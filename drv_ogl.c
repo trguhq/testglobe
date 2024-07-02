@@ -1,0 +1,242 @@
+// testglobe - display 3d globe to test 3d hardware
+// drv_ogl.c - OpenGL driver
+//
+// Copyright (C) 2024 trguhq
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+#include "testglob.h"
+#include "glob_ext.h"
+#include "drv_ext.h"
+
+#ifdef DRV_OGL
+
+#include <OpenGL/OpenGL.h>
+#include <GLUT/glut.h>
+
+static int ogl_old_x;
+static int ogl_old_y;
+
+// error handling
+void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam)
+{
+    fprintf(stderr, "GL CALLBACK: type = 0x%x, severity = 0x%x, message = %s\n", type, severity, message );
+}
+
+void ogl_keyboard(unsigned char key, int x, int y)
+{
+    if (key == '1' || key == '2' || key == '3' || key == '4' || key == '5')
+    {
+        globe_toggle_res(key);
+    }
+}
+
+void ogl_mouse_move(int x, int y)
+{
+    int change_x;
+    int change_y;
+    
+    if (drv_lmouse_pressed)
+    {
+        change_x = x - ogl_old_x;
+        change_y = y - ogl_old_y;
+        drv_rot_y += (float) change_x * 100.0f / (float)drv_win_width;
+        drv_rot_x += (float) change_y * 100.0f / (float)drv_win_height;
+        ogl_old_x = x;
+        ogl_old_y = y;
+        glutPostRedisplay();
+    }
+}
+
+void ogl_mouse(int button, int state, int x, int y)
+{
+    if (button == GLUT_LEFT_BUTTON)
+    {
+        if (state == GLUT_DOWN)
+        {
+            if (drv_lmouse_pressed == TRUE)
+            {
+                
+            }
+            else
+            {
+                drv_lmouse_pressed = TRUE;
+                ogl_old_x = x;
+                ogl_old_y = y;
+            }
+        }
+        if (state == GLUT_UP)
+        {
+            if (drv_lmouse_pressed == FALSE)
+            {
+                
+            }
+            else
+            {
+                drv_lmouse_pressed = FALSE;
+                ogl_old_x = x;
+                ogl_old_y = y;
+            }
+        }
+    }
+}
+
+void ogl_checkerrors (void)
+{
+    GLenum error;
+    
+    while((error = glGetError()) != GL_NO_ERROR)
+    {
+        char *error_msg;
+        
+        switch(error)
+        {
+            case GL_INVALID_ENUM:
+                error_msg = "Invalid enum";
+                break;
+            case GL_INVALID_VALUE:
+                error_msg = "Invalid value";
+                break;
+            case GL_INVALID_OPERATION:
+                error_msg = "Invalid operation";
+                break;
+            case GL_STACK_OVERFLOW:
+                error_msg = "Stack overflow";
+                break;
+            case GL_STACK_UNDERFLOW:
+                error_msg = "Stack underflow";
+                break;
+            case GL_OUT_OF_MEMORY:
+                error_msg = "Out of memory";
+                break;
+            case GL_INVALID_FRAMEBUFFER_OPERATION:
+                error_msg = "Invalid framebuffer operation";
+                break;
+#ifdef GL_CONTEXT_LOST
+            case GL_CONTEXT_LOST:
+                error_msg = "Context lost";
+                break;
+#endif
+#ifdef GL_TABLE_TOO_LARGE1
+            case GL_TABLE_TOO_LARGE1:
+                error_msg = "Table too large";
+                break;
+#endif
+            default:
+                error_msg = "Unknown";
+                break;
+        }
+        fprintf(stderr, "OpenGL error: %s!\n", error_msg);
+    }
+}
+
+// initialize graphics subsystem
+void drv_init(int *argc, char **argv)
+{
+    glutInit(argc, argv);
+    glutInitDisplayMode(GLUT_SINGLE);
+}
+
+// render current scene
+void drv_render(void)
+{
+    glEnable(GL_CULL_FACE);
+    glFrontFace(GL_CCW);
+    glCullFace(GL_BACK);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(45, (float)drv_win_width/(float)drv_win_height, 1.0, 10000);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glTranslatef(0,0, -3000.0f);
+    glRotatef(drv_rot_x, 1, 0, 0);
+    glRotatef(drv_rot_y, 0, 1, 0);
+    glRotatef(-90, 1, 0, 0);
+    glRotatef(-90, 0, 0, 1);
+    glBegin(GL_TRIANGLES);
+    globe_draw_tris();
+    glEnd();
+    glFlush();
+    glutSwapBuffers();
+    ogl_checkerrors();
+}
+
+// resize window
+void drv_resize(int width, int height) {
+    drv_win_width = width;
+    drv_win_height = height;
+    drv_render();
+}
+
+// initialize a window, all values < 1 for full screen/default
+int drv_init_window(int in_x, int in_y, int in_width, int in_height)
+{
+    if (in_x > 0) {
+        drv_win_x = in_x;
+    } else {
+        in_x = drv_win_x;
+    }
+    if (in_y > 0) {
+        drv_win_y = in_y;
+    } else {
+        in_y = drv_win_y;
+    }
+    if (in_width > 0) {
+        drv_win_width = in_width;
+    } else {
+        in_width = drv_win_width;
+    }
+    if (in_height > 0) {
+        drv_win_height = in_height;
+    } else {
+        in_height = drv_win_height;
+    }
+
+    glutInitWindowSize(in_width, in_height);
+    glutInitWindowPosition(in_x, in_y);
+    glutCreateWindow(TESTGLOBE_NAME);
+    glutDisplayFunc(drv_render);
+    glutReshapeFunc(drv_resize);
+    glutMouseFunc(ogl_mouse);
+    glutMotionFunc(ogl_mouse_move);
+    glutPassiveMotionFunc(ogl_mouse_move);
+    glutKeyboardUpFunc(ogl_keyboard);
+    
+    ogl_checkerrors();
+    return 1;
+}
+
+void drv_loop(void)
+{
+    glutMainLoop();
+}
+
+void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *color)
+{
+    glColor3ub(color->r, color->g, color->b);
+
+    glVertex3fv((GLfloat *)xyz1);
+    glVertex3fv((GLfloat *)xyz2);
+    glVertex3fv((GLfloat *)xyz3);
+}
+
+// cleanly close window
+void drv_close(void)
+{
+    
+}
+
+#endif
