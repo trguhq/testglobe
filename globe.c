@@ -129,7 +129,7 @@ void globe_calc_colors(void)
             globe_data = earth_data_512;
             break;
         default:
-            error("Invalid globe resolutions (longs), must be 32, 64, 128, 256 or 512");
+            error("Invalid globe resolution (longitude), must be 32, 64, 128, 256 or 512");
     }
     
     globe_cmap = &earth_cmap;
