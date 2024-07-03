@@ -36,7 +36,7 @@ int main(int argc, char **argv) {
        
     drv_init_window(0,0,0,0);
     globe_init();
-    globe_init_verts(512, -1, GLOBE_RADIUS);
+    globe_init_verts(DEFAULT_GLOBE_LONGITUDE, -1, GLOBE_RADIUS);
     drv_loop();
 
     return 0;

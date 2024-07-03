@@ -178,7 +178,6 @@ int globe_init_verts(int longitude, int latitude, float radius)
     printf("Vertices: %i\n", globe_verts_num);
     printf("Triangles: %i\n", globe_tris_num);
     
-    
     globe_alloc();
 
     vertex_ptr = globe_verts;
@@ -254,25 +253,37 @@ void globe_toggle_res(char key)
 {
     int new_longitude;
     
-    new_longitude = 512;
+    new_longitude = DEFAULT_GLOBE_LONGITUDE;
     
     switch (key)
     {
+#ifdef EARTH_32
         case '1':
             new_longitude = 32;
             break;
+#endif
+#ifdef EARTH_64
         case '2':
             new_longitude = 64;
             break;
+#endif
+#ifdef EARTH_128
         case '3':
             new_longitude = 128;
             break;
+#endif
+#ifdef EARTH_256
         case '4':
             new_longitude = 256;
             break;
+#endif
+#ifdef EARTH_512
         case '5':
-        default:
             new_longitude = 512;
+            break;
+#endif
+        default:
+            return;
             break;
     }
     

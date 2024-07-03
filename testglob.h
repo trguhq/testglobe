@@ -45,6 +45,9 @@
 
 #define GLOBE_RADIUS 1000
 
+// this can be 32, 64, 128, 256 and 512, provided the above are defined for each
+#define DEFAULT_GLOBE_LONGITUDE 512
+
 // set a graphics driver if not already set
 #ifndef DRV
 #ifdef __APPLE__
