@@ -182,7 +182,8 @@ void drv_render(void)
 void drv_resize(int width, int height) {
     drv_win_width = width;
     drv_win_height = height;
-    drv_render();
+    glViewport(0, 0, width, height);
+    glutPostRedisplay();
 }
 
 // initialize a window, all values < 1 for full screen/default
