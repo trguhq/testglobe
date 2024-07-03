@@ -1,5 +1,5 @@
 CC = cc
-DRVFLAGS = -DDRV_OGL
+DRVFLAGS = -DDRV_OGL -DDRV
 CFLAGS = $(DRVFLAGS) -g -O0
 LDFLAGS = -lm -lGL -lGLU -lglut
 
