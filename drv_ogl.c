@@ -22,8 +22,11 @@
 
 #ifdef DRV_OGL
 
-#include <OpenGL/OpenGL.h>
+#ifdef __APPLE__
 #include <GLUT/glut.h>
+#else
+#include <GL/glut.h>
+#endif
 
 static int ogl_old_x;
 static int ogl_old_y;
@@ -39,6 +42,7 @@ void ogl_keyboard(unsigned char key, int x, int y)
     if (key == '1' || key == '2' || key == '3' || key == '4' || key == '5')
     {
         globe_toggle_res(key);
+        glutPostRedisplay();
     }
 }
 
@@ -205,6 +209,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
         in_height = drv_win_height;
     }
 
+    glutInitDisplayMode(GLUT_RGB|GLUT_DOUBLE);
     glutInitWindowSize(in_width, in_height);
     glutInitWindowPosition(in_x, in_y);
     glutCreateWindow(TESTGLOBE_NAME);
