@@ -51,8 +51,8 @@ float globe_radius;
 int globe_verts_num;
 int globe_faces_num;
 int globe_tris_num;
-int globe_sectors;
-int globe_stacks;
+int globe_longs;
+int globe_lats;
 static unsigned char *globe_data;
 static cmap *globe_cmap;
 
@@ -64,8 +64,8 @@ void globe_init(void)
     globe_verts_num = 0;
     globe_faces_num = 0;
     globe_tris_num = 0;
-    globe_sectors = 0;
-    globe_stacks = 0;
+    globe_longs = 0;
+    globe_lats = 0;
 }
 
 void globe_free(void)
@@ -111,7 +111,7 @@ void globe_calc_colors(void)
     unsigned char val;
     unsigned char *data_ptr;
 
-    switch (globe_sectors)
+    switch (globe_longs)
     {
         case 32:
             globe_data = earth_data_32;
@@ -129,12 +129,12 @@ void globe_calc_colors(void)
             globe_data = earth_data_512;
             break;
         default:
-            error("Invalid globe resolutions (sectors), must be 32, 64, 128, 256 or 512");
+            error("Invalid globe resolutions (longs), must be 32, 64, 128, 256 or 512");
     }
     
     globe_cmap = &earth_cmap;
-    width = globe_sectors;
-    height = globe_stacks;
+    width = globe_longs;
+    height = globe_lats;
     
     color_ptr = globe_colors;
     data_ptr = globe_data;
@@ -153,13 +153,13 @@ void globe_calc_colors(void)
     }
 }
 
-int globe_init_verts(int sectors, int stacks, float radius)
+int globe_init_verts(int longs, int lats, float radius)
 {
     int i, j;
     float u, v;
     float x, y, z, xy;
-    float sector_step, stack_step;
-    float sector_angle, stack_angle;
+    float long_step, lat_step;
+    float long_angle, lat_angle;
     int verts_added;
     
     Vertex *vertex_ptr;
@@ -167,14 +167,14 @@ int globe_init_verts(int sectors, int stacks, float radius)
     globe_free();
     
     globe_radius = radius;
-    globe_sectors = sectors;
-    if (stacks<1) globe_stacks = globe_sectors/2;
-    else globe_stacks = stacks;
-    globe_verts_num = (globe_stacks+1)*(globe_sectors+1);
-    globe_faces_num = globe_sectors*globe_stacks;
-    globe_tris_num = ((globe_stacks-2)*globe_sectors*2)+(2*globe_sectors);
+    globe_longs = longs;
+    if (lats<1) globe_lats = globe_longs/2;
+    else globe_lats = lats;
+    globe_verts_num = (globe_lats+1)*(globe_longs+1);
+    globe_faces_num = globe_longs*globe_lats;
+    globe_tris_num = ((globe_lats-2)*globe_longs*2)+(2*globe_longs);
 
-    printf("Globe resolution: %i x %i\n", globe_sectors, globe_stacks);
+    printf("Globe resolution: %i x %i\n", globe_longs, globe_lats);
     printf("Vertices: %i\n", globe_verts_num);
     printf("Triangles: %i\n", globe_tris_num);
     
@@ -184,27 +184,27 @@ int globe_init_verts(int sectors, int stacks, float radius)
     vertex_ptr = globe_verts;
     verts_added = 0;
     
-    sector_step = 2.0f*PI/globe_sectors;
-    stack_step = PI/globe_stacks;
-    for(i=0; i<=globe_stacks; ++i)
+    long_step = 2.0f*PI/globe_longs;
+    lat_step = PI/globe_lats;
+    for(i=0; i<=globe_lats; ++i)
     {
-        stack_angle = PI/2.0f-i*stack_step;
-        xy = globe_radius * cosf(stack_angle);
-        z = globe_radius * sinf(stack_angle);
+        lat_angle = PI/2.0f-i*lat_step;
+        xy = globe_radius * cosf(lat_angle);
+        z = globe_radius * sinf(lat_angle);
 
-        for(j = 0; j<=globe_sectors; ++j)
+        for(j = 0; j<=globe_longs; ++j)
         {
-            sector_angle = j*sector_step;
+            long_angle = j*long_step;
 
-            x = xy*cosf(sector_angle);
-            y = xy*sinf(sector_angle);
+            x = xy*cosf(long_angle);
+            y = xy*sinf(long_angle);
             vertex_ptr->x = x;
             vertex_ptr->y = y;
             vertex_ptr->z = z;
             vertex_ptr++;
             
-            u = (float)j/globe_sectors;
-            v = (float)i/globe_stacks;
+            u = (float)j/globe_longs;
+            v = (float)i/globe_lats;
             // calc and store texture coords or colors or per vertex colors
 
         }
@@ -223,20 +223,20 @@ void globe_draw_tris(void)
     int i,j;
     color_ptr = globe_colors;
     
-    for(i=0; i<globe_stacks; i++)
+    for(i=0; i<globe_lats; i++)
     {
-        v1 = globe_verts + (i * (globe_sectors + 1));
+        v1 = globe_verts + (i * (globe_longs + 1));
         v1_1 = v1 + 1;
-        v2 = v1 + globe_sectors + 1;
+        v2 = v1 + globe_longs + 1;
         v2_1 = v2 + 1;
-        for(j=0; j<globe_sectors; j++)
+        for(j=0; j<globe_longs; j++)
         {
             if(i != 0)
             {
                 drv_draw_tri_flat_rgb(v1, v2, v1_1, color_ptr);
             }
             
-            if(i != globe_stacks-1)
+            if(i != globe_lats-1)
             {
                 drv_draw_tri_flat_rgb(v1_1, v2, v2_1, color_ptr);
             }
@@ -252,30 +252,30 @@ void globe_draw_tris(void)
 
 void globe_toggle_res(char key)
 {
-    int new_sectors;
+    int new_longs;
     
-    new_sectors = 512;
+    new_longs = 512;
     
     switch (key)
     {
         case '1':
-            new_sectors = 32;
+            new_longs = 32;
             break;
         case '2':
-            new_sectors = 64;
+            new_longs = 64;
             break;
         case '3':
-            new_sectors = 128;
+            new_longs = 128;
             break;
         case '4':
-            new_sectors = 256;
+            new_longs = 256;
             break;
         case '5':
         default:
-            new_sectors = 512;
+            new_longs = 512;
             break;
     }
     
     globe_free();
-    globe_init_verts(new_sectors, -1, GLOBE_RADIUS);
+    globe_init_verts(new_longs, -1, GLOBE_RADIUS);
 }
