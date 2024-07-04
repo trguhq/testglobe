@@ -96,7 +96,7 @@ int globe_alloc(void)
     return 1;
 }
 
-inline void lookup_color()
+void lookup_color()
 {
     
 }

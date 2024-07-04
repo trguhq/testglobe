@@ -31,18 +31,39 @@
 static int ogl_old_x;
 static int ogl_old_y;
 
+/* display list for currently selected sphere tesselation. Lazily constructed
+ * on first use.
+ */
+static int dlist;
+
+
 // error handling
-void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam)
+void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const char* message, const void* userParam)
 {
     fprintf(stderr, "GL CALLBACK: type = 0x%x, severity = 0x%x, message = %s\n", type, severity, message );
 }
 
 void ogl_keyboard(unsigned char key, int x, int y)
 {
-    if (key == '1' || key == '2' || key == '3' || key == '4' || key == '5')
-    {
-        globe_toggle_res(key);
-        glutPostRedisplay();
+    switch(key) {
+        case 27:
+            exit(0);
+
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+        case '5':
+            globe_toggle_res(key);
+            if(dlist) {
+                glDeleteLists(dlist, 1);
+                dlist = 0;
+            }
+            glutPostRedisplay();
+            break;
+
+        default:
+            break;
     }
 }
 
@@ -98,71 +119,63 @@ void ogl_mouse(int button, int state, int x, int y)
 
 void ogl_checkerrors (void)
 {
-    GLenum error;
-    
-    while((error = glGetError()) != GL_NO_ERROR)
-    {
-        char *error_msg;
+    char *error_msg;
         
-        switch(error)
-        {
-            case GL_INVALID_ENUM:
-                error_msg = "Invalid enum";
-                break;
-            case GL_INVALID_VALUE:
-                error_msg = "Invalid value";
-                break;
-            case GL_INVALID_OPERATION:
-                error_msg = "Invalid operation";
-                break;
-            case GL_STACK_OVERFLOW:
-                error_msg = "Stack overflow";
-                break;
-            case GL_STACK_UNDERFLOW:
-                error_msg = "Stack underflow";
-                break;
-            case GL_OUT_OF_MEMORY:
-                error_msg = "Out of memory";
-                break;
-            case GL_INVALID_FRAMEBUFFER_OPERATION:
-                error_msg = "Invalid framebuffer operation";
-                break;
+    switch(glGetError())
+    {
+        case GL_NO_ERROR:
+            return;
+        case GL_INVALID_ENUM:
+            error_msg = "Invalid enum";
+            break;
+        case GL_INVALID_VALUE:
+            error_msg = "Invalid value";
+            break;
+        case GL_INVALID_OPERATION:
+            error_msg = "Invalid operation";
+            break;
+        case GL_STACK_OVERFLOW:
+            error_msg = "Stack overflow";
+            break;
+        case GL_STACK_UNDERFLOW:
+            error_msg = "Stack underflow";
+            break;
+        case GL_OUT_OF_MEMORY:
+            error_msg = "Out of memory";
+            break;
+#ifdef GL_INVALID_FRAMEBUFFER_OPERATION
+        case GL_INVALID_FRAMEBUFFER_OPERATION:
+            error_msg = "Invalid framebuffer operation";
+            break;
+#endif
 #ifdef GL_CONTEXT_LOST
-            case GL_CONTEXT_LOST:
-                error_msg = "Context lost";
-                break;
+        case GL_CONTEXT_LOST:
+            error_msg = "Context lost";
+            break;
 #endif
 #ifdef GL_TABLE_TOO_LARGE1
-            case GL_TABLE_TOO_LARGE1:
-                error_msg = "Table too large";
-                break;
+        case GL_TABLE_TOO_LARGE1:
+            error_msg = "Table too large";
+            break;
 #endif
-            default:
-                error_msg = "Unknown";
-                break;
-        }
-        fprintf(stderr, "OpenGL error: %s!\n", error_msg);
+        default:
+            error_msg = "Unknown";
+            break;
     }
+    fprintf(stderr, "OpenGL error: %s!\n", error_msg);
 }
 
 // initialize graphics subsystem
 void drv_init(int *argc, char **argv)
 {
     glutInit(argc, argv);
-    glutInitDisplayMode(GLUT_SINGLE);
+    glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
 }
 
 // render current scene
 void drv_render(void)
 {
-    glEnable(GL_CULL_FACE);
-    glFrontFace(GL_CCW);
-    glCullFace(GL_BACK);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    gluPerspective(45, (float)drv_win_width/(float)drv_win_height, 1.0, 10000);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glTranslatef(0,0, -3000.0f);
@@ -170,10 +183,20 @@ void drv_render(void)
     glRotatef(drv_rot_y, 0, 1, 0);
     glRotatef(-90, 1, 0, 0);
     glRotatef(-90, 0, 0, 1);
-    glBegin(GL_TRIANGLES);
-    globe_draw_tris();
-    glEnd();
-    glFlush();
+
+    if(!dlist) {
+        dlist = glGenLists(1);
+        glNewList(dlist, GL_COMPILE_AND_EXECUTE);
+
+        glBegin(GL_TRIANGLES);
+        globe_draw_tris();
+        glEnd();
+
+        glEndList();
+    } else {
+        glCallList(dlist);
+    }
+
     glutSwapBuffers();
     ogl_checkerrors();
 }
@@ -183,7 +206,10 @@ void drv_resize(int width, int height) {
     drv_win_width = width;
     drv_win_height = height;
     glViewport(0, 0, width, height);
-    glutPostRedisplay();
+
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(45, (float)width/(float)height, 1.0, 10000);
 }
 
 // initialize a window, all values < 1 for full screen/default
@@ -219,8 +245,13 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     glutMouseFunc(ogl_mouse);
     glutMotionFunc(ogl_mouse_move);
     glutPassiveMotionFunc(ogl_mouse_move);
-    glutKeyboardUpFunc(ogl_keyboard);
-    
+    glutKeyboardFunc(ogl_keyboard);
+
+    glEnable(GL_CULL_FACE);
+    glFrontFace(GL_CCW);
+    glCullFace(GL_BACK);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
     ogl_checkerrors();
     return 1;
 }
