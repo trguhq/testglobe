@@ -16,6 +16,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#include <stdlib.h>
 #include "testglob.h"
 #include "glob_ext.h"
 #include "drv_ext.h"
