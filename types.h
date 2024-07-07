@@ -37,4 +37,10 @@ typedef struct Color_Index
     unsigned char color;
 } Color_Index;
 
+typedef struct Coord
+{
+    float u;
+    float v;
+} Coord;
+
 #endif /* types_h */

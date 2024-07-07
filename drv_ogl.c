@@ -20,6 +20,7 @@
 #include "testglob.h"
 #include "glob_ext.h"
 #include "drv_ext.h"
+#include "tex_ext.h"
 
 #ifdef DRV_OGL
 
@@ -37,6 +38,7 @@ static int ogl_old_y;
  */
 static int dlist;
 
+static GLuint texture_id;
 
 // error handling
 void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const char* message, const void* userParam)
@@ -62,7 +64,15 @@ void ogl_keyboard(unsigned char key, int x, int y)
             }
             glutPostRedisplay();
             break;
-
+        case 't':
+        case 'T':
+            globe_toggle_tex();
+            if(dlist) {
+                glDeleteLists(dlist, 1);
+                dlist = 0;
+            }
+            glutPostRedisplay();
+            break;
         default:
             break;
     }
@@ -213,6 +223,39 @@ void drv_resize(int width, int height) {
     gluPerspective(45, (float)width/(float)height, 1.0, 10000);
 }
 
+// load texture
+void drv_texture_load(void)
+{
+    texture_generate(TEXTURE_DEFAULT_SIZE);
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size/2, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    texture_free();
+    drv_texture_loaded = TRUE;
+}
+
+// set rendering pipeline to textures
+void drv_texture_enable(void)
+{
+    if (!drv_texture_loaded) drv_texture_load();
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glEnable(GL_TEXTURE_2D);
+    drv_texture_enabled = TRUE;
+}
+
+// turn off textures
+void drv_texture_disable(void)
+{
+    glDisable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    drv_texture_enabled = FALSE;
+}
+
 // initialize a window, all values < 1 for full screen/default
 int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 {
@@ -268,6 +311,16 @@ void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *
 
     glVertex3fv((GLfloat *)xyz1);
     glVertex3fv((GLfloat *)xyz2);
+    glVertex3fv((GLfloat *)xyz3);
+}
+
+void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, Coord *uv2, Coord *uv3)
+{
+    glTexCoord2fv((GLfloat *)uv1);
+    glVertex3fv((GLfloat *)xyz1);
+    glTexCoord2fv((GLfloat *)uv2);
+    glVertex3fv((GLfloat *)xyz2);
+    glTexCoord2fv((GLfloat *)uv3);
     glVertex3fv((GLfloat *)xyz3);
 }
 

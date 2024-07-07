@@ -31,6 +31,9 @@
 unsigned int drv_win_x, drv_win_y;              // window geometry
 unsigned int drv_win_width, drv_win_height;     // window geometry
 int drv_colormapped;                    // bool is colormap window
+int drv_texture_avail;                  // is texturing available in the driver
+int drv_texture_loaded;                 // has texture been loaded
+int drv_texture_enabled;                // is texturing enabled
 unsigned int drv_bits_per_pixel;        // bits depth
 unsigned int drv_colormap_bits;         // bits per color
 unsigned long int drv_colors;           // number of colors
@@ -54,6 +57,8 @@ void drv_ext_init(void)
     drv_win_width = DRV_WIN_WIDTH;
     drv_win_height = DRV_WIN_HEIGHT;
     drv_colormapped = DRV_COLORMAPPED;
+    drv_texture_avail = DRV_TEXTURE;
+    drv_texture_enabled = DRV_TEXTURE_DEFAULT;
     drv_bits_per_pixel = DRV_DEPTH;
     drv_colormap_bits = DRV_COLORMAPDEPTH;
     drv_colors = (drv_bits_per_pixel == 32 ? 0xFFFFFFFF : 1<<drv_bits_per_pixel);

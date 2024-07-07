@@ -18,7 +18,7 @@
 #ifndef e_512_h
 #define e_512_h
 
-static unsigned char earth_data_512[] = {
+unsigned char earth_data_512[] = {
 	3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
 	3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
 	3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,

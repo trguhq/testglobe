@@ -45,6 +45,7 @@
 typedef unsigned char cmap[256][3];
 Vertex *globe_verts;
 Color_RGB *globe_colors;
+Coord *globe_coords;
 
 float globe_radius;
 
@@ -60,6 +61,7 @@ void globe_init(void)
 {
     globe_verts = NULL;
     globe_colors = NULL;
+    globe_coords = NULL;
     globe_radius = 0;
     globe_verts_num = 0;
     globe_faces_num = 0;
@@ -80,6 +82,11 @@ void globe_free(void)
         free(globe_colors);
         globe_colors = NULL;
     }
+    if (globe_coords != NULL)
+    {
+        free(globe_coords);
+        globe_coords = NULL;
+    }
 
     globe_init();
 }
@@ -92,6 +99,11 @@ int globe_alloc(void)
     globe_colors = (void *) malloc(globe_tris_num * sizeof(struct Color_RGB));
     if (globe_colors == NULL)
         error("Couldn't allocate memory for colors!\n");
+#ifdef TEXTURE
+    globe_coords = (void *) malloc(globe_verts_num * sizeof(struct Coord));
+    if (globe_coords == NULL)
+        error("Couldn't allocate memory for texture coordinates!\n");
+#endif
     
     return 1;
 }
@@ -163,7 +175,8 @@ int globe_init_verts(int longitude, int latitude, float radius)
     int verts_added;
     
     Vertex *vertex_ptr;
-       
+    Coord *coord_ptr;
+    
     globe_free();
     
     globe_radius = radius;
@@ -181,6 +194,8 @@ int globe_init_verts(int longitude, int latitude, float radius)
     globe_alloc();
 
     vertex_ptr = globe_verts;
+    coord_ptr = globe_coords;
+    
     verts_added = 0;
     
     longitude_step = 2.0f*PI/globe_longitude;
@@ -201,10 +216,12 @@ int globe_init_verts(int longitude, int latitude, float radius)
             vertex_ptr->y = y;
             vertex_ptr->z = z;
             vertex_ptr++;
-            
-            u = (float)j/globe_longitude;
-            v = (float)i/globe_latitude;
-            // calc and store texture coords or colors or per vertex colors
+
+#ifdef TEXTURE
+            coord_ptr->u = (float)j/(float)globe_longitude;
+            coord_ptr->v = (float)i/(float)globe_latitude;
+            coord_ptr++;
+#endif
 
         }
     }
@@ -219,34 +236,81 @@ void globe_draw_tris(void)
     Color_RGB *color_ptr;
     
     Vertex *v1, *v2, *v1_1, *v2_1;
+#ifdef TEXTURE
+    Coord *c1, *c2, *c1_1, *c2_1;
+#endif
+    
     int i,j;
     color_ptr = globe_colors;
     
-    for(i=0; i<globe_latitude; i++)
+    if (drv_texture_enabled == FALSE)
     {
-        v1 = globe_verts + (i * (globe_longitude + 1));
-        v1_1 = v1 + 1;
-        v2 = v1 + globe_longitude + 1;
-        v2_1 = v2 + 1;
-        for(j=0; j<globe_longitude; j++)
+        for(i=0; i<globe_latitude; i++)
         {
-            if(i != 0)
+            v1 = globe_verts + (i * (globe_longitude + 1));
+            v1_1 = v1 + 1;
+            v2 = v1 + globe_longitude + 1;
+            v2_1 = v2 + 1;
+            for(j=0; j<globe_longitude; j++)
             {
-                drv_draw_tri_flat_rgb(v1, v2, v1_1, color_ptr);
+                if(i != 0)
+                {
+                    drv_draw_tri_flat_rgb(v1, v2, v1_1, color_ptr);
+                }
+                
+                if(i != globe_latitude-1)
+                {
+                    drv_draw_tri_flat_rgb(v1_1, v2, v2_1, color_ptr);
+                }
+                color_ptr++;
+                
+                v1++;
+                v1_1++;
+                v2++;
+                v2_1++;
             }
-            
-            if(i != globe_latitude-1)
-            {
-                drv_draw_tri_flat_rgb(v1_1, v2, v2_1, color_ptr);
-            }
-            color_ptr++;
-            
-            v1++;
-            v1_1++;
-            v2++;
-            v2_1++;
         }
     }
+#ifdef TEXTURE
+    else
+    {
+        for(i=0; i<globe_latitude; i++)
+        {
+            v1 = globe_verts + (i * (globe_longitude + 1));
+            v1_1 = v1 + 1;
+            v2 = v1 + globe_longitude + 1;
+            v2_1 = v2 + 1;
+            
+            c1 = globe_coords + (i * (globe_longitude + 1));
+            c1_1 = c1 + 1;
+            c2 = c1 + globe_longitude + 1;
+            c2_1 = c2 + 1;
+            
+            for(j=0; j<globe_longitude; j++)
+            {
+                if(i != 0)
+                {
+                    drv_draw_tri_flat_uv(v1, v2, v1_1, c1, c2, c1_1);
+                }
+                
+                if(i != globe_latitude-1)
+                {
+                    drv_draw_tri_flat_uv(v1_1, v2, v2_1, c1_1, c2, c2_1);
+                }
+                
+                v1++;
+                v1_1++;
+                v2++;
+                v2_1++;
+                
+                c1++;
+                c1_1++;
+                c2++;
+                c2_1++;
+            }
+        }
+    }
+#endif
 }
 
 void globe_toggle_res(char key)
@@ -289,4 +353,15 @@ void globe_toggle_res(char key)
     
     globe_free();
     globe_init_verts(new_longitude, -1, GLOBE_RADIUS);
+}
+
+void globe_toggle_tex(void)
+{
+    if (drv_texture_enabled) {
+        drv_texture_disable();
+    } else {
+        drv_texture_enable();
+    }
+    
+    
 }

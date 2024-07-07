@@ -22,5 +22,12 @@ extern void globe_init(void);
 extern int globe_init_verts(int, int, float);
 extern void globe_draw_tris(void);
 extern void globe_toggle_res(char);
+extern void globe_toggle_tex(void);
+extern unsigned char earth_data_32[];
+extern unsigned char earth_data_64[];
+extern unsigned char earth_data_128[];
+extern unsigned char earth_data_256[];
+extern unsigned char earth_data_512[];
+extern unsigned char earth_cmap[][3];
 
 #endif /* glob_ext_h */

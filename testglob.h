@@ -43,6 +43,12 @@
 #define EARTH_256
 #define EARTH_512
 
+// compile in texture support
+#define TEXTURE
+// default texture size, this can be 32, 64, 128, 256 or 512
+#define TEXTURE_DEFAULT_SIZE 512
+#define TEXTURE_RGB
+
 #define GLOBE_RADIUS 1000
 
 // this can be 32, 64, 128, 256 and 512, provided the above are defined for each

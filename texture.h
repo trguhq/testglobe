@@ -1,5 +1,5 @@
 // testglobe - display 3d globe to test 3d hardware
-// drv_igl.h - IRIS GL driver
+// texture.h - generic texture support
 //
 // Copyright (C) 2024 trguhq
 //
@@ -16,25 +16,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#ifndef drv_igl_h
-#define drv_igl_h
+#ifndef texture_h
+#define texture_h
 
-#ifndef DRV
-#define DRV
-#endif
+#include "testglob.h"
+#include "types.h"
 
-#define DRV_NAME "IRIS GL"
-
-#define DRV_WIN_X 100
-#define DRV_WIN_Y 100
-#define DRV_WIN_WIDTH 640
-#define DRV_WIN_HEIGHT 480
-#define DRV_COLORMAPPED FALSE
-#define DRV_TEXTURE TRUE
-#define DRV_TEXTURE_DEFAULT FALSE
-#define DRV_DEPTH 24
-#define DRV_COLORMAPDEPTH 24
-#define Color Color_RGB
-
-
-#endif /* drv_igl_h */
+#endif /* texture_h */

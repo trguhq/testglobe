@@ -18,7 +18,7 @@
 #ifndef e_cmap_h
 #define e_cmap_h
 
-static unsigned char earth_cmap[256][3] = {
+unsigned char earth_cmap[256][3] = {
     {  6,  2,  7},
     {  4,  3, 16},
     {  0,  6,  9},

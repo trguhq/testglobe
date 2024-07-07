@@ -18,7 +18,7 @@
 #ifndef e_256_h
 #define e_256_h
 
-static unsigned char earth_data_256[] = {
+unsigned char earth_data_256[] = {
 	3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
 	3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
 	3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,

@@ -18,7 +18,7 @@
 #ifndef e_128_h
 #define e_128_h
 
-static unsigned char earth_data_128[] = {
+unsigned char earth_data_128[] = {
 	3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
 	3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
 	3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,

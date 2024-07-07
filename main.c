@@ -20,6 +20,7 @@
 #include "testglob.h"
 #include "drv_ext.h"
 #include "glob_ext.h"
+#include "tex_ext.h"
 
 int main(int argc, char **argv) {
     drv_ext_init();
@@ -33,10 +34,17 @@ int main(int argc, char **argv) {
     if (drv_colormapped == TRUE) {
         printf("Palette: %u (%u colors)\n", drv_colormap_bits, drv_colormap_colors);
     }
-       
+#ifdef TEXTURE
+    printf("Texture mapping: %s (%s)\n", (drv_texture_avail == TRUE ? "available" : "none"),
+           (drv_texture_enabled == TRUE ? "enabled" : "disabled"));
+#endif
+    
     drv_init_window(0,0,0,0);
     globe_init();
     globe_init_verts(DEFAULT_GLOBE_LONGITUDE, -1, GLOBE_RADIUS);
+#ifdef TEXTURE
+    texture_init();
+#endif
     drv_loop();
 
     return 0;
