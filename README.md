@@ -12,3 +12,4 @@ Cross-platform program to display a 3d globe on different APIs and hardware. Cur
 ## Interface
 * keys 1-5 set resolution of globe
 * mouse spins globe
+* t toggles texture mapping
