@@ -29,7 +29,7 @@ unsigned int texture_data_size;
 
 void texture_generate(int size)
 {
-    int i, j;
+    int i;
     unsigned char *earth_data;
     unsigned char *texture_data_ptr;
     int texture_data_elements;

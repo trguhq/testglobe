@@ -168,7 +168,6 @@ void globe_calc_colors(void)
 int globe_init_verts(int longitude, int latitude, float radius)
 {
     int i, j;
-    float u, v;
     float x, y, z, xy;
     float longitude_step, latitude_step;
     float longitude_angle, latitude_angle;
