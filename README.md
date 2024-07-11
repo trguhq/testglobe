@@ -7,7 +7,7 @@ Cross-platform program to display a 3d globe on different APIs and hardware. Cur
 * OpenGL
 * PHIGS
 * Sun XGL
-* IBM Adapter Interface? VBE/AF? others?
+* IBM Adapter Interface? VBE/AF? QuickDraw? others?
 
 ## Interface
 * keys 1-5 set resolution of globe
