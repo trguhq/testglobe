@@ -88,7 +88,11 @@ void texture_init(void)
 
 void texture_free(void)
 {
-    if (texture_data != NULL) free(texture_data);
+    if (texture_data != NULL)
+    {
+        free(texture_data);
+        texture_data = NULL;
+    }
 }
 
 
