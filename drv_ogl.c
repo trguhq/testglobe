@@ -48,7 +48,8 @@ void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei
 
 void ogl_keyboard(unsigned char key, int x, int y)
 {
-    switch(key) {
+    switch(key)
+    {
         case 27:
             exit(0);
 
@@ -58,7 +59,8 @@ void ogl_keyboard(unsigned char key, int x, int y)
         case '4':
         case '5':
             globe_toggle_res(key);
-            if(dlist) {
+            if(dlist)
+            {
                 glDeleteLists(dlist, 1);
                 dlist = 0;
             }
@@ -67,7 +69,8 @@ void ogl_keyboard(unsigned char key, int x, int y)
         case 't':
         case 'T':
             globe_toggle_tex();
-            if(dlist) {
+            if(dlist)
+            {
                 glDeleteLists(dlist, 1);
                 dlist = 0;
             }
@@ -195,7 +198,8 @@ void drv_render(void)
     glRotatef(-90, 1, 0, 0);
     glRotatef(-90, 0, 0, 1);
 
-    if(!dlist) {
+    if(!dlist)
+    {
         dlist = glGenLists(1);
         glNewList(dlist, GL_COMPILE_AND_EXECUTE);
 
@@ -204,7 +208,8 @@ void drv_render(void)
         glEnd();
 
         glEndList();
-    } else {
+    } else
+    {
         glCallList(dlist);
     }
 
@@ -259,26 +264,22 @@ void drv_texture_disable(void)
 // initialize a window, all values < 1 for full screen/default
 int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 {
-    if (in_x > 0) {
+    if (in_x > 0)
         drv_win_x = in_x;
-    } else {
+    else
         in_x = drv_win_x;
-    }
-    if (in_y > 0) {
+    if (in_y > 0)
         drv_win_y = in_y;
-    } else {
+    else
         in_y = drv_win_y;
-    }
-    if (in_width > 0) {
+    if (in_width > 0)
         drv_win_width = in_width;
-    } else {
+    else
         in_width = drv_win_width;
-    }
-    if (in_height > 0) {
+    if (in_height > 0)
         drv_win_height = in_height;
-    } else {
+    else
         in_height = drv_win_height;
-    }
 
     glutInitDisplayMode(GLUT_RGB|GLUT_DOUBLE);
     glutInitWindowSize(in_width, in_height);
