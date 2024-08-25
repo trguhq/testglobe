@@ -369,7 +369,7 @@ void drv_draw_osd(void)
     glLoadIdentity();
     
     ogl_draw_string(drv_help, 10, 10);
-    snprintf(status_str, 255, "triangles %i, texturing %s", globe_tris_num, (drv_texture_enabled ? "on" : "off"));
+    snprintf(status_str, 255, "%i triangles (%i visible), texturing %s", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"));
     ogl_draw_string(status_str, 10, drv_win_height - 18);
 }
 

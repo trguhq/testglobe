@@ -52,6 +52,7 @@ float globe_radius;
 int globe_verts_num;
 int globe_faces_num;
 int globe_tris_num;
+int globe_tris_num_vis;
 int globe_longitude;
 int globe_latitude;
 static unsigned char *globe_data;
@@ -185,6 +186,7 @@ int globe_init_verts(int longitude, int latitude, float radius)
     globe_verts_num = (globe_latitude+1)*(globe_longitude+1);
     globe_faces_num = globe_longitude*globe_latitude;
     globe_tris_num = ((globe_latitude-2)*globe_longitude*2)+(2*globe_longitude);
+    globe_tris_num_vis = globe_tris_num/2;
 
     printf("Globe resolution: %i x %i\n", globe_longitude, globe_latitude);
     printf("Vertices: %i\n", globe_verts_num);
