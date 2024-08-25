@@ -24,6 +24,8 @@
 #endif
 
 #define DRV_NAME "IBM PGC"
+#define DRV_HELP "1-5 = facets, O = OSD, T = texturing"
+
 #define DRV_WIN_X 0
 #define DRV_WIN_Y 0
 #define DRV_WIN_WIDTH 640
@@ -31,6 +33,7 @@
 #define DRV_COLORMAPPED TRUE
 #define DRV_TEXTURE FALSE
 #define DRV_TEXTURE_DEFAULT FALSE
+#define DRV_OSD_DEFAULT TRUE
 #define DRV_DEPTH 8
 #define DRV_COLORMAPDEPTH 12
 

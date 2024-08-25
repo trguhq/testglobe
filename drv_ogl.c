@@ -30,6 +30,8 @@
 #include <GL/glut.h>
 #endif
 
+void *ogl_font;
+
 static int ogl_old_x;
 static int ogl_old_y;
 
@@ -74,6 +76,11 @@ void ogl_keyboard(unsigned char key, int x, int y)
                 glDeleteLists(dlist, 1);
                 dlist = 0;
             }
+            glutPostRedisplay();
+            break;
+        case 'O':
+        case 'o':
+            drv_osd_enabled = !drv_osd_enabled;
             glutPostRedisplay();
             break;
         default:
@@ -179,11 +186,23 @@ void ogl_checkerrors (void)
     fprintf(stderr, "OpenGL error: %s!\n", error_msg);
 }
 
+// draw a string with bitmap text
+void ogl_draw_string(char * str, int x, int y)
+{
+    glRasterPos2i(x, y);
+    int i;
+    for (i=0; *(str+i) != 0; str++)
+    {
+        glutBitmapCharacter(ogl_font, *(str+i));
+    }
+}
+
 // initialize graphics subsystem
 void drv_init(int *argc, char **argv)
 {
     glutInit(argc, argv);
     glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
+    ogl_font = GLUT_BITMAP_HELVETICA_12;
 }
 
 // render current scene
@@ -213,6 +232,19 @@ void drv_render(void)
         glCallList(dlist);
     }
 
+    if (drv_osd_enabled)
+    {
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        drv_draw_osd();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+    }
+    
     glutSwapBuffers();
     ogl_checkerrors();
 }
@@ -323,6 +355,22 @@ void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, 
     glVertex3fv((GLfloat *)xyz2);
     glTexCoord2fv((GLfloat *)uv3);
     glVertex3fv((GLfloat *)xyz3);
+}
+
+void drv_draw_osd(void)
+{
+    char status_str[256];
+    
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluOrtho2D(0, drv_win_width, 0, drv_win_height);
+    
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    
+    ogl_draw_string(drv_help, 10, 10);
+    snprintf(status_str, 255, "triangles %i, texturing %s", globe_tris_num, (drv_texture_enabled ? "on" : "off"));
+    ogl_draw_string(status_str, 10, drv_win_height - 18);
 }
 
 // cleanly close window

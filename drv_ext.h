@@ -29,16 +29,19 @@ extern int drv_colormapped;
 extern int drv_texture_avail;
 extern int drv_texture_loaded;
 extern int drv_texture_enabled;
+extern int drv_osd_enabled;
 extern unsigned int drv_bits_per_pixel;
 extern unsigned int drv_bytes_per_pixel;
 extern unsigned int drv_colormap_bits;
 extern unsigned long int drv_colors;
 extern unsigned long int drv_colormap_colors;
 extern char drv_name[];
+extern char drv_help[];
 extern float drv_rot_x;
 extern float drv_rot_y;
 extern int drv_lmouse_pressed;
 extern int drv_rmouse_pressed;
+
 
 extern void drv_ext_init(void);
 extern void drv_init(int *argc, char **argv);
@@ -48,5 +51,6 @@ extern void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord
 extern void drv_loop(void);
 extern void drv_texture_enable(void);
 extern void drv_texture_disable(void);
+extern void drv_draw_osd(void);
 
 #endif /* drv_ext_h */

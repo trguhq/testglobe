@@ -34,6 +34,7 @@ int drv_colormapped;                    // bool is colormap window
 int drv_texture_avail;                  // is texturing available in the driver
 int drv_texture_loaded;                 // has texture been loaded
 int drv_texture_enabled;                // is texturing enabled
+int drv_osd_enabled;                    // is OSD enabled
 unsigned int drv_bits_per_pixel;        // bits depth
 unsigned int drv_colormap_bits;         // bits per color
 unsigned long int drv_colors;           // number of colors
@@ -44,6 +45,7 @@ float drv_rot_x;                            // rotation of globe on x axis
 float drv_rot_y;                            // rotation of globe on y axis
 int drv_lmouse_pressed;                 // mouse pressed
 int drv_rmouse_pressed;                 //
+char drv_help[256];                     // OSD help string to print
 
 
 // call first
@@ -59,6 +61,7 @@ void drv_ext_init(void)
     drv_colormapped = DRV_COLORMAPPED;
     drv_texture_avail = DRV_TEXTURE;
     drv_texture_enabled = DRV_TEXTURE_DEFAULT;
+    drv_osd_enabled = DRV_OSD_DEFAULT;
     drv_bits_per_pixel = DRV_DEPTH;
     drv_colormap_bits = DRV_COLORMAPDEPTH;
     drv_colors = (drv_bits_per_pixel == 32 ? 0xFFFFFFFF : 1<<drv_bits_per_pixel);
@@ -79,6 +82,7 @@ void drv_ext_init(void)
             break;
     }
     strcpy(drv_name, DRV_NAME);
+    strcpy(drv_help, DRV_HELP);
     drv_rot_x = 0;
     drv_rot_y = 0;
     drv_lmouse_pressed = FALSE;

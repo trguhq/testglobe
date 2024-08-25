@@ -29,5 +29,6 @@ extern unsigned char earth_data_128[];
 extern unsigned char earth_data_256[];
 extern unsigned char earth_data_512[];
 extern unsigned char earth_cmap[][3];
+extern int globe_tris_num;
 
 #endif /* glob_ext_h */

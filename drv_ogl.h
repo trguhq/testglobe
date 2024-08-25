@@ -24,6 +24,7 @@
 #endif
 
 #define DRV_NAME "OpenGL"
+#define DRV_HELP "1-5 = facets, O = OSD, T = texturing"
 #define GL_SILENCE_DEPRECATION
 
 #define DRV_WIN_X 100
@@ -33,6 +34,7 @@
 #define DRV_COLORMAPPED FALSE
 #define DRV_TEXTURE TRUE
 #define DRV_TEXTURE_DEFAULT FALSE
+#define DRV_OSD_DEFAULT TRUE
 #define DRV_DEPTH 24
 #define DRV_COLORMAPDEPTH 24
 #define Color Color_RGB
