@@ -9,6 +9,7 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 ## Interface
 * keys 1-5 set resolution of globe
 * mouse spins globe
+* o toggles on-screen display
 * t toggles texture mapping
   
 ## Planned drivers
