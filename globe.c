@@ -204,15 +204,15 @@ int globe_init_verts(int longitude, int latitude, float radius)
     for(i=0; i<=globe_latitude; ++i)
     {
         latitude_angle = PI/2.0f-i*latitude_step;
-        xy = globe_radius * cosf(latitude_angle);
-        z = globe_radius * sinf(latitude_angle);
+        xy = globe_radius * COS(latitude_angle);
+        z = globe_radius * SIN(latitude_angle);
 
         for(j = 0; j<=globe_longitude; ++j)
         {
             longitude_angle = j*longitude_step;
 
-            x = xy*cosf(longitude_angle);
-            y = xy*sinf(longitude_angle);
+            x = xy*COS(longitude_angle);
+            y = xy*SIN(longitude_angle);
             vertex_ptr->x = x;
             vertex_ptr->y = y;
             vertex_ptr->z = z;

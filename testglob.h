@@ -21,7 +21,7 @@
 
 #define DEBUG
 
-#define TESTGLOBE_NAME "TESTGLOBE"
+#define TESTGLOBE_NAME "testglobe"
 
 #define TESTGLOBE_VERSION_MAJOR 0
 #define TESTGLOBE_VERSION_MINOR 1
@@ -67,6 +67,15 @@
 #ifdef sparc
 #define DRV_XGL
 #endif
+#endif
+
+// system specific defines
+#ifdef NO_SINF
+#define SIN sin
+#define COS cos
+#else
+#define SIN sinf
+#define COS cosf
 #endif
 
 #endif /* testglob_h */

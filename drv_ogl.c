@@ -269,7 +269,11 @@ void drv_texture_load(void)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size/2, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
+#ifndef NO_GENMIPMAP
     glGenerateMipmap(GL_TEXTURE_2D);
+#else
+    gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, texture_size, texture_size/2, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
+#endif
     texture_free();
     drv_texture_loaded = TRUE;
 }
