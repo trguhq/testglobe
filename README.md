@@ -34,5 +34,8 @@ GLUT is required. If your system did not include GLUT out of the box you may hav
       
 If you don't have glGenerateMipmap define NO_GENMIPMAP as in the Makefile example.
 
+### Xcode
+No .xcodeproj is provided at this time (as of v0.1), however testglobe was built for macOS with Xcode. This will be provided at some point in the future.
+
 ## Known issues
 * FreeGLUT on Linux (tested on arm64 Raspberry Pi) seems to have an issue with drawing text when texturing is enabled.
