@@ -19,3 +19,15 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 * PHIGS
 * Sun XGL
 * IBM Adapter Interface? VBE/AF? QuickDraw? others?
+
+## Build notes
+### cosf and sinf
+If you don't have cosf and sinf (some old Unixes) define NO_SINF as in the Makefile example.
+### OpenGL
+GLUT is required for the OpenGL version. If your system did not include GLUT out of the box you may have to hunt around for it:
+* Linux: ```sudo apt-get install freeglut3-dev```
+* Solaris:
+    * https://web.archive.org/web/20010726192034/http://reality.sgi.com/opengl/glut3/glut-3.7b.sparc_solaris_64.tar.gz
+    * https://web.archive.org/web/20010726175006/http://reality.sgi.com/opengl/glut3/glut-3.7b.sparc_solaris.tar.gz
+      
+If you don't have glGenerateMipmap define NO_GENMIPMAP as in the Makefile example.
