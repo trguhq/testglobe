@@ -31,3 +31,6 @@ GLUT is required for the OpenGL version. If your system did not include GLUT out
     * https://web.archive.org/web/20010726175006/http://reality.sgi.com/opengl/glut3/glut-3.7b.sparc_solaris.tar.gz
       
 If you don't have glGenerateMipmap define NO_GENMIPMAP as in the Makefile example.
+
+## Known issues
+* FreeGLUT on Linux (tested on arm64 Raspberry Pi) seems to have an issue with drawing text when texturing is enabled.
