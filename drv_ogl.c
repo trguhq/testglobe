@@ -22,16 +22,16 @@
 #include "drv_ext.h"
 #include "tex_ext.h"
 
-#ifdef DRV_OGL
-
 #ifdef __APPLE__
 #include <GLUT/glut.h>
 #else
 #include <GL/glut.h>
 #endif
 
+// OpenGL font pointer
 void *ogl_font;
 
+// previous mouse pointer location
 static int ogl_old_x;
 static int ogl_old_y;
 
@@ -48,18 +48,19 @@ void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei
     fprintf(stderr, "GL CALLBACK: type = 0x%x, severity = 0x%x, message = %s\n", type, severity, message );
 }
 
+// keyboard input
 void ogl_keyboard(unsigned char key, int x, int y)
 {
     switch(key)
     {
         case 27:
             exit(0);
-
         case '1':
         case '2':
         case '3':
         case '4':
         case '5':
+            // in this case the routines in globe.c understand the same keys we have for OpenGL
             globe_toggle_res(key);
             if(dlist)
             {
@@ -88,6 +89,7 @@ void ogl_keyboard(unsigned char key, int x, int y)
     }
 }
 
+// callback for mouse movement
 void ogl_mouse_move(int x, int y)
 {
     int change_x;
@@ -105,6 +107,7 @@ void ogl_mouse_move(int x, int y)
     }
 }
 
+// callback for mouse click
 void ogl_mouse(int button, int state, int x, int y)
 {
     if (button == GLUT_LEFT_BUTTON)
@@ -138,7 +141,8 @@ void ogl_mouse(int button, int state, int x, int y)
     }
 }
 
-void ogl_checkerrors (void)
+// print out description of last error
+void ogl_checkerror (void)
 {
     char *error_msg;
         
@@ -246,7 +250,7 @@ void drv_render(void)
     }
     
     glutSwapBuffers();
-    ogl_checkerrors();
+    ogl_checkerror();
 }
 
 // resize window
@@ -333,7 +337,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     glCullFace(GL_BACK);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
-    ogl_checkerrors();
+    ogl_checkerror();
     return 1;
 }
 
@@ -373,7 +377,7 @@ void drv_draw_osd(void)
     glLoadIdentity();
     
     ogl_draw_string(drv_help, 10, 10);
-    snprintf(status_str, 255, "%i triangles (%i visible), texturing %s", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"));
+    snprintf(status_str, 255, "%i triangles (%i visible), texture mapping %s", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"));
     ogl_draw_string(status_str, 10, drv_win_height - 18);
 }
 
@@ -382,5 +386,3 @@ void drv_close(void)
 {
     
 }
-
-#endif

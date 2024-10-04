@@ -24,7 +24,7 @@
 #endif
 
 #define DRV_NAME "OpenGL"
-#define DRV_HELP "1-5 = facets, O = OSD, T = texturing"
+#define DRV_HELP "1-5 = facets, O = OSD, T = texture mapping"
 #define GL_SILENCE_DEPRECATION
 
 #define DRV_WIN_X 100

@@ -54,7 +54,8 @@
 // this can be 32, 64, 128, 256 and 512, provided the above are defined for each
 #define DEFAULT_GLOBE_LONGITUDE 512
 
-// set a graphics driver if not already set
+// set a graphics driver if not already set, a fallback, normally this should be in the Makefile or build settings
+// also this is not necessary anymore to exclude code that isn't being built, which is done in the Makefile
 #ifndef DRV
 #ifdef __APPLE__
 #ifdef __MACH__
