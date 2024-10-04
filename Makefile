@@ -44,11 +44,12 @@ DRV_OBJ = drv_ogl.o
 # Solaris 2.8 and earlier:
 SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
 #
-# IRIX, OS X/macOS:
+# IRIX, OS X/macOS, Linux:
 #SYS_FLAGS =
 
 # Release:
 CFLAGS = $(DRV_FLAGS) $(SYS_FLAGS) -O2
+#
 # Debug:
 #CFLAGS = $(DRV_FLAGS) $(SYS_FLAGS) -g -O0 -DDEBUG
 
@@ -56,6 +57,9 @@ CFLAGS = $(DRV_FLAGS) $(SYS_FLAGS) -O2
 #
 # OpenGL in Unix-compatible environment:
 LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
+#
+# Linux
+#LDFLAGS = -lm -lglut -lGL -lGLU -lX11
 
 OBJECTS = drv.o $(DRV_OBJ) err.o globe.o main.o texture.o
 TARGET = testglobe
