@@ -18,6 +18,7 @@
 #include <stdio.h>
 
 #include "testglob.h"
+#include "globe.h"
 #include "drv_ext.h"
 #include "glob_ext.h"
 #include "tex_ext.h"

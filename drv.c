@@ -17,6 +17,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #include "testglob.h"
+#include "globe.h"
 
 #ifdef DRV_OGL
 #include "drv_ogl.h"

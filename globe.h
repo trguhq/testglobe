@@ -24,4 +24,13 @@
 #define PI 3.14159265358979323846
 #endif
 
+#define GLOBE_RADIUS 1000
+
+// default rotation
+#define GLOBE_DEFAULT_ROTATION_X 0
+#define GLOBE_DEFAULT_ROTATION_Y 180
+
+// this can be 32, 64, 128, 256 and 512, provided the above are defined for each
+#define GLOBE_DEFAULT_LONGITUDE 512
+
 #endif /* globe_h */
