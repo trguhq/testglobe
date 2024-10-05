@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
     
     drv_init_window(0,0,0,0);
     globe_init();
-    globe_init_verts(DEFAULT_GLOBE_LONGITUDE, -1, GLOBE_RADIUS);
+    globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS);
 #ifdef TEXTURE
     texture_init();
 #endif

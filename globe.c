@@ -126,21 +126,32 @@ void globe_calc_colors(void)
 
     switch (globe_longitude)
     {
+
+#ifdef EARTH_32
         case 32:
             globe_data = earth_data_32;
             break;
+#endif
+#ifdef EARTH_64
         case 64:
             globe_data = earth_data_64;
             break;
+#endif
+#ifdef EARTH_128
         case 128:
             globe_data = earth_data_128;
             break;
+#endif
+#ifdef EARTH_256
         case 256:
             globe_data = earth_data_256;
             break;
+#endif
+#ifdef EARTH_512
         case 512:
             globe_data = earth_data_512;
             break;
+#endif
         default:
             error("Invalid globe resolution (longitude), must be 32, 64, 128, 256 or 512");
     }
@@ -318,7 +329,7 @@ void globe_toggle_res(char key)
 {
     int new_longitude;
     
-    new_longitude = DEFAULT_GLOBE_LONGITUDE;
+    new_longitude = GLOBE_DEFAULT_LONGITUDE;
     
     switch (key)
     {

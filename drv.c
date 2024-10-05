@@ -83,8 +83,8 @@ void drv_ext_init(void)
     }
     strcpy(drv_name, DRV_NAME);
     strcpy(drv_help, DRV_HELP);
-    drv_rot_x = 0;
-    drv_rot_y = 0;
+    drv_rot_x = GLOBE_DEFAULT_ROTATION_X;
+    drv_rot_y = GLOBE_DEFAULT_ROTATION_Y;
     drv_lmouse_pressed = FALSE;
     drv_rmouse_pressed = FALSE;
 }

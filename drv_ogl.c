@@ -148,7 +148,7 @@ void ogl_mouse(int button, int state, int x, int y)
 }
 
 // print out description of last error
-void ogl_checkerror (void)
+void ogl_checkerror(void)
 {
     char *error_msg;
         
@@ -263,8 +263,8 @@ void drv_render(void)
 void drv_resize(int width, int height) {
     drv_win_width = width;
     drv_win_height = height;
+    
     glViewport(0, 0, width, height);
-
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     gluPerspective(45, (float)width/(float)height, 1.0, 10000);

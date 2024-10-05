@@ -24,7 +24,7 @@
 #define TESTGLOBE_NAME "testglobe"
 
 #define TESTGLOBE_VERSION_MAJOR 0
-#define TESTGLOBE_VERSION_MINOR 1
+#define TESTGLOBE_VERSION_MINOR 2
 
 #ifndef testglob_h
 #define testglob_h
@@ -51,8 +51,12 @@
 
 #define GLOBE_RADIUS 1000
 
+// default rotation
+#define GLOBE_DEFAULT_ROTATION_X 0
+#define GLOBE_DEFAULT_ROTATION_Y 180
+
 // this can be 32, 64, 128, 256 and 512, provided the above are defined for each
-#define DEFAULT_GLOBE_LONGITUDE 512
+#define GLOBE_DEFAULT_LONGITUDE 512
 
 // set a graphics driver if not already set, a fallback, normally this should be in the Makefile or build settings
 // also this is not necessary anymore to exclude code that isn't being built, which is done in the Makefile

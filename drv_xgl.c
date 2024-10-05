@@ -92,7 +92,7 @@ void xgl_mouse(int button, int state, int x, int y)
 }
 
 // check for errors
-void xgl_checkerrors (void)
+void xgl_checkerrors(void)
 {
 }
 

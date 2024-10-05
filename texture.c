@@ -38,21 +38,31 @@ void texture_generate(int size)
     
     switch (size)
     {
+#ifdef EARTH_32
         case 32:
             earth_data = earth_data_32;
             break;
+#endif
+#ifdef EARTH_64
         case 64:
             earth_data = earth_data_64;
             break;
+#endif
+#ifdef EARTH_128
         case 128:
             earth_data = earth_data_128;
             break;
+#endif
+#ifdef EARTH_256
         case 256:
             earth_data = earth_data_256;
             break;
+#endif
+#ifdef EARTH_512
         case 512:
             earth_data = earth_data_512;
             break;
+#endif
         default:
             error("Invalid texture size");
     }
