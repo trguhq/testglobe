@@ -42,6 +42,12 @@ static int dlist;
 
 static GLuint texture_id;
 
+// cleanly close window
+void drv_close(void)
+{
+    exit(0);
+}
+
 // error handling
 void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const char* message, const void* userParam)
 {
@@ -54,7 +60,7 @@ void ogl_keyboard(unsigned char key, int x, int y)
     switch(key)
     {
         case 27:
-            exit(0);
+            drv_close();
         case '1':
         case '2':
         case '3':
@@ -379,10 +385,4 @@ void drv_draw_osd(void)
     ogl_draw_string(drv_help, 10, 10);
     snprintf(status_str, 255, "%i triangles (%i visible), texture mapping %s", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"));
     ogl_draw_string(status_str, 10, drv_win_height - 18);
-}
-
-// cleanly close window
-void drv_close(void)
-{
-    
 }
