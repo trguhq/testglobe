@@ -75,6 +75,11 @@ void ogl_keyboard(unsigned char key, int x, int y)
             }
             glutPostRedisplay();
             break;
+        case 'a':
+        case 'A':
+            drv_auto_enabled = !drv_auto_enabled;
+            glutPostRedisplay();
+            break;
         case 't':
         case 'T':
             globe_toggle_tex();
@@ -259,6 +264,12 @@ void drv_render(void)
     glutSwapBuffers();
     ogl_checkerror();
     drv_fps_stop();
+    
+    if (drv_auto_enabled == TRUE)
+    {
+        drv_rot_y += 1;
+        glutPostRedisplay();
+    }
 }
 
 // resize window

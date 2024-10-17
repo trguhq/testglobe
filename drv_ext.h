@@ -43,6 +43,7 @@ extern int drv_lmouse_pressed;
 extern int drv_rmouse_pressed;
 extern float drv_fps_average;
 extern int drv_fps_enabled;
+extern int drv_auto_enabled;
 
 
 extern void drv_ext_init(void);

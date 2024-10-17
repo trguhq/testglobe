@@ -52,6 +52,7 @@ int drv_fps_enabled;                    // fps counter enabled
 float drv_fps_average;                    // average fps
 struct timeval drv_frame_begin, drv_frame_start, drv_frame_stop;     // time of frame start and stop
 long drv_fps_history_num;               // total number of frames recorded
+long drv_auto_enabled;                  // automatically rotate
 
 // call first
 void drv_ext_init(void)
@@ -95,7 +96,7 @@ void drv_ext_init(void)
     drv_fps_enabled = DRV_FPS_DEFAULT;
     drv_fps_average = 0;
     drv_fps_history_num = 0;
-//    drv_fps_history_ptr = 0;
+    drv_auto_enabled = FALSE;
     
 }
 
