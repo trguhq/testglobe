@@ -218,6 +218,7 @@ void drv_init(int *argc, char **argv)
 // render current scene
 void drv_render(void)
 {
+    drv_fps_start();
     glClear(GL_COLOR_BUFFER_BIT);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
@@ -257,6 +258,7 @@ void drv_render(void)
     
     glutSwapBuffers();
     ogl_checkerror();
+    drv_fps_stop();
 }
 
 // resize window
@@ -383,6 +385,6 @@ void drv_draw_osd(void)
     glLoadIdentity();
     
     ogl_draw_string(drv_help, 10, 10);
-    snprintf(status_str, 255, "%i triangles (%i visible), texture mapping %s", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"));
+    snprintf(status_str, 255, "%i triangles (%i visible), texture mapping %s, %.2f frames per second", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"), drv_fps_average);
     ogl_draw_string(status_str, 10, drv_win_height - 18);
 }

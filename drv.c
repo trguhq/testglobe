@@ -16,6 +16,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#include <sys/time.h>
 #include "testglob.h"
 #include "globe.h"
 
@@ -47,7 +48,10 @@ float drv_rot_y;                            // rotation of globe on y axis
 int drv_lmouse_pressed;                 // mouse pressed
 int drv_rmouse_pressed;                 //
 char drv_help[256];                     // OSD help string to print
-
+int drv_fps_enabled;                    // fps counter enabled
+float drv_fps_average;                    // average fps
+struct timeval drv_frame_begin, drv_frame_start, drv_frame_stop;     // time of frame start and stop
+long drv_fps_history_num;               // total number of frames recorded
 
 // call first
 void drv_ext_init(void)
@@ -88,5 +92,44 @@ void drv_ext_init(void)
     drv_rot_y = GLOBE_DEFAULT_ROTATION_Y;
     drv_lmouse_pressed = FALSE;
     drv_rmouse_pressed = FALSE;
+    drv_fps_enabled = DRV_FPS_DEFAULT;
+    drv_fps_average = 0;
+    drv_fps_history_num = 0;
+//    drv_fps_history_ptr = 0;
+    
+}
+
+// frame start
+void drv_fps_start(void)
+{
+    gettimeofday(&drv_frame_start, NULL);
+    if (drv_fps_history_num == 0)
+    {
+        drv_frame_begin.tv_sec = drv_frame_start.tv_sec;
+        drv_frame_begin.tv_usec = drv_frame_start.tv_usec;
+    }
+}
+
+// frame stop
+void drv_fps_stop(void)
+{
+    float diff_msec;
+    
+    gettimeofday(&drv_frame_stop, NULL);
+    diff_msec = (drv_frame_stop.tv_sec - drv_frame_start.tv_sec) * 1000 + (drv_frame_stop.tv_usec - drv_frame_start.tv_usec) / 1000;
+    
+    if (diff_msec > 1000)
+    {
+        drv_fps_average = 1.0f / (float) diff_msec * 1000.0f;
+    } else
+    {
+        drv_fps_history_num++;
+        if (drv_fps_history_num == DRV_FPS_HISTORY)
+        {
+            drv_fps_history_num = 0;
+            diff_msec = (drv_frame_stop.tv_sec - drv_frame_begin.tv_sec) * 1000 + (drv_frame_stop.tv_usec - drv_frame_begin.tv_usec) / 1000;
+            drv_fps_average = (float) DRV_FPS_HISTORY / (float) diff_msec * 1000.0f;
+        }
+    }
 }
 

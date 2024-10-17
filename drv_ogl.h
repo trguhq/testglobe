@@ -38,7 +38,8 @@
 #define DRV_DEPTH 24
 #define DRV_COLORMAPDEPTH 24
 #define Color Color_RGB
-
+#define DRV_FPS_HISTORY 60
+#define DRV_FPS_DEFAULT TRUE
 
 
 #endif /* drv_ogl_h */

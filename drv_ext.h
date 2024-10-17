@@ -41,6 +41,8 @@ extern float drv_rot_x;
 extern float drv_rot_y;
 extern int drv_lmouse_pressed;
 extern int drv_rmouse_pressed;
+extern float drv_fps_average;
+extern int drv_fps_enabled;
 
 
 extern void drv_ext_init(void);
@@ -52,5 +54,7 @@ extern void drv_loop(void);
 extern void drv_texture_enable(void);
 extern void drv_texture_disable(void);
 extern void drv_draw_osd(void);
+extern void drv_fps_start(void);
+extern void drv_fps_stop(void);
 
 #endif /* drv_ext_h */
