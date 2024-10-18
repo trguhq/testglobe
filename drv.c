@@ -104,17 +104,13 @@ void drv_ext_init(void)
 void drv_fps_start(void)
 {
     gettimeofday(&drv_frame_start, NULL);
-    if (drv_fps_history_num == 0)
-    {
-        drv_frame_begin.tv_sec = drv_frame_start.tv_sec;
-        drv_frame_begin.tv_usec = drv_frame_start.tv_usec;
-    }
 }
 
 // frame stop
 void drv_fps_stop(void)
 {
     int diff_msec;
+    static int diff_msec_total;
     
     gettimeofday(&drv_frame_stop, NULL);
     diff_msec = (drv_frame_stop.tv_sec - drv_frame_start.tv_sec) * 1000 + (drv_frame_stop.tv_usec - drv_frame_start.tv_usec) / 1000;
@@ -124,12 +120,20 @@ void drv_fps_stop(void)
         drv_fps_average = 1.0f / (float) diff_msec * 1000.0f;
     } else
     {
+        if (drv_fps_history_num == 0)
+        {
+            diff_msec_total = 0;
+            
+        }
+        
+        diff_msec_total += diff_msec;
         drv_fps_history_num++;
+        
         if (drv_fps_history_num == DRV_FPS_HISTORY)
         {
+            drv_fps_average = (float) DRV_FPS_HISTORY / (float) diff_msec_total * 1000.0f;
             drv_fps_history_num = 0;
-            diff_msec = (drv_frame_stop.tv_sec - drv_frame_begin.tv_sec) * 1000 + (drv_frame_stop.tv_usec - drv_frame_begin.tv_usec) / 1000;
-            drv_fps_average = (float) DRV_FPS_HISTORY / (float) diff_msec * 1000.0f;
+            diff_msec_total = 0;
         }
     }
 }
