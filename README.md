@@ -44,9 +44,9 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 
 ## Version history
 
-### 0.2
+### v0.2
 * Add FPS counter
 * Add auto-rotation benchmarking feature
 
-### 0.1
+### v0.1
 First release, OpenGL/GLUT only. Provide binaries for several platforms.
