@@ -114,7 +114,7 @@ void drv_fps_start(void)
 // frame stop
 void drv_fps_stop(void)
 {
-    float diff_msec;
+    int diff_msec;
     
     gettimeofday(&drv_frame_stop, NULL);
     diff_msec = (drv_frame_stop.tv_sec - drv_frame_start.tv_sec) * 1000 + (drv_frame_stop.tv_usec - drv_frame_start.tv_usec) / 1000;
