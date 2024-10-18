@@ -9,9 +9,10 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 ## Interface
 * keys 1-5 set resolution of globe
 * mouse spins globe
-* a toggles auto-rotate / benchmark mode
-* o toggles on-screen display
-* t toggles texture mapping
+* a key toggles auto-rotate / benchmark mode
+* o key toggles on-screen display
+* t key toggles texture mapping
+* esc key exits immediately
   
 ## Planned drivers
 * IBM PGC hardware
