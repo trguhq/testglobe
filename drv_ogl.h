@@ -40,6 +40,7 @@
 #define Color Color_RGB
 #define DRV_FPS_HISTORY 60
 #define DRV_FPS_DEFAULT TRUE
+#define DRV_ROTATE 10.0f
 
 
 #endif /* drv_ogl_h */

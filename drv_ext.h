@@ -57,5 +57,6 @@ extern void drv_texture_disable(void);
 extern void drv_draw_osd(void);
 extern void drv_fps_start(void);
 extern void drv_fps_stop(void);
+extern void drv_globe_rotate(void);
 
 #endif /* drv_ext_h */

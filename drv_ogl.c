@@ -111,7 +111,21 @@ void ogl_mouse_move(int x, int y)
         change_x = x - ogl_old_x;
         change_y = y - ogl_old_y;
         drv_rot_y += (float) change_x * 100.0f / (float)drv_win_width;
+        if (drv_rot_y > 360.0f)
+        {
+            drv_rot_y -= 360.0f;
+        } else if (drv_rot_y < 0.0f)
+        {
+            drv_rot_y += 360.0f;
+        }
         drv_rot_x += (float) change_y * 100.0f / (float)drv_win_height;
+        if (drv_rot_x > 360.0f)
+        {
+            drv_rot_x -= 360.0f;
+        } else if (drv_rot_x < 0.0f)
+        {
+            drv_rot_x += 360.0f;
+        }
         ogl_old_x = x;
         ogl_old_y = y;
         glutPostRedisplay();
@@ -267,7 +281,7 @@ void drv_render(void)
     
     if (drv_auto_enabled == TRUE)
     {
-        drv_rot_y += 1;
+        drv_globe_rotate();
         glutPostRedisplay();
     }
 }

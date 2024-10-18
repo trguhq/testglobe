@@ -43,14 +43,14 @@ unsigned long int drv_colors;           // number of colors
 unsigned long int drv_colormap_colors;  // number of colors in colormap
 unsigned int drv_bytes_per_pixel;       // bytes per color: 1, 2 or 3
 char drv_name[64];                      // name of driver
-float drv_rot_x;                            // rotation of globe on x axis
-float drv_rot_y;                            // rotation of globe on y axis
+float drv_rot_x;                        // rotation of globe on x axis
+float drv_rot_y;                        // rotation of globe on y axis
 int drv_lmouse_pressed;                 // mouse pressed
 int drv_rmouse_pressed;                 //
 char drv_help[256];                     // OSD help string to print
 int drv_fps_enabled;                    // fps counter enabled
-float drv_fps_average;                    // average fps
-struct timeval drv_frame_begin, drv_frame_start, drv_frame_stop;     // time of frame start and stop
+float drv_fps_average;                  // average fps
+struct timeval drv_frame_start, drv_frame_stop;     // time of frame start and stop
 long drv_fps_history_num;               // total number of frames recorded
 long drv_auto_enabled;                  // automatically rotate
 
@@ -115,7 +115,7 @@ void drv_fps_stop(void)
     gettimeofday(&drv_frame_stop, NULL);
     diff_msec = (drv_frame_stop.tv_sec - drv_frame_start.tv_sec) * 1000 + (drv_frame_stop.tv_usec - drv_frame_start.tv_usec) / 1000;
     
-    if (diff_msec > 1000)
+    if (diff_msec >= 1000)
     {
         drv_fps_average = 1.0f / (float) diff_msec * 1000.0f;
     } else
@@ -138,3 +138,18 @@ void drv_fps_stop(void)
     }
 }
 
+// rotate globe at a fixed speed
+void drv_globe_rotate(void)
+{
+    float sec;
+    
+    sec = (float) (drv_frame_stop.tv_sec - drv_frame_start.tv_sec) + (float) (drv_frame_stop.tv_usec - drv_frame_start.tv_usec) / 1000000.0f;
+    drv_rot_y += DRV_ROTATE * sec;
+    if (drv_rot_y > 360.0f)
+    {
+        drv_rot_y -= 360.0f;
+    } else if (drv_rot_y < 0.0f)
+    {
+        drv_rot_y += 360.0f;
+    }
+}
