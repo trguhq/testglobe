@@ -42,7 +42,7 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 ## Known issues
 * Linux or Mesa OpenGL seems to have an issue with drawing text when texturing is enabled.
 
-## Verison history
+## Version history
 
 ### 0.2
 * Add FPS counter
