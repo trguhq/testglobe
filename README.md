@@ -7,7 +7,7 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 *Running on macOS (OS X)*
 
 ## Interface
-* keys 1-5 set resolution of globe
+* keys 1-5 adjust number of faces of globe
 * mouse spins globe
 * a key toggles auto-rotate / benchmark mode
 * o key toggles on-screen display
