@@ -44,7 +44,7 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 
 ## Version history
 
-### v0.2
+### v0.2 (in development)
 * Add FPS counter
 * Add auto-rotation benchmarking feature
 
