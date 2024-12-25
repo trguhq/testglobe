@@ -7,7 +7,7 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 *Running on macOS (OS X)*
 
 ## Interface
-* keys 1-5 set resolution of globe
+* keys 1-5 adjust number of faces of globe
 * mouse spins globe
 * a key toggles auto-rotate / benchmark mode
 * o key toggles on-screen display
@@ -41,3 +41,14 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 
 ## Known issues
 * Linux or Mesa OpenGL seems to have an issue with drawing text when texturing is enabled.
+
+## Version history
+
+### v0.2 (in development)
+* Add XGL driver (in progress)
+* Change all comments to C style (in progress)
+* Add FPS counter (complete)
+* Add auto-rotation benchmarking feature (complete)
+
+### v0.1
+First release, OpenGL/GLUT only. Provide binaries for several platforms.
