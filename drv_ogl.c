@@ -402,6 +402,12 @@ void drv_draw_osd(void)
 {
     char status_str[256];
     
+    // due to differences in implementation this has to be disabled for Mesa
+    if (drv_texture_enabled)
+    {
+        glDisable(GL_TEXTURE_2D);
+    }
+    
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     gluOrtho2D(0, drv_win_width, 0, drv_win_height);
@@ -412,4 +418,9 @@ void drv_draw_osd(void)
     ogl_draw_string(drv_help, 10, 10);
     snprintf(status_str, 255, "%i triangles (%i visible), texture mapping %s, %.2f frames per second", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"), drv_fps_average);
     ogl_draw_string(status_str, 10, drv_win_height - 18);
+    
+    if (drv_texture_enabled)
+    {
+        glEnable(GL_TEXTURE_2D);
+    }
 }
