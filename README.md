@@ -49,6 +49,7 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 * Change all comments to C style (in progress)
 * Add FPS counter (complete)
 * Add auto-rotation benchmarking feature (complete)
+* [bugfix] Disable texture mapping during drawing of bitmap text in OpenGL for Mesa quirk
 
 ### v0.1
 First release, OpenGL/GLUT only. Provide binaries for several platforms.
