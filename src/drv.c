@@ -1,20 +1,22 @@
-// testglobe - display 3d globe to test 3d hardware
-// drv.c - graphics driver
-//
-// Copyright (C) 2024 trguhq
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+/*
+ * testglobe - display 3d globe to test 3d hardware
+ * drv.c - graphics driver
+ *
+ * Copyright (C) 2024 trguhq
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 
 #include <sys/time.h>
 #include "testglob.h"
@@ -30,31 +32,31 @@
 #include "drv_xgl.h"
 #endif
 
-unsigned int drv_win_x, drv_win_y;              // window geometry
-unsigned int drv_win_width, drv_win_height;     // window geometry
-int drv_colormapped;                    // bool is colormap window
-int drv_texture_avail;                  // is texturing available in the driver
-int drv_texture_loaded;                 // has texture been loaded
-int drv_texture_enabled;                // is texturing enabled
-int drv_osd_enabled;                    // is OSD enabled
-unsigned int drv_bits_per_pixel;        // bits depth
-unsigned int drv_colormap_bits;         // bits per color
-unsigned long int drv_colors;           // number of colors
-unsigned long int drv_colormap_colors;  // number of colors in colormap
-unsigned int drv_bytes_per_pixel;       // bytes per color: 1, 2 or 3
-char drv_name[64];                      // name of driver
-float drv_rot_x;                        // rotation of globe on x axis
-float drv_rot_y;                        // rotation of globe on y axis
-int drv_lmouse_pressed;                 // mouse pressed
-int drv_rmouse_pressed;                 //
-char drv_help[256];                     // OSD help string to print
-int drv_fps_enabled;                    // fps counter enabled
-float drv_fps_average;                  // average fps
-struct timeval drv_frame_start, drv_frame_stop;     // time of frame start and stop
-long drv_fps_history_num;               // total number of frames recorded
-long drv_auto_enabled;                  // automatically rotate
+unsigned int drv_win_x, drv_win_y;              /* window geometry */
+unsigned int drv_win_width, drv_win_height;     /* window geometry */
+int drv_colormapped;                    /* bool is colormap window */
+int drv_texture_avail;                  /* is texturing available in the driver */
+int drv_texture_loaded;                 /* has texture been loaded */
+int drv_texture_enabled;                /* is texturing enabled */
+int drv_osd_enabled;                    /* is OSD enabled */
+unsigned int drv_bits_per_pixel;        /* bits depth */
+unsigned int drv_colormap_bits;         /* bits per color */
+unsigned long int drv_colors;           /* number of colors */
+unsigned long int drv_colormap_colors;  /* number of colors in colormap */
+unsigned int drv_bytes_per_pixel;       /* bytes per color: 1, 2 or 3 */
+char drv_name[64];                      /* name of driver */
+float drv_rot_x;                        /* rotation of globe on x axis */
+float drv_rot_y;                        /* rotation of globe on y axis */
+int drv_lmouse_pressed;                 /* mouse pressed */
+int drv_rmouse_pressed;                 /* */
+char drv_help[256];                     /* OSD help string to print */
+int drv_fps_enabled;                    /* fps counter enabled */
+float drv_fps_average;                  /* average fps */
+struct timeval drv_frame_start, drv_frame_stop;     /* time of frame start and stop */
+long drv_fps_history_num;               /* total number of frames recorded */
+long drv_auto_enabled;                  /* automatically rotate */
 
-// call first
+/* call first */
 void drv_ext_init(void)
 {
 #ifndef DRV
@@ -83,7 +85,7 @@ void drv_ext_init(void)
         case 24:
             drv_bytes_per_pixel = 3;
             break;
-        default:    // this should really be an error as it's not handled
+        default:    /* this should really be an error as it's not handled */
             drv_bytes_per_pixel = 4;
             break;
     }
@@ -100,13 +102,13 @@ void drv_ext_init(void)
     
 }
 
-// frame start
+/* frame start */
 void drv_fps_start(void)
 {
     gettimeofday(&drv_frame_start, NULL);
 }
 
-// frame stop
+/* frame stop */
 void drv_fps_stop(void)
 {
     int diff_msec;
@@ -138,7 +140,7 @@ void drv_fps_stop(void)
     }
 }
 
-// rotate globe at a fixed speed
+/* rotate globe at a fixed speed */
 void drv_globe_rotate(void)
 {
     float sec;

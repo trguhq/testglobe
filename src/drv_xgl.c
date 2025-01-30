@@ -1,20 +1,22 @@
-// testglobe - display 3d globe to test 3d hardware
-// drv_xgl.c - Sun XGL driver
-//
-// Copyright (C) 2024 trguhq
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+/*
+ * testglobe - display 3d globe to test 3d hardware
+ * drv_xgl.c - Sun XGL driver
+ *
+ * Copyright (C) 2024 trguhq
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 
 #include <stdlib.h>
 #include <xview/xview.h>
@@ -32,17 +34,17 @@
 #include "drv_ext.h"
 #include "tex_ext.h"
 
-// previous position of mouse pointer
+/* previous position of mouse pointer */
 static int xgl_old_x;
 static int xgl_old_y;
 
-// cleanly close window
+/* cleanly close window */
 void drv_close(void)
 {
     exit(0);
 }
 
-// keyboard input
+/* keyboard input */
 void xgl_keyboard(unsigned char key, int x, int y)
 {
     switch(key)
@@ -69,7 +71,7 @@ void xgl_keyboard(unsigned char key, int x, int y)
     }
 }
 
-// mouse movement
+/* mouse movement */
 void xgl_mouse_move(int x, int y)
 {
     int change_x;
@@ -86,27 +88,27 @@ void xgl_mouse_move(int x, int y)
     }
 }
 
-// mouse click
+/* mouse click */
 void xgl_mouse(int button, int state, int x, int y)
 {
 }
 
-// check for errors
+/* check for errors */
 void xgl_checkerrors(void)
 {
 }
 
-// draw a string with bitmap text
+/* draw a string with bitmap text */
 void xgl_draw_string(char * str, int x, int y)
 {
 }
 
-// initialize graphics subsystem
+/* initialize graphics subsystem */
 void drv_init(int *argc, char **argv)
 {
 }
 
-// render current scene
+/* render current scene */
 void drv_render(void)
 {
     globe_draw_tris();
@@ -117,33 +119,33 @@ void drv_render(void)
     }
 }
 
-// resize window
+/* resize window */
 void drv_resize(int width, int height)
 {
     drv_win_width = width;
     drv_win_height = height;
 }
 
-// load texture
+/* load texture */
 void drv_texture_load(void)
 {
     drv_texture_loaded = TRUE;
 }
 
-// set rendering pipeline to textures
+/* set rendering pipeline to textures */
 void drv_texture_enable(void)
 {
     if (!drv_texture_loaded) drv_texture_load();
     drv_texture_enabled = TRUE;
 }
 
-// turn off textures
+/* turn off textures */
 void drv_texture_disable(void)
 {
     drv_texture_enabled = FALSE;
 }
 
-// initialize a window, all values < 1 for full screen/default
+/* initialize a window, all values < 1 for full screen/default */
 int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 {
     if (in_x > 0)
@@ -167,22 +169,22 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     return 1;
 }
 
-// main program loop
+/* main program loop */
 void drv_loop(void)
 {
 }
 
-// draw a flat shaded triangle with a color
+/* draw a flat shaded triangle with a color */
 void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *color)
 {
 }
 
-// draw a flat shaded triangle with texture coords
+/* draw a flat shaded triangle with texture coords */
 void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, Coord *uv2, Coord *uv3)
 {
 }
 
-// draw on screen display
+/* draw on screen display */
 void drv_draw_osd(void)
 {
     char status_str[256];

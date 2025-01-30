@@ -1,20 +1,22 @@
-// testglobe - display 3d globe to test 3d hardware
-// drv_ogl.c - OpenGL driver
-//
-// Copyright (C) 2024 trguhq
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+/*
+ * testglobe - display 3d globe to test 3d hardware
+ * drv_ogl.c - OpenGL driver
+ *
+ * Copyright (C) 2024 trguhq
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 
 #include <stdlib.h>
 #include "testglob.h"
@@ -28,10 +30,10 @@
 #include <GL/glut.h>
 #endif
 
-// OpenGL font pointer
+/* OpenGL font pointer */
 void *ogl_font;
 
-// previous mouse pointer location
+/* previous mouse pointer location */
 static int ogl_old_x;
 static int ogl_old_y;
 
@@ -42,19 +44,19 @@ static int dlist;
 
 static GLuint texture_id;
 
-// cleanly close window
+/* cleanly close window */
 void drv_close(void)
 {
     exit(0);
 }
 
-// error handling
+/* error handling */
 void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const char* message, const void* userParam)
 {
     fprintf(stderr, "GL CALLBACK: type = 0x%x, severity = 0x%x, message = %s\n", type, severity, message );
 }
 
-// keyboard input
+/* keyboard input */
 void ogl_keyboard(unsigned char key, int x, int y)
 {
     switch(key)
@@ -66,7 +68,7 @@ void ogl_keyboard(unsigned char key, int x, int y)
         case '3':
         case '4':
         case '5':
-            // in this case the routines in globe.c understand the same keys we have for OpenGL
+            /* in this case the routines in globe.c understand the same keys we have for OpenGL */
             globe_toggle_res(key);
             if(dlist)
             {
@@ -100,7 +102,7 @@ void ogl_keyboard(unsigned char key, int x, int y)
     }
 }
 
-// callback for mouse movement
+/* callback for mouse movement */
 void ogl_mouse_move(int x, int y)
 {
     int change_x;
@@ -132,7 +134,7 @@ void ogl_mouse_move(int x, int y)
     }
 }
 
-// callback for mouse click
+/* callback for mouse click */
 void ogl_mouse(int button, int state, int x, int y)
 {
     if (button == GLUT_LEFT_BUTTON)
@@ -166,7 +168,7 @@ void ogl_mouse(int button, int state, int x, int y)
     }
 }
 
-// print out description of last error
+/* print out description of last error */
 void ogl_checkerror(void)
 {
     char *error_msg;
@@ -215,7 +217,7 @@ void ogl_checkerror(void)
     fprintf(stderr, "OpenGL error: %s!\n", error_msg);
 }
 
-// draw a string with bitmap text
+/* draw a string with bitmap text */
 void ogl_draw_string(char * str, int x, int y)
 {
     glRasterPos2i(x, y);
@@ -226,7 +228,7 @@ void ogl_draw_string(char * str, int x, int y)
     }
 }
 
-// initialize graphics subsystem
+/* initialize graphics subsystem */
 void drv_init(int *argc, char **argv)
 {
     glutInit(argc, argv);
@@ -234,7 +236,7 @@ void drv_init(int *argc, char **argv)
     ogl_font = GLUT_BITMAP_HELVETICA_12;
 }
 
-// render current scene
+/* render current scene */
 void drv_render(void)
 {
     drv_fps_start();
@@ -286,7 +288,7 @@ void drv_render(void)
     }
 }
 
-// resize window
+/* resize window */
 void drv_resize(int width, int height) {
     drv_win_width = width;
     drv_win_height = height;
@@ -297,7 +299,7 @@ void drv_resize(int width, int height) {
     gluPerspective(45, (float)width/(float)height, 1.0, 10000);
 }
 
-// load texture
+/* load texture */
 void drv_texture_load(void)
 {
     texture_generate(TEXTURE_DEFAULT_SIZE);
@@ -315,7 +317,7 @@ void drv_texture_load(void)
     drv_texture_loaded = TRUE;
 }
 
-// set rendering pipeline to textures
+/* set rendering pipeline to textures */
 void drv_texture_enable(void)
 {
     if (!drv_texture_loaded) drv_texture_load();
@@ -326,7 +328,7 @@ void drv_texture_enable(void)
     drv_texture_enabled = TRUE;
 }
 
-// turn off textures
+/* turn off textures */
 void drv_texture_disable(void)
 {
     glDisable(GL_TEXTURE_2D);
@@ -334,7 +336,7 @@ void drv_texture_disable(void)
     drv_texture_enabled = FALSE;
 }
 
-// initialize a window, all values < 1 for full screen/default
+/* initialize a window, all values < 1 for full screen/default */
 int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 {
     if (in_x > 0)
@@ -374,11 +376,13 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     return 1;
 }
 
+/* main loop */
 void drv_loop(void)
 {
     glutMainLoop();
 }
 
+/* draw flat shaded colored triangle */
 void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *color)
 {
     glColor3ub(color->r, color->g, color->b);
@@ -388,6 +392,7 @@ void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *
     glVertex3fv((GLfloat *)xyz3);
 }
 
+/* draw flat shaded textured triangle */
 void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, Coord *uv2, Coord *uv3)
 {
     glTexCoord2fv((GLfloat *)uv1);
@@ -398,11 +403,12 @@ void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, 
     glVertex3fv((GLfloat *)xyz3);
 }
 
+/* draw the OSD */
 void drv_draw_osd(void)
 {
     char status_str[256];
     
-    // due to differences in implementation this has to be disabled for Mesa
+    /* due to differences in implementation this has to be disabled for Mesa */
     if (drv_texture_enabled)
     {
         glDisable(GL_TEXTURE_2D);
