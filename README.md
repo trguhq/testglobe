@@ -20,7 +20,7 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 * OpenGL
 * PHIGS
 * Sun XGL
-* IBM Adapter Interface? VBE/AF? QuickDraw? others?
+* IBM Adapter Interface? VBE/AF? QuickDraw? Amiga? others?
 
 ## Build notes
 ### cosf and sinf
