@@ -60,7 +60,7 @@ long drv_auto_enabled;                  /* automatically rotate */
 void drv_ext_init(void)
 {
 #ifndef DRV
-    error("No driver loaded");          // won't compile anyway
+    error("No driver loaded");          /* won't compile anyway */
 #endif
     drv_win_x = DRV_WIN_X;
     drv_win_y = DRV_WIN_Y;
