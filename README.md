@@ -46,8 +46,9 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 
 ### v0.2 (in development)
 * Add XGL driver (in progress)
+* Add one-button benchmark (in progress)
 * Add FPS counter (complete)
-* Add auto-rotation benchmarking feature (complete)
+* Add auto-rotation feature (complete)
 * Change all comments to C style (complete)
 * [bugfix] Disable texture mapping during drawing of bitmap text in OpenGL for Mesa quirk (complete)
 
