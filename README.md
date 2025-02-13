@@ -40,7 +40,7 @@ If you don't have glGenerateMipmap define NO_GENMIPMAP as in the Makefile exampl
 No .xcodeproj is provided at this time (as of v0.1), however testglobe was built for macOS with Xcode. This will be provided at some point in the future.
 
 ## Known issues
-* Linux or Mesa OpenGL seems to have an issue with drawing text when texturing is enabled.
+* Linux or Mesa OpenGL seems to have an issue with drawing text when texturing is enabled (should be fixed in v0.2).
 
 ## Version history
 
