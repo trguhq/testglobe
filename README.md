@@ -15,6 +15,7 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 * esc key exits immediately
   
 ## Planned drivers
+* Apple (classic) Macintosh QuickDraw
 * IBM PGC hardware
 * IRIS GL
 * OpenGL
