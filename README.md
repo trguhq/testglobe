@@ -25,6 +25,10 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 ## Build notes
 ### cosf and sinf
 If you don't have cosf and sinf (some old Unixes) define NO_SINF as in the Makefile example.
+### Classic Mac (QuickDraw)
+The files provided here are in Unix format and can't be used directly on Classic Mac without conversion. The utility "dos2unix" can do this conversion, e.g. with its alias "unix2mac".
+
+Building assumes some coding knowledge and experience with compilers on Classic Mac, for example Symantec Think C++, or with a cross-compiler like Retro68 (https://github.com/autc04/Retro68).
 ### OpenGL
 OpenGL is currently written to support a 24-bit (true color) desktop. It would not be hard to adjust this but it seems unlikely that there is much 8-bit 3D hardware with OpenGL.
 
@@ -35,10 +39,8 @@ GLUT is required. If your system did not include GLUT out of the box you may hav
     * https://web.archive.org/web/20010726175006/http://reality.sgi.com/opengl/glut3/glut-3.7b.sparc_solaris.tar.gz
       
 If you don't have glGenerateMipmap define NO_GENMIPMAP as in the Makefile example.
-
 ### Xcode
 No .xcodeproj is provided at this time (as of v0.1), however testglobe was built for macOS with Xcode. This will be provided at some point in the future.
-
 ## Known issues
 * Linux or Mesa OpenGL seems to have an issue with drawing text when texturing is enabled (should be fixed in v0.2).
 
@@ -46,6 +48,7 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 
 ### v0.2 (in development)
 * Add XGL driver (in progress)
+* Add Classic Mac/QuickDraw driver (in progress)
 * Add one-button benchmark (in progress)
 * Add FPS counter (complete)
 * Add auto-rotation feature (complete)
