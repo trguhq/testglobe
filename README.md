@@ -25,10 +25,10 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 
 ## Binary builds
 The following binaries are available in the corresponding releases:
-* OpenGL / IRIX / MIPSIV: v0.1
-* OpenGL / Linuz / ARM64: V0.1
-* OpenGL / macOS / AMD64/ARM64: v0.1
-* OpenGL / Solaris / SPARCv8: v0.1
+* OpenGL / IRIX / MIPSIV: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
+* OpenGL / Linuz / ARM64: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
+* OpenGL / macOS / AMD64/ARM64: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
+* OpenGL / Solaris / SPARCv8: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
 ## Build notes
 ### cosf and sinf
@@ -63,5 +63,5 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 * Change all comments to C style (complete)
 * [bugfix] Disable texture mapping during drawing of bitmap text in OpenGL for Mesa quirk (complete)
 
-### v0.1
+### [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 First release, OpenGL/GLUT only. Provide binaries for several platforms.
