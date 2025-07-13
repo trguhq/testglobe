@@ -26,7 +26,7 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
 ## Binary builds
 The following binaries are available in the corresponding releases:
 * OpenGL / IRIX / MIPSIV: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
-* OpenGL / Linuz / ARM64: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
+* OpenGL / Linux / ARM64: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 * OpenGL / macOS / AMD64/ARM64: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 * OpenGL / Solaris / SPARCv8: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
