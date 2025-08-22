@@ -37,6 +37,8 @@ If you don't have cosf and sinf (some old Unixes) define NO_SINF as in the Makef
 The files provided here are in Unix format and can't be used directly on Classic Mac without conversion. The utility "dos2unix" can do this conversion, e.g. with its alias "unix2mac".
 
 Building assumes some coding knowledge and experience with compilers on Classic Mac, for example Symantec Think C++, or with a cross-compiler like Retro68 (https://github.com/autc04/Retro68).
+### DOS
+Borland C++ 3.0 used, and the utility "unix2dos" for converting the CR/LF from Unix to DOS/Windows.
 ### OpenGL
 OpenGL is currently written to support a 24-bit (true color) desktop. It would not be hard to adjust this but it seems unlikely that there is much 8-bit 3D hardware with OpenGL.
 
