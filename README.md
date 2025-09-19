@@ -16,7 +16,7 @@ Out of the box, the default mode is texture mapping off, highest resolution sphe
   
 ## Planned drivers
 * Apple (classic) Macintosh QuickDraw
-* IBM PGC hardware
+* IBM PGC and derivatives
 * IRIS GL
 * OpenGL
 * PHIGS
@@ -56,10 +56,20 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 
 ## Version history
 
+### v?.?
+* Elevation
+* Sunlight, real time
+* Clouds, real time if feasible
+* Shadows
+* One-button benchmark
+
+### v0.3 (planned)
+* Add Classic Mac/QuickDraw driver
+* Add IBM PGC and derivatives driver
+* Compile for Amiga 68k OpenGL
+  
 ### v0.2 (in development)
 * Add XGL driver (in progress)
-* Add Classic Mac/QuickDraw driver (in progress)
-* Add one-button benchmark (in progress)
 * Add FPS counter (complete)
 * Add auto-rotation feature (complete)
 * Change all comments to C style (complete)
