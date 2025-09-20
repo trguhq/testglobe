@@ -65,14 +65,16 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 * Shadows
 * City lights
 * One-button benchmark
-
-### v0.3 (planned)
 * Add Classic Mac/QuickDraw driver
-* Add IBM PGC and derivatives driver
-* Compile for Amiga 68k OpenGL
+
+### v0.4 (future)
+* Add XGL driver
+  
+### v0.3 (future)
+* Add IBM PGC and derivatives driver (start with Matrox)
   
 ### v0.2 (in development)
-* Add XGL driver (in progress)
+* Compile for Amiga 68k OpenGL
 * Add FPS counter (complete)
 * Add auto-rotation feature (complete)
 * Change all comments to C style (complete)
