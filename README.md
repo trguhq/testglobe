@@ -61,6 +61,7 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 * Sunlight, real time
 * Clouds, real time if feasible
 * Shadows
+* City lights
 * One-button benchmark
 
 ### v0.3 (planned)
