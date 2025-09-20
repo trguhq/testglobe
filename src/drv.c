@@ -20,17 +20,8 @@
 
 #include <sys/time.h>
 #include "testglob.h"
+#include "drv.h"
 #include "globe.h"
-
-#ifdef DRV_OGL
-#include "drv_ogl.h"
-#endif
-#ifdef DRV_PGC
-#include "drv_pgc.h"
-#endif
-#ifdef DRV_XGL
-#include "drv_xgl.h"
-#endif
 
 unsigned int drv_win_x, drv_win_y;              /* window geometry */
 unsigned int drv_win_width, drv_win_height;     /* window geometry */

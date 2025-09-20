@@ -1,6 +1,6 @@
 /*
  * testglobe - display 3d globe to test 3d hardware
- * drv_xgl.c - Sun XGL driver
+ * drv_qd.c - Classic Mac QuickDraw driver
  *
  * Copyright (C) 2024 trguhq
  *
@@ -19,27 +19,17 @@
  */
 
 #include <stdlib.h>
-#include <xview/xview.h>
-#include <xview/frame.h>
-#include <xview/panel.h>
-#include <xview/testsw.h>
-#include <xview/canvas.h>
-#include <xview/xv_xrect.h>
-#include <X11/Xlib.h>
-#include <X11/Xatom.h>
-#include <X11/Xutil.h>
-#include <xgl/xgl.h>
 #include "testglob.h"
 #include "drv.h"
 #include "glob_ext.h"
 #include "drv_ext.h"
 #include "tex_ext.h"
 
-#ifdef DRV_XGL
+#ifdef DRV_QD
 
 /* previous position of mouse pointer */
-static int xgl_old_x;
-static int xgl_old_y;
+static int qd_old_x;
+static int qd_old_y;
 
 /* cleanly close window */
 void drv_close(void)
@@ -48,7 +38,7 @@ void drv_close(void)
 }
 
 /* keyboard input */
-void xgl_keyboard(unsigned char key, int x, int y)
+void qd_keyboard(unsigned char key, int x, int y)
 {
     switch(key)
     {
@@ -75,34 +65,34 @@ void xgl_keyboard(unsigned char key, int x, int y)
 }
 
 /* mouse movement */
-void xgl_mouse_move(int x, int y)
+void qd_mouse_move(int x, int y)
 {
     int change_x;
     int change_y;
     
     if (drv_lmouse_pressed)
     {
-        change_x = x - xgl_old_x;
-        change_y = y - xgl_old_y;
+        change_x = x - qd_old_x;
+        change_y = y - qd_old_y;
         drv_rot_y += (float) change_x * 100.0f / (float)drv_win_width;
         drv_rot_x += (float) change_y * 100.0f / (float)drv_win_height;
-        xgl_old_x = x;
-        xgl_old_y = y;
+        qd_old_x = x;
+        qd_old_y = y;
     }
 }
 
 /* mouse click */
-void xgl_mouse(int button, int state, int x, int y)
+void qd_mouse(int button, int state, int x, int y)
 {
 }
 
 /* check for errors */
-void xgl_checkerrors(void)
+void qd_checkerrors(void)
 {
 }
 
 /* draw a string with bitmap text */
-void xgl_draw_string(char * str, int x, int y)
+void qd_draw_string(char * str, int x, int y)
 {
 }
 
@@ -168,7 +158,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     else
         in_height = drv_win_height;
 
-    xgl_checkerrors();
+    qd_checkerrors();
     return 1;
 }
 

@@ -44,5 +44,18 @@
 #define DRV_FPS_DEFAULT TRUE
 #define DRV_ROTATE 10.0f
 
+#define EARTH
+#define EARTH_32
+#define EARTH_64
+#define EARTH_128
+#define EARTH_256
+#define EARTH_512
+
+/* compile in texture support */
+#define TEXTURE
+/* default texture size, this can be 32, 64, 128, 256 or 512 */
+#define TEXTURE_DEFAULT_SIZE 512
+/* currently means 24-bit RGB */
+#define TEXTURE_RGB
 
 #endif /* drv_ogl_h */

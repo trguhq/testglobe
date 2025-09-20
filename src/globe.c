@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include "testglob.h"
+#include "drv.h"
 #include "globe.h"
 #include "drv_ext.h"
 #include "types.h"
@@ -111,7 +112,7 @@ int globe_alloc(void)
     return 1;
 }
 
-void lookup_color()
+void lookup_color(void)
 {
     
 }

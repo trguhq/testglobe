@@ -20,9 +20,12 @@
 
 #include <stdlib.h>
 #include "testglob.h"
+#include "drv.h"
 #include "glob_ext.h"
 #include "drv_ext.h"
 #include "tex_ext.h"
+
+#ifdef DRV_OGL
 
 #ifdef __APPLE__
 #include <GLUT/glut.h>
@@ -430,3 +433,5 @@ void drv_draw_osd(void)
         glEnable(GL_TEXTURE_2D);
     }
 }
+
+#endif

@@ -38,20 +38,6 @@
 #define TRUE 1
 #endif
 
-#define EARTH
-#define EARTH_32
-#define EARTH_64
-#define EARTH_128
-#define EARTH_256
-#define EARTH_512
-
-/* compile in texture support */
-#define TEXTURE
-/* default texture size, this can be 32, 64, 128, 256 or 512 */
-#define TEXTURE_DEFAULT_SIZE 512
-/* currently means 24-bit RGB */
-#define TEXTURE_RGB
-
 /*
  * set a graphics driver if not already set, a fallback, normally this should be in the Makefile or build settings
  * also this is not necessary anymore to exclude code that isn't being built, which is done in the Makefile
@@ -60,6 +46,10 @@
 #ifdef __APPLE__
 #ifdef __MACH__
 #define DRV_OGL
+#endif
+#ifndef __MACH__
+#define DRV_QD
+typedef long Int;
 #endif
 #endif
 #ifdef __BORLANDC__

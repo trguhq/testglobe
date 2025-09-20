@@ -20,6 +20,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include "testglob.h"
+#include "drv.h"
 #include "texture.h"
 #include "glob_ext.h"
 
