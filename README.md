@@ -1,6 +1,6 @@
 # testglobe
-* [wiki](https://testglobe.dev)
-* [github repository](https://github.com/trguhq/testglobe/)
+* [testglobe website](https://testglobe.dev)
+* [testglobe repository](https://github.com/trguhq/testglobe/)
 
 testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Only OpenGL/GLUT is currently implemented. Provisions are there for color mapping but are incomplete - the texture is stored in an 8-bit (to 24-bit) colormap.
 
