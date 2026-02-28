@@ -23,6 +23,7 @@ A feature is the ability to compare detail from the number of quads or triangles
 * OpenGL
 * PHIGS
 * Sun XGL
+* WebGL
 * IBM Adapter Interface? VBE/AF? Amiga? others?
 
 ## Binary builds
