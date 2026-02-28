@@ -65,6 +65,7 @@ No .xcodeproj is provided at this time (as of v0.1), however testglobe was built
 * Shadows
 * City lights
 * One-button benchmark
+* Add WebGL driver
 * Add Classic Mac/QuickDraw driver
 * Add XGL driver
 * Add IBM PGC and derivatives driver (start with Matrox)
