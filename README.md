@@ -8,7 +8,7 @@ This was originally conceived as a test for lower spec systems (late 80s and ear
 
 A feature is the ability to compare detail from the number of quads or triangles used on screen vs. detail from hardware texture mapping. Out of the box, the default mode is texture mapping off, highest resolution sphere, which is likely not going to be the most performant on older systems. Note that it still appears texture mapped, however it is all flat shaded single color quads mapped to the texture of earth by the program itself, rather than texture mapping per se through the graphical API and hardware. Adjust as needed per the Interface section below.
 
-![screenshot](https://github.com/trguhq/testglobe/blob/main/testglobe.png?raw=true)
+![raw image](https://github.com/trguhq/testglobe/blob/main/testglobe.png?raw=true)
 *Running on macOS (OS X)*
 
 *[Video of tesglobe running on Sun Ultra 60 with Elite3D-m6 graphics](https://www.youtube.com/watch?v=CffPcvwioUA)*
