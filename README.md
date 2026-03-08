@@ -11,7 +11,7 @@ A feature is the ability to compare detail from the number of quads or triangles
 ![raw image](https://github.com/trguhq/testglobe/blob/main/testglobe.png?raw=true)
 *Running on macOS (OS X)*
 
-*[Video of tesglobe running on Sun Ultra 60 with Elite3D-m6 graphics](https://www.youtube.com/watch?v=CffPcvwioUA)*
+External: *[Video of tesglobe running on Sun Ultra 60 with Elite3D-m6 graphics](https://www.youtube.com/watch?v=CffPcvwioUA)*
 
 ## Interface
 * keys 1-5 adjust number of faces of globe
