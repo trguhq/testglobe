@@ -96,6 +96,13 @@ colors, per-vertex UV seams, and display-list caching and invalidation. Strip an
 cap topology is checked against the retained independent-triangle reference at
 all five Earth resolutions.
 
+Display-list controls check the enabled default, both `d` and `D`, redraw requests,
+cache deletion on disable, complete uncached geometry without list calls, and lazy
+rebuilding after re-enabling. Resolution and texture changes are checked while lists
+are disabled. OSD checks verify `dlist on`/`dlist off` after FPS and before texture
+status, with the display-list key last in the help text. Indexed software texturing
+continues to bypass native lists in either setting.
+
 The GLU mipmap path is checked with a 256-pixel texture-size limit and a larger
 source image, as well as a failed mipmap build. Native-rendering statistics must
 omit visibility counts that the graphics API does not report.

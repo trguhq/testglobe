@@ -30,7 +30,7 @@
 #endif
 
 #define DRV_NAME "OpenGL"
-#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, T = texture mapping, F = FPS, Esc = exit"
+#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, F = FPS, Esc = exit, T = texture mapping, D = display list"
 #define GL_SILENCE_DEPRECATION
 
 #define DRV_WIN_X 100
@@ -40,6 +40,7 @@
 #define DRV_COLORMAPPED FALSE
 #define DRV_TEXTURE TRUE
 #define DRV_TEXTURE_DEFAULT FALSE
+#define DRV_DLIST_DEFAULT TRUE
 #define DRV_OSD_DEFAULT TRUE
 #define DRV_DEPTH 24
 #define DRV_COLORMAPDEPTH 24

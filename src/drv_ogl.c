@@ -46,6 +46,7 @@ static int ogl_old_y;
  * on first use.
  */
 static GLuint dlist;
+static int ogl_dlist_enabled = DRV_DLIST_DEFAULT;
 
 static GLuint texture_id;
 static int ogl_window;
@@ -259,8 +260,11 @@ static void ogl_keyboard(unsigned char key, int x, int y)
         drv_close();
         return;
     }
-    if (!drv_handle_key(key)) return;
-    if (((key >= '1' && key <= '5') || key == 't' || key == 'T') && dlist)
+    if (key == 'd' || key == 'D')
+        ogl_dlist_enabled = !ogl_dlist_enabled;
+    else if (!drv_handle_key(key)) return;
+    if (((key >= '1' && key <= '5') || key == 't' || key == 'T' ||
+         key == 'd' || key == 'D') && dlist)
     {
         glDeleteLists(dlist, 1);
         dlist = 0;
@@ -462,6 +466,10 @@ void drv_render(void)
             error("Cannot allocate indexed OpenGL texture raster");
         ogl_draw_globe();
         ogl_present_indexed_texture();
+    }
+    else if (!ogl_dlist_enabled)
+    {
+        ogl_draw_globe();
     }
     else if(!dlist)
     {
@@ -806,6 +814,7 @@ void drv_draw_osd(void)
     
     ogl_draw_string(drv_help, 10, 10);
     drv_format_stats(status_str);
+    strcat(status_str, ogl_dlist_enabled ? ", dlist on" : ", dlist off");
     strcat(status_str, drv_texture_enabled ?
              (ogl_indexed ? ", software texture mapping on" : ", texture mapping on") :
              ", texture mapping off");

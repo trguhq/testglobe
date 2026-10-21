@@ -27,7 +27,7 @@ static int output_width=64,output_height=48;
 static unsigned int palette_calls,draw_pixels_calls,texture_uploads,indices,rgb_calls,swaps,flushes;
 static unsigned int direct_texture_uploads,glu_mipmap_calls;
 static unsigned int texture_allocations,texture_deletions,mipmap_generations;
-static unsigned int list_attempts,list_deletions;
+static unsigned int list_attempts,list_deletions,list_calls;
 static GLenum pending_error;
 static unsigned int maximum_texture_size=512;
 static unsigned int emitted_vertices,texture_coordinates;
@@ -54,6 +54,9 @@ static void (*reshape_callback)(int,int);
 static void (*mouse_callback)(int,int,int,int);
 static void (*motion_callback)(int,int);
 static void (*keyboard_callback)(unsigned char,int,int);
+static char osd_lines[2][256];
+static unsigned int osd_lengths[2];
+static int osd_line=-1;
 
 static void matrix_identity(GLfloat *m)
 {int i;for(i=0;i<16;++i)m[i]=(GLfloat)(i%5==0);}
@@ -209,7 +212,13 @@ void glutKeyboardFunc(void (*f)(unsigned char,int,int)){keyboard_callback=f;}
 void glutPostRedisplay(void){++redisplay_posts;}
 void glutSwapBuffers(void){assert(windows[active_window].doubled);++swaps;}
 void glutMainLoop(void){assert(globe_verts!=NULL&&windows[active_window].display==drv_render&&reshape_callback&&mouse_callback&&motion_callback&&keyboard_callback);assert(redisplay_posts>posts_before_loop);++loop_calls;}
-void glutBitmapCharacter(void *font,int c){assert(font&&c>0&&c<256);}
+void glutBitmapCharacter(void *font,int c)
+{
+    assert(font&&c>0&&c<256&&osd_line>=0&&osd_line<2);
+    assert(osd_lengths[osd_line]<sizeof(osd_lines[osd_line])-1U);
+    osd_lines[osd_line][osd_lengths[osd_line]++]=(char)c;
+    osd_lines[osd_line][osd_lengths[osd_line]]=0;
+}
 void glutSetColor(int i,GLfloat r,GLfloat g,GLfloat b)
 {assert(windows[active_window].indexed&&i>=0&&i<256);assert(fabs(r-(double)earth_cmap[i][0]/255)<1e-6&&fabs(g-(double)earth_cmap[i][1]/255)<1e-6&&fabs(b-(double)earth_cmap[i][2]/255)<1e-6);++palette_calls;palette_mask[i]=1;}
 GLenum glGetError(void){GLenum code=pending_error;pending_error=GL_NO_ERROR;return code;}
@@ -262,7 +271,7 @@ void glViewport(GLint x,GLint y,GLsizei w,GLsizei h){assert(x==0&&y==0&&w>0&&h>0
 GLuint glGenLists(GLsizei n){assert(n==1&&native_lists<63);++list_attempts;if(strcmp(profile,"listfail")==0)return 0;++native_lists;list_reserved[native_lists]=1;return native_lists;}
 void glNewList(GLuint l,GLenum mode){assert(l&&l<64&&list_reserved[l]&&mode==GL_COMPILE&&!current_list&&!begin_mode);if(strcmp(profile,"newlistfail")==0){pending_error=GL_OUT_OF_MEMORY;return;}current_list=l;list_exists[l]=1;memset(&list_geometry[l],0,sizeof(list_geometry[l]));}
 void glEndList(void){assert(current_list&&!begin_mode);current_list=0;}
-void glCallList(GLuint l){assert(l&&l<64&&list_exists[l]&&!list_compile_failed[l]&&!current_list&&!begin_mode);geometry_add(&frame_geometry,&list_geometry[l]);}
+void glCallList(GLuint l){assert(l&&l<64&&list_exists[l]&&!list_compile_failed[l]&&!current_list&&!begin_mode);++list_calls;geometry_add(&frame_geometry,&list_geometry[l]);}
 void glDeleteLists(GLuint l,GLsizei n){assert(l&&l<64&&list_reserved[l]&&n==1&&!current_list&&!begin_mode);list_exists[l]=list_reserved[l]=0;++list_deletions;}
 void glBegin(GLenum mode){assert((mode==GL_TRIANGLES||mode==GL_TRIANGLE_STRIP)&&!begin_mode);begin_mode=mode;block_vertices=block_coordinates=0;}
 void glEnd(void)
@@ -335,7 +344,16 @@ void glVertex3fv(const GLfloat *v)
     ++block_vertices;++emitted_vertices;
 }
 void glTexCoord2fv(const GLfloat *v){assert(begin_mode&&v&&v[0]>=0&&v[0]<=1&&v[1]>=0&&v[1]<=1);memcpy(last_uv,v,sizeof(last_uv));++block_coordinates;++texture_coordinates;}
-void glRasterPos2i(GLint x,GLint y){assert(x>=0&&x<=(int)drv_win_width&&y>=0&&y<=(int)drv_win_height);}
+void glRasterPos2i(GLint x,GLint y)
+{
+    assert(x>=0&&x<=(int)drv_win_width&&y>=0&&y<=(int)drv_win_height);
+    osd_line=-1;
+    if(x==10){
+        assert(y==10||y==(int)drv_win_height-18);
+        osd_line=y==10?0:1;
+        osd_lengths[osd_line]=0;osd_lines[osd_line][0]=0;
+    }
+}
 void glRasterPos2f(GLfloat x,GLfloat y){assert(x>=-1&&x<=drv_win_width&&y>=-1&&y<=drv_win_height);}
 void glPixelStorei(GLenum p,GLint v){if(p==GL_UNPACK_ALIGNMENT){assert(v==1||v==2||v==4||v==8);unpack_alignment=v;}else assert(v==0);}
 void glPixelZoom(GLfloat x,GLfloat y){zoom_x=x;zoom_y=y;}
@@ -399,10 +417,34 @@ static void native_texture_failure_cleanup(void)
     puts("PASS OpenGL native texture failure: allocation/upload/mipmap errors never commit loaded state and release all resources");
 }
 
+static void check_dlist_osd(void)
+{
+    const char *option,*state,*fps,*texture;
+    option=strstr(osd_lines[0],"T = texture mapping, D = display list");
+    assert(option&&strcmp(option,"T = texture mapping, D = display list")==0);
+    assert(strcmp(osd_lines[0],drv_help)==0);
+    state=strstr(osd_lines[1],ogl_dlist_enabled?", dlist on":", dlist off");
+    assert(state);
+    texture=state+strlen(ogl_dlist_enabled?", dlist on":", dlist off");
+    assert(strcmp(texture,drv_texture_enabled?
+           (ogl_indexed?", software texture mapping on":", texture mapping on"):
+           ", texture mapping off")==0);
+    fps=strstr(osd_lines[1],"frames per second");
+    if(drv_fps_enabled){
+        assert(fps&&fps<state);
+#if !DEBUG
+        assert(fps+strlen("frames per second")==state);
+#endif
+    }else assert(fps==NULL);
+}
+
 static void render_checked(int indexed)
 {
     unsigned int previous_pixels=draw_pixels_calls;
+    unsigned int previous_attempts=list_attempts,previous_calls=list_calls;
     drv_render();
+    if(!ogl_dlist_enabled)
+        assert(list_attempts==previous_attempts&&list_calls==previous_calls&&dlist==0);
     if(indexed&&drv_texture_enabled){
         assert(draw_pixels_calls==previous_pixels+1U);
         assert(frame_geometry.vertices==0&&frame_geometry.triangles==0);
@@ -420,6 +462,7 @@ static void render_checked(int indexed)
 #endif
     }
     assert(!begin_mode&&!current_list);
+    if(drv_osd_enabled)check_dlist_osd();
 }
 
 static void check_cached_frame(int indexed)
@@ -428,7 +471,10 @@ static void check_cached_frame(int indexed)
     render_checked(indexed);
     /* Cached native lists execute again without rebuilding or resubmitting
      * vertex data. The indexed software texture raster is redrawn each time. */
-    if(strcmp(profile,"listfail")==0&&!(indexed&&drv_texture_enabled)){
+    if(!ogl_dlist_enabled){
+        assert(emitted_vertices==previous_vertices+frame_geometry.vertices);
+        assert(native_lists==previous_lists&&dlist==0);
+    }else if(strcmp(profile,"listfail")==0&&!(indexed&&drv_texture_enabled)){
         assert(emitted_vertices==previous_vertices+frame_geometry.vertices);
         assert(native_lists==0&&dlist==0&&list_attempts>0);
     }else if(strcmp(profile,"newlistfail")==0||strcmp(profile,"listcompilefail")==0){
@@ -436,6 +482,42 @@ static void check_cached_frame(int indexed)
                (strcmp(profile,"listcompilefail")==0?2U:1U));
         assert(native_lists==previous_lists+1U&&dlist==0&&list_deletions==native_lists);
     }else assert(emitted_vertices==previous_vertices&&native_lists==previous_lists);
+}
+
+static void check_display_list_toggle(int indexed)
+{
+    unsigned int level,previous_posts,previous_attempts,previous_calls;
+    unsigned int previous_deletions;
+    for(level=0;level<5;++level){
+        assert(ogl_dlist_enabled&&dlist!=0&&!drv_texture_enabled);
+        previous_posts=redisplay_posts;previous_deletions=list_deletions;
+        keyboard_callback('d',0,0);
+        assert(!ogl_dlist_enabled&&dlist==0);
+        assert(redisplay_posts==previous_posts+1U&&list_deletions==previous_deletions+1U);
+        previous_attempts=list_attempts;previous_calls=list_calls;
+        keyboard_callback((unsigned char)('1'+level),0,0);
+        assert(globe_longitude==(32<<level)&&dlist==0);
+        render_checked(indexed);check_cached_frame(indexed);
+        if(level==0){
+            keyboard_callback('f',0,0);assert(!drv_fps_enabled);
+            render_checked(indexed);
+            keyboard_callback('F',0,0);assert(drv_fps_enabled);
+        }
+        keyboard_callback('t',0,0);assert(drv_texture_enabled&&dlist==0);
+        render_checked(indexed);check_cached_frame(indexed);
+        assert(list_attempts==previous_attempts&&list_calls==previous_calls);
+        previous_posts=redisplay_posts;
+        keyboard_callback('D',0,0);
+        assert(ogl_dlist_enabled&&dlist==0&&redisplay_posts==previous_posts+1U);
+        assert(list_attempts==previous_attempts&&list_calls==previous_calls);
+        render_checked(indexed);check_cached_frame(indexed);
+        if(indexed)assert(dlist==0&&list_attempts==previous_attempts&&list_calls==previous_calls);
+        else assert(dlist!=0&&list_attempts==previous_attempts+1U);
+        keyboard_callback('T',0,0);assert(!drv_texture_enabled&&dlist==0);
+        render_checked(indexed);check_cached_frame(indexed);
+        assert(dlist!=0);
+    }
+    puts("PASS OpenGL display-list toggle: default on, d/D redraw, immediate geometry while off, lazy rebuild, resolution/texture changes and ordered OSD status/help");
 }
 
 int main(int argc,char **argv)
@@ -450,6 +532,7 @@ int main(int argc,char **argv)
         assert(atexit(native_texture_failure_cleanup)==0);
     matrix_identity(matrices[0][0]);matrix_identity(matrices[1][0]);
     drv_ext_init();drv_init(&argc,argv);assert(!drv_texture_enabled);
+    assert(DRV_DLIST_DEFAULT==TRUE&&ogl_dlist_enabled);
     assert(drv_init_window(0,0,64,48));assert(active_window&&windows[active_window].live);
     assert(redisplay_posts>0);
     indexed=strcmp(profile,"indexed")==0;
@@ -506,6 +589,7 @@ int main(int argc,char **argv)
         render_checked(indexed);check_cached_frame(indexed);
     }
     if(indexed)assert(draw_pixels_calls==10);
+    if(strcmp(profile,"rgba")==0||indexed)check_display_list_toggle(indexed);
     assert(stack_depth[0]==0&&stack_depth[1]==0&&attrib_depth==0&&client_depth==0&&cull_enabled);
     if(windows[active_window].doubled)assert(swaps>0);else assert(flushes>0&&swaps==0);
     ogl_cleanup();ogl_cleanup();
