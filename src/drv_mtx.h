@@ -5,8 +5,8 @@
  */
 #ifndef drv_mtx_h
 #define drv_mtx_h
-#if !defined(SEG86) || !defined(QUAD)
-#error Matrox LibShell requires SEG86 and QUAD
+#if !defined(SEG86)
+#error Matrox LibShell requires SEG86
 #endif
 #ifndef DRV
 #define DRV
@@ -18,6 +18,7 @@
 #define DRV_WIN_WIDTH 640
 #define DRV_WIN_HEIGHT 480
 #define DRV_COLORMAPPED TRUE
+#define DRV_COLORMAP
 #define DRV_TEXTURE FALSE
 #define DRV_TEXTURE_DEFAULT FALSE
 #define DRV_OSD_DEFAULT TRUE
@@ -32,4 +33,5 @@
 #define EARTH_64
 #define GLOBE_DEFAULT_LONGITUDE 32
 /* No TEXTURE: the palette supplies polygon colors, not texture mapping. */
+#define QUAD
 #endif /* drv_mtx_h */

@@ -206,26 +206,19 @@ static void mtx_set_transform(void)
     mtx_eye_z = (float)cos(pitch_radians);
 }
 
-void drv_draw_quad_flat_rgb(Vertex TG_HUGE *xyz1,
-                            Vertex TG_HUGE *xyz2,
-                            Vertex TG_HUGE *xyz3,
-                            Vertex TG_HUGE *xyz4,
-                            Color TG_HUGE *color)
+static void mtx_draw_flat_color(unsigned short npoints,
+                                Vertex TG_HUGE *source[],
+                                unsigned char color)
 {
     struct V3coord vertices[4];
-    Vertex TG_HUGE *source[4];
     unsigned short count = 0;
     unsigned short i;
     float ax, ay, az, bx, by, bz;
     float nx, ny, nz;
-    source[0] = xyz1;
-    source[1] = xyz2;
-    source[2] = xyz3;
-    source[3] = xyz4;
     /* Tiny contiguous far-data packet for the SDK: never pass huge mesh
      * pointers directly to legacy bindings. Compact repeated pole
      * vertices into three-vertex caps to avoid degenerate quad fills. */
-    for (i = 0; i < 4; ++i)
+    for (i = 0; i < npoints; ++i)
     {
         if (count != 0 && source[i]->x == vertices[count - 1].x &&
             source[i]->y == vertices[count - 1].y &&
@@ -256,9 +249,38 @@ void drv_draw_quad_flat_rgb(Vertex TG_HUGE *xyz1,
     nz = ax * by - ay * bx;
     if (nx * mtx_eye_x + ny * mtx_eye_y + nz * mtx_eye_z <= 0.0f)
         return;
-    krhwsfcol((unsigned short)color->color);
+    krhwsfcol((unsigned short)color);
     v3arwplygn(count, vertices);
-    ++globe_quads_num_vis;
+    if (npoints == 3)
+        ++globe_tris_num_vis;
+    else
+        ++globe_quads_num_vis;
+}
+
+void drv_draw_tri_flat_color(Vertex TG_HUGE *xyz1,
+                             Vertex TG_HUGE *xyz2,
+                             Vertex TG_HUGE *xyz3,
+                             unsigned char color)
+{
+    Vertex TG_HUGE *source[3];
+    source[0] = xyz1;
+    source[1] = xyz2;
+    source[2] = xyz3;
+    mtx_draw_flat_color(3, source, color);
+}
+
+void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1,
+                              Vertex TG_HUGE *xyz2,
+                              Vertex TG_HUGE *xyz3,
+                              Vertex TG_HUGE *xyz4,
+                              unsigned char color)
+{
+    Vertex TG_HUGE *source[4];
+    source[0] = xyz1;
+    source[1] = xyz2;
+    source[2] = xyz3;
+    source[3] = xyz4;
+    mtx_draw_flat_color(4, source, color);
 }
 
 void drv_draw_osd(void)

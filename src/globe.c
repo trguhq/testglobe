@@ -53,6 +53,14 @@ Color TG_HUGE *globe_colors;
 #ifdef TEXTURE
 Coord TG_HUGE *globe_coords;
 #endif
+#ifdef TRISTRIP
+/* One whole latitude band is contiguous for a single native strip call. */
+static Vertex *globe_strip_verts;
+static Color_RGB *globe_strip_colors;
+#ifdef TEXTURE
+static Coord *globe_strip_coords;
+#endif
+#endif
 float globe_radius;
 unsigned long globe_verts_num;
 unsigned long globe_faces_num;
@@ -90,6 +98,13 @@ void globe_init(void)
 #ifdef TEXTURE
     globe_coords = NULL;
 #endif
+#ifdef TRISTRIP
+    globe_strip_verts = NULL;
+    globe_strip_colors = NULL;
+#ifdef TEXTURE
+    globe_strip_coords = NULL;
+#endif
+#endif
     globe_radius = 0;
     globe_verts_num = 0UL;
     globe_faces_num = 0UL;
@@ -112,6 +127,16 @@ void globe_free(void)
     if (globe_coords != NULL)
         globe_free_items(globe_coords);
 #endif
+#ifdef TRISTRIP
+    if (globe_strip_verts != NULL)
+        globe_free_items(globe_strip_verts);
+    if (globe_strip_colors != NULL)
+        globe_free_items(globe_strip_colors);
+#ifdef TEXTURE
+    if (globe_strip_coords != NULL)
+        globe_free_items(globe_strip_coords);
+#endif
+#endif
     globe_init();
 }
 
@@ -128,6 +153,20 @@ static void globe_alloc(void)
     globe_coords = (Coord TG_HUGE *)globe_alloc_items(globe_verts_num, sizeof(Coord));
     if (globe_coords == NULL)
         error("Couldn't allocate memory for texture coordinates!");
+#endif
+#ifdef TRISTRIP
+    globe_strip_verts = (Vertex *)globe_alloc_items(2UL * (globe_longitude + 1UL),
+                                                  sizeof(Vertex));
+    globe_strip_colors = (Color_RGB *)globe_alloc_items(2UL * globe_longitude,
+                                                       sizeof(Color_RGB));
+    if (globe_strip_verts == NULL || globe_strip_colors == NULL)
+        error("Couldn't allocate memory for triangle strips!");
+#ifdef TEXTURE
+    globe_strip_coords = (Coord *)globe_alloc_items(2UL * (globe_longitude + 1UL),
+                                                   sizeof(Coord));
+    if (globe_strip_coords == NULL)
+        error("Couldn't allocate memory for strip texture coordinates!");
+#endif
 #endif
 }
 
@@ -167,7 +206,7 @@ static void globe_calc_colors(void)
     for (index = 0UL; index < globe_faces_num; ++index)
     {
         value = *data_ptr++;
-#if DRV_COLORMAPPED
+#ifdef DRV_COLORMAP
         /* Preserve the original byte: the driver installs earth_cmap in its LUT. */
         color_ptr->color = value;
 #else
@@ -210,7 +249,7 @@ int globe_init_verts(int longitude, int latitude, float radius)
 
     printf("Globe resolution: %i x %i\n", globe_longitude, globe_latitude);
     printf("Vertices: %lu\n", globe_verts_num);
-#ifdef TRI
+#if defined(TRI) || defined(TRISTRIP)
     printf("Triangles: %lu\n", globe_tris_num);
 #endif
 #ifdef QUAD
@@ -299,9 +338,17 @@ void globe_draw_tris(void)
 #endif
             {
                 if (i != 0)
+#ifdef DRV_COLORMAP
+                    drv_draw_tri_flat_color(v1, v2, v1_1, color_ptr->color);
+#else
                     drv_draw_tri_flat_rgb(v1, v2, v1_1, color_ptr);
+#endif
                 if (i != globe_latitude - 1)
+#ifdef DRV_COLORMAP
+                    drv_draw_tri_flat_color(v1_1, v2, v2_1, color_ptr->color);
+#else
                     drv_draw_tri_flat_rgb(v1_1, v2, v2_1, color_ptr);
+#endif
             }
             ++color_ptr;
             ++v1;
@@ -338,13 +385,98 @@ void globe_draw_quads(void)
         v2_1 = v2 + 1;
         for (j = 0; j < globe_longitude; ++j)
         {
+#ifdef DRV_COLORMAP
+            drv_draw_quad_flat_color(v1, v2, v2_1, v1_1, color_ptr->color);
+#else
             drv_draw_quad_flat_rgb(v1, v2, v2_1, v1_1, color_ptr);
+#endif
             ++color_ptr;
             ++v1;
             ++v1_1;
             ++v2;
             ++v2_1;
         }
+    }
+}
+#endif
+
+#ifdef TRISTRIP
+void globe_draw_tripstrip(void)
+{
+    int i, j, k;
+    unsigned int count;
+    unsigned long top, bottom, face;
+    unsigned long cap[3];
+    const Coord *coords;
+
+    /* XGL's point count is 32-bit with no smaller documented strip limit.
+     * A complete latitude band needs at most 1026 vertices (EARTH_512).
+     * Alternating top/bottom rows gives exactly the TRI path's winding;
+     * the two facets for each longitude patch use the same flat color.
+     * At the poles use three-vertex strips: XGL computes facet normals and
+     * does not document safe handling of zero-area strip facets. */
+    count = 2U * ((unsigned int)globe_longitude + 1U);
+    for (i = 0; i < globe_latitude; ++i)
+    {
+        top = (unsigned long)i * (globe_longitude + 1UL);
+        bottom = top + globe_longitude + 1UL;
+        face = (unsigned long)i * globe_longitude;
+        coords = NULL;
+#ifdef TEXTURE
+        if (drv_texture_enabled)
+            coords = globe_strip_coords;
+#endif
+        if (i == 0 || i == globe_latitude - 1)
+        {
+            for (j = 0; j < globe_longitude; ++j)
+            {
+                /* Preserve the individual TRI path's exact pole UVs,
+                 * rather than merging the cap into a differently mapped fan. */
+                if (i == 0)
+                {
+                    cap[0] = top + j + 1;
+                    cap[1] = bottom + j;
+                    cap[2] = bottom + j + 1;
+                }
+                else
+                {
+                    cap[0] = top + j;
+                    cap[1] = bottom + j;
+                    cap[2] = top + j + 1;
+                }
+                for (k = 0; k < 3; ++k)
+                {
+                    globe_strip_verts[k] = globe_verts[cap[k]];
+#ifdef TEXTURE
+                    if (drv_texture_enabled)
+                        globe_strip_coords[k] = globe_coords[cap[k]];
+#endif
+                }
+                globe_strip_colors[0] = globe_colors[face + j];
+                drv_draw_tristrip_flat_rgb(3, globe_strip_verts,
+                                           globe_strip_colors, coords);
+            }
+            continue;
+        }
+        for (j = 0; j <= globe_longitude; ++j)
+        {
+            globe_strip_verts[2 * j] = globe_verts[top + j];
+            globe_strip_verts[2 * j + 1] = globe_verts[bottom + j];
+#ifdef TEXTURE
+            if (drv_texture_enabled)
+            {
+                globe_strip_coords[2 * j] = globe_coords[top + j];
+                globe_strip_coords[2 * j + 1] = globe_coords[bottom + j];
+            }
+#endif
+            if (j < globe_longitude)
+            {
+                globe_strip_colors[2 * j] = globe_colors[face + j];
+                globe_strip_colors[2 * j + 1] = globe_colors[face + j];
+            }
+        }
+        drv_draw_tristrip_flat_rgb(count, globe_strip_verts, globe_strip_colors,
+                                   coords);
     }
 }
 #endif

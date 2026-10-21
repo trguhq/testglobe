@@ -10,7 +10,7 @@ CPPFLAGS =
 CFLAGS = -O
 SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
 LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
-OGL_DEFINES = -DFLAT -DDRV_OGL -DTRI -DDRV
+OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
 OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o
 OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_ogl.h $(SRC)/err_ext.h \
@@ -18,10 +18,29 @@ OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
+# Sun XGL 3.x / 32-bit SPARC on Solaris 2.6. Select native SDK locations
+# on the make command line if they differ from the Sun installation defaults.
+# x_ objects keep this driver's TRISTRIP layout separate from OpenGL's TRI.
+XGLHOME = /opt/SUNWits/Graphics-sw/xgl
+OPENWINHOME = /usr/openwin
+XGL_CPPFLAGS = -I$(XGLHOME)/include -I$(OPENWINHOME)/include
+XGL_CFLAGS = $(CFLAGS)
+XGL_SYS_FLAGS = -DNO_SINF
+XGL_DEFINES = -DFLAT -DDRV_XGL -DDRV
+XGL_LDFLAGS = -L$(XGLHOME)/lib -L$(OPENWINHOME)/lib \
+    -R$(XGLHOME)/lib:$(OPENWINHOME)/lib -Bdynamic \
+    -lxgl -lX11 -ldga -ldl -lm
+XGL_OBJECTS = x_drv.o x_xgl.o x_err.o x_globe.o x_main.o x_tex.o
+XGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
+    $(SRC)/drv_ext.h $(SRC)/drv_xgl.h $(SRC)/err_ext.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
+    $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
+    $(SRC)/e_256.h $(SRC)/e_512.h
+
 # Microsoft C 7, huge model, with native DOS paths and 8.3 file names.
 MTX_CC = cl
 MTX_CFLAGS = -AH -O -W3
-MTX_DEFINES = -DSEG86 -DDRV_MTX -DQUAD -DDRV -DNO_SINF
+MTX_DEFINES = -DSEG86 -DDRV_MTX -DDRV -DNO_SINF
 XGX_ROOT = .
 MTX_CPPFLAGS = -I$(XGX_ROOT)
 MTX_LIB = $(XGX_ROOT)\libsv5\lscl.lib
@@ -41,7 +60,7 @@ RM = rm -f
 # The first ordinary target is the portable way to choose the default.
 opengl: testglobe
 
-testglobe: $(OGL_OBJECTS)
+testglobe: $(OGL_OBJECTS) FORCE
 	$(CC) -o testglobe $(OGL_OBJECTS) $(LDFLAGS)
 
 drv.o: $(SRC)/drv.c $(OGL_HEADERS)
@@ -61,6 +80,32 @@ main.o: $(SRC)/main.c $(OGL_HEADERS)
 
 texture.o: $(SRC)/texture.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/texture.c
+
+# Both Unix backends intentionally write testglobe. Always relink the
+# selected backend so switching from "xgl" to "opengl" cannot keep the other
+# driver's executable merely because its timestamp is newer than the objects.
+FORCE:
+
+xgl: $(XGL_OBJECTS) FORCE
+	$(CC) -o testglobe $(XGL_OBJECTS) $(XGL_LDFLAGS)
+
+x_drv.o: $(SRC)/drv.c $(XGL_HEADERS)
+	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c $(SRC)/drv.c -o x_drv.o
+
+x_xgl.o: $(SRC)/drv_xgl.c $(XGL_HEADERS)
+	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c $(SRC)/drv_xgl.c -o x_xgl.o
+
+x_err.o: $(SRC)/err.c $(XGL_HEADERS)
+	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c $(SRC)/err.c -o x_err.o
+
+x_globe.o: $(SRC)/globe.c $(XGL_HEADERS)
+	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c $(SRC)/globe.c -o x_globe.o
+
+x_main.o: $(SRC)/main.c $(XGL_HEADERS)
+	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c $(SRC)/main.c -o x_main.o
+
+x_tex.o: $(SRC)/texture.c $(XGL_HEADERS)
+	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c $(SRC)/texture.c -o x_tex.o
 
 matrox: testglob.exe
 
@@ -102,10 +147,10 @@ main.obj: $(SRC)\main.c $(MTX_HEADERS)
 	@echo -Fomain.obj $(SRC)\main.c >> main.rsp
 	$(MTX_CC) @main.rsp
 
-# Separate targets can clean one backend; "clean" removes both.
+# Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-matrox
+clean: clean-opengl clean-xgl clean-matrox
 
 clean-opengl:
 	-$(RM) drv.o
@@ -114,6 +159,15 @@ clean-opengl:
 	-$(RM) globe.o
 	-$(RM) main.o
 	-$(RM) texture.o
+	-$(RM) testglobe
+
+clean-xgl:
+	-$(RM) x_drv.o
+	-$(RM) x_xgl.o
+	-$(RM) x_err.o
+	-$(RM) x_globe.o
+	-$(RM) x_main.o
+	-$(RM) x_tex.o
 	-$(RM) testglobe
 
 clean-matrox:

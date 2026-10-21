@@ -2,7 +2,7 @@
 * [testglobe website](https://testglobe.dev)
 * [testglobe repository](https://github.com/trguhq/testglobe/)
 
-testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT and MS-DOS Matrox LibShell. The Earth data uses 8-bit palette indices: OpenGL expands these to RGB, while LibShell installs the palette in the card's LUT and draws indexed-color polygons.
+testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, Sun XGL on Solaris, and MS-DOS Matrox LibShell. The Earth data uses 8-bit palette indices: OpenGL and XGL expand these to RGB, while LibShell installs the palette in the card's LUT and draws indexed-color polygons.
 
 This was originally conceived as a test for lower spec systems (late 80s and early 90s 3D hardware) and was initially implemented on more modern high spec systems for convenience, but it may envolve into a general 3D demo for medium-high spec.
 
@@ -14,20 +14,18 @@ A feature is the ability to compare detail from the number of quads or triangles
 External: *[Video of testglobe running on Sun Ultra 60 with Elite3D-m6 graphics](https://www.youtube.com/watch?v=CffPcvwioUA)*
 
 ## Interface
-* keys 1-5 adjust number of faces of globe for OpenGL; LibShell supports keys 1-2
+* keys 1-5 adjust number of faces of globe for OpenGL and XGL; LibShell supports keys 1-2
 * mouse spins globe
 * a key toggles auto-rotate / benchmark mode
 * o key toggles on-screen display
-* t key toggles texture mapping for OpenGL
+* t key toggles texture mapping for OpenGL and XGL (off by default)
 * esc key exits immediately
   
 ## Planned drivers
 * Apple (classic) Macintosh QuickDraw
 * IBM PGC and derivatives
 * IRIS GL
-* OpenGL
 * PHIGS
-* Sun XGL
 * WebGL
 * IBM Adapter Interface? VBE/AF? Amiga? others?
 
@@ -39,9 +37,9 @@ The following binaries are available in the corresponding releases:
 * OpenGL / Solaris / SPARCv8: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
 ## Build notes
-The Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: on Unix, `make` (or `make opengl`) builds `testglobe`; under MS-DOS, `nmake matrox` builds `testglob.exe` with Microsoft C 7.0. Objects and binaries are placed in the directory where make is run. OpenGL uses `.o` files and DOS uses `.obj` files, so switching targets does not reuse incompatible objects.
+The Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds the OpenGL `testglobe`; `make xgl` builds the XGL `testglobe`; under MS-DOS, `nmake matrox` builds `testglob.exe` with Microsoft C 7.0. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, XGL uses `x_*.o`, and DOS uses `.obj` files. Selecting a Unix backend relinks `testglobe` so that switching targets selects the requested driver even when its objects are older than the other backend's executable.
 
-The OpenGL target defines `FLAT`, `DRV_OGL`, and `TRI`. The Matrox target defines `SEG86`, `DRV_MTX`, and `QUAD`, and compiles all of its objects with `-AH`. These select the memory model, graphics driver, and primitive independently. On Unix, `make clean` removes both targets' generated files; under DOS use `nmake clean RM=del`. `clean-opengl` and `clean-matrox` clean individual targets using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+The Makefile selects `FLAT` with `DRV_OGL` or `DRV_XGL`, or `SEG86` with `DRV_MTX` and Microsoft C's `-AH`. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_xgl.h` defines `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The Matrox header also defines `DRV_COLORMAP`; indexed-color draw functions take one palette byte, while RGB functions retain RGB color parameters. On Unix, `make clean` removes all targets' generated files; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-xgl`, and `clean-matrox` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
 Run the appropriate clean target after changing the compiler or build flags; traditional make does not track command-line changes.
 
@@ -89,6 +87,21 @@ make CC=cc CPPFLAGS=-I/usr/openwin/include \
 ```
 
 The default optimization option is the traditional Unix `-O`; override `CFLAGS` and the library locations for the installed compiler and GLUT package.
+
+### Sun XGL
+The XGL target is intended for native 32-bit SPARC Solaris 2.6 with the Sun XGL 3.x SDK/runtime and X11/OpenWindows. It uses Xlib directly, without XView or GLUT. The window requires a 24-bit TrueColor visual, matching the OpenGL driver's RGB display assumption.
+
+```sh
+make xgl
+# For nonstandard Sun SDK locations:
+make xgl XGLHOME=/path/to/xgl OPENWINHOME=/path/to/openwin
+```
+
+The default locations are `/opt/SUNWits/Graphics-sw/xgl` and `/usr/openwin`. `XGL_CPPFLAGS`, `XGL_CFLAGS`, `XGL_SYS_FLAGS`, and `XGL_LDFLAGS` can be overridden for the installed compiler and libraries. The native Solaris/SPARC compiler's 32-bit default is used. When relocating the runtime, also set the shell's `XGLHOME` as required by the installed XGL pipeline and font files.
+
+The driver submits each interior latitude band to `xgl_triangle_strip`: up to 1,026 vertices and 1,024 facet colors per call at `EARTH_512`. Alternating row vertices reproduce the individual-triangle path's winding; both triangles of each globe patch retain the same flat color. Polar caps use the original nondegenerate three-vertex triangles as short strips, preserving their per-triangle UVs and avoiding undefined normals from duplicate pole vertices. Model/view/projection transforms, clipping, back-face handling, depth, and texture mapping use XGL. The `t` key enables the native texture-map/MipMap path; the XGL runtime provides its software pipeline where hardware cannot accelerate texturing, as described in Sun's programmer's guide. No Mesa replacement is needed.
+
+X11 supplies keyboard, button, drag, expose, resize, and window-close events. The same keys and default `EARTH_512` resolution are retained as in OpenGL. Native SDK compilation and physical XGL rendering require the Sun SDK/runtime; host tests using manual-derived XGL contracts do not replace that validation.
 ### Xcode
 No .xcodeproj is provided at this time (as of v0.1), however testglobe was built for macOS with Xcode. This will be provided at some point in the future.
 ## Known issues

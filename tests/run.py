@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Host regression checks; real SDK declarations, recorded DOS/board operations.
+"""Host regression checks: geometry, SDK-backed Matrox, manual-derived XGL calls.
 
-No test here emulates Microsoft C's 16-bit code generation or a Matrox board.
+No test here emulates Microsoft C's segmented code generation, a Matrox board,
+or Sun's native XGL implementation.
 """
 import argparse
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tempfile
 
@@ -32,6 +34,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sdk", default=os.environ.get("MATROX_SDK"),
                         help="SDK root containing XGX1/HEADERS (headers are not vendored)")
+    parser.add_argument("--xgl-contract", action="store_true",
+                        help="Record XGL calls using manual-derived declarations and real X11 under Xvfb; not native XGL validation")
     args = parser.parse_args()
     cc = shlex.split(os.environ.get("CC", "cc"))
     common = ["-std=c89", "-pedantic-errors", "-Wall", "-Wextra",
@@ -40,11 +44,30 @@ def main():
               "-fno-omit-frame-pointer", "-I" + str(ROOT / "src")]
     with tempfile.TemporaryDirectory(prefix="testglobe-tests-") as temporary:
         output = Path(temporary)
-        flat = ["-DFLAT", "-DDRV_OGL", "-DTRI"]
+        flat = ["-DFLAT", "-DDRV_OGL"]
         run(cc + common + flat + [str(ROOT / "tests/geometry.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "geometry")])
         run([str(output / "geometry")])
+        strips = ["-DFLAT", "-DDRV_XGL"]
+        run(cc + common + strips + [str(ROOT / "tests/strips.c"),
+            str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "strips")])
+        run([str(output / "strips")])
+        if args.xgl_contract:
+            if not shutil.which("xvfb-run"):
+                parser.error("--xgl-contract requires xvfb-run and Xvfb on PATH")
+            xgl_cppflags = shlex.split(os.environ.get("XGL_TEST_CPPFLAGS", ""))
+            xgl_ldflags = shlex.split(os.environ.get("XGL_TEST_LDFLAGS", ""))
+            run(cc + common + strips + xgl_cppflags +
+                ["-I" + str(ROOT / "tests/xgl_record"),
+                 str(ROOT / "tests/xgl.c"), str(ROOT / "src/globe.c"),
+                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
+                 str(ROOT / "src/err.c")] + xgl_ldflags +
+                ["-lm", "-lX11", "-o", str(output / "xgl")])
+            for mode in ("double", "single"):
+                run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
+                     str(output / "xgl"), mode])
         if not args.sdk:
             print("SKIP Matrox SDK contract checks: supply --sdk or MATROX_SDK")
             return
@@ -60,7 +83,7 @@ def main():
                 # DOS uses Ctrl-Z as EOF; GCC treats it as an invalid C token.
                 data = path.read_bytes().rstrip(b"\r\n\x1a") + b"\n"
                 (normalized / path.name).write_bytes(data)
-        segmented = ["-DSEG86", "-DDRV_MTX", "-DQUAD", "-D_huge=",
+        segmented = ["-DSEG86", "-DDRV_MTX", "-D_huge=",
                      "-D__interrupt=", "-D__far=", "-D_far=", "-D_near=",
                      "-I" + str(ROOT / "tests/dos_shim"),
                      "-I" + str(output / "sdk")]

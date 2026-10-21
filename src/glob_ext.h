@@ -32,6 +32,9 @@ extern void globe_draw_tris(void);
 #ifdef QUAD
 extern void globe_draw_quads(void);
 #endif
+#ifdef TRISTRIP
+extern void globe_draw_tripstrip(void);
+#endif
 extern void globe_toggle_res(char);
 #ifdef TEXTURE
 extern void globe_toggle_tex(void);

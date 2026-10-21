@@ -53,9 +53,18 @@ extern int drv_auto_enabled;
 extern void drv_ext_init(void);
 extern void drv_init(int *argc, char **argv);
 extern int drv_init_window(int in_x, int in_y, int in_width, int in_height);
+#ifdef DRV_COLORMAP
+extern void drv_draw_tri_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                    Vertex TG_HUGE *xyz3, unsigned char color);
+extern void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                     Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
+                                     unsigned char color);
+#endif
 #ifdef TRI
+#ifndef DRV_COLORMAP
 extern void drv_draw_tri_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
                                   Vertex TG_HUGE *xyz3, Color_RGB TG_HUGE *color);
+#endif
 #ifdef TEXTURE
 extern void drv_draw_tri_flat_uv(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
                                  Vertex TG_HUGE *xyz3, Coord TG_HUGE *uv1,
@@ -63,10 +72,17 @@ extern void drv_draw_tri_flat_uv(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
 #endif
 #endif
 #ifdef QUAD
-/* The historical rgb suffix denotes a flat face; Color can be a LUT index. */
+#ifndef DRV_COLORMAP
 extern void drv_draw_quad_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
                                    Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
-                                   Color TG_HUGE *color);
+                                   Color_RGB TG_HUGE *color);
+#endif
+#endif
+#ifdef TRISTRIP
+/* Colors describe count-2 facets; NULL coords requests untextured rendering. */
+extern void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
+                                      const Color_RGB *facet_colors,
+                                      const Coord *coords);
 #endif
 extern void drv_loop(void);
 #ifdef TEXTURE

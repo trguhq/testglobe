@@ -21,8 +21,8 @@
 #ifndef drv_ogl_h
 #define drv_ogl_h
 
-#if !defined(FLAT) || !defined(TRI)
-#error OpenGL requires the FLAT and TRI build options
+#if !defined(FLAT)
+#error OpenGL requires the FLAT build option
 #endif
 
 #ifndef DRV
@@ -58,6 +58,7 @@
 
 /* compile in texture support */
 #define TEXTURE
+#define TRI
 /* default texture size, this can be 32, 64, 128, 256 or 512 */
 #define TEXTURE_DEFAULT_SIZE 512
 /* currently means 24-bit RGB */

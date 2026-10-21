@@ -12,9 +12,9 @@
 #include "globe.h"
 
 /* Count every globe patch before the real driver's visibility rejection. */
-#define drv_draw_quad_flat_rgb recorded_driver_quad
+#define drv_draw_quad_flat_color recorded_driver_quad
 #include "../src/drv_mtx.c"
-#undef drv_draw_quad_flat_rgb
+#undef drv_draw_quad_flat_color
 
 #ifdef TEXTURE
 #error The Matrox driver must not compile texture mapping support
@@ -242,9 +242,9 @@ void v3arwplygn(unsigned short count, struct V3coord *vertices)
     if (count == 3) ++filled_triangles;
 }
 
-void drv_draw_quad_flat_rgb(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
+void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
                             Vertex TG_HUGE *c, Vertex TG_HUGE *d,
-                            Color TG_HUGE *color)
+                            unsigned char color)
 {
     double ux, uy, uz, vx, vy, vz, nx, ny, nz;
     double angle, model_y, view_z, tolerance;
@@ -252,8 +252,8 @@ void drv_draw_quad_flat_rgb(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
     int cap;
     Vertex *third;
     assert(submitted_quads < globe_faces_num);
-    assert(color == globe_colors + submitted_quads);
-    assert(color->color == expected_data[submitted_quads]);
+    assert(color == globe_colors[submitted_quads].color);
+    assert(color == expected_data[submitted_quads]);
     assert(a >= globe_verts && a < globe_verts + globe_verts_num);
     assert(b >= globe_verts && b < globe_verts + globe_verts_num);
     assert(c >= globe_verts && c < globe_verts + globe_verts_num);
@@ -278,7 +278,7 @@ void drv_draw_quad_flat_rgb(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
     tolerance = sqrt(nx * nx + ny * ny + nz * nz) * 0.000001;
     submitted_vertices[0] = a; submitted_vertices[1] = b;
     submitted_vertices[2] = c; submitted_vertices[3] = d;
-    submitted_color = color->color;
+    submitted_color = color;
     ++submitted_quads;
     before_fill = filled_polygons;
     recorded_driver_quad(a, b, c, d, color);
@@ -342,6 +342,34 @@ static void cleanup_checks(void)
     puts("PASS Matrox cleanup: Escape, board emulation, palette selection/content, huge allocations");
 }
 
+static void check_indexed_triangle(void)
+{
+    unsigned long top, before_fill, before_triangles, before_quads;
+    unsigned char color;
+    Vertex *a, *b, *c;
+    /* Default view looks toward the positive-Y equatorial hemisphere. Use
+     * a real outward triangle there to exercise the separate byte-color API. */
+    top = ((unsigned long)globe_latitude / 2UL - 1UL) *
+          (globe_longitude + 1UL) + (unsigned long)globe_longitude / 4UL;
+    a = globe_verts + top;
+    b = a + globe_longitude + 1;
+    c = a + 1;
+    color = earth_data_32[((unsigned long)globe_latitude / 2UL - 1UL) *
+                         globe_longitude + (unsigned long)globe_longitude / 4UL];
+    submitted_vertices[0] = a; submitted_vertices[1] = b;
+    submitted_vertices[2] = c; submitted_vertices[3] = c;
+    submitted_color = color;
+    before_fill = filled_polygons;
+    before_triangles = globe_tris_num_vis;
+    before_quads = globe_quads_num_vis;
+    drv_draw_tri_flat_color(a, b, c, color);
+    assert(filled_polygons == before_fill + 1UL);
+    assert(globe_tris_num_vis == before_triangles + 1UL);
+    assert(globe_quads_num_vis == before_quads);
+    assert(last_color == color);
+    puts("PASS indexed drawing: distinct triangle and quad APIs receive original color bytes");
+}
+
 int main(void)
 {
     unsigned int i;
@@ -374,6 +402,7 @@ int main(void)
     globe_init();
     assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
     render_and_check(512, earth_data_32);
+    check_indexed_triangle();
     check_noncardinal_poses(512, earth_data_32);
     assert(osd_calls > 0);
     mtx_keyboard('2');

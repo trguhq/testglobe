@@ -41,12 +41,7 @@
 #if !defined(FLAT) && !defined(SEG86)
 #define FLAT
 #endif
-#if defined(TRI) && defined(QUAD)
-#error Choose either TRI or QUAD, not both
-#endif
-#if !defined(TRI) && !defined(QUAD)
-#define TRI
-#endif
+/* The selected driver header chooses TRI, QUAD, or TRISTRIP. */
 
 /* Fallbacks for legacy build settings; the Makefile selects the driver. */
 #ifndef DRV
