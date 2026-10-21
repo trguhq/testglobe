@@ -93,6 +93,7 @@ appropriate platform's compiler and libraries installed:
 | Target | Command | Output |
 | --- | --- | --- |
 | [OpenGL](#opengl) (default) | `make` or `make opengl` | `testglobe-opengl` |
+| [Solaris OpenGL](#solaris-solaris-opengl) | `make solaris-opengl` | `testglobe-opengl` |
 | [Apple OpenGL](#modern-macos-apple-opengl) | `make apple-opengl` | `testglobe-opengl` |
 | [IRIS GL](#iris-gl) | `make irisgl` | `testglobe-irisgl` |
 | [Sun XGL](#sun-xgl) | `make xgl` | `testglobe-xgl` |
@@ -107,7 +108,8 @@ portable `quickdraw` target requires a configured bridge to the MPW tools.
 
 Run the appropriate clean target after changing the compiler or build flags; traditional
 make does not track command-line changes. Use `make clean` to remove all generated
-targets, or `clean-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`,
+targets, or `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`,
+`clean-irisgl`, `clean-xgl`,
 `clean-matrox`, `clean-gdi`, or `clean-quickdraw` to clean one backend. Under DOS, use
 `nmake clean RM=del` or the corresponding individual target with `RM=del`.
 
@@ -116,9 +118,9 @@ standard `sin` and `cos` instead of `sinf` and `cosf`. Apple OpenGL uses its sep
 `APPLE_SYS_FLAGS` and the system's modern math library.
 
 <!--
-Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
+Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Solaris OpenGL uses separate `s_*.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic, Solaris, and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
 
-The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_igl.h`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_igl.h`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows.
 
@@ -162,7 +164,34 @@ The default `SYS_FLAGS` also includes `-DNO_GENMIPMAP`, which builds mipmaps wit
 for older OpenGL implementations. On newer systems, `SYS_FLAGS=-DGL_GLEXT_PROTOTYPES`
 enables the `glGenerateMipmap` path.
 
-For Solaris, select the installed compiler and OpenWindows paths as needed:
+#### Solaris (`solaris-opengl`)
+
+Use the installed Solaris C compiler, OpenGL/GLU, GLUT, and OpenWindows libraries.
+Build from the repository root or `src`:
+
+```sh
+make solaris-opengl
+./testglobe-opengl
+```
+
+`SOLARIS_CC` defaults to `CC` (`cc`). `OPENWINHOME` defaults to `/usr/openwin` and
+selects the include and library directories. The link uses `-lglut -lGL -lGLU`
+and the X11, Xmu, and math libraries from the example below. It also records the
+OpenWindows library directory with Solaris's `-R` option for runtime lookup.
+
+`SOLARIS_CPPFLAGS`, `SOLARIS_CFLAGS`, `SOLARIS_SYS_FLAGS`, and `SOLARIS_LDFLAGS`
+can be overridden for the installed compiler, GLUT package, or library paths.
+`SOLARIS_CFLAGS` defaults to `CFLAGS`; `SOLARIS_SYS_FLAGS` defaults to
+`-DNO_SINF -DNO_GENMIPMAP` for older Solaris math and OpenGL libraries. The
+compiler's default architecture and ABI are retained.
+
+Solaris objects use `s_*.o`. The generic, Solaris, and Apple OpenGL targets all
+write `testglobe-opengl` and relink when selected. Use
+`make clean-solaris-opengl` before changing compiler flags; `make clean` also
+removes these objects and the binary. Native compilation and rendering still
+require Solaris and its installed graphics libraries.
+
+The equivalent generic OpenGL command remains available:
 
 ```sh
 make CC=cc CPPFLAGS=-I/usr/openwin/include \

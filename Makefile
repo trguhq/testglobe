@@ -18,6 +18,18 @@ OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
+# Native Solaris OpenGL/GLUT with the installed OpenWindows headers/libraries.
+# s_ objects keep Solaris compiler and linker options separate from other builds.
+OPENWINHOME = /usr/openwin
+SOLARIS_CC = $(CC)
+SOLARIS_CPPFLAGS = -I$(OPENWINHOME)/include
+SOLARIS_CFLAGS = $(CFLAGS)
+SOLARIS_SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
+SOLARIS_DEFINES = $(OGL_DEFINES)
+SOLARIS_LDFLAGS = -L$(OPENWINHOME)/lib -R$(OPENWINHOME)/lib \
+    -lglut -lGL -lGLU -lX11 -lXmu -lm
+SOLARIS_OBJECTS = s_drv.o s_ogl.o s_err.o s_globe.o s_main.o s_tex.o s_soft.o
+
 # Native macOS OpenGL/GLUT from the selected Xcode command line tools.
 # Apple objects stay separate from Unix GL/X11 objects. Apple's legacy
 # OpenGL context uses GLU mipmaps rather than core glGenerateMipmap.
@@ -33,7 +45,6 @@ APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o
 # on the make command line if they differ from the Sun installation defaults.
 # x_ objects keep this driver's TRISTRIP layout separate from OpenGL's TRI.
 XGLHOME = /opt/SUNWits/Graphics-sw/xgl
-OPENWINHOME = /usr/openwin
 XGL_CPPFLAGS = -I$(XGLHOME)/include -I$(OPENWINHOME)/include
 XGL_CFLAGS = $(CFLAGS)
 XGL_SYS_FLAGS = -DNO_SINF
@@ -143,6 +154,32 @@ texture.o: $(SRC)/texture.c $(OGL_HEADERS)
 
 texsoft.o: $(SRC)/texsoft.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/texsoft.c
+
+# This target uses native Solaris OpenWindows paths for the OpenGL binary.
+# FORCE relinks it when switching among the OpenGL platform targets.
+solaris-opengl: $(SOLARIS_OBJECTS) FORCE
+	$(SOLARIS_CC) -o testglobe-opengl $(SOLARIS_OBJECTS) $(SOLARIS_LDFLAGS)
+
+s_drv.o: $(SRC)/drv.c $(OGL_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/drv.c -o s_drv.o
+
+s_ogl.o: $(SRC)/drv_ogl.c $(OGL_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/drv_ogl.c -o s_ogl.o
+
+s_err.o: $(SRC)/err.c $(OGL_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/err.c -o s_err.o
+
+s_globe.o: $(SRC)/globe.c $(OGL_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/globe.c -o s_globe.o
+
+s_main.o: $(SRC)/main.c $(OGL_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/main.c -o s_main.o
+
+s_tex.o: $(SRC)/texture.c $(OGL_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/texture.c -o s_tex.o
+
+s_soft.o: $(SRC)/texsoft.c $(OGL_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/texsoft.c -o s_soft.o
 
 # This target produces the same OpenGL binary with native Apple frameworks.
 # FORCE relinks it when switching between opengl and apple-opengl.
@@ -332,7 +369,7 @@ clean-quickdraw:
 # Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-apple-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw
+clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw
 	-$(RM) testglobe
 
 clean-opengl:
@@ -343,6 +380,16 @@ clean-opengl:
 	-$(RM) main.o
 	-$(RM) texture.o
 	-$(RM) texsoft.o
+	-$(RM) testglobe-opengl
+
+clean-solaris-opengl:
+	-$(RM) s_drv.o
+	-$(RM) s_ogl.o
+	-$(RM) s_err.o
+	-$(RM) s_globe.o
+	-$(RM) s_main.o
+	-$(RM) s_tex.o
+	-$(RM) s_soft.o
 	-$(RM) testglobe-opengl
 
 clean-apple-opengl:
