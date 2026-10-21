@@ -38,9 +38,10 @@
 #define EARTH_256
 #define EARTH_512
 
-#define TRISTRIP
 #define TEXTURE
 #define TEXTURE_DEFAULT_SIZE 512
 #define TEXTURE_RGB
+/* render tristrips */
+#define TRISTRIP
 
 #endif /* drv_xgl_h */
