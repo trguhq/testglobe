@@ -46,8 +46,8 @@ static double outward_area(const Vertex *a, const Vertex *b, const Vertex *c)
            nz * (a->z + b->z + c->z);
 }
 
-void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
-                               const Color_RGB *colors, const Coord *coords)
+static void check_strip(unsigned int count, const Vertex *vertices,
+                         const Color_RGB *colors, const Coord *coords)
 {
     unsigned int i, cell;
     unsigned long band, index, top, bottom, face, cap[3];
@@ -82,7 +82,8 @@ void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
         ++full_bands;
     }
     assert(count <= 1026U);
-    assert(vertices != NULL && colors != NULL);
+    assert(vertices != NULL);
+    assert((colors != NULL) == (drv_texture_enabled == FALSE));
     assert((coords != NULL) == (drv_texture_enabled != FALSE));
     for (i = 0; i < count; ++i) {
         index = polar ? cap[i] :
@@ -124,13 +125,29 @@ void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
         }
         face = band * globe_longitude + cell;
         color = expected_data[face];
-        assert(colors[i].r == earth_cmap[color][0]);
-        assert(colors[i].g == earth_cmap[color][1]);
-        assert(colors[i].b == earth_cmap[color][2]);
+        if (colors != NULL) {
+            assert(colors[i].r == earth_cmap[color][0]);
+            assert(colors[i].g == earth_cmap[color][1]);
+            assert(colors[i].b == earth_cmap[color][2]);
+        }
         assert(outward_area(a, b, c) > 0.0);
         ++rendered_triangles;
     }
     ++strip_calls;
+}
+
+void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
+                               const Color_RGB *colors)
+{
+    assert(!drv_texture_enabled);
+    check_strip(count, vertices, colors, NULL);
+}
+
+void drv_draw_tristrip_flat_uv(unsigned int count, const Vertex *vertices,
+                              const Coord *coords)
+{
+    assert(drv_texture_enabled);
+    check_strip(count, vertices, NULL, coords);
 }
 
 void drv_texture_enable(void) { drv_texture_enabled = TRUE; }
@@ -140,7 +157,7 @@ static void check_drawing(void)
 {
     char stats[128], counts[80];
     strip_calls = rendered_triangles = full_bands = cap_strips = 0UL;
-    globe_draw_tripstrip();
+    globe_draw_tristrips();
     assert(strip_calls == (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
     assert(full_bands == (unsigned long)globe_latitude - 2UL);
     assert(cap_strips == 2UL * globe_longitude);

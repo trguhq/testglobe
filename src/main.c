@@ -24,7 +24,9 @@
 #include "globe.h"
 #include "drv_ext.h"
 #include "glob_ext.h"
+#ifdef TEXTURE
 #include "tex_ext.h"
+#endif
 
 #ifdef GDI
 /* The Win16 driver owns WinMain and its instance/show-window arguments. */
@@ -43,6 +45,7 @@ int main(int argc, char **argv)
     printf("Driver: %s\n", drv_name);
     printf("Resolution: %u x %u\n", drv_win_width, drv_win_height);
     printf("Color depth: %u bpp (%lu colors)\n", drv_bits_per_pixel, drv_colors);
+    printf("Pixel storage: %u bytes per pixel\n", drv_bytes_per_pixel);
     printf("Color mapped: %s\n", (drv_colormapped == TRUE ? "yes" : "no"));
     if (drv_colormapped == TRUE) {
         printf("Palette: %u (%lu colors)\n", drv_colormap_bits, drv_colormap_colors);

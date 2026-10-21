@@ -46,7 +46,10 @@ typedef struct {
 } Xgl_facet_list;
 typedef struct { void *X_display; int X_screen; Xgl_usgn32 X_window; } Xgl_X_window;
 typedef union { struct { int type; void *desc; } win_ras; } Xgl_obj_desc;
-typedef struct { char *id, *msg, *cur_op; } Xgl_error_info;
+typedef int Xgl_error_type;
+#define XGL_ERROR_RECOVERABLE 1
+#define XGL_ERROR_NONRECOVERABLE 2
+typedef struct { Xgl_error_type type; char *id, *msg, *cur_op; } Xgl_error_info;
 
 typedef struct {
     int comp, texture_op;

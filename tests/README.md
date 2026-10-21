@@ -21,12 +21,46 @@ development headers and libraries.
 python3 tests/run.py
 ```
 
-The baseline checks cover OpenGL indexed triangles, XGL RGB strips, and IRIS GL,
-GDI, and QuickDraw indexed strips. They verify all five globe resolutions,
-TRI-equivalent winding and colors, nondegenerate polar caps, UV seams, and
-texture-toggle dispatch where supported. XGL and IRIS GL default to `EARTH_128`
-(key 3). Primitive modes come from the driver headers; do not pass `TRI`,
-`TRISTRIP`, or `QUAD` on the compiler command line.
+The baseline checks cover OpenGL indexed strips with separate pole triangles, XGL
+RGB strips, IRIS GL indexed strips, and GDI/QuickDraw indexed quad batches. They
+verify all five globe resolutions, exact primitive tuples and palette bytes,
+outward winding, pole geometry, packet seams and shared vertices, UV seams, and
+texture-toggle dispatch where supported. The shared `tests/quad_batches.c` fixture
+is built separately for GDI and QuickDraw; at key 5 it checks 2,048 packets and
+131,072 quad patches, with no packet larger than 130 vertices. OpenGL defaults to
+`EARTH_512` (key 5); XGL and IRIS GL default to `EARTH_128` (key 3). The retained
+independent-triangle path has a separate reference check using the test-only
+forced-include header `tests/tri_mode.h`. Normal builds select primitive modes in
+driver headers; do not pass `TRI`, `TRISTRIP`, or `QUAD` on the compiler command
+line.
+
+Traversal checks use `globe_draw_tris()`, `globe_draw_tristrips()`,
+`globe_draw_quads()`, and `globe_draw_quadbatches()` as separate entry points.
+Driver callbacks retain singular primitive names; their color/RGB/UV declarations
+are grouped and selected by the driver headers' implemented capabilities.
+
+`tests/driver_api.c` checks declarations for all six drivers and the retained TRI
+configuration, rejects unsupported callbacks, and checks the separate three-argument
+XGL RGB/UV signatures. `tests/driver_helpers.c` exercises the shared `drv.c` utilities
+in flat OpenGL and segmented GDI configurations: 1,026-vertex strip splitting with
+even overlap, odd limits and tails, exact UV triangle parity, invalid-input guards,
+standard and unsupported keys, FPS enable/disable behavior, debug metadata,
+bounded multi-turn and zero-window drag handling, very large elapsed-time rotation,
+indexed quad validation, and individual-quad packing. The quad geometry fixture verifies
+individual and batched globe traversal separately at all five resolutions.
+
+Core geometry checks also cover custom latitude counts by sampling the complete
+source map at each band's center, and reject nonfinite radii while preserving a valid
+existing mesh. Resource-backed builds must release the temporary Earth byte buffer
+after constructing indexed colors.
+Configuration checks exercise repaired platform/architecture defaults and explicit
+errors for unsupported legacy driver selections.
+
+With `--ogl-contract` or `--igl-contract`, `tests/texture.c` compares every expanded
+RGB texel with its Earth palette source at all five resolutions. It checks repeated
+generation with same-size allocation reuse, changed-size replacement-allocation
+failure, invalid sizes, idempotent cleanup, and the retained dimensions needed by
+XGL after releasing the staging image.
 
 Additional options may be combined in one invocation:
 
@@ -40,7 +74,7 @@ Additional options may be combined in one invocation:
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
 
 Without `--sdk` or `MATROX_SDK`, the Matrox SDK contract checks are explicitly
-reported as skipped. The baseline strip checks require no XGL SDK.
+reported as skipped. The baseline geometry checks require no XGL SDK.
 
 ## OpenGL
 
@@ -56,9 +90,41 @@ destruction of every probe context, a fresh final window at its requested size,
 initial redisplay, absent depth buffers, exact Earth palette installation,
 index-byte facets, and native RGB textures.
 
+The native geometry checks cover full interior latitude strips, a single
+`GL_TRIANGLES` batch for both polar caps, original winding and provoking-vertex
+colors, per-vertex UV seams, and display-list caching and invalidation. Strip and
+cap topology is checked against the retained independent-triangle reference at
+all five Earth resolutions.
+
+Display-list controls check the enabled default, both `d` and `D`, redraw requests,
+cache deletion on disable, complete uncached geometry without list calls, and lazy
+rebuilding after re-enabling. Resolution and texture changes are checked while lists
+are disabled. OSD checks verify `dlist on` only after successful list execution,
+`dlist off` when disabled, and `dlist fail` when enabled lists fail or are bypassed.
+The status follows FPS and precedes texture status, with the display-list key last
+in the help text. Indexed software texturing continues to bypass native lists in
+either setting and reports `dlist fail` while they are enabled.
+
 The GLU mipmap path is checked with a 256-pixel texture-size limit and a larger
-source image, as well as a failed mipmap build. Native-rendering statistics must
-omit visibility counts that the graphics API does not report.
+source image, as well as a failed mipmap build. OpenGL 1.1 compatibility checks cover
+legacy declarations and runtime fallbacks when modern mipmap support is unavailable.
+Optional modern mipmaps require FreeGLUT lookup support, a suitable context version,
+an available entry point, and a source image within the texture limit; otherwise GLU
+must be used. Native-rendering statistics must omit visibility counts that the
+graphics API does not report.
+
+Failure injection checks zero display-list allocation, rejected list creation,
+partial compilation failure, invalid list validation, and execution errors, with
+failed-list deletion and complete immediate-mode fallback. Validation and error
+checks use OpenGL 1.1-compatible `glIsList` and `glGetError` calls. Texture failures
+release invalid resources and recover to complete flat geometry while retaining the
+user's enabled request. Top-line status checks distinguish `texture on` only after
+successful native use, `texture soft` after successful software presentation,
+`texture off` when disabled, and `texture fail` when an enabled texture cannot be
+created, validated, or used. They also check off/on retry and retain the bottom-line
+texture-mapping key description. FPS toggling, right-button metadata, and both released
+and retained software-raster
+cache policies are recorded independently of geometry caching.
 
 Each window has its own display callback. Probe hiding and final-window
 resizing/showing dispatch an early initial redraw to check that callbacks exist
@@ -93,6 +159,20 @@ alpha queries, exact indexed palette colors/restoration, missing depth buffers,
 unknown/absent texture capabilities, older headers, optional affine-texture
 subdivision, keyboard controls, tied mouse movement, focus, redraw sizing, queue
 overflow, Escape, and window quit.
+Deleted native geometry objects are checked in flat and textured modes: the driver
+draws the complete geometry directly and rebuilds the cache on the next frame.
+
+Software-texture profiles verify both the default raster release on disable and
+the optional `TEXTURE_CACHE_RASTER=1` retained cache.
+
+Texture status checks distinguish current-frame native submission (`texture on`),
+software presentation (`texture soft`), manual disable (`texture off`), and detected
+failure while enabled (`texture fail`). Recoverable failures must draw complete flat
+geometry, invalidate incompatible cached geometry, preserve the user's request, and
+allow an off/on retry.
+The IRIX 4.0 native texture and pixel-transfer calls return no success value, so
+the tests check submitted calls and observable failures without claiming detection
+of silent errors inside the SGI library or hardware.
 
 At resolution 512 it verifies 1,278 native meshes and 263,676 submitted vertices,
 with 1,026-vertex interior bands and separate nondegenerate polar caps. Textured
@@ -105,7 +185,10 @@ OpenGL's matrix calls.
 The standalone software cases use analytically predicted pixels for row-vector
 transforms, six clipping planes, depth/culling, perspective interpolation,
 wrapping, bilinear/trilinear filtering, mipmap minification, indexed conversion,
-and cleanup.
+and cleanup. Raster-release checks retain mipmaps and the indexed-color lookup
+table for re-enabling at a resized viewport. Invalid matrices, vertices, and UVs
+must be rejected before integer conversion; very large finite repeating UVs
+remain valid.
 
 The recorder headers are **not an SGI SDK or ABI**, and their optional subdivision
 constants are explicit fixture tags. Prototypes are checked against the supplied
@@ -130,6 +213,20 @@ resolution keys, native-call arguments, flat facet/strip packets, packed texture
 pixels and mipmap settings, clipping and model/view setup, single/double
 buffering, X11 input/resize events, and both Escape and window-manager close
 cleanup.
+
+Separate `drv_draw_tristrip_flat_rgb()` and `drv_draw_tristrip_flat_uv()` callbacks
+verify that flat facets retain their RGB values and textured strips retain their
+UVs. The textured native facet metadata is white because XGL's REPLACE operation
+uses the texture color directly.
+
+Texture failure checks cover the short `texture on`, `texture off`, and
+`texture fail` status labels, complete flat fallback while preserving the enabled
+request, partial-resource cleanup, and off/on retry. Status reflects use in the
+current frame rather than the toggle alone. XGL's internal hardware/software mix is
+not exposed through a reliable per-frame texture query, so its successful native API
+path remains `texture on`; `texture soft` covers the explicit OpenGL/IRIS GL rasterizer.
+Recovery is limited to errors XGL classifies as recoverable; nonrecoverable and
+unrelated rendering errors retain their fatal handling.
 
 `tests/xgl_record/xgl/xgl.h` is a small, manual-derived recording contract with
 test-local symbolic values. It is **not Sun's SDK header**, an ABI-compatible
@@ -177,19 +274,24 @@ python3 tests/run.py --gdi-contract
 ```
 
 The checks cover all five Earth resolutions, resource chunks compared with the
-original data, large global-heap buffers, exact palette bytes and strip topology,
-independent double-precision projection references at rotated poses, 80387
+original data, large global-heap buffers, exact palette bytes and indexed quad
+topology, independent double-precision projection references at rotated poses, 80387
 selection and the integer fallback (including a 286/287 machine), near/far and
 screen clipping, bounded `PolyPolygon` packets, foreground/background palette
 handling, buffering, mouse/keyboard/resize messages, timer rollover,
 Escape/window-close cleanup, and global-heap/object ownership.
 
-Small-screen defaults, explicit size overrides, and wrapped triangle/FPS/math
-statistics are recorded. Synthetic full-width and odd-tail strips verify exact
-facet colors and winding with every native `PolyPolygon` packet bounded to 128
-facets. Resource mocks check native lock/unlock/release ownership. The Win16
-`MakeProcInstance` callback casts suppress only GCC's `-Wcast-function-type`
-diagnostic.
+Small-screen defaults, explicit size overrides, and wrapped quad/FPS/math
+statistics are recorded. Synthetic indexed quad batches verify shared-vertex
+projection, exact colors, winding, clipping, pole compaction, and packet boundaries,
+with every native `PolyPolygon` call bounded to 64 polygons. Resource mocks check
+native lock/unlock/release ownership. The Win16 `MakeProcInstance` callback casts
+suppress only GCC's `-Wcast-function-type` diagnostic.
+
+Fatal-error profiles inject polygon drawing failure, vertex-allocation failure during
+a resolution change, and an oversized initial window. The modal error dialog dispatches
+paint, timer, and input messages: rendering must already be disabled, partial mesh state
+must stay untouched, and cleanup must release the timer, window, heap, and GDI objects.
 
 `tests/win16_shim/windows.h` contains manual-derived call declarations,
 cross-checked against public Win16 API declarations. It is **not Microsoft's
@@ -211,7 +313,7 @@ python3 tests/run.py --qd-contract
 
 The checks cover all five Earth resolutions, the default low-resolution globe,
 resource chunks compared byte-for-byte with the original source data, buffers
-larger than 64 KiB, exact palette uploads and strip topology, independent
+larger than 64 KiB, exact palette uploads and indexed quad topology, independent
 double-precision projections at rotated poses, fixed-point and FPU paths,
 CPU/FPU dispatch guards, near/far/window clipping, native polygon/text calls,
 1-bit luminance dithering, 4/8/16/32-bit color paths, maximum-depth device
@@ -222,14 +324,23 @@ resize and 1×1 viewports, `TickCount` rollover, animation,
 window-close/Command-Q exits, and heap/Toolbox ownership.
 
 The small-screen checks cover 640×480 and 512×342 desktops, larger screens, and
-explicit per-dimension overrides. OSD checks verify wrapped text, triangle/FPS
+explicit per-dimension overrides. OSD checks verify wrapped text, quad/FPS
 statistics, and the actual GWorld on/off state after allocation or lock failure.
-A synthetic 1,026-vertex strip independently checks all 1,024 facet colors and
-winding across native batch boundaries; large globe checks use linear traversal
-rather than quadratic polygon matching. The monochrome-68000 case rejects every
-Color QuickDraw, Palette Manager, and GWorld call. Tests model
+Synthetic indexed quad packets independently check shared vertices, colors, winding,
+clipping, pole compaction, and packet boundaries; large globe checks use linear
+traversal rather than quadratic polygon matching. The monochrome-68000 case rejects
+every Color QuickDraw, Palette Manager, and GWorld call. Tests model
 `OpenPoly`/`ClosePoly`'s automatic pen hiding so outlines cannot accidentally be
 drawn while recording filled polygons.
+
+Readiness checks cover early drawing and late events during teardown. OSD calculations
+exercise the supported 32,767-coordinate boundary with widened arithmetic. Activation,
+resume, and completed drags re-sample display properties, including depth changes that
+require palette, pattern, and GWorld reconstruction.
+
+Polygon and color-pattern allocation failures check that pending polygons are released,
+GWorld pixels unlocked, and the caller's port/device restored before a modal alert.
+Reentrant drawing during the alert is blocked, and repeated teardown must be safe.
 
 `tests/qd_shim/` contains manual-derived call declarations checked against public
 classic interface declarations. It is **not Apple's SDK**, an ABI replacement,
@@ -244,11 +355,20 @@ or QuickDraw hardware acceleration.
 
 ## Shared GDI and QuickDraw pipeline
 
-Both driver contracts link the actual shared `soft3d.c` module and exercise the
-common strip batching and Earth-resource traversal in `drv.c`. In addition to
-the independent projection references, a shared public-pipeline case clips a
+Both driver contracts link the actual shared `soft3d.c` module and exercise quad
+batching in `globe_draw_quadbatches()` and Earth-resource traversal in `drv.c`.
+The quad packets contain at most 64 quads and 130 shared vertices, with four indices
+and one palette byte per quad. The `DRV_QUAD_BATCH` capability retains `QUAD` as
+the primitive; `globe_draw_quads()` retains individual submission, including Matrox.
+In addition to the independent projection references, a shared public-pipeline case clips a
 triangle spanning 268 million coordinate units to exact viewport corners, then
 reverses its winding to check rejection. This exercises clipping products that
 would overflow a 32-bit intermediate without depending on private helpers.
 Large positive and negative accepted rotation angles must produce the same
 fixed matrix as their equivalent angles modulo 360 degrees.
+
+Quad projection cases check exact screen coordinates, near/far rejection, both
+collapsed poles, and the retained triangle projection entry point. Polygon culling
+uses the whole signed area: a rounded silhouette whose first fan triangle has the
+opposite orientation must still be classified correctly. A full 32,767-pixel
+viewport checks the area calculation at the supported integer coordinate limit.

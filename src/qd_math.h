@@ -20,6 +20,10 @@ extern void qd_fpu_prepare(const float *rotation_x, const float *rotation_y);
 extern void qd_fpu_transform(unsigned int count, const Vertex *vertices);
 /* Returns a near/far-clipped polygon in downward-Y screen coordinates.
  * The caller then clips to its window and rejects back-facing polygons. */
+extern int qd_fpu_project_polygon(const unsigned int *indices, unsigned int count,
+                                   unsigned int width, unsigned int height,
+                                   Qd_screen_point *out);
+/* Retained triangle convenience entry point. */
 extern int qd_fpu_project(unsigned int first, unsigned int second,
                            unsigned int third, unsigned int width,
                            unsigned int height, Qd_screen_point *out);

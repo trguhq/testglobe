@@ -30,7 +30,7 @@
 #endif
 
 #define DRV_NAME "IRIS GL"
-#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, T = texture mapping, Esc = exit"
+#define DRV_HELP "1-5 = facets, A = auto rotate, F = FPS, O = OSD, T = texture mapping, Esc = exit"
 
 #define DRV_WIN_X 100
 #define DRV_WIN_Y 100
@@ -59,5 +59,7 @@
 #define TEXTURE_DEFAULT_SIZE 512
 #define TEXTURE_RGB
 #define TRISTRIP
+#define DRV_TRI_COLOR
+#define DRV_TRI_UV
 
 #endif /* drv_igl_h */

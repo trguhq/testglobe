@@ -1,6 +1,7 @@
 /* Execute the real Win16 driver against recorded Windows calls.
  * This host contract is not a Windows SDK, ABI check, or renderer. */
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,7 @@ static HWND main_window, capture_window;
 static WNDPROC window_callback;
 static unsigned int palette_uploads, palette_realizations, text_calls;
 static unsigned int bitblts, polygon_calls, polypolygon_calls, timer_calls;
+static unsigned int invalidations;
 static unsigned int destroyed_windows, proc_instances, quit_messages;
 static int quit_code;
 static unsigned long submitted_polygons, submitted_vertices;
@@ -57,6 +59,10 @@ static int run_contract(void);
 static int contract_started;
 static int close_with_escape;
 static BOOL last_realize_background;
+static const char *profile;
+static unsigned int fail_allocation, allocation_attempts;
+static int fail_polygon;
+static unsigned int fatal_dialogs;
 
 static HANDLE object_new(int kind)
 {
@@ -88,6 +94,8 @@ HGLOBAL GlobalAlloc(UINT flags, DWORD bytes)
 {
     HGLOBAL handle;
     assert(bytes > 0 && (flags & GMEM_MOVEABLE));
+    if (fail_allocation != 0 && ++allocation_attempts == fail_allocation)
+        return 0;
     handle = object_new(OBJ_MEMORY);
     objects[handle].memory = calloc((size_t)bytes, 1);
     assert(objects[handle].memory != NULL);
@@ -199,7 +207,8 @@ HWND CreateWindow(LPCSTR class_name, LPCSTR title, DWORD style,
     (void)style; (void)x; (void)y; (void)parameter;
     assert(class_name != NULL && title != NULL && parent == 0 && menu == 0);
     assert(instance == 1 && width > 0 && height > 0);
-    client_width = width; client_height = height;
+    assert(width <= 32767 && height <= 32767);
+    client_width = width - 8; client_height = height - 28;
     main_window = object_new(OBJ_WINDOW);
     ++created_windows;
     return main_window;
@@ -257,6 +266,7 @@ void PostQuitMessage(int code) { ++quit_messages; quit_code = code; }
 void InvalidateRect(HWND window, const RECT *rectangle, BOOL erase)
 {
     assert(window == main_window);
+    ++invalidations;
     (void)rectangle; (void)erase;
 }
 HDC GetDC(HWND window)
@@ -297,6 +307,12 @@ void GetClientRect(HWND window, RECT *rectangle)
 void AdjustWindowRect(RECT *rectangle, DWORD style, BOOL menu)
 {
     assert(rectangle != NULL && style != 0 && !menu);
+    /* Native RECT fields are signed16. The production code must query
+     * border offsets at zero, then add client dimensions in wider math. */
+    assert(rectangle->left == 0 && rectangle->top == 0 &&
+           rectangle->right == 0 && rectangle->bottom == 0);
+    rectangle->left = -4; rectangle->top = -24;
+    rectangle->right = 4; rectangle->bottom = 4;
 }
 HCURSOR LoadCursor(HINSTANCE instance, LPCSTR name)
 {
@@ -438,8 +454,19 @@ static void record_polygon(HDC dc, const POINT *points, int count)
     }
     {
         long area;
-        area = (long)(points[1].x - points[0].x) * (points[2].y - points[0].y) -
-               (long)(points[1].y - points[0].y) * (points[2].x - points[0].x);
+        area = 0;
+        for (i = 1; i < count - 1; ++i)
+            area += (long)(points[i].x - points[0].x) *
+                     (points[i + 1].y - points[0].y) -
+                     (long)(points[i].y - points[0].y) *
+                     (points[i + 1].x - points[0].x);
+        if (area >= 0) {
+            fprintf(stderr, "Non-front GDI polygon: count %d, area %ld, pose %.2f/%.2f, resolution %d\n",
+                    count, area, (double)drv_rot_x, (double)drv_rot_y, globe_longitude);
+            for (i = 0; i < count; ++i)
+                fprintf(stderr, " %d,%d", points[i].x, points[i].y);
+            fputc('\n', stderr);
+        }
         assert(area < 0);
     }
     ++submitted_polygons;
@@ -455,8 +482,9 @@ BOOL PolyPolygon(HDC dc, const POINT *points, int *counts, int polygons)
 {
     int i;
     unsigned long total;
-    assert(polygons > 0 && polygons <= 128);
+    assert(polygons > 0 && polygons <= DRV_QUAD_BATCH_MAX);
     ++polypolygon_calls;
+    if (fail_polygon) return FALSE;
     total = 0;
     for (i = 0; i < polygons; ++i) {
         record_polygon(dc, points + total, counts[i]);
@@ -500,9 +528,10 @@ static void check_text(LPCSTR text, int length)
         assert(length < (int)sizeof(last_status));
         memcpy(last_status, text, (size_t)length);
         last_status[length] = 0;
-        assert(strstr(last_status, "triangles") != NULL);
-        assert(strstr(last_status, "quads") == NULL);
-        assert(strstr(last_status, "frames per second") != NULL);
+        assert(strstr(last_status, "quads") != NULL);
+        assert(strstr(last_status, "triangles") == NULL);
+        assert((strstr(last_status, "frames per second") != NULL) ==
+               (drv_fps_enabled != FALSE));
         assert(strstr(last_status, "math") != NULL);
     } else {
         assert(strstr(text, "1-5") != NULL);
@@ -561,7 +590,45 @@ BOOL KillTimer(HWND window, UINT id)
 }
 int MessageBox(HWND window, LPCSTR text, LPCSTR title, UINT flags)
 {
-    (void)window; (void)title; (void)flags;
+    unsigned int polygons, allocated, texts;
+    unsigned long vertices;
+    float rotation;
+    (void)title; (void)flags;
+    if (profile != NULL && strncmp(profile, "fatal-", 6) == 0) {
+        assert(gdi_failed && !gdi_ready && !gdi_dirty && !gdi_timer_active);
+        assert(!drv_auto_enabled && !drv_lmouse_pressed && !drv_rmouse_pressed);
+        assert(timer_calls == 0 && capture_window == 0);
+        assert(fatal_dialogs++ == 0);
+        if (strcmp(profile, "fatal-poly") == 0)
+            assert(strstr(text, "PolyPolygon") != NULL);
+        else if (strcmp(profile, "fatal-oom") == 0) {
+            assert(strstr(text, "vertices") != NULL);
+            assert(globe_verts == NULL && globe_verts_num == 131841UL);
+        } else {
+            assert(strcmp(profile, "fatal-size") == 0);
+            assert(strstr(text, "dimensions") != NULL && window == 0);
+        }
+        polygons = polypolygon_calls;
+        allocated = allocated_count;
+        texts = text_calls;
+        vertices = globe_verts_num;
+        rotation = drv_rot_y;
+        if (window != 0) {
+            /* A modal Win16 dialog pumps queued paint/timer/input messages.
+             * None may touch the failed or partly replaced scene. */
+            window_callback(window, WM_TIMER, GDI_TIMER, 0);
+            window_callback(window, WM_PAINT, 0, 0);
+            window_callback(window, WM_CHAR, '1', 0);
+            window_callback(window, WM_SIZE, 0, (LPARAM)(800UL | (600UL << 16)));
+            window_callback(window, WM_LBUTTONDOWN, 0, 0);
+            window_callback(window, WM_RBUTTONDOWN, 0, 0);
+            drv_render();
+        }
+        assert(polypolygon_calls == polygons && allocated_count == allocated);
+        assert(text_calls == texts && globe_verts_num == vertices);
+        assert(drv_rot_y == rotation && capture_window == 0);
+        return 1;
+    }
     fprintf(stderr, "Unexpected GDI error dialog: %s\n", text);
     assert(!"Unexpected error dialog");
     return 1;
@@ -572,12 +639,13 @@ int MessageBox(HWND window, LPCSTR text, LPCSTR title, UINT flags)
 
 typedef struct { double x, y; } ReferencePoint;
 typedef struct {
-    ReferencePoint point[3];
+    ReferencePoint point[4];
+    int count;
     unsigned char color;
     double area;
     int seen;
-} ReferenceTriangle;
-static ReferenceTriangle reference[5000];
+} ReferenceQuad;
+static ReferenceQuad reference[5000];
 static unsigned int reference_count;
 
 static ReferencePoint project_reference(const Vertex *vertex)
@@ -599,20 +667,35 @@ static ReferencePoint project_reference(const Vertex *vertex)
 }
 
 static void add_reference(unsigned long a, unsigned long b, unsigned long c,
-                           unsigned char color)
+                           unsigned long d, unsigned char color)
 {
-    ReferenceTriangle *triangle;
-    ReferencePoint *p;
+    ReferenceQuad *quad;
+    ReferencePoint projected[4];
+    int i, previous;
     assert(reference_count < 5000);
-    triangle = reference + reference_count++;
-    triangle->point[0] = project_reference(globe_verts + a);
-    triangle->point[1] = project_reference(globe_verts + b);
-    triangle->point[2] = project_reference(globe_verts + c);
-    p = triangle->point;
-    triangle->area = (p[1].x - p[0].x) * (p[2].y - p[0].y) -
-                     (p[1].y - p[0].y) * (p[2].x - p[0].x);
-    triangle->color = color;
-    triangle->seen = FALSE;
+    quad = reference + reference_count++;
+    projected[0] = project_reference(globe_verts + a);
+    projected[1] = project_reference(globe_verts + b);
+    projected[2] = project_reference(globe_verts + c);
+    projected[3] = project_reference(globe_verts + d);
+    quad->count = 0;
+    for (i = 0; i < 4; ++i) {
+        previous = quad->count - 1;
+        if (previous >= 0 && projected[i].x == quad->point[previous].x &&
+            projected[i].y == quad->point[previous].y) continue;
+        quad->point[quad->count++] = projected[i];
+    }
+    if (quad->count > 1 && quad->point[quad->count - 1].x == quad->point[0].x &&
+        quad->point[quad->count - 1].y == quad->point[0].y) --quad->count;
+    assert(quad->count == 3 || quad->count == 4);
+    quad->area = 0;
+    for (i = 1; i < quad->count - 1; ++i)
+        quad->area += (quad->point[i].x - quad->point[0].x) *
+                      (quad->point[i + 1].y - quad->point[0].y) -
+                      (quad->point[i].y - quad->point[0].y) *
+                      (quad->point[i + 1].x - quad->point[0].x);
+    quad->color = color;
+    quad->seen = FALSE;
 }
 
 static void build_reference(void)
@@ -627,59 +710,73 @@ static void build_reference(void)
             top = (unsigned long)latitude * (globe_longitude + 1UL) + longitude;
             bottom = top + globe_longitude + 1UL;
             face = (unsigned long)latitude * globe_longitude + longitude;
-            if (latitude != globe_latitude - 1)
-                add_reference(top + 1UL, bottom, bottom + 1UL, data[face]);
-            if (latitude != 0)
-                add_reference(top, bottom, top + 1UL, data[face]);
+            add_reference(top, bottom, bottom + 1UL, top + 1UL, data[face]);
         }
     }
-    assert(reference_count == globe_tris_num);
+    assert(reference_count == globe_quads_num);
 }
 
 static double reference_distance(const RecordedPolygon *actual,
-                                  const ReferenceTriangle *expected)
+                                  const ReferenceQuad *expected)
 {
-    int shift, point, next, close;
+    int shift, point, next, close, skipped, skip;
     double distance, best, dx, dy;
     best = 1e30;
-    if (actual->count != 3 || actual->color != expected->color) return best;
-    for (shift = 0; shift < 3; ++shift) {
-        close = TRUE;
-        distance = 0;
-        for (point = 0; point < 3; ++point) {
-            next = (point + shift) % 3;
-            dx = actual->points[point].x - expected->point[next].x;
-            dy = actual->points[point].y - expected->point[next].y;
-            if (fabs(dx) > 3.0 || fabs(dy) > 3.0)
-                close = FALSE;
-            distance += dx * dx + dy * dy;
+    if (actual->color != expected->color || actual->count > expected->count ||
+        actual->count < expected->count - 1) return best;
+    /* Screen rounding may merge an adjacent pair on a silhouette quad.
+     * Permit that one missing corner only when it is within the same
+     * three-pixel projection tolerance as its retained neighbor. */
+    for (skip = -1; skip < expected->count; ++skip) {
+        if ((skip < 0) != (actual->count == expected->count)) continue;
+        if (skip >= 0) {
+            next = (skip + 1) % expected->count;
+            dx = expected->point[skip].x - expected->point[next].x;
+            dy = expected->point[skip].y - expected->point[next].y;
+            if (fabs(dx) > 3.0 || fabs(dy) > 3.0) continue;
         }
-        if (close && distance < best) best = distance;
+        for (shift = 0; shift < expected->count; ++shift) {
+            close = TRUE; distance = 0; skipped = 0;
+            for (point = 0; point < actual->count; ++point) {
+                next = (point + shift + skipped) % expected->count;
+                if (next == skip) {
+                    skipped = 1;
+                    next = (next + 1) % expected->count;
+                }
+                dx = actual->points[point].x - expected->point[next].x;
+                dy = actual->points[point].y - expected->point[next].y;
+                if (fabs(dx) > 3.0 || fabs(dy) > 3.0) close = FALSE;
+                distance += dx * dx + dy * dy;
+            }
+            if (close && distance < best) best = distance;
+        }
     }
     return best;
 }
 
 static void check_projection(void)
 {
-    unsigned int polygon, triangle, found, matched;
+    unsigned int polygon, quad, found, matched;
     long area;
     double distance, best, dx, dy, longest, length;
     int point, next;
     matched = 0;
     for (polygon = 0; polygon < recorded_count; ++polygon) {
-        assert(recorded[polygon].count == 3);
-        area = (long)(recorded[polygon].points[1].x - recorded[polygon].points[0].x) *
-               (recorded[polygon].points[2].y - recorded[polygon].points[0].y) -
-               (long)(recorded[polygon].points[1].y - recorded[polygon].points[0].y) *
-               (recorded[polygon].points[2].x - recorded[polygon].points[0].x);
+        assert(recorded[polygon].count == 3 || recorded[polygon].count == 4);
+        area = 0;
+        for (point = 1; point < recorded[polygon].count - 1; ++point)
+            area += (long)(recorded[polygon].points[point].x - recorded[polygon].points[0].x) *
+                     (recorded[polygon].points[point + 1].y - recorded[polygon].points[0].y) -
+                     (long)(recorded[polygon].points[point].y - recorded[polygon].points[0].y) *
+                     (recorded[polygon].points[point + 1].x - recorded[polygon].points[0].x);
         assert(area < 0);
         found = reference_count;
         best = 1e30;
-        for (triangle = 0; triangle < reference_count; ++triangle) {
-            distance = reference_distance(recorded + polygon, reference + triangle);
+        for (quad = 0; quad < reference_count; ++quad) {
+            distance = reference_distance(recorded + polygon, reference + quad);
             if (distance < best) {
                 best = distance;
-                found = triangle;
+                found = quad;
             }
         }
         if (found == reference_count) {
@@ -697,76 +794,87 @@ static void check_projection(void)
     /* Silhouette facets can round to zero area on either arithmetic path.
      * Require every front-facing facet whose altitude exceeds four pixels,
      * independently of the longest edge's length. */
-    for (triangle = 0; triangle < reference_count; ++triangle) {
+    for (quad = 0; quad < reference_count; ++quad) {
         longest = 0;
-        for (point = 0; point < 3; ++point) {
-            next = (point + 1) % 3;
-            dx = reference[triangle].point[point].x - reference[triangle].point[next].x;
-            dy = reference[triangle].point[point].y - reference[triangle].point[next].y;
+        for (point = 0; point < reference[quad].count; ++point) {
+            next = (point + 1) % reference[quad].count;
+            dx = reference[quad].point[point].x - reference[quad].point[next].x;
+            dy = reference[quad].point[point].y - reference[quad].point[next].y;
             length = sqrt(dx * dx + dy * dy);
             if (length > longest) longest = length;
         }
-        if (reference[triangle].area < -4.0 * longest && !reference[triangle].seen) {
+        if (reference[quad].area < -4.0 * longest && !reference[quad].seen) {
             /* Adjacent subpixel facets can have identical rounded tuples;
              * coverage matters more than a greedy one-to-one assignment. */
             for (polygon = 0; polygon < recorded_count; ++polygon) {
-                if (reference_distance(recorded + polygon, reference + triangle) < 1e30) {
-                    reference[triangle].seen = TRUE;
+                if (reference_distance(recorded + polygon, reference + quad) < 1e30) {
+                    reference[quad].seen = TRUE;
                     break;
                 }
             }
-            assert(reference[triangle].seen);
+            assert(reference[quad].seen);
         }
     }
 }
 
-/* A fully visible strip makes every chunk-boundary facet observable.
- * Its 1,024 triangles stay several pixels wide even at the largest strip
- * count, so rounding cannot conceal missing seams or wrong parity/colors. */
-static void check_large_strip(void)
+/* Shared vertices are deliberately permuted so the driver must honor all
+ * four indices. Repeated colors require native PolyPolygon grouping, while
+ * 1/17/64-quad packets cover partial and maximum-size native batches. */
+static void check_quad_batches(void)
 {
-    Vertex *vertices, *saved_vertices;
-    unsigned char *colors;
-    unsigned int i, facet, sizes[3], test;
-    vertices = (Vertex *)calloc(1026U, sizeof(*vertices));
-    colors = (unsigned char *)malloc(1024U);
-    assert(vertices != NULL && colors != NULL);
-    for (i = 0; i < 1026U; ++i) {
-        vertices[i].x = (float)((int)(i / 2U) * 2 - 512);
-        vertices[i].y = 0.0f;
-        vertices[i].z = (i & 1U) ? -100.0f : 100.0f;
+    Vertex vertices[130], *saved_vertices;
+    unsigned int indices[64 * 4], sizes[3], test, i, quad, calls;
+    unsigned char colors[64];
+    HPEN previous;
+    for (i = 0; i < 130U; ++i) {
+        unsigned int slot = (i * 37U) % 130U;
+        vertices[slot].x = (float)((int)(i / 2U) * 2 - 64);
+        vertices[slot].y = 0.0f;
+        vertices[slot].z = (i & 1U) ? -100.0f : 100.0f;
     }
-    for (i = 0; i < 1024U; ++i) colors[i] = (unsigned char)(i * 37U);
-    sizes[0] = 3U; sizes[1] = 259U; sizes[2] = 1026U;
-    drv_resize(32767, 32767);
+    for (i = 0; i < 64U; ++i) {
+        indices[4U * i] = (2U * i * 37U) % 130U;
+        indices[4U * i + 1U] = ((2U * i + 1U) * 37U) % 130U;
+        indices[4U * i + 2U] = ((2U * i + 3U) * 37U) % 130U;
+        indices[4U * i + 3U] = ((2U * i + 2U) * 37U) % 130U;
+        colors[i] = (unsigned char)((i % 4U) * 37U);
+    }
+    sizes[0] = 1U; sizes[1] = 17U; sizes[2] = 64U;
+    gdi_resize(32767, 32767);
     drv_rot_x = 0.0f; drv_rot_y = 90.0f;
     gdi_set_transform();
     saved_vertices = globe_verts;
+    previous = (HPEN)SelectObject(gdi_buffer, GetStockObject(NULL_PEN));
     for (test = 0; test < 3U; ++test) {
         reference_count = 0;
         globe_verts = vertices;
-        for (facet = 0; facet < sizes[test] - 2U; ++facet) {
-            if (facet & 1U) add_reference(facet + 1U, facet, facet + 2U, colors[facet]);
-            else add_reference(facet, facet + 1U, facet + 2U, colors[facet]);
-        }
+        for (quad = 0; quad < sizes[test]; ++quad)
+            add_reference(indices[4U * quad], indices[4U * quad + 1U],
+                           indices[4U * quad + 2U], indices[4U * quad + 3U],
+                           colors[quad]);
         globe_verts = saved_vertices;
         recorded_count = 0;
-        globe_tris_num_vis = 0;
-        {
-            HPEN previous;
-            previous = (HPEN)SelectObject(gdi_buffer, GetStockObject(NULL_PEN));
-            drv_draw_tristrip_flat_color(sizes[test], vertices, colors);
-            SelectObject(gdi_buffer, previous);
-        }
-        assert(recorded_count == sizes[test] - 2U);
-        assert(globe_tris_num_vis == sizes[test] - 2U);
+        globe_quads_num_vis = 0;
+        calls = polypolygon_calls;
+        drv_draw_quadbatch_flat_color(130U, vertices, sizes[test], indices, colors);
+        assert(recorded_count == sizes[test] && globe_quads_num_vis == sizes[test]);
+        assert(polypolygon_calls - calls == (sizes[test] < 4U ? sizes[test] : 4U));
         check_projection();
-        for (facet = 0; facet < reference_count; ++facet) assert(reference[facet].seen);
+        for (quad = 0; quad < reference_count; ++quad) assert(reference[quad].seen);
     }
-    free(colors);
-    free(vertices);
-    drv_resize(640, 480);
-    puts("PASS GDI strip packets: 1,026 vertices, exact colors/winding and full seam coverage, bounded 128-facet native calls");
+    /* The individual QUAD entry point retains identical palette and geometry
+     * semantics and delegates to the same native batch implementation. */
+    recorded_count = 0;
+    globe_quads_num_vis = 0;
+    drv_draw_quad_flat_color(vertices + indices[0], vertices + indices[1],
+                              vertices + indices[2], vertices + indices[3], colors[0]);
+    assert(recorded_count == 1 && globe_quads_num_vis == 1);
+    assert(recorded[0].color == colors[0] && recorded[0].count == 4);
+    drv_draw_quadbatch_flat_color(0U, NULL, 0U, NULL, NULL);
+    assert(recorded_count == 1 && globe_quads_num_vis == 1);
+    SelectObject(gdi_buffer, previous);
+    gdi_resize(640, 480);
+    puts("PASS GDI quad packets: arbitrary shared-vertex indices, exact colors/winding, partial and 64-quad batches, native palette grouping and individual-quad compatibility");
 }
 
 static LPARAM packed_coordinates(int x, int y)
@@ -796,23 +904,66 @@ static void camera_triangle(double z0, double z1, double z2)
     gdi_fixed_points[2].z = (long)(z2 * 16.0);
 }
 
+static void camera_quad(double z0, double z1, double z2, double z3)
+{
+    static const int x[4] = { -100, 100, 100, -100 };
+    static const int y[4] = { -100, -100, 100, 100 };
+    double z[4];
+    int i;
+    z[0] = z0; z[1] = z1; z[2] = z2; z[3] = z3;
+    for (i = 0; i < 4; ++i) {
+        gdi_float_points[i].x = (float)x[i];
+        gdi_float_points[i].y = (float)y[i];
+        gdi_float_points[i].z = (float)z[i];
+        gdi_fixed_points[i].x = x[i] * 16L;
+        gdi_fixed_points[i].y = y[i] * 16L;
+        gdi_fixed_points[i].z = (long)(z[i] * 16.0);
+    }
+}
+
 static void check_clipping(void)
 {
     POINT polygon[10];
+    static const unsigned int indices[3] = { 0, 1, 2 };
+    static const unsigned int quad_indices[4] = { 0, 1, 2, 3 };
+    static const unsigned int reversed[4] = { 3, 2, 1, 0 };
     int count, i;
     camera_triangle(-9000.0, -9000.0, -11000.0);
-    count = gdi_prepare_polygon(0, 1, 2, polygon);
+    count = gdi_prepare_polygon(indices, 3U, polygon);
     assert(count == 4);
     camera_triangle(-11000.0, -11000.0, -11000.0);
-    assert(gdi_prepare_polygon(0, 1, 2, polygon) == 0);
+    assert(gdi_prepare_polygon(indices, 3U, polygon) == 0);
     camera_triangle(0.0, 0.0, 0.0);
-    assert(gdi_prepare_polygon(0, 1, 2, polygon) == 0);
+    assert(gdi_prepare_polygon(indices, 3U, polygon) == 0);
     camera_triangle(-2.0, -2.0, -0.5);
-    count = gdi_prepare_polygon(0, 1, 2, polygon);
+    count = gdi_prepare_polygon(indices, 3U, polygon);
     assert(count >= 3 && count <= 10);
     for (i = 0; i < count; ++i) {
         assert(polygon[i].x >= 0 && polygon[i].x <= (int)drv_win_width);
         assert(polygon[i].y >= 0 && polygon[i].y <= (int)drv_win_height);
+    }
+    camera_quad(-9000.0, -9000.0, -11000.0, -11000.0);
+    assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 4);
+    camera_quad(-11000.0, -11000.0, -11000.0, -11000.0);
+    assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 0);
+    camera_quad(0.0, 0.0, 0.0, 0.0);
+    assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 0);
+    camera_quad(-2.0, -2.0, -0.5, -0.5);
+    count = gdi_prepare_polygon(quad_indices, 4U, polygon);
+    assert(count >= 3 && count <= 10);
+    for (i = 0; i < count; ++i) {
+        assert(polygon[i].x >= 0 && polygon[i].x <= (int)drv_win_width);
+        assert(polygon[i].y >= 0 && polygon[i].y <= (int)drv_win_height);
+    }
+    camera_quad(-3000.0, -3000.0, -3000.0, -3000.0);
+    assert(gdi_prepare_polygon(reversed, 4U, polygon) == 0);
+    /* Repeated pole vertices become one nondegenerate native triangle. */
+    gdi_float_points[3] = gdi_float_points[0];
+    gdi_fixed_points[3] = gdi_fixed_points[0];
+    assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 3);
+    if (gdi_has_fpu) {
+        gdi_float_points[0].x = FLT_MAX;
+        assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 0);
     }
     test_soft3d_shared_pipeline();
 }
@@ -821,7 +972,11 @@ static int run_contract(void)
 {
     int resolution, pose, i;
     float old_x, old_y;
+    double expected_rotation;
     unsigned int realized, texts;
+#if DEBUG
+    unsigned int old_invalidations;
+#endif
     static const int pitch[4] = { 0, 19, 247, 71 };
     static const int yaw[4] = { 180, 37, 121, 302 };
     assert(globe_longitude == 32 && globe_latitude == 16);
@@ -832,9 +987,38 @@ static int run_contract(void)
     assert(drv_win_width == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 320 : 640));
     assert(drv_win_height == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 240 : 480));
     assert(allocated_count >= 4 && loaded_chunks > 0);
+    if (strncmp(profile, "fatal-", 6) == 0) {
+        if (strcmp(profile, "fatal-size") == 0) {
+            gdi_cleanup();
+            drv_init_window(0, 0, 32767, 300);
+        } else {
+            window_callback(main_window, WM_LBUTTONDOWN, MK_LBUTTON, 0);
+            window_callback(main_window, WM_RBUTTONDOWN, 0, 0);
+            drv_auto_enabled = TRUE;
+            if (strcmp(profile, "fatal-poly") == 0) {
+                fail_polygon = TRUE;
+                gdi_dirty = TRUE;
+                drv_render();
+            } else {
+                assert(strcmp(profile, "fatal-oom") == 0);
+                fail_allocation = 2U;
+                allocation_attempts = 0;
+                gdi_dirty = FALSE;
+                window_callback(main_window, WM_CHAR, '5', 0);
+            }
+        }
+        assert(!"Fatal GDI error must exit after the modal dialog");
+    }
     recorded_count = 0;
     drv_render();
     assert(text_calls == 2 && last_status[0] != 0);
+    window_callback(main_window, WM_CHAR, 'f', 0);
+    assert(!drv_fps_enabled);
+    recorded_count = 0;
+    drv_render();
+    assert(strstr(last_status, "frames per second") == NULL);
+    window_callback(main_window, WM_CHAR, 'F', 0);
+    assert(drv_fps_enabled);
     drv_osd_enabled = FALSE;
     for (resolution = 0; resolution < 2; ++resolution) {
         window_callback(main_window, WM_CHAR, (WPARAM)('1' + resolution), 0);
@@ -845,15 +1029,15 @@ static int run_contract(void)
             build_reference();
             recorded_count = 0;
             drv_render();
-            assert(recorded_count == globe_tris_num_vis);
+            assert(recorded_count == globe_quads_num_vis);
             check_projection();
         }
         window_callback(main_window, WM_CHAR, 't', 0);
         assert(!drv_texture_enabled);
     }
     /* Large real Earth meshes exercise huge allocations and all resource
-     * chunks in linear time; exact strip topology is covered independently
-     * by gdi_strips and the fully visible synthetic strip below. */
+     * chunks in linear time; exact quad topology is covered independently
+     * by the geometry fixture and fully visible indexed packets below. */
     for (resolution = 2; resolution < 5; ++resolution) {
         unsigned long before;
         window_callback(main_window, WM_CHAR, (WPARAM)('1' + resolution), 0);
@@ -862,8 +1046,8 @@ static int run_contract(void)
         stream_polygons = TRUE;
         drv_render();
         stream_polygons = FALSE;
-        assert(submitted_polygons - before == globe_tris_num_vis);
-        assert(globe_tris_num_vis > 0 && globe_tris_num_vis < globe_tris_num);
+        assert(submitted_polygons - before == globe_quads_num_vis);
+        assert(globe_quads_num_vis > 0 && globe_quads_num_vis < globe_quads_num);
         window_callback(main_window, WM_CHAR, 't', 0);
         assert(!drv_texture_enabled);
     }
@@ -871,7 +1055,7 @@ static int run_contract(void)
     assert(loaded_chunks >= 12UL);
     window_callback(main_window, WM_CHAR, '2', 0);
     assert(globe_longitude == 64);
-    check_large_strip();
+    check_quad_batches();
     assert(polypolygon_calls > 0 && polygon_calls == 0);
     check_clipping();
     puts("PASS GDI rendering: five Earth resolutions, huge allocations/resources, independent pose checks, bounded palette batches, near/far/screen clipping");
@@ -883,10 +1067,45 @@ static int run_contract(void)
     assert(drv_rot_x != old_x && drv_rot_y != old_y);
     window_callback(main_window, WM_LBUTTONUP, 0, packed_coordinates(384, 288));
     assert(!drv_lmouse_pressed && capture_window == 0);
+#if DEBUG
+    drv_osd_enabled = TRUE;
+    gdi_dirty = FALSE;
+    old_invalidations = invalidations;
+#endif
+    window_callback(main_window, WM_RBUTTONDOWN, 0, packed_coordinates(384, 288));
+    assert(drv_rmouse_pressed && capture_window == main_window);
+#if DEBUG
+    assert(gdi_dirty && invalidations == old_invalidations + 1U);
+    recorded_count = 0;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(strstr(last_status, "R=1") != NULL);
+    assert(!gdi_dirty);
+    old_invalidations = invalidations;
+#endif
+    window_callback(main_window, WM_RBUTTONUP, 0, packed_coordinates(384, 288));
+    assert(!drv_rmouse_pressed && capture_window == 0);
+#if DEBUG
+    assert(gdi_dirty && invalidations == old_invalidations + 1U);
+    recorded_count = 0;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(strstr(last_status, "R=0") != NULL);
+#endif
     window_callback(main_window, WM_LBUTTONDOWN, MK_LBUTTON, packed_coordinates(0, 0));
     window_callback(main_window, WM_MOUSEMOVE, MK_LBUTTON, packed_coordinates(-10, -5));
+    window_callback(main_window, WM_RBUTTONDOWN, 0, 0);
+#if DEBUG
+    gdi_dirty = FALSE;
+    old_invalidations = invalidations;
+#endif
     window_callback(main_window, WM_KILLFOCUS, 0, 0);
-    assert(!drv_lmouse_pressed && capture_window == 0);
+    assert(!drv_lmouse_pressed && !drv_rmouse_pressed && capture_window == 0);
+#if DEBUG
+    assert(gdi_dirty && invalidations == old_invalidations + 1U);
+    recorded_count = 0;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(strstr(last_status, "R=0") != NULL);
+    drv_osd_enabled = FALSE;
+#endif
     assert(drv_rot_x >= 0 && drv_rot_x < 360 && drv_rot_y >= 0 && drv_rot_y < 360);
     texts = text_calls;
     window_callback(main_window, WM_CHAR, 'o', 0);
@@ -906,6 +1125,19 @@ static int run_contract(void)
     old_y = drv_rot_y;
     window_callback(main_window, WM_TIMER, 1, 0);
     assert(fabs((drv_rot_y - old_y) - 0.16f) < 0.001);
+    /* A full wrapping DWORD interval stays accurate without repeated
+     * subtraction, including an invalid previous rotation. */
+    ticks = 0xfffffff0UL;
+    gdi_auto_tick = 1UL;
+    drv_rot_y = 37.0f;
+    expected_rotation = fmod(37.0 + 4294967295.0 * (double)DRV_ROTATE / 1000.0,
+                              360.0);
+    window_callback(main_window, WM_TIMER, 1, 0);
+    assert(fabs((double)drv_rot_y - expected_rotation) < 0.001);
+    drv_rot_y = FLT_MAX;
+    gdi_auto_tick = ticks;
+    window_callback(main_window, WM_TIMER, 1, 0);
+    assert(drv_rot_y >= 0.0f && drv_rot_y < 360.0f);
     window_callback(main_window, WM_CHAR, 'a', 0);
     assert(!drv_auto_enabled);
     old_y = drv_rot_y;
@@ -936,13 +1168,14 @@ static int run_contract(void)
     check_projection();
     window_callback(main_window, WM_SIZE, SIZE_MINIMIZED, 0);
     assert(drv_win_width == 800 && drv_win_height == 600);
-    drv_resize(1, 1);
+    gdi_resize(1, 1);
     camera_triangle(-2.0, -2.0, -0.5);
     {
         POINT tiny[10];
-        assert(gdi_prepare_polygon(0, 1, 2, tiny) >= 3);
+        static const unsigned int indices[3] = { 0, 1, 2 };
+        assert(gdi_prepare_polygon(indices, 3U, tiny) >= 3);
     }
-    drv_resize(800, 600);
+    gdi_resize(800, 600);
     assert(drv_win_width == 800 && drv_win_height == 600);
     ticks = 0xffffffd0UL;
     for (i = 0; i < 61; ++i) { drv_fps_start(); drv_fps_stop(); }
@@ -950,16 +1183,33 @@ static int run_contract(void)
     /* Explicit client dimensions override the detected small-screen default. */
     gdi_cleanup();
     assert(resource_count == 0 && allocated_count == 0 && proc_instances == 0);
-    assert(drv_init_window(0, 0, 444, 333));
-    assert(drv_win_width == 444 && drv_win_height == 333);
-    assert(client_width == 444 && client_height == 333);
-    puts("PASS GDI input: production WinMain/common startup, mouse capture/drag, 1-5/O/A keys, palette events, screen defaults/overrides, resize, paint and 32-bit timer rollover");
+    if (strcmp(profile, "maxframe") == 0) {
+        assert(drv_init_window(0, 0, 32759, 32739));
+        assert(drv_win_width == 32759U && drv_win_height == 32739U);
+        assert(client_width == 32759 && client_height == 32739);
+    } else {
+        assert(drv_init_window(0, 0, 444, 333));
+        assert(drv_win_width == 444 && drv_win_height == 333);
+        assert(client_width == 444 && client_height == 333);
+    }
+    puts("PASS GDI input: production WinMain/common startup, left/right mouse capture, drag, 1-5/O/A/F keys, palette events, screen defaults/overrides, resize, paint and 32-bit timer rollover");
     return 0;
+}
+
+static void check_fatal_cleanup(void)
+{
+    assert(fatal_dialogs == 1U && gdi_failed && !gdi_ready);
+    assert(resource_count == 0 && allocated_count == 0 && proc_instances == 0);
+    assert(timer_calls == 0 && capture_window == 0 && main_window == 0);
+    puts("PASS GDI fatal error: modal paint/timer/input dispatch cannot reenter rendering or partial scene state, and cleanup releases all resources");
 }
 
 int main(int argc, char **argv)
 {
     assert(argc == 2);
+    profile = argv[1];
+    if (strncmp(profile, "fatal-", 6) == 0)
+        assert(atexit(check_fatal_cleanup) == 0);
     windows_flags = WF_CPU386;
     if (strstr(argv[1], "fpu") != NULL) windows_flags |= WF_80x87;
     if (strcmp(argv[1], "287") == 0) windows_flags = WF_CPU286 | WF_80x87;

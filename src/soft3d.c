@@ -202,17 +202,32 @@ int soft3d_fixed_project(const Soft3d_fixed_point *points,
                           unsigned int third, unsigned int width,
                           unsigned int height, Soft3d_screen_point *out)
 {
+    unsigned int indices[3];
+    indices[0] = first;
+    indices[1] = second;
+    indices[2] = third;
+    return soft3d_fixed_project_polygon(points, indices, 3U, width, height, out);
+}
+
+int soft3d_fixed_project_polygon(const Soft3d_fixed_point *points,
+                                  const unsigned int TG_HUGE *indices,
+                                  unsigned int corners, unsigned int width,
+                                  unsigned int height, Soft3d_screen_point *out)
+{
     Soft3d_fixed_point a[SOFT3D_MAX_POLY], b[SOFT3D_MAX_POLY];
     long focal;
     int i, count;
-    if (points == NULL || out == NULL || first >= SOFT3D_MAX_VERTICES ||
-        second >= SOFT3D_MAX_VERTICES || third >= SOFT3D_MAX_VERTICES ||
+    if (points == NULL || indices == NULL || out == NULL ||
+        corners < 3U || corners > 4U ||
         width == 0 || height == 0 || width > 32767U || height > 32767U)
         return 0;
-    a[0] = points[first];
-    a[1] = points[second];
-    a[2] = points[third];
-    count = soft3d_clip_fixed_z(a, 3, b, -SOFT3D_COORD_SCALE, FALSE);
+    for (i = 0; i < (int)corners; ++i)
+    {
+        if (indices[i] >= SOFT3D_MAX_VERTICES) return 0;
+        a[i] = points[indices[i]];
+    }
+    count = soft3d_clip_fixed_z(a, (int)corners, b,
+                               -SOFT3D_COORD_SCALE, FALSE);
     if (count < 3) return 0;
     count = soft3d_clip_fixed_z(b, count, a, -10000L * SOFT3D_COORD_SCALE, TRUE);
     if (count < 3) return 0;
@@ -266,8 +281,9 @@ int soft3d_finish_polygon(Soft3d_screen_point *points, int count,
                            unsigned int width, unsigned int height)
 {
     Soft3d_screen_point clipped[SOFT3D_MAX_POLY];
-    long area;
-    int i;
+    long area, area_high;
+    unsigned long area_low, previous;
+    int i, total;
     if (points == NULL || count < 3 || count > SOFT3D_MAX_POLY ||
         width == 0 || height == 0 || width > 32767U || height > 32767U)
         return 0;
@@ -279,12 +295,39 @@ int soft3d_finish_polygon(Soft3d_screen_point *points, int count,
     if (count < 3) return 0;
     count = soft3d_clip_screen(clipped, count, points, 1, (long)height, FALSE);
     if (count < 3) return 0;
-    /* CCW front faces become clockwise in downward-Y window coordinates. */
-    area = 0;
-    for (i = 1; i < count - 1 && area == 0; ++i)
+    /* Pole patches and clipped edges can have coincident corners. Submit
+     * their actual polygon, retaining triangles at either collapsed pole. */
+    total = 0;
+    for (i = 0; i < count; ++i)
+    {
+        if (total != 0 && points[i].x == points[total - 1].x &&
+            points[i].y == points[total - 1].y)
+            continue;
+        points[total++] = points[i];
+    }
+    if (total > 1 && points[total - 1].x == points[0].x &&
+        points[total - 1].y == points[0].y)
+        --total;
+    if (total < 3) return 0;
+    count = total;
+    /* Rounded silhouette quads can contain fan triangles of either sign.
+     * Cull by the complete polygon's signed area. Each cross product fits
+     * a signed 32-bit long inside this viewport; accumulate its sign in two
+     * words so even mixed-sign partial sums cannot overflow on 68000/8086.
+     * CCW front faces become clockwise in downward-Y window coordinates. */
+    area_high = 0;
+    area_low = 0;
+    for (i = 1; i < count - 1; ++i)
+    {
         area = (points[i].x - points[0].x) *
                (points[i + 1].y - points[0].y) -
                (points[i].y - points[0].y) *
                (points[i + 1].x - points[0].x);
-    return area < 0 ? count : 0;
+        previous = area_low;
+        area_low = (area_low + ((unsigned long)area & 0xFFFFFFFFUL)) &
+                   0xFFFFFFFFUL;
+        if (area < 0) --area_high;
+        if (area_low < previous) ++area_high;
+    }
+    return area_high < 0 ? count : 0;
 }

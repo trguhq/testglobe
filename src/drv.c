@@ -24,6 +24,8 @@
 #include "globe.h"
 #include "glob_ext.h"
 #include <stdio.h>
+#include <math.h>
+#include <float.h>
 #ifdef DRV_EARTH_RESOURCES
 #include "earthres.h"
 #endif
@@ -70,16 +72,19 @@ static struct timeval drv_frame_start, drv_frame_stop;
 #endif
 static float drv_frame_seconds;
 static float drv_fps_history_seconds;
-long drv_fps_history_num;               /* total number of frames recorded */
+static long drv_fps_history_num;        /* frames in this FPS sample */
 int drv_auto_enabled;                   /* automatically rotate */
 
 void drv_format_stats(char *buffer)
 {
+    char status[192];
+    size_t length;
     unsigned long total;
     const char *primitive;
 #ifdef DRV_VISIBLE_COUNTS
     unsigned long visible;
 #endif
+    if (buffer == NULL) return;
 #ifdef QUAD
     total = globe_quads_num;
     primitive = "quads";
@@ -94,17 +99,28 @@ void drv_format_stats(char *buffer)
 #endif
 #endif
 #ifdef DRV_VISIBLE_COUNTS
-    sprintf(buffer, "%lu %s (%lu visible), %.2f frames per second",
-            total, primitive, visible, (double)drv_fps_average);
+    sprintf(status, "%lu %s (%lu visible)", total, primitive, visible);
 #else
     /* Native pipelines cull internally without returning a facet count. */
-    sprintf(buffer, "%lu %s, %.2f frames per second",
-            total, primitive, (double)drv_fps_average);
+    sprintf(status, "%lu %s", total, primitive);
 #endif
+    if (drv_fps_enabled)
+        sprintf(status + strlen(status), ", %.2f frames per second",
+                 (double)drv_fps_average);
+#if DEBUG
+    sprintf(status + strlen(status), ", %u B/px, R=%d", drv_bytes_per_pixel,
+             drv_rmouse_pressed != FALSE);
+#endif
+    /* The public contract is 128 bytes, including diagnostic builds. The
+     * intermediate fits even native float maxima and 64-bit host counts. */
+    length = strlen(status);
+    if (length > 127U) length = 127U;
+    memcpy(buffer, status, length);
+    buffer[length] = 0;
 }
 
 #if defined(TRISTRIP) && defined(DRV_COLORMAP)
-void drv_draw_strip_batches(unsigned int count,
+void drv_split_tristrip_batches(unsigned int count,
                             const Vertex TG_HUGE *vertices,
                             const unsigned char TG_HUGE *facet_colors,
                             unsigned int max_facets,
@@ -129,6 +145,51 @@ void drv_draw_strip_batches(unsigned int count,
         draw_batch(facets + 2U, vertices + first, facet_colors + first);
         first += facets;
     }
+}
+#endif
+
+#if defined(TRISTRIP) && defined(TEXTURE)
+void drv_expand_tristrip_uv(unsigned int count,
+                            const Vertex TG_HUGE *vertices,
+                            const Coord TG_HUGE *coords,
+                            Drv_uv_triangle draw_triangle)
+{
+    unsigned int i, first, second;
+    if (count < 3U || vertices == NULL || coords == NULL || draw_triangle == NULL)
+        return;
+    for (i = 0; i < count - 2U; ++i)
+    {
+        first = (i & 1U) ? i + 1U : i;
+        second = (i & 1U) ? i : i + 1U;
+        draw_triangle(vertices + first, vertices + second, vertices + i + 2U,
+                       coords + first, coords + second, coords + i + 2U);
+    }
+}
+#endif
+
+#ifdef DRV_QUAD_BATCH
+int drv_validate_quadbatch(unsigned int vertex_count, unsigned int quad_count,
+                            const unsigned int TG_HUGE *indices)
+{
+    unsigned int i;
+    if (vertex_count == 0 || vertex_count > 2U * (DRV_QUAD_BATCH_MAX + 1U) ||
+        quad_count == 0 || quad_count > DRV_QUAD_BATCH_MAX || indices == NULL)
+        return FALSE;
+    for (i = 0; i < quad_count * 4U; ++i)
+        if (indices[i] >= vertex_count) return FALSE;
+    return TRUE;
+}
+
+void drv_submit_quad_as_batch(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
+                               Vertex TG_HUGE *third, Vertex TG_HUGE *fourth,
+                               unsigned char color)
+{
+    Vertex vertices[4];
+    static const unsigned int indices[4] = { 0, 1, 2, 3 };
+    if (first == NULL || second == NULL || third == NULL || fourth == NULL) return;
+    vertices[0] = *first; vertices[1] = *second;
+    vertices[2] = *third; vertices[3] = *fourth;
+    drv_draw_quadbatch_flat_color(4U, vertices, 1U, indices, &color);
 }
 #endif
 
@@ -190,21 +251,7 @@ void drv_ext_init(void)
     /* An unsigned long is 32 bits even when the DOS compiler has 16-bit ints. */
     drv_colors = (drv_bits_per_pixel == 32 ? 0xFFFFFFFFUL : 1UL << drv_bits_per_pixel);
     drv_colormap_colors = (drv_colormap_bits == 32 ? 0xFFFFFFFFUL : 1UL << drv_colormap_bits);
-    switch (drv_bits_per_pixel)
-    {
-        case 8:
-            drv_bytes_per_pixel = 1;
-            break;
-        case 16:
-            drv_bytes_per_pixel = 2;
-            break;
-        case 24:
-            drv_bytes_per_pixel = 3;
-            break;
-        default:    /* this should really be an error as it's not handled */
-            drv_bytes_per_pixel = 4;
-            break;
-    }
+    drv_bytes_per_pixel = (drv_bits_per_pixel + 7U) / 8U;
     strcpy(drv_name, DRV_NAME);
     strcpy(drv_help, DRV_HELP);
     drv_rot_x = GLOBE_DEFAULT_ROTATION_X;
@@ -273,6 +320,13 @@ void drv_fps_stop(void)
 #endif
 #endif
 
+    if (!drv_fps_enabled)
+    {
+        drv_fps_average = 0;
+        drv_fps_history_num = 0;
+        drv_fps_history_seconds = 0;
+        return;
+    }
     if (drv_frame_seconds >= 1.0f)
     {
         drv_fps_average = 1.0f / drv_frame_seconds;
@@ -295,16 +349,81 @@ void drv_fps_stop(void)
     }
 }
 
+/* Apply only application actions; event loops retain native exit, redraw,
+ * timer and geometry-cache work after a recognized key. */
+int drv_handle_key(unsigned char key)
+{
+    switch (key)
+    {
+#ifdef EARTH_32
+        case '1':
+#endif
+#ifdef EARTH_64
+        case '2':
+#endif
+#ifdef EARTH_128
+        case '3':
+#endif
+#ifdef EARTH_256
+        case '4':
+#endif
+#ifdef EARTH_512
+        case '5':
+#endif
+            globe_toggle_res((char)key);
+            return TRUE;
+        case 'a': case 'A':
+            drv_auto_enabled = !drv_auto_enabled;
+            return TRUE;
+        case 'o': case 'O':
+            drv_osd_enabled = !drv_osd_enabled;
+            return TRUE;
+        case 'f': case 'F':
+            drv_fps_enabled = !drv_fps_enabled;
+            drv_fps_average = 0;
+            drv_fps_history_num = 0;
+            drv_fps_history_seconds = 0;
+            return TRUE;
+#ifdef TEXTURE
+        case 't': case 'T':
+            globe_toggle_tex();
+            return TRUE;
+#endif
+        default: return FALSE;
+    }
+}
+
+static float drv_wrap_angle(double angle)
+{
+    double wrapped;
+    float result;
+    /* C89 comparison rejects NaN as well as either infinity. fmod bounds
+     * work even when a floating-point subtraction of 360 would not change
+     * the input value at all. Native emulation libraries supply fmod too. */
+    if (!(angle >= -DBL_MAX && angle <= DBL_MAX)) return 0.0f;
+    wrapped = fmod(angle, 360.0);
+    if (wrapped < 0.0) wrapped += 360.0;
+    result = (float)wrapped;
+    return result >= 360.0f ? 0.0f : result;
+}
+
+/* Drivers supply deltas in the application's downward-Y mouse convention. */
+void drv_rotate_drag(long dx, long dy)
+{
+    if (drv_win_width == 0 || drv_win_height == 0) return;
+    drv_rot_y = drv_wrap_angle((double)drv_rot_y + (double)dx * 100.0 / drv_win_width);
+    drv_rot_x = drv_wrap_angle((double)drv_rot_x + (double)dy * 100.0 / drv_win_height);
+}
+
+/* Native event timers include their wait time in this interval. */
+void drv_rotate_elapsed(double seconds)
+{
+    drv_rot_y = drv_wrap_angle((double)drv_rot_y +
+                                (double)DRV_ROTATE * seconds);
+}
+
 /* rotate globe at a fixed speed */
 void drv_globe_rotate(void)
 {
-    drv_rot_y += DRV_ROTATE * drv_frame_seconds;
-    while (drv_rot_y >= 360.0f)
-    {
-        drv_rot_y -= 360.0f;
-    }
-    while (drv_rot_y < 0.0f)
-    {
-        drv_rot_y += 360.0f;
-    }
+    drv_rotate_elapsed((double)drv_frame_seconds);
 }

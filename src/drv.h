@@ -34,8 +34,8 @@
 #ifdef DRV_IGL
 #include "drv_igl.h"
 #endif
-#ifdef DRV_PGC
-#include "drv_pgc.h"
+#if defined(DRV_PGC) || defined(DRV_PHG)
+#error The retained PGC/PHIGS headers have no implemented driver; select a supported driver
 #endif
 #ifdef DRV_XGL
 #include "drv_xgl.h"
@@ -47,9 +47,42 @@
 #include "drv_qd.h"
 #endif
 
+#if !defined(DRV_OGL) && !defined(DRV_IGL) && !defined(DRV_MTX) && \
+    !defined(DRV_XGL) && !defined(DRV_GDI) && !defined(DRV_QD)
+#error Select a supported graphics driver through its Makefile target or DRV_ define
+#endif
+
 #if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_MTX) || defined(DRV_XGL) || defined(DRV_GDI) || defined(DRV_QD)
 #if (defined(TRI) + defined(QUAD) + defined(TRISTRIP)) != 1
 #error Select exactly one driver primitive: TRI, QUAD, or TRISTRIP
+#endif
+#endif
+
+#if defined(TRI) || defined(DRV_TRI_CAPS)
+#ifdef DRV_COLORMAP
+#ifndef DRV_TRI_COLOR
+#error The triangle traversal requires a palette-index triangle callback
+#endif
+#else
+#ifndef DRV_TRI_RGB
+#error The triangle traversal requires an RGB triangle callback
+#endif
+#endif
+#ifdef TEXTURE
+#ifndef DRV_TRI_UV
+#error Textured triangles require a triangle UV callback
+#endif
+#endif
+#endif
+
+#ifdef DRV_QUAD_BATCH
+#if !defined(QUAD) || !defined(DRV_COLORMAP)
+#error Indexed quad batching requires QUAD and DRV_COLORMAP
+#endif
+#ifndef DRV_QUAD_BATCH_MAX
+#error A quad batch driver must define DRV_QUAD_BATCH_MAX
+#elif DRV_QUAD_BATCH_MAX < 1 || DRV_QUAD_BATCH_MAX > 16383
+#error Quad batch indices must fit in a 16-bit unsigned int
 #endif
 #endif
 

@@ -18,6 +18,20 @@ extern int globe_longitude, globe_latitude;
 
 static unsigned long flat_calls, texture_calls;
 static unsigned char *expected_data;
+static Vertex *saved_verts;
+static Color *saved_colors;
+static Coord *saved_coords;
+
+static void invalid_radius_cleanup(void)
+{
+    assert(globe_verts == saved_verts && globe_colors == saved_colors &&
+           globe_coords == saved_coords);
+    assert(globe_longitude == 32 && globe_latitude == 16);
+    assert(globe_verts_num == 561UL && globe_faces_num == 512UL);
+    assert(globe_verts[0].z == GLOBE_RADIUS);
+    globe_free();
+    puts("PASS invalid globe radius: nonfinite input fails before replacing the existing mesh");
+}
 
 static void check_triangle(Vertex *a, Vertex *b, Vertex *c)
 {
@@ -76,13 +90,30 @@ void drv_draw_tri_flat_uv(Vertex *a, Vertex *b, Vertex *c,
 void drv_texture_enable(void) { drv_texture_enabled = TRUE; }
 void drv_texture_disable(void) { drv_texture_enabled = FALSE; }
 
-int main(void)
+static float special_radius(unsigned long pattern)
+{
+    float value;
+    unsigned char *bytes;
+    const unsigned short endian = 1;
+    unsigned int i, position;
+    assert(sizeof(value) == 4U);
+    bytes = (unsigned char *)&value;
+    for (i = 0; i < 4U; ++i) {
+        position = *(const unsigned char *)&endian ? i : 3U - i;
+        bytes[position] = (unsigned char)(pattern >> (8U * i));
+    }
+    return value;
+}
+
+int main(int argc, char **argv)
 {
     int sizes[5];
     unsigned char *datasets[5];
     unsigned long expected_tris, row;
     int n;
     char stats[128], counts[80];
+    unsigned char coarse_colors[96];
+    unsigned int latitude, column, source_row;
     sizes[0] = 32; sizes[1] = 64; sizes[2] = 128;
     sizes[3] = 256; sizes[4] = 512;
     datasets[0] = earth_data_32; datasets[1] = earth_data_64;
@@ -90,6 +121,16 @@ int main(void)
     datasets[4] = earth_data_512;
     drv_ext_init();
     globe_init();
+    if (argc > 1) {
+        assert(strcmp(argv[1], "nan") == 0 || strcmp(argv[1], "infinity") == 0);
+        assert(globe_init_verts(32, -1, GLOBE_RADIUS));
+        saved_verts = globe_verts; saved_colors = globe_colors;
+        saved_coords = globe_coords;
+        assert(atexit(invalid_radius_cleanup) == 0);
+        globe_init_verts(32, -1, special_radius(strcmp(argv[1], "nan") == 0 ?
+                                               0x7fc00000UL : 0x7f800000UL));
+        assert(!"Nonfinite globe radius must be rejected");
+    }
     assert(GLOBE_DEFAULT_LONGITUDE == 512);
     for (n = 0; n < 5; ++n) {
         expected_data = datasets[n];
@@ -128,7 +169,27 @@ int main(void)
     assert(sizeof(Color) == 1);
     assert(globe_faces_num * sizeof(Color) > 65535UL);
     assert(globe_verts_num * sizeof(Coord) > 65535UL);
+    /* Three latitude bands still represent the full source map. Center
+     * sampling must reach southern rows rather than cropping at row two. */
+    for (latitude = 0; latitude < 3U; ++latitude) {
+        source_row = (2U * latitude + 1U) * 16U / 6U;
+        for (column = 0; column < 32U; ++column)
+            coarse_colors[latitude * 32U + column] =
+                earth_data_32[source_row * 32U + column];
+    }
+    expected_data = coarse_colors;
+    assert(globe_init_verts(32, 3, GLOBE_RADIUS));
+    assert(globe_latitude == 3 && globe_faces_num == 96UL);
+    assert(globe_tris_num == 128UL);
+    flat_calls = texture_calls = 0;
+    globe_draw_tris();
+    assert(flat_calls == 128UL && texture_calls == 0UL);
+    globe_toggle_tex();
+    globe_draw_tris();
+    assert(texture_calls == 128UL);
+    globe_toggle_tex();
     globe_free();
     puts("PASS geometry: five resolutions, outward triangles, original palette indices, texture UVs, large buffers");
+    puts("PASS custom globe latitudes: full-map center sampling, outward pole triangles and unchanged UV range");
     return 0;
 }

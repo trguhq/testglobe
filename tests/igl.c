@@ -5,7 +5,46 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "testglob.h"
+#include "drv.h"
+#include "types.h"
+#include "tex_ext.h"
+#include "texsoft.h"
+
+static int fail_stage, fail_image, fail_mips, fail_frame, fail_pixels;
+static int fail_capability;
+static void *fixture_malloc(size_t bytes);
+static int fixture_texture_try_generate(int size);
+static int fixture_texsoft_texture(unsigned int width, unsigned int height,
+                                   const unsigned char *rgb);
+static int fixture_texsoft_begin(unsigned int width, unsigned int height,
+                                 float model[4][4], float projection[4][4],
+                                 int indexed, const unsigned char *palette);
+static unsigned long *fixture_texsoft_pixels(void);
+#define malloc fixture_malloc
+#define texture_try_generate fixture_texture_try_generate
+#define texsoft_texture fixture_texsoft_texture
+#define texsoft_begin fixture_texsoft_begin
+#define texsoft_pixels fixture_texsoft_pixels
 #include "../src/drv_igl.c"
+#undef malloc
+#undef texture_try_generate
+#undef texsoft_texture
+#undef texsoft_begin
+#undef texsoft_pixels
+
+static void *fixture_malloc(size_t bytes)
+{return fail_image?NULL:malloc(bytes);}
+static int fixture_texture_try_generate(int size)
+{return !fail_stage&&texture_try_generate(size);}
+static int fixture_texsoft_texture(unsigned int width,unsigned int height,const unsigned char *rgb)
+{return !fail_mips&&texsoft_texture(width,height,rgb);}
+static int fixture_texsoft_begin(unsigned int width,unsigned int height,
+                                 float model[4][4],float projection[4][4],
+                                 int indexed,const unsigned char *palette)
+{return !fail_frame&&texsoft_begin(width,height,model,projection,indexed,palette);}
+static unsigned long *fixture_texsoft_pixels(void)
+{return fail_pixels?NULL:texsoft_pixels();}
 
 extern Vertex *globe_verts;
 extern int globe_longitude, globe_latitude;
@@ -17,10 +56,12 @@ static int matrix_mode = MVIEWING, matrix_depth[4], texture_bound, environment_b
 static Matrix matrices[4], matrix_stack[4][16];
 static unsigned long raster_writes;
 static unsigned long emitted, drawn, swaps, flushes, clears, zclears, text_calls;
-static unsigned long object_polygons[16], next_object = 1, current_object;
+static unsigned long object_polygons[32], next_object = 1, current_object;
 static unsigned long mesh_calls,vertex_calls,drawn_meshes,drawn_vertices;
-static unsigned long object_meshes[16],object_vertices[16];
-static int object_exists[16];
+static unsigned long object_meshes[32],object_vertices[32];
+static int object_textured[32];
+static unsigned long native_texture_draws;
+static int object_exists[32];
 static unsigned long texture_definitions, texture_pixels;
 static unsigned long current_color;
 static unsigned int mesh_vertices, coordinate_calls, current_uv;
@@ -40,6 +81,7 @@ static char rotation_axes[8];
 static int rotations;
 static struct {long device;short value;} events[64];
 static unsigned int event_count, event_index;
+static int sampled_buttons_pressed;
 
 static unsigned char *earth_bytes(void)
 {
@@ -71,7 +113,7 @@ long getgdesc(long inquiry)
     case GD_ZMAX:return 0xffffffL;
     case GD_XPMAX:return 1280;
     case GD_YPMAX:return 1024;
-    case GD_TEXTURE:return mode_unknown ? -1 : (mode_notexture ? 0 : 1);
+    case GD_TEXTURE:return mode_unknown ? -1 : ((mode_notexture||fail_capability) ? 0 : 1);
     #ifdef GD_TEXTURE_PERSP
     case GD_TEXTURE_PERSP:return mode_affine ? 0 : 1;
 #endif
@@ -241,7 +283,7 @@ void endtmesh(void)
     if(texture_bound)assert(current_uv==mesh_vertices);
     ++mesh_calls;
     if(current_object){++object_meshes[current_object];object_vertices[current_object]+=mesh_vertices;}
-    else{++drawn_meshes;drawn_vertices+=mesh_vertices;}
+    else{++drawn_meshes;drawn_vertices+=mesh_vertices;if(texture_bound&&environment_bound)++native_texture_draws;}
     in_mesh=0;
 }
 void c3f(float c[3]){current_color=(unsigned long)(c[0]*255.0f+0.5f)|((unsigned long)(c[1]*255.0f+0.5f)<<8)|((unsigned long)(c[2]*255.0f+0.5f)<<16);}
@@ -289,24 +331,26 @@ void qreset(void){event_index=event_count;}
 long qtest(void){return event_index<event_count?events[event_index].device:0;}
 long qread(short *value){assert(event_index<event_count);*value=events[event_index].value;return events[event_index++].device;}
 long getvaluator(Device device){assert(device==MOUSEX||device==MOUSEY);return device==MOUSEX?pointer_x:pointer_y;}
-Boolean getbutton(Device device){assert(device==LEFTMOUSE);return drv_lmouse_pressed;}
+Boolean getbutton(Device device){assert(device==LEFTMOUSE||device==RIGHTMOUSE);if(sampled_buttons_pressed)return TRUE;return device==LEFTMOUSE?drv_lmouse_pressed:drv_rmouse_pressed;}
 void tie(Device button,Device first,Device second){assert(button==LEFTMOUSE&&first==MOUSEX&&second==MOUSEY);}
 void swapbuffers(void){assert(double_mode);++swaps;}
 void gflush(void){++flushes;}
 void frontbuffer(Boolean enabled){assert(enabled==!double_mode);}
 void backbuffer(Boolean enabled){assert(enabled==double_mode);}
-long genobj(void){assert(next_object<16);return (long)next_object++;}
-void makeobj(long id){assert(id>0&&id<16&&!current_object);current_object=(unsigned long)id;object_exists[id]=1;object_polygons[id]=object_meshes[id]=object_vertices[id]=0;}
+long genobj(void){assert(next_object<32);return (long)next_object++;}
+void makeobj(long id){assert(id>0&&id<32&&!current_object);current_object=(unsigned long)id;object_exists[id]=1;object_polygons[id]=object_meshes[id]=object_vertices[id]=0;object_textured[id]=texture_bound&&environment_bound;}
 void closeobj(void){assert(current_object);current_object=0;}
-void callobj(long id){assert(id>0&&id<16&&object_exists[id]);drawn+=object_polygons[id];drawn_meshes+=object_meshes[id];drawn_vertices+=object_vertices[id];}
-void delobj(long id){assert(id>0&&id<16&&object_exists[id]);object_exists[id]=0;}
-Boolean isobj(long id){return id>0&&id<16&&object_exists[id];}
+void callobj(long id){assert(id>0&&id<32&&object_exists[id]);drawn+=object_polygons[id];drawn_meshes+=object_meshes[id];drawn_vertices+=object_vertices[id];if(object_textured[id]&&texture_bound&&environment_bound)++native_texture_draws;}
+void delobj(long id){assert(id>0&&id<32&&object_exists[id]);object_exists[id]=0;}
+Boolean isobj(long id){return id>0&&id<32&&object_exists[id];}
 
 static void enqueue(long device,short value){assert(event_count<64);events[event_count].device=device;events[event_count++].value=value;}
 static void frame(void)
 {
     unsigned long before,old_writes,old_vertices,old_meshes,expected_meshes,expected_vertices;
+    unsigned long old_native;
     before=drawn;old_writes=raster_writes;old_vertices=drawn_vertices;old_meshes=drawn_meshes;
+    old_native=native_texture_draws;
     rotations=0;drv_render();
     assert(drawn>before||raster_writes>old_writes);
     if(drawn>before){
@@ -341,6 +385,55 @@ static void frame(void)
     }
     assert(strstr(recorded_stats,"triangles")!=NULL&&strstr(recorded_stats,"quads")==NULL);
     assert(strstr(recorded_stats,"visible")==NULL);
+    assert(igl_texture_used==(raster_writes>old_writes||native_texture_draws>old_native));
+    if(drv_osd_enabled){
+        const char *expected_status=!drv_texture_enabled?", texture off":
+              (raster_writes>old_writes?", texture soft":
+               (native_texture_draws>old_native?", texture on":", texture fail"));
+        /* At the normal 640px window the status fits in one text line. */
+        if(drv_win_width>=640U)assert(strstr(recorded_stats,expected_status)!=NULL);
+        assert(strstr(recorded_stats,"texture mapping")==NULL);
+    }
+}
+
+static int failure_profile(const char *profile)
+{
+    return strcmp(profile,"stagefail")==0||strcmp(profile,"imagefail")==0||
+           strcmp(profile,"softmipfail")==0||strcmp(profile,"softframefail")==0||
+           strcmp(profile,"softpixelsfail")==0||strcmp(profile,"capabilitylost")==0||
+           strcmp(profile,"unloadedtexture")==0;
+}
+
+static void check_texture_failure(const char *profile)
+{
+    unsigned long definitions,old_drawn,old_writes;
+    fail_stage=strcmp(profile,"stagefail")==0;
+    fail_image=strcmp(profile,"imagefail")==0;
+    fail_mips=strcmp(profile,"softmipfail")==0;
+    fail_frame=strcmp(profile,"softframefail")==0;
+    fail_pixels=strcmp(profile,"softpixelsfail")==0;
+    igl_keyboard('T');assert(drv_texture_enabled);
+    if(strcmp(profile,"capabilitylost")==0||strcmp(profile,"unloadedtexture")==0){
+        frame();assert(igl_texture_used);
+        if(strcmp(profile,"capabilitylost")==0)fail_capability=1;
+        else drv_texture_loaded=FALSE;
+    }
+    old_drawn=drawn;old_writes=raster_writes;
+    frame();
+    assert(drv_texture_enabled&&igl_texture_failed&&!igl_texture_used&&!drv_texture_loaded);
+    assert(drawn-old_drawn==globe_tris_num&&raster_writes==old_writes);
+    assert(!texture_bound&&!environment_bound&&texture_data==NULL&&texsoft_pixels()==NULL);
+    assert(strstr(recorded_stats,", texture fail")!=NULL);
+    definitions=texture_definitions;frame();assert(texture_definitions==definitions&&igl_texture_failed);
+    igl_keyboard('t');assert(!drv_texture_enabled&&!igl_texture_failed);frame();
+    assert(strstr(recorded_stats,", texture off")!=NULL);
+    fail_stage=fail_image=fail_mips=fail_frame=fail_pixels=fail_capability=0;
+    igl_keyboard('T');frame();
+    assert(drv_texture_enabled&&drv_texture_loaded&&!igl_texture_failed&&igl_texture_used);
+    assert(strstr(recorded_stats,software_texture_expected()?", texture soft":", texture on")!=NULL);
+    igl_keyboard('t');frame();
+    igl_cleanup();igl_cleanup();assert(!window_open&&globe_verts==NULL&&texture_data==NULL);
+    puts("PASS IRIS GL recoverable texture failure: flat fallback, requested state, latched failure, short OSD status and off/on retry");
 }
 
 int main(int argc,char **argv)
@@ -361,6 +454,7 @@ int main(int argc,char **argv)
 #endif
     mode_unknown=argc>1&&strcmp(argv[1],"unknown")==0;
     mode_notexture=mode_unknown||(argc>1&&strcmp(argv[1],"software")==0);
+    if(argc>1&&strncmp(argv[1],"soft",4)==0)mode_notexture=1;
     for(i=0;i<4;++i)identity(matrices[i]);
     for(i=0;i<256;++i)for(j=0;j<3;++j)actual_palette[i][j]=saved_palette[i][j]=(short)((i+j*37)&255);
     drv_ext_init();drv_init(&argc,argv);assert(!drv_texture_enabled);
@@ -369,11 +463,21 @@ int main(int argc,char **argv)
     assert(drv_bits_per_pixel==(mode_indexed?8U:((mode_rgba||mode_rgba_single)?32U:24U)));
     assert(drv_colormapped==mode_indexed);
     assert(sizeof(Color)==1);
-    assert(requested[KEYBD]&&requested[LEFTMOUSE]&&requested[MOUSEX]&&requested[MOUSEY]&&requested[REDRAW]&&requested[INPUTCHANGE]&&requested[WINQUIT]);
+    assert(requested[KEYBD]&&requested[LEFTMOUSE]&&requested[RIGHTMOUSE]&&requested[MOUSEX]&&requested[MOUSEY]&&requested[REDRAW]&&requested[INPUTCHANGE]&&requested[WINQUIT]);
     globe_init();texture_init();globe_init_verts(GLOBE_DEFAULT_LONGITUDE,-1,GLOBE_RADIUS);
     assert(GLOBE_DEFAULT_LONGITUDE==128&&globe_longitude==128);
+    if(argc>1&&failure_profile(argv[1])){
+        check_texture_failure(argv[1]);
+        return 0;
+    }
     frame();assert(drawn==globe_tris_num);
     before=emitted;frame();assert(emitted==before);
+    /* IRIX ignores callobj on an undefined object. A lost cache must draw
+     * directly this frame and rebuild lazily without losing geometry. */
+    assert(igl_object>=0&&isobj(igl_object));
+    object_exists[igl_object]=0;
+    before=emitted;frame();assert(igl_object<0&&emitted>before);
+    frame();assert(igl_object>=0&&isobj(igl_object));
     for(i='1';i<='5';++i){igl_keyboard((unsigned char)i);assert(globe_longitude==(32<<(i-'1')));frame();}
     igl_keyboard('1');frame();
     old_x=drv_rot_x;old_y=drv_rot_y;
@@ -391,15 +495,39 @@ int main(int argc,char **argv)
         assert(fabs(drv_rot_x-expected_x)<1e-4&&fabs(drv_rot_y-expected_y)<1e-4);
     }
     enqueue(MOUSEX,170);enqueue(MOUSEY,175);igl_event(LEFTMOUSE,0);assert(!drv_lmouse_pressed);
+    igl_event(RIGHTMOUSE,1);assert(drv_rmouse_pressed);
+    igl_event(RIGHTMOUSE,0);assert(!drv_rmouse_pressed);
+    sampled_buttons_pressed=1;
+    enqueue(MOUSEY,175);enqueue(MOUSEX,170);igl_event(LEFTMOUSE,1);
+    assert(drv_lmouse_pressed&&drv_rmouse_pressed&&event_index==event_count);
+    sampled_buttons_pressed=0;
+    enqueue(MOUSEX,170);enqueue(MOUSEY,175);igl_event(LEFTMOUSE,0);
+    igl_event(RIGHTMOUSE,0);assert(!drv_lmouse_pressed&&!drv_rmouse_pressed);
+    igl_keyboard('f');assert(!drv_fps_enabled);frame();assert(strstr(recorded_stats,"frames per second")==NULL);
+    igl_keyboard('F');assert(drv_fps_enabled);frame();assert(strstr(recorded_stats,"frames per second")!=NULL);
     before=text_calls;igl_keyboard('o');frame();assert(text_calls==before);igl_keyboard('O');frame();
     igl_keyboard('T');assert(drv_texture_enabled);
+    frame();
+    if(igl_native_texture){
+        assert(igl_object>=0&&isobj(igl_object));
+        object_exists[igl_object]=0;
+        before=emitted;frame();
+        assert(igl_object<0&&emitted>before&&igl_texture_used);
+        frame();assert(igl_object>=0&&isobj(igl_object)&&igl_texture_used);
+    }
     for(i='1';i<='5';++i){igl_keyboard((unsigned char)i);frame();}
     if(!software_texture_expected())assert(texture_definitions==1&&coordinate_calls>0&&texture_pixels==512UL*256UL);
     else assert(texture_definitions==0);
     igl_keyboard('t');assert(!drv_texture_enabled);frame();
+#if !TEXTURE_CACHE_RASTER
+    assert(texsoft_pixels()==NULL);
+#else
+    if(software_texture_expected())assert(texsoft_pixels()!=NULL);
+#endif
     igl_keyboard('a');assert(drv_auto_enabled);igl_keyboard('A');assert(!drv_auto_enabled);
     window_width=500;window_height=300;igl_event(REDRAW,2);assert(drv_win_width==640&&drv_win_height==480);igl_event(REDRAW,1);assert(drv_win_width==500&&drv_win_height==300);frame();
-    igl_event(INPUTCHANGE,0);assert(!drv_lmouse_pressed&&!igl_active);igl_event(INPUTCHANGE,1);assert(igl_active);
+    igl_event(RIGHTMOUSE,1);assert(drv_rmouse_pressed);
+    igl_event(INPUTCHANGE,0);assert(!drv_lmouse_pressed&&!drv_rmouse_pressed&&!igl_active);igl_event(INPUTCHANGE,1);assert(igl_active);
     igl_event(QFULL,0);assert(event_index==event_count);
     before=drawn;enqueue(KEYBD,'2');enqueue(REDRAW,1);enqueue(WINQUIT,2);
     if(argc>1&&strcmp(argv[1],"winquit")==0)enqueue(WINQUIT,1);
@@ -411,12 +539,13 @@ int main(int argc,char **argv)
     /* Native shutdown is idempotent and restores any shared color-map entries. */
     igl_cleanup();igl_cleanup();
     assert(closed==1&&window_open==0);
-    for(i=1;i<16;++i)assert(!object_exists[i]);
+    for(i=1;i<32;++i)assert(!object_exists[i]);
     if(mode_indexed){assert(palette_changes>=512);assert(memcmp(saved_palette,actual_palette,sizeof(saved_palette))==0);}
     assert(texture_data==NULL);
     assert(globe_verts==NULL);
     puts("PASS IRIS GL rendering: default 128 and five indexed LODs, native tmesh provoking colors/winding/UVs, transforms, depth/cull, texture packing and OSD state");
     puts("PASS IRIS GL input/capabilities: native queue, keys, tied mouse, resize, focus, buffering and texture fallbacks");
     puts("PASS IRIS GL cleanup: objects, resources, window and shared palette restored");
+    puts("PASS IRIS GL texture status: short on/soft/off/fail distinguishes submitted native or software work without later residency APIs");
     return 0;
 }

@@ -31,6 +31,11 @@
 #define TG_HUGE
 #endif
 
+#ifdef SEG68
+/* Retained MPW spelling for widened native-coordinate intermediates. */
+typedef long Int;
+#endif
+
 typedef struct Vertex
 {
     float x;

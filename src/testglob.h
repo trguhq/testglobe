@@ -23,7 +23,9 @@
 #include <string.h>
 #include "err_ext.h"
 
-#define DEBUG
+#ifndef DEBUG
+#define DEBUG 0
+#endif
 #define TESTGLOBE_NAME "testglobe"
 #define TESTGLOBE_VERSION_MAJOR 0
 #define TESTGLOBE_VERSION_MINOR 2
@@ -35,29 +37,37 @@
 #define TRUE 1
 #endif
 
+/* Fallbacks for legacy build settings; the Makefile selects the driver. */
+#if !defined(DRV_OGL) && !defined(DRV_IGL) && !defined(DRV_XGL) && \
+    !defined(DRV_MTX) && !defined(DRV_GDI) && !defined(DRV_QD) && \
+    !defined(DRV_PGC) && !defined(DRV_PHG)
+#if defined(__APPLE__) && defined(__MACH__)
+#define DRV_OGL
+#elif defined(applec) || defined(__SC__) || defined(__APPLE__)
+#define DRV_QD
+#elif defined(sparc) || defined(__sparc)
+#define DRV_XGL
+#endif
+#endif
+
+/* Infer memory architecture only after the driver has been selected. */
+#if !defined(FLAT) && !defined(SEG86) && !defined(SEG68)
+#if defined(DRV_MTX) || defined(DRV_GDI)
+#define SEG86
+#elif defined(DRV_QD)
+#define SEG68
+#else
+#define FLAT
+#endif
+#endif
 #if (defined(FLAT) + defined(SEG86) + defined(SEG68)) > 1
 #error Choose exactly one memory architecture: FLAT, SEG86, or SEG68
 #endif
-#if !defined(FLAT) && !defined(SEG86) && !defined(SEG68)
-#define FLAT
-#endif
 /* The selected driver header chooses TRI, QUAD, or TRISTRIP. */
-
-/* Fallbacks for legacy build settings; the Makefile selects the driver. */
+#if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_XGL) || \
+    defined(DRV_MTX) || defined(DRV_GDI) || defined(DRV_QD)
 #ifndef DRV
-#ifdef __APPLE__
-#ifdef __MACH__
-#define DRV_OGL
-#else
-#define DRV_QD
-typedef long Int;
-#endif
-#endif
-#ifdef __BORLANDC__
-#define DRV_PGC
-#endif
-#ifdef sparc
-#define DRV_XGL
+#define DRV
 #endif
 #endif
 

@@ -1,6 +1,6 @@
 /*
  * testglobe - display 3d globe to test 3d hardware
- * text_ext.h - texture externs
+ * tex_ext.h - texture externs
  *
  * Copyright (C) 2024 trguhq
  *
@@ -21,12 +21,19 @@
 #ifndef tex_ext_h
 #define tex_ext_h
 
+#include "texture.h"
+#include "drv.h"
+
+#ifdef TEXTURE
 extern unsigned char* texture_data;
+/* Dimensions remain available after the temporary RGB bytes are released. */
 extern unsigned int texture_size;
-extern unsigned int texture_data_size;
 
 extern void texture_generate(int size);
+/* Recoverable construction; failure leaves an existing staging image intact. */
+extern int texture_try_generate(int size);
 extern void texture_init(void);
 extern void texture_free(void);
+#endif
 
 #endif /* tex_ext_h */

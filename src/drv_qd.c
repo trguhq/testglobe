@@ -40,6 +40,9 @@
 #define QD_MAX_VERTICES SOFT3D_MAX_VERTICES
 #define QD_MAX_POLY SOFT3D_MAX_POLY
 #define QD_FILE_MENU 128
+#if 2 * (DRV_QUAD_BATCH_MAX + 1) > QD_MAX_VERTICES
+#error QuickDraw quad batches exceed the transformed vertex cache
+#endif
 
 QDGlobals qd;
 static WindowPtr qd_window;
@@ -58,6 +61,11 @@ static int qd_ready;
 static int qd_running;
 static int qd_active;
 static int qd_dirty = TRUE;
+static int qd_rendering;
+static GrafPtr qd_render_port;
+static GDHandle qd_render_device;
+static PixMapHandle qd_locked_pixels;
+static PolyHandle qd_pending_polygon;
 static int qd_old_x, qd_old_y;
 static unsigned long qd_auto_tick;
 static Rect qd_screen;
@@ -73,6 +81,22 @@ static void qd_pascal(Str255 result, const char *text)
     memcpy(result + 1, text, length);
 }
 
+/* Restore the caller's Toolbox state before a modal alert or disposal.
+ * A failed color-pattern allocation can also leave a closed polygon live. */
+static void qd_finish_render(void)
+{
+    if (qd_pending_polygon != NULL) KillPoly(qd_pending_polygon);
+    qd_pending_polygon = NULL;
+    if (!qd_rendering) return;
+    SetPort(qd_render_port);
+    if (qd_locked_pixels != NULL) UnlockPixels(qd_locked_pixels);
+    qd_locked_pixels = NULL;
+    if (qd_color_available) SetGDevice(qd_render_device);
+    qd_render_port = NULL;
+    qd_render_device = NULL;
+    qd_rendering = FALSE;
+}
+
 static void qd_dispose_buffer(void)
 {
     if (qd_world != NULL) DisposeGWorld(qd_world);
@@ -80,11 +104,8 @@ static void qd_dispose_buffer(void)
     qd_pattern_color = -1;
 }
 
-static void qd_cleanup(void)
+static void qd_dispose_palette(void)
 {
-    qd_dispose_buffer();
-    if (qd_pattern != NULL) DisposePixPat(qd_pattern);
-    qd_pattern = NULL;
     if (qd_palette != NULL)
     {
         if (qd_window != NULL) SetPalette(qd_window, NULL, FALSE);
@@ -93,6 +114,19 @@ static void qd_cleanup(void)
     qd_palette = NULL;
     if (qd_colors != NULL) DisposeHandle((Handle)qd_colors);
     qd_colors = NULL;
+}
+
+static void qd_cleanup(void)
+{
+    qd_ready = FALSE;
+    qd_running = FALSE;
+    qd_active = FALSE;
+    drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
+    qd_finish_render();
+    qd_dispose_buffer();
+    if (qd_pattern != NULL) DisposePixPat(qd_pattern);
+    qd_pattern = NULL;
+    qd_dispose_palette();
     if (qd_window != NULL) DisposeWindow(qd_window);
     qd_window = NULL;
     if (qd_file_menu != NULL)
@@ -101,7 +135,6 @@ static void qd_cleanup(void)
         DisposeMenu(qd_file_menu);
     }
     qd_file_menu = NULL;
-    qd_ready = FALSE;
     globe_free();
 }
 
@@ -109,6 +142,12 @@ void qd_error(char *message)
 {
     Str255 text;
     static const unsigned char empty[] = "";
+    /* A modal alert must never expose a partially rebuilt mesh or port. */
+    qd_ready = FALSE;
+    qd_running = FALSE;
+    qd_active = FALSE;
+    drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
+    qd_finish_render();
     qd_pascal(text, message);
     ParamText(text, empty, empty, empty);
     StopAlert(128, NULL);
@@ -117,7 +156,10 @@ void qd_error(char *message)
 
 void drv_close(void)
 {
+    qd_ready = FALSE;
     qd_running = FALSE;
+    qd_active = FALSE;
+    drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
 }
 
 void drv_init(int *argc, char **argv)
@@ -126,6 +168,7 @@ void drv_init(int *argc, char **argv)
     static const unsigned char file_title[] = "\004File";
     static const unsigned char quit_item[] = "\006Quit/Q";
     (void)argc; (void)argv;
+    qd_ready = FALSE;
     MaxApplZone();
     InitGraf(&qd.thePort);
     InitFonts();
@@ -247,7 +290,37 @@ static void qd_make_buffer(void)
         qd_world = NULL; /* Low-memory systems still draw in the window. */
 }
 
-void drv_resize(int width, int height)
+/* Recheck devices after background display-mode changes. Keep native
+ * palette and GWorld policy consistent with the newly sampled depth. */
+static void qd_refresh_display(void)
+{
+    GDHandle old_device;
+    Rect old_screen;
+    int old_depth;
+    if (!qd_ready || qd_window == NULL) return;
+    old_device = qd_device;
+    old_depth = qd_depth;
+    old_screen = qd_screen;
+    qd_display_info();
+    if (old_device != qd_device || old_depth != qd_depth ||
+        old_screen.left != qd_screen.left || old_screen.top != qd_screen.top ||
+        old_screen.right != qd_screen.right || old_screen.bottom != qd_screen.bottom)
+    {
+        qd_ready = FALSE;
+        qd_dispose_buffer();
+        if (qd_pattern != NULL) DisposePixPat(qd_pattern);
+        qd_pattern = NULL;
+        qd_pattern_color = -1;
+        qd_dispose_palette();
+        if (qd_color_available && qd_depth <= 8) qd_make_palette();
+        qd_make_buffer();
+        qd_ready = TRUE;
+        qd_dirty = TRUE;
+    }
+    if (qd_palette != NULL) ActivatePalette(qd_window);
+}
+
+static void qd_resize(int width, int height)
 {
     if (width < 1 || height < 1) return;
     if (width > 32767 || height > 32767) qd_error("QuickDraw window is too large");
@@ -291,6 +364,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     SetPort((GrafPtr)qd_window);
     if (qd_color_available && qd_depth <= 8) qd_make_palette();
     qd_make_buffer();
+    qd_ready = TRUE;
     return 1;
 }
 
@@ -302,24 +376,25 @@ static void qd_set_transform(void)
         qd_error("QuickDraw coordinate is out of range");
 }
 
-static int qd_prepare_polygon(unsigned int first, unsigned int second,
-                               unsigned int third, Point *destination)
+static int qd_prepare_polygon(const unsigned int *indices, unsigned int count,
+                               Point *destination)
 {
     Qd_screen_point screen[QD_MAX_POLY];
-    int i, count;
+    int i, projected_count;
     if (qd_has_fpu)
-        count = qd_fpu_project(first, second, third,
+        projected_count = qd_fpu_project_polygon(indices, count,
                                drv_win_width, drv_win_height, screen);
     else
-        count = soft3d_fixed_project(qd_fixed_points, first, second, third,
+        projected_count = soft3d_fixed_project_polygon(qd_fixed_points, indices, count,
                                      drv_win_width, drv_win_height, screen);
-    count = soft3d_finish_polygon(screen, count, drv_win_width, drv_win_height);
-    for (i = 0; i < count; ++i)
+    projected_count = soft3d_finish_polygon(screen, projected_count,
+                                            drv_win_width, drv_win_height);
+    for (i = 0; i < projected_count; ++i)
     {
         destination[i].h = (short)screen[i].x;
         destination[i].v = (short)screen[i].y;
     }
-    return count;
+    return projected_count;
 }
 
 static void qd_flat_color(PolyHandle polygon, unsigned char index)
@@ -380,48 +455,57 @@ static void qd_flat_color(PolyHandle polygon, unsigned char index)
     }
 }
 
-static void qd_draw_strip_batch(unsigned int count,
-                                const Vertex TG_HUGE *vertices,
-                                const unsigned char TG_HUGE *facet_colors)
+void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                               Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
+                               unsigned char color)
+{
+    if (!qd_ready) return;
+    drv_submit_quad_as_batch(xyz1, xyz2, xyz3, xyz4, color);
+}
+
+/* One indexed packet shares transformed vertices between adjacent quads.
+ * Classic QuickDraw still fills one polygon per retained quad. */
+void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
+                                    const Vertex TG_HUGE *vertices,
+                                    unsigned int quad_count,
+                                    const unsigned int TG_HUGE *indices,
+                                    const unsigned char TG_HUGE *colors)
 {
     Point projected[QD_MAX_POLY];
-    unsigned int i;
-    int j, total;
+    unsigned int i, j, corners[4];
+    int point, total;
     PolyHandle polygon;
-    if (count < 3 || vertices == NULL || facet_colors == NULL) return;
-    if (count > QD_MAX_VERTICES) qd_error("QuickDraw strip batch is too large");
-    if (qd_has_fpu) qd_fpu_transform(count, vertices);
-    else if (!soft3d_fixed_transform(qd_fixed_matrix, count, vertices,
+    if (!qd_ready || vertex_count == 0 || quad_count == 0 || vertices == NULL ||
+        indices == NULL || colors == NULL) return;
+    if (!drv_validate_quadbatch(vertex_count, quad_count, indices))
+        qd_error("QuickDraw quad batch or vertex index is out of range");
+    if (qd_has_fpu) qd_fpu_transform(vertex_count, vertices);
+    else if (!soft3d_fixed_transform(qd_fixed_matrix, vertex_count, vertices,
                                       qd_fixed_points))
         qd_error("QuickDraw fixed path supports radius up to 1000");
-    for (i = 0; i < count - 2; ++i)
+    for (i = 0; i < quad_count; ++i)
     {
-        total = (i & 1) ? qd_prepare_polygon(i + 1, i, i + 2, projected) :
-                          qd_prepare_polygon(i, i + 1, i + 2, projected);
+        for (j = 0; j < 4U; ++j) corners[j] = indices[i * 4U + j];
+        total = qd_prepare_polygon(corners, 4U, projected);
         if (total == 0) continue;
         polygon = OpenPoly();
         if (polygon == NULL) qd_error("Cannot allocate QuickDraw polygon");
+        qd_pending_polygon = polygon;
         MoveTo(projected[0].h, projected[0].v);
-        for (j = 1; j < total; ++j) LineTo(projected[j].h, projected[j].v);
+        for (point = 1; point < total; ++point)
+            LineTo(projected[point].h, projected[point].v);
         LineTo(projected[0].h, projected[0].v);
         ClosePoly();
-        qd_flat_color(polygon, facet_colors[i]);
+        qd_flat_color(polygon, colors[i]);
         KillPoly(polygon);
-        ++globe_tris_num_vis;
+        qd_pending_polygon = NULL;
+        ++globe_quads_num_vis;
     }
-}
-
-void drv_draw_tristrip_flat_color(unsigned int count,
-                                  const Vertex TG_HUGE *vertices,
-                                  const unsigned char TG_HUGE *facet_colors)
-{
-    drv_draw_strip_batches(count, vertices, facet_colors,
-                            QD_MAX_VERTICES - 2U, qd_draw_strip_batch);
 }
 
 /* Native font metrics keep both the statistics and help readable on a
  * 320-pixel window. A counting pass positions wrapped help at the bottom. */
-static int qd_osd_text(const char *text, int baseline, short width, int draw)
+static Int qd_osd_text(const char *text, Int baseline, short width, int draw)
 {
     short count, last_space;
     while (*text != 0)
@@ -434,12 +518,13 @@ static int qd_osd_text(const char *text, int baseline, short width, int draw)
         }
         if (text[count] != 0 && last_space > 0) count = last_space;
         if (count == 0) count = 1;
-        if (draw && baseline > 0 && baseline <= (int)drv_win_height)
+        if (draw && baseline > 0L && baseline <= (Int)drv_win_height &&
+            baseline <= 32767L)
         {
             MoveTo(8, (short)baseline);
             DrawText(text, 0, count);
         }
-        baseline += 12;
+        baseline += 12L;
         text += count;
         while (*text == ' ') ++text;
     }
@@ -451,8 +536,8 @@ void drv_draw_osd(void)
     char status[160];
     RGBColor white;
     short width;
-    int next_line, help_baseline;
-    if (drv_win_width <= 16 || drv_win_height < 16) return;
+    Int next_line, help_baseline;
+    if (!qd_ready || drv_win_width <= 16 || drv_win_height < 16) return;
     if (qd_depth > 1)
     {
         white.red = white.green = white.blue = 65535U;
@@ -468,7 +553,8 @@ void drv_draw_osd(void)
              qd_world != NULL ? "on" : "off");
     width = (short)(drv_win_width - 16U);
     next_line = qd_osd_text(status, 14, width, TRUE);
-    help_baseline = (int)drv_win_height + 4 - qd_osd_text(drv_help, 0, width, FALSE);
+    help_baseline = (Int)drv_win_height + 4L -
+                    qd_osd_text(drv_help, 0L, width, FALSE);
     if (help_baseline >= next_line) qd_osd_text(drv_help, help_baseline, width, TRUE);
 }
 
@@ -485,23 +571,22 @@ static void qd_present(void)
 
 void drv_render(void)
 {
-    GrafPtr saved;
     CGrafPtr old_world;
     GDHandle old_device;
-    GDHandle saved_device;
     PixMapHandle pixels;
     Rect bounds;
     RGBColor background;
     int buffered;
-    if (qd_window == NULL || globe_verts_num == 0) return;
+    if (!qd_ready || qd_rendering || qd_window == NULL || globe_verts_num == 0) return;
     drv_fps_start();
-    GetPort(&saved);
-    saved_device = NULL;
+    GetPort(&qd_render_port);
+    qd_render_device = NULL;
     if (qd_color_available)
     {
-        saved_device = GetGDevice();
+        qd_render_device = GetGDevice();
         if (qd_device != NULL) SetGDevice(qd_device);
     }
+    qd_rendering = TRUE;
     buffered = FALSE;
     pixels = NULL;
     if (qd_world != NULL)
@@ -509,6 +594,7 @@ void drv_render(void)
         pixels = qd_world->portPixMap;
         if (LockPixels(pixels))
         {
+            qd_locked_pixels = pixels;
             GetGWorld(&old_world, &old_device);
             SetGWorld(qd_world, NULL);
             buffered = TRUE;
@@ -526,51 +612,36 @@ void drv_render(void)
     EraseRect(&bounds);
     PenNormal();
     qd_set_transform();
-    globe_tris_num_vis = 0;
-    globe_draw_tripstrip();
+    globe_quads_num_vis = 0;
+    globe_draw_quadbatches();
     if (drv_osd_enabled) drv_draw_osd();
     if (buffered)
     {
         SetGWorld(old_world, old_device);
         qd_present();
-        UnlockPixels(pixels);
     }
     SetPort((GrafPtr)qd_window);
     DrawGrowIcon(qd_window);
-    SetPort(saved);
-    if (qd_color_available) SetGDevice(saved_device);
+    qd_finish_render();
     qd_dirty = FALSE;
     drv_fps_stop();
 }
 
 static void qd_keyboard(unsigned char key)
 {
-    switch (key)
-    {
-        case 27: drv_close(); return;
-        case '1': case '2': case '3': case '4': case '5':
-            globe_toggle_res((char)key);
-            break;
-        case 'a': case 'A':
-            drv_auto_enabled = !drv_auto_enabled;
-            qd_auto_tick = TickCount();
-            break;
-        case 'o': case 'O': drv_osd_enabled = !drv_osd_enabled; break;
-        default: return;
-    }
+    if (!qd_ready) return;
+    if (key == 27) { drv_close(); return; }
+    if (!drv_handle_key(key)) return;
+    if (key == 'a' || key == 'A') qd_auto_tick = TickCount();
     qd_dirty = TRUE;
 }
 
 static void qd_mouse_move(int x, int y)
 {
+    if (!qd_ready) return;
     if (drv_lmouse_pressed)
     {
-        drv_rot_y += (float)((long)x - qd_old_x) * 100.0f / drv_win_width;
-        drv_rot_x += (float)((long)y - qd_old_y) * 100.0f / drv_win_height;
-        while (drv_rot_x < 0) drv_rot_x += 360.0f;
-        while (drv_rot_x >= 360.0f) drv_rot_x -= 360.0f;
-        while (drv_rot_y < 0) drv_rot_y += 360.0f;
-        while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
+        drv_rotate_drag((long)x - qd_old_x, (long)y - qd_old_y);
         qd_dirty = TRUE;
     }
     qd_old_x = x; qd_old_y = y;
@@ -591,6 +662,7 @@ static void qd_event(EventRecord *event)
     long dimensions;
     short part;
     unsigned char key;
+    if (!qd_ready || !qd_running || event == NULL) return;
     switch (event->what)
     {
         case mouseDown:
@@ -616,6 +688,7 @@ static void qd_event(EventRecord *event)
                     {
                         limit = qd_screen;
                         DragWindow(window, event->where, &limit);
+                        qd_refresh_display();
                         qd_dirty = TRUE;
                     }
                     break;
@@ -630,7 +703,7 @@ static void qd_event(EventRecord *event)
                         {
                             SizeWindow(window, (short)dimensions,
                                         (short)(dimensions >> 16), TRUE);
-                            drv_resize((short)dimensions, (short)(dimensions >> 16));
+                            qd_resize((short)dimensions, (short)(dimensions >> 16));
                         }
                     }
                     break;
@@ -659,8 +732,8 @@ static void qd_event(EventRecord *event)
             {
                 qd_active = (event->modifiers & activeFlag) != 0;
                 qd_auto_tick = TickCount();
-                if (!qd_active) drv_lmouse_pressed = FALSE;
-                if (qd_active && qd_palette != NULL) ActivatePalette(qd_window);
+                if (!qd_active) drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
+                if (qd_active) qd_refresh_display();
                 qd_dirty = TRUE;
             }
             break;
@@ -669,8 +742,12 @@ static void qd_event(EventRecord *event)
             {
                 qd_active = (event->message & resumeFlag) != 0;
                 qd_auto_tick = TickCount();
-                if (qd_active) qd_dirty = TRUE;
-                else drv_lmouse_pressed = FALSE;
+                if (qd_active)
+                {
+                    qd_refresh_display();
+                    qd_dirty = TRUE;
+                }
+                else drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
             }
             break;
         default: break;
@@ -682,7 +759,7 @@ void drv_loop(void)
     EventRecord event;
     Point point;
     unsigned long tick, elapsed;
-    qd_ready = TRUE;
+    if (!qd_ready || qd_window == NULL) return;
     qd_auto_tick = TickCount();
     while (qd_running)
     {
@@ -702,8 +779,7 @@ void drv_loop(void)
             tick = TickCount();
             elapsed = (tick - qd_auto_tick) & 0xffffffffUL;
             qd_auto_tick = tick;
-            drv_rot_y += (float)elapsed * (DRV_ROTATE / 60.0f);
-            while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
+            drv_rotate_elapsed((double)elapsed / 60.0);
             qd_dirty = TRUE;
         }
         else qd_auto_tick = TickCount();

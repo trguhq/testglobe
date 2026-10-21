@@ -222,10 +222,11 @@ void sctxbstring(short x, short y, char *text)
     assert(strstr(text, "texture") == NULL);
     assert(strstr(text, "Texture") == NULL);
     assert(strstr(text, "T =") == NULL);
-    if (strstr(text, "frames per second") != NULL) {
-        sprintf(expected, "%lu quads (%lu visible)",
-                globe_quads_num, globe_quads_num_vis);
-        assert(strstr(text, expected) == text);
+    sprintf(expected, "%lu quads (%lu visible)",
+            globe_quads_num, globe_quads_num_vis);
+    if (strstr(text, expected) == text) {
+        assert((strstr(text, "frames per second") != NULL) ==
+               (drv_fps_enabled != 0));
         assert(strstr(text, "triangles") == NULL);
     }
     ++osd_calls;
@@ -424,6 +425,16 @@ static void check_indexed_triangle(void)
     before_fill = filled_polygons;
     before_triangles = globe_tris_num_vis;
     before_quads = globe_quads_num_vis;
+    drv_draw_tri_flat_color(NULL, b, c, color);
+    drv_draw_tri_flat_color(a, NULL, c, color);
+    drv_draw_tri_flat_color(a, b, NULL, color);
+    recorded_driver_quad(NULL, b, c, a, color);
+    recorded_driver_quad(a, NULL, c, a, color);
+    recorded_driver_quad(a, b, NULL, a, color);
+    recorded_driver_quad(a, b, c, NULL, color);
+    assert(filled_polygons == before_fill &&
+           globe_tris_num_vis == before_triangles &&
+           globe_quads_num_vis == before_quads);
     drv_draw_tri_flat_color(a, b, c, color);
     assert(filled_polygons == before_fill + 1UL);
     assert(globe_tris_num_vis == before_triangles + 1UL);
@@ -486,6 +497,8 @@ int main(void)
     mtx_keyboard('a'); assert(!drv_auto_enabled);
     mtx_keyboard('o'); assert(!drv_osd_enabled);
     mtx_keyboard('o'); assert(drv_osd_enabled);
+    mtx_keyboard('f'); assert(!drv_fps_enabled); drv_draw_osd();
+    mtx_keyboard('F'); assert(drv_fps_enabled); drv_draw_osd();
     puts("PASS Matrox rendering: indexed palette, 32/64 quads, world vertices, transforms, pole compaction, OSD");
     puts("PASS Matrox visibility: independent transformed normals and visible/cap counts across rotated poses");
 
@@ -503,8 +516,18 @@ int main(void)
     mouse_buttons = 0; mouse_dx = 50; mouse_dy = 50;
     mtx_poll_mouse();
     assert(!drv_lmouse_pressed && drv_rot_x == x && drv_rot_y == y);
+    mtx_dirty = FALSE;
+    mouse_buttons = 2; mouse_dx = mouse_dy = 0;
+    mtx_poll_mouse();
+    assert(drv_rmouse_pressed && mtx_dirty && drv_rot_x == x && drv_rot_y == y);
+    mtx_dirty = FALSE;
+    mtx_poll_mouse();
+    assert(drv_rmouse_pressed && !mtx_dirty);
+    mouse_buttons = 0;
+    mtx_poll_mouse();
+    assert(!drv_rmouse_pressed && mtx_dirty && drv_rot_x == x && drv_rot_y == y);
     assert(mouse_polls >= 4 && mouse_motion_reads >= 4);
-    puts("PASS DOS input: INT 33h polling, motion drain, left drag/release, key restrictions and toggles");
+    puts("PASS DOS input: INT 33h polling, motion drain, left drag/release, right-button redraw, key restrictions and toggles");
     mtx_keyboard(27);
     assert(!"Escape must terminate the application");
     return 1;

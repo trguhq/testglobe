@@ -22,6 +22,7 @@
 
 #include "testglob.h"
 #include "drv.h"
+#include "e_ext.h"
 
 extern void globe_init(void);
 extern void globe_free(void);
@@ -29,34 +30,23 @@ extern int globe_init_verts(int, int, float);
 #ifdef TRI
 extern void globe_draw_tris(void);
 #endif
-#ifdef QUAD
-extern void globe_draw_quads(void);
+#if defined(TRISTRIP) && defined(DRV_TRI_CAPS)
+/* Separate cap triangles retain their original colors and texture UVs. */
+extern void globe_draw_pole_tris(void);
 #endif
 #ifdef TRISTRIP
-extern void globe_draw_tripstrip(void);
+extern void globe_draw_tristrips(void);
+#endif
+#ifdef QUAD
+extern void globe_draw_quads(void);
+#ifdef DRV_QUAD_BATCH
+extern void globe_draw_quadbatches(void);
+#endif
 #endif
 extern void globe_toggle_res(char);
 #ifdef TEXTURE
 extern void globe_toggle_tex(void);
 #endif
-#ifndef DRV_EARTH_RESOURCES
-#ifdef EARTH_32
-extern unsigned char earth_data_32[];
-#endif
-#ifdef EARTH_64
-extern unsigned char earth_data_64[];
-#endif
-#ifdef EARTH_128
-extern unsigned char earth_data_128[];
-#endif
-#ifdef EARTH_256
-extern unsigned char earth_data_256[];
-#endif
-#ifdef EARTH_512
-extern unsigned char earth_data_512[];
-#endif
-#endif
-extern unsigned char earth_cmap[][3];
 extern unsigned long globe_verts_num;
 extern unsigned long globe_faces_num;
 extern unsigned long globe_tris_num;

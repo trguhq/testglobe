@@ -22,23 +22,24 @@
 #include <stdlib.h>
 #include "testglob.h"
 #include "drv.h"
-#include "texture.h"
-#include "glob_ext.h"
+#include "tex_ext.h"
+#include "e_ext.h"
 
 #ifdef TEXTURE
 
 unsigned char* texture_data;
 unsigned int texture_size;
-unsigned int texture_data_size;
+static size_t texture_data_size;
 
-void texture_generate(int size)
+/* Keep both public policies on one transactional image construction path. */
+static char *texture_build_image(int size)
 {
-    int i;
-    unsigned char *earth_data;
-    unsigned char *texture_data_ptr;
-    int texture_data_elements;
-    
-    texture_size = size;
+    const unsigned char *earth_data;
+#ifdef TEXTURE_RGB
+    unsigned long i, elements;
+    size_t bytes;
+    unsigned char *new_data, *destination;
+#endif
     
     switch (size)
     {
@@ -68,45 +69,70 @@ void texture_generate(int size)
             break;
 #endif
         default:
-            error("Invalid texture size");
+            return "Invalid texture size";
     }
     
 #ifdef TEXTURE_RGB
-    texture_data_elements = size * (size/2);
-    texture_data_size = texture_data_elements * 3;
-    texture_data = malloc(texture_data_size);
-    if (texture_data == NULL)
+    elements = (unsigned long)size * ((unsigned int)size / 2U);
+    if ((unsigned int)size > TEXTURE_MAX_SIZE ||
+        elements > (size_t)-1 / 3U)
     {
-        error("Could not allocate memory for texture!");
+        return "Texture image is too large";
     }
-    texture_data_ptr = texture_data;
-    
-    for (i=0; i<texture_data_elements; i++)
+    bytes = (size_t)elements * 3U;
+    /* Regeneration at the same dimensions can reuse its owned staging
+     * image. Size changes allocate first to preserve the previous image
+     * if a replacement cannot be obtained. */
+    new_data = texture_data_size == bytes ? texture_data : NULL;
+    if (new_data == NULL) new_data = (unsigned char *)malloc(bytes);
+    if (new_data == NULL)
     {
-        *texture_data_ptr = earth_cmap[earth_data[i]][0];
-        texture_data_ptr++;
-        *texture_data_ptr = earth_cmap[earth_data[i]][1];
-        texture_data_ptr++;
-        *texture_data_ptr = earth_cmap[earth_data[i]][2];
-        texture_data_ptr++;
+        return "Could not allocate memory for texture!";
     }
+    destination = new_data;
+    for (i = 0; i < elements; ++i)
+    {
+        *destination++ = earth_cmap[earth_data[i]][0];
+        *destination++ = earth_cmap[earth_data[i]][1];
+        *destination++ = earth_cmap[earth_data[i]][2];
+    }
+    /* Commit only after the replacement is complete. Failed generation
+     * leaves the previously owned image intact for error-path cleanup. */
+    if (texture_data != new_data) free(texture_data);
+    texture_data = new_data;
+    texture_data_size = bytes;
+    texture_size = (unsigned int)size;
+    return NULL;
+#else
+    (void)earth_data;
+    return "Texture RGB format is required";
 #endif
+}
+
+void texture_generate(int size)
+{
+    char *message;
+    message = texture_build_image(size);
+    if (message != NULL) error(message);
+}
+
+int texture_try_generate(int size)
+{
+    return texture_build_image(size) == NULL;
 }
 
 void texture_init(void)
 {
-    texture_data = NULL;
+    texture_free();
     texture_size = 0;
     texture_data_size = 0;
 }
 
 void texture_free(void)
 {
-    if (texture_data != NULL)
-    {
-        free(texture_data);
-        texture_data = NULL;
-    }
+    free(texture_data);
+    texture_data = NULL;
+    texture_data_size = 0;
 }
 
 

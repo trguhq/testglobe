@@ -20,8 +20,13 @@
 #ifndef e_ext_h
 #define e_ext_h
 
+#include "testglob.h"
+#include "drv.h"
+
+/* One declaration source for both embedded and resource-backed Earth data. */
 #ifdef EARTH
 extern unsigned char earth_cmap[][3];
+#ifndef DRV_EARTH_RESOURCES
 #ifdef EARTH_32
 extern unsigned char earth_data_32[];
 #endif
@@ -36,6 +41,7 @@ extern unsigned char earth_data_256[];
 #endif
 #ifdef EARTH_512
 extern unsigned char earth_data_512[];
+#endif
 #endif
 #endif
 

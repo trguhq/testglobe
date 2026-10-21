@@ -283,6 +283,7 @@ void drv_draw_tri_flat_color(Vertex TG_HUGE *xyz1,
                              unsigned char color)
 {
     Vertex TG_HUGE *source[3];
+    if (xyz1 == NULL || xyz2 == NULL || xyz3 == NULL) return;
     source[0] = xyz1;
     source[1] = xyz2;
     source[2] = xyz3;
@@ -296,6 +297,7 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1,
                               unsigned char color)
 {
     Vertex TG_HUGE *source[4];
+    if (xyz1 == NULL || xyz2 == NULL || xyz3 == NULL || xyz4 == NULL) return;
     source[0] = xyz1;
     source[1] = xyz2;
     source[2] = xyz3;
@@ -328,41 +330,23 @@ void drv_render(void)
 
 static void mtx_keyboard(unsigned char key)
 {
-    switch (key)
-    {
-        case 27:
-            drv_close();
-            break;
-        case '1':
-        case '2':
-            globe_toggle_res((char)key);
-            mtx_dirty = TRUE;
-            break;
-        case 'a':
-        case 'A':
-            drv_auto_enabled = !drv_auto_enabled;
-            mtx_dirty = TRUE;
-            break;
-        case 'o':
-        case 'O':
-            drv_osd_enabled = !drv_osd_enabled;
-            mtx_dirty = TRUE;
-            break;
-        default:
-            break;
-    }
+    if (key == 27) { drv_close(); return; }
+    if (drv_handle_key(key)) mtx_dirty = TRUE;
 }
 
 static void mtx_poll_mouse(void)
 {
     union REGS regs;
     short dx, dy;
+    int right_pressed;
     if (!mtx_mouse_present) return;
     memset(&regs, 0, sizeof(regs));
     regs.x.ax = 3;
     int86(0x33, &regs, &regs);
     drv_lmouse_pressed = (regs.x.bx & 1) != 0;
-    drv_rmouse_pressed = (regs.x.bx & 2) != 0;
+    right_pressed = (regs.x.bx & 2) != 0;
+    if (drv_rmouse_pressed != right_pressed) mtx_dirty = TRUE;
+    drv_rmouse_pressed = right_pressed;
     /* Relative mickeys avoid VGA/CGA coordinate ranges and clipping when
      * the mouse controls an independent Matrox display. */
     regs.x.ax = 0x0b;
@@ -371,12 +355,7 @@ static void mtx_poll_mouse(void)
     dy = (short)regs.x.dx;
     if (drv_lmouse_pressed && (dx != 0 || dy != 0))
     {
-        drv_rot_y += (float)dx * 100.0f / (float)DRV_WIN_WIDTH;
-        drv_rot_x += (float)dy * 100.0f / (float)DRV_WIN_HEIGHT;
-        while (drv_rot_y < 0.0f) drv_rot_y += 360.0f;
-        while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
-        while (drv_rot_x < 0.0f) drv_rot_x += 360.0f;
-        while (drv_rot_x >= 360.0f) drv_rot_x -= 360.0f;
+        drv_rotate_drag((long)dx, (long)dy);
         mtx_dirty = TRUE;
     }
 }

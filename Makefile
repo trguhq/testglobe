@@ -1,6 +1,7 @@
 # Common make syntax for IRIX/Solaris System V make and Microsoft C 7 NMAKE.
 # Keep this file in step with src/Makefile; directory defaults differ.
 # Binaries and objects are written in the directory where make is run.
+# Driver headers select rendering callbacks; drv.c contains shared helpers.
 
 SRC = src
 
@@ -10,11 +11,13 @@ CPPFLAGS =
 CFLAGS = -O
 SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
 LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
+# drv_ogl.h selects latitude strips with separately batched pole triangles.
 OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
 OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o texsoft.o
 OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_ogl.h $(SRC)/err_ext.h \
-    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h $(SRC)/texsoft.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h \
+    $(SRC)/texture.h $(SRC)/tex_ext.h $(SRC)/texsoft.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
@@ -43,7 +46,7 @@ APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o
 
 # Sun XGL 3.x / 32-bit SPARC on Solaris 2.6. Select native SDK locations
 # on the make command line if they differ from the Sun installation defaults.
-# x_ objects keep this driver's TRISTRIP layout separate from OpenGL's TRI.
+# x_ objects keep XGL's RGB strip packets separate from OpenGL driver objects.
 XGLHOME = /opt/SUNWits/Graphics-sw/xgl
 XGL_CPPFLAGS = -I$(XGLHOME)/include -I$(OPENWINHOME)/include
 XGL_CFLAGS = $(CFLAGS)
@@ -55,7 +58,7 @@ XGL_LDFLAGS = -L$(XGLHOME)/lib -L$(OPENWINHOME)/lib \
 XGL_OBJECTS = x_drv.o x_xgl.o x_err.o x_globe.o x_main.o x_tex.o
 XGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_xgl.h $(SRC)/err_ext.h \
-    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
@@ -71,7 +74,7 @@ IGL_LDFLAGS = -lc_s -lgl_s -lm
 IGL_OBJECTS = i_drv.o i_igl.o i_err.o i_globe.o i_main.o i_tex.o i_soft.o
 IGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_igl.h $(SRC)/texsoft.h $(SRC)/err_ext.h \
-    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
@@ -86,7 +89,7 @@ MTX_LDFLAGS = -link /STACK:16384
 MTX_OBJECTS = drv.obj drv_mtx.obj err.obj globe.obj main.obj
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
-    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_cmap.h \
+    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
     $(SRC)\e_32.h $(SRC)\e_64.h \
     $(XGX_ROOT)\XGX1\HEADERS\DEF.H \
     $(XGX_ROOT)\XGX1\HEADERS\LIBFN.H \
@@ -96,6 +99,7 @@ MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
 # /FPi uses a coprocessor when present and emulates otherwise. Keep /Gw
 # for Windows prologs and /AH for normalized cross-segment mesh pointers.
 # GDI objects are separate from the Matrox DOS program.
+# drv_gdi.h selects QUAD/DRV_QUAD_BATCH; globe_draw_quadbatches submits packets.
 GDI_CC = cl
 GDI_LINK = link
 GDI_RC = rc
@@ -109,7 +113,7 @@ GDI_DATA = data
 GDI_OBJECTS = g_drv.obj g_gdi.obj g_err.obj g_globe.obj g_main.obj g_soft.obj
 GDI_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_gdi.h $(SRC)\err_ext.h \
-    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_cmap.h \
+    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
     $(SRC)\earthres.h $(SRC)\soft3d.h
 GDI_RESOURCE_DATA = $(GDI_DATA)\e32.bin $(GDI_DATA)\e64.bin \
     $(GDI_DATA)\e128.bin $(GDI_DATA)\e256_0.bin $(GDI_DATA)\e256_1.bin \
@@ -120,6 +124,7 @@ GDI_RESOURCE_DATA = $(GDI_DATA)\e32.bin $(GDI_DATA)\e64.bin \
 # MPW Make has its own grammar. mpw-make is an external bridge that runs the
 # native Make tool and executes its generated MPW commands; override MPW_EXEC
 # for a configured equivalent. Native MPW users use Makefile.mpw directly.
+# drv_qd.h selects QUAD/DRV_QUAD_BATCH; globe_draw_quadbatches submits packets.
 MPW_EXEC = mpw-make
 QD_MAKEFILE = Makefile.mpw
 QD_SOURCE = :src:

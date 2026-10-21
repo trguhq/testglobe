@@ -30,7 +30,7 @@
 #endif
 
 #define DRV_NAME "OpenGL"
-#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, T = texture mapping"
+#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, F = FPS, Esc = exit, T = texture mapping, D = display list"
 #define GL_SILENCE_DEPRECATION
 
 #define DRV_WIN_X 100
@@ -40,6 +40,7 @@
 #define DRV_COLORMAPPED FALSE
 #define DRV_TEXTURE TRUE
 #define DRV_TEXTURE_DEFAULT FALSE
+#define DRV_DLIST_DEFAULT TRUE
 #define DRV_OSD_DEFAULT TRUE
 #define DRV_DEPTH 24
 #define DRV_COLORMAPDEPTH 24
@@ -64,7 +65,11 @@
 #define TEXTURE_DEFAULT_SIZE 512
 /* currently means 24-bit RGB */
 #define TEXTURE_RGB
-/* render individual triangles */
-#define TRI
+/* Native latitude strips and separately batched pole triangles. */
+#define TRISTRIP
+#define DRV_TRI_CAPS
+#define DRV_TRI_COLOR
+#define DRV_TRI_RGB
+#define DRV_TRI_UV
 
 #endif /* drv_ogl_h */
