@@ -9,7 +9,7 @@ This was originally conceived as a test for lower spec systems (late 80s and ear
 A feature is the ability to compare detail from the number of quads or triangles used on screen vs. detail from hardware texture mapping. Texture mapping is off by default. OpenGL and XGL start at the highest globe resolution (key 5); GDI, QuickDraw, and LibShell start at the lowest (key 1). Higher resolutions require more memory and rendering time on older systems. Note that it still appears texture mapped, however it is all flat shaded single color quads mapped to the texture of earth by the program itself, rather than texture mapping per se through the graphical API and hardware. Adjust as needed per the Interface section below.
 
 ![raw image](https://github.com/trguhq/testglobe/blob/main/testglobe.png?raw=true)
-*Running on macOS (OS X)*
+*OpenGL driver running on macOS (OS X)*
 
 External: *[Video of testglobe running on Sun Ultra 60 with Elite3D-m6 graphics](https://www.youtube.com/watch?v=CffPcvwioUA)*
 
