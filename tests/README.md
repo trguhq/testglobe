@@ -22,15 +22,22 @@ declarations, and check the real software texture fallback's pixels:
 python3 tests/run.py --igl-contract
 ```
 
-The native recorder checks all five Earth levels and the default 512 level,
-triangle winding and colors independently located by spherical centroids,
+The native recorder checks all five Earth levels and the default 128 level,
+native triangle-mesh winding and provoking-vertex colors independently
+located by spherical centroids, per-vertex UVs,
 matrix composition and OSD restoration, native object caching/invalidation,
 every packed texture word, RGBA32/RGB24/color-index8 format selection,
 precision before buffering, unknown alpha queries, exact indexed palette
 colors/restoration, missing depth buffers, unknown/absent texture capabilities,
 older headers, optional affine-texture subdivision, keyboard controls, tied
 mouse movement, focus, redraw sizing, queue overflow, Escape and window quit.
-It models IRIS GL's implicit projection-matrix behavior rather than OpenGL's
+At resolution 512 it verifies 1,278 native meshes and 263,676 submitted
+vertices, with 1,026-vertex interior bands and separate nondegenerate polar
+caps. Textured rendering runs at all five resolutions in both native and
+software capability profiles. A separate indexed strip geometry fixture
+checks exact TRI-equivalent tuples, original color bytes, UVs and seams
+without native graphics calls. It models IRIS GL's implicit projection-matrix
+behavior rather than OpenGL's
 matrix calls. The standalone software cases use analytically predicted pixels
 for row-vector transforms, six clipping planes, depth/culling, perspective
 interpolation, wrapping, bilinear/trilinear filtering, mipmap minification,

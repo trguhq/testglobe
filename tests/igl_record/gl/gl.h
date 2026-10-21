@@ -113,6 +113,8 @@ extern void zfunction(long function);
 extern void clear(void);
 extern void shademodel(long model);
 extern void subpixel(Boolean enable);
+extern void bgntmesh(void);
+extern void endtmesh(void);
 extern void bgnpolygon(void);
 extern void endpolygon(void);
 extern void v3f(float vertex[3]);

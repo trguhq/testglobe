@@ -84,6 +84,12 @@ extern void drv_draw_quad_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
 extern void drv_draw_tristrip_flat_color(unsigned int count,
                                         const Vertex TG_HUGE *vertices,
                                         const unsigned char TG_HUGE *facet_colors);
+#ifdef TEXTURE
+/* One UV per vertex; count-2 facets use the same strip winding as above. */
+extern void drv_draw_tristrip_flat_uv(unsigned int count,
+                                     const Vertex TG_HUGE *vertices,
+                                     const Coord TG_HUGE *coords);
+#endif
 typedef void (*Drv_strip_batch)(unsigned int count,
                                 const Vertex TG_HUGE *vertices,
                                 const unsigned char TG_HUGE *facet_colors);

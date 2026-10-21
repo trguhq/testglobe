@@ -70,7 +70,7 @@ static unsigned char TG_HUGE *globe_strip_colors;
 static Color_RGB TG_HUGE *globe_strip_colors;
 #endif
 #ifdef TEXTURE
-static Coord *globe_strip_coords;
+static Coord TG_HUGE *globe_strip_coords;
 #endif
 #endif
 float globe_radius;
@@ -243,8 +243,8 @@ static void globe_alloc(void)
     if (globe_strip_verts == NULL || globe_strip_colors == NULL)
         error("Couldn't allocate memory for triangle strips!");
 #ifdef TEXTURE
-    globe_strip_coords = (Coord *)globe_alloc_items(2UL * (globe_longitude + 1UL),
-                                                   sizeof(Coord));
+    globe_strip_coords = (Coord TG_HUGE *)globe_alloc_items(
+        2UL * (globe_longitude + 1UL), sizeof(Coord));
     if (globe_strip_coords == NULL)
         error("Couldn't allocate memory for strip texture coordinates!");
 #endif
@@ -501,35 +501,45 @@ void globe_draw_quads(void)
 #endif
 
 #ifdef TRISTRIP
+/* Bands and nondegenerate pole triangles share the same packet dispatch. */
+static void globe_draw_strip(unsigned int count)
+{
+#ifdef DRV_COLORMAP
+#ifdef TEXTURE
+    if (drv_texture_enabled)
+    {
+        drv_draw_tristrip_flat_uv(count, globe_strip_verts, globe_strip_coords);
+        return;
+    }
+#endif
+    drv_draw_tristrip_flat_color(count, globe_strip_verts, globe_strip_colors);
+#else
+    const Coord TG_HUGE *coords;
+    coords = NULL;
+#ifdef TEXTURE
+    if (drv_texture_enabled) coords = globe_strip_coords;
+#endif
+    drv_draw_tristrip_flat_rgb(count, globe_strip_verts, globe_strip_colors, coords);
+#endif
+}
+
 void globe_draw_tripstrip(void)
 {
     int i, j, k;
     unsigned int count;
     unsigned long top, bottom, face;
     unsigned long cap[3];
-#ifndef DRV_COLORMAP
-    const Coord *coords;
-#endif
-
-    /* XGL's point count is 32-bit with no smaller documented strip limit.
-     * A complete latitude band needs at most 1026 vertices (EARTH_512).
+    /* A complete latitude band needs at most 1026 vertices (EARTH_512).
      * Alternating top/bottom rows gives exactly the TRI path's winding;
      * the two facets for each longitude patch use the same flat color.
-     * At the poles use three-vertex strips: XGL computes facet normals and
-     * does not document safe handling of zero-area strip facets. */
+     * Three-vertex pole strips preserve the TRI path's exact UVs and avoid
+     * zero-area facets in native pipelines that compute facet normals. */
     count = 2U * ((unsigned int)globe_longitude + 1U);
     for (i = 0; i < globe_latitude; ++i)
     {
         top = (unsigned long)i * (globe_longitude + 1UL);
         bottom = top + globe_longitude + 1UL;
         face = (unsigned long)i * globe_longitude;
-#ifndef DRV_COLORMAP
-        coords = NULL;
-#endif
-#ifdef TEXTURE
-        if (drv_texture_enabled)
-            coords = globe_strip_coords;
-#endif
         if (i == 0 || i == globe_latitude - 1)
         {
             for (j = 0; j < globe_longitude; ++j)
@@ -558,13 +568,10 @@ void globe_draw_tripstrip(void)
                 }
 #ifdef DRV_COLORMAP
                 globe_strip_colors[0] = globe_colors[face + j].color;
-                drv_draw_tristrip_flat_color(3, globe_strip_verts,
-                                             globe_strip_colors);
 #else
                 globe_strip_colors[0] = globe_colors[face + j];
-                drv_draw_tristrip_flat_rgb(3, globe_strip_verts,
-                                           globe_strip_colors, coords);
 #endif
+                globe_draw_strip(3);
             }
             continue;
         }
@@ -590,13 +597,7 @@ void globe_draw_tripstrip(void)
 #endif
             }
         }
-#ifdef DRV_COLORMAP
-        drv_draw_tristrip_flat_color(count, globe_strip_verts,
-                                     globe_strip_colors);
-#else
-        drv_draw_tristrip_flat_rgb(count, globe_strip_verts, globe_strip_colors,
-                                   coords);
-#endif
+        globe_draw_strip(count);
     }
 }
 #endif

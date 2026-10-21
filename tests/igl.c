@@ -18,11 +18,14 @@ static Matrix matrices[4], matrix_stack[4][16];
 static unsigned long raster_writes;
 static unsigned long emitted, drawn, swaps, flushes, clears, zclears, text_calls;
 static unsigned long object_polygons[16], next_object = 1, current_object;
+static unsigned long mesh_calls,vertex_calls,drawn_meshes,drawn_vertices;
+static unsigned long object_meshes[16],object_vertices[16];
 static int object_exists[16];
 static unsigned long texture_definitions, texture_pixels;
 static unsigned long current_color;
-static unsigned int polygon_vertices, coordinate_calls, current_uv;
-static float polygon[3][3];
+static unsigned int mesh_vertices, coordinate_calls, current_uv;
+static int in_mesh;
+static float polygon[3][3],mesh_uvs[3][2],first_uvs[2][2],last_uv[2];
 static long window_width = 640, window_height = 480;
 static long origin_x = 100, origin_y = 100, pointer_x = 120, pointer_y = 130;
 static short saved_palette[256][3], actual_palette[256][3];
@@ -150,20 +153,16 @@ static int software_texture_expected(void)
     return mode_affine;
 #endif
 }
-void bgnpolygon(void){assert(!polygon_vertices);assert(cull_enabled);current_uv=0;}
-void v3f(float v[3])
-{int i;assert(polygon_vertices<3);for(i=0;i<3;++i){assert(v[i]>=-1000.1f&&v[i]<=1000.1f);polygon[polygon_vertices][i]=v[i];}++polygon_vertices;}
-void endpolygon(void)
+static void check_mesh_triangle(const float *a,const float *b,const float *c)
 {
     double ux,uy,uz,vx,vy,vz,cx,cy,cz,area,phi,theta;
     unsigned int latitude,longitude,index;
     unsigned long expected;
-    assert(polygon_vertices==3);
-    ux=polygon[1][0]-polygon[0][0];uy=polygon[1][1]-polygon[0][1];uz=polygon[1][2]-polygon[0][2];
-    vx=polygon[2][0]-polygon[0][0];vy=polygon[2][1]-polygon[0][1];vz=polygon[2][2]-polygon[0][2];
-    cx=(polygon[0][0]+polygon[1][0]+polygon[2][0])/3.0;
-    cy=(polygon[0][1]+polygon[1][1]+polygon[2][1])/3.0;
-    cz=(polygon[0][2]+polygon[1][2]+polygon[2][2])/3.0;
+    ux=b[0]-a[0];uy=b[1]-a[1];uz=b[2]-a[2];
+    vx=c[0]-a[0];vy=c[1]-a[1];vz=c[2]-a[2];
+    cx=(a[0]+b[0]+c[0])/3.0;
+    cy=(a[1]+b[1]+c[1])/3.0;
+    cz=(a[2]+b[2]+c[2])/3.0;
     area=(uy*vz-uz*vy)*cx+(uz*vx-ux*vz)*cy+(ux*vy-uy*vx)*cz;
     assert(area>0.0);
     if(!drv_texture_enabled) {
@@ -183,10 +182,67 @@ void endpolygon(void)
         }
         else assert((current_color&0xffffffUL)==expected);
     }
-    if(texture_bound)assert(current_uv==3);
     ++emitted;
     if(current_object)++object_polygons[current_object];else ++drawn;
-    polygon_vertices=0;
+}
+void bgnpolygon(void){assert(!"IRIS GL strip renderer used individual polygons");}
+void endpolygon(void){assert(!"IRIS GL strip renderer used individual polygons");}
+void bgntmesh(void)
+{
+    assert(!in_mesh&&cull_enabled);
+    in_mesh=1;mesh_vertices=current_uv=0;
+}
+void v3f(float v[3])
+{
+    unsigned int i,slot;
+    double u,t,xy,difference;
+    assert(in_mesh&&mesh_vertices<1026);
+    for(i=0;i<3;++i)assert(v[i]>=-1000.1f&&v[i]<=1000.1f);
+    slot=mesh_vertices<2?mesh_vertices:2U;
+    memcpy(polygon[slot],v,sizeof(polygon[slot]));
+    if(texture_bound){
+        assert(current_uv==mesh_vertices+1U);
+        memcpy(mesh_uvs[slot],last_uv,sizeof(last_uv));
+        if(mesh_vertices<2)memcpy(first_uvs[mesh_vertices],last_uv,sizeof(last_uv));
+        xy=sqrt((double)v[0]*v[0]+(double)v[1]*v[1]);
+        t=atan2(xy,(double)v[2])/PI;
+        assert(fabs(t-last_uv[1])<1e-5);
+        if(xy>0.001){
+            u=atan2((double)v[1],(double)v[0])/(2*PI);
+            if(u<0)u+=1;
+            difference=fabs(u-last_uv[0]);
+            if(difference>0.5)difference=1-difference;
+            assert(difference<1e-5);
+        }
+    }else assert(current_uv==0);
+    if(mesh_vertices>=2){
+        /* A mesh facet takes the color on its newly submitted vertex.
+         * Swap alternate first/second vertices to reconstruct CCW winding. */
+        if(((mesh_vertices-2U)&1U)!=0)
+            check_mesh_triangle(polygon[1],polygon[0],polygon[2]);
+        else check_mesh_triangle(polygon[0],polygon[1],polygon[2]);
+        memcpy(polygon[0],polygon[1],sizeof(polygon[0]));
+        memcpy(polygon[1],polygon[2],sizeof(polygon[1]));
+        memcpy(mesh_uvs[0],mesh_uvs[1],sizeof(mesh_uvs[0]));
+        memcpy(mesh_uvs[1],mesh_uvs[2],sizeof(mesh_uvs[1]));
+    }
+    ++mesh_vertices;++vertex_calls;
+}
+void endtmesh(void)
+{
+    assert(in_mesh&&mesh_vertices>=3);
+    if(mesh_vertices!=3){
+        assert(mesh_vertices==2U*((unsigned int)globe_longitude+1U));
+        if(texture_bound){
+            assert(first_uvs[0][0]==0&&first_uvs[1][0]==0);
+            assert(mesh_uvs[0][0]==1&&mesh_uvs[1][0]==1);
+        }
+    }
+    if(texture_bound)assert(current_uv==mesh_vertices);
+    ++mesh_calls;
+    if(current_object){++object_meshes[current_object];object_vertices[current_object]+=mesh_vertices;}
+    else{++drawn_meshes;drawn_vertices+=mesh_vertices;}
+    in_mesh=0;
 }
 void c3f(float c[3]){current_color=(unsigned long)(c[0]*255.0f+0.5f)|((unsigned long)(c[1]*255.0f+0.5f)<<8)|((unsigned long)(c[2]*255.0f+0.5f)<<16);}
 void c3s(short c[3]){RGBcolor(c[0],c[1],c[2]);}
@@ -210,7 +266,7 @@ void texdef2d(long id,long components,long width,long height,unsigned long *imag
 void texbind(long target,long id){assert(target==TX_TEXTURE_0);assert(id==0||(!software_texture_expected()));texture_bound=id!=0;}
 void tevdef(long id,long np,float *props){assert(id>0&&np>0&&props[np-1]==TV_NULL);}
 void tevbind(long target,long id){assert(target==TV_ENV0);environment_bound=id!=0;}
-void t2f(float uv[2]){assert(uv[0]>=0&&uv[0]<=1&&uv[1]>=0&&uv[1]<=1);++coordinate_calls;++current_uv;}
+void t2f(float uv[2]){assert(in_mesh&&uv[0]>=0&&uv[0]<=1&&uv[1]>=0&&uv[1]<=1);memcpy(last_uv,uv,sizeof(last_uv));++coordinate_calls;++current_uv;}
 long getplanes(void){return mode_indexed?8:24;}
 long getheight(void){return 14;}
 long strwidth(char *text){return (long)strlen(text)*8;}
@@ -240,18 +296,27 @@ void gflush(void){++flushes;}
 void frontbuffer(Boolean enabled){assert(enabled==!double_mode);}
 void backbuffer(Boolean enabled){assert(enabled==double_mode);}
 long genobj(void){assert(next_object<16);return (long)next_object++;}
-void makeobj(long id){assert(id>0&&id<16&&!current_object);current_object=(unsigned long)id;object_exists[id]=1;object_polygons[id]=0;}
+void makeobj(long id){assert(id>0&&id<16&&!current_object);current_object=(unsigned long)id;object_exists[id]=1;object_polygons[id]=object_meshes[id]=object_vertices[id]=0;}
 void closeobj(void){assert(current_object);current_object=0;}
-void callobj(long id){assert(id>0&&id<16&&object_exists[id]);drawn+=object_polygons[id];}
+void callobj(long id){assert(id>0&&id<16&&object_exists[id]);drawn+=object_polygons[id];drawn_meshes+=object_meshes[id];drawn_vertices+=object_vertices[id];}
 void delobj(long id){assert(id>0&&id<16&&object_exists[id]);object_exists[id]=0;}
 Boolean isobj(long id){return id>0&&id<16&&object_exists[id];}
 
 static void enqueue(long device,short value){assert(event_count<64);events[event_count].device=device;events[event_count++].value=value;}
 static void frame(void)
 {
-    unsigned long before,old_writes;
-    before=drawn;old_writes=raster_writes;rotations=0;drv_render();
+    unsigned long before,old_writes,old_vertices,old_meshes,expected_meshes,expected_vertices;
+    before=drawn;old_writes=raster_writes;old_vertices=drawn_vertices;old_meshes=drawn_meshes;
+    rotations=0;drv_render();
     assert(drawn>before||raster_writes>old_writes);
+    if(drawn>before){
+        expected_meshes=(unsigned long)globe_latitude-2UL+2UL*globe_longitude;
+        expected_vertices=((unsigned long)globe_latitude-2UL)*2UL*(globe_longitude+1UL)+6UL*globe_longitude;
+        assert(drawn-before==globe_tris_num);
+        assert(drawn_meshes-old_meshes==expected_meshes);
+        assert(drawn_vertices-old_vertices==expected_vertices);
+        if(globe_longitude==512){assert(expected_meshes==1278UL&&expected_vertices==263676UL);}
+    }
     assert(rotations==4);
     assert(rotation_axes[0]=='x'&&rotation_values[0]==drv_rot_x);
     assert(rotation_axes[1]=='y'&&rotation_values[1]==drv_rot_y);
@@ -305,7 +370,7 @@ int main(int argc,char **argv)
     assert(sizeof(Color)==1);
     assert(requested[KEYBD]&&requested[LEFTMOUSE]&&requested[MOUSEX]&&requested[MOUSEY]&&requested[REDRAW]&&requested[INPUTCHANGE]&&requested[WINQUIT]);
     globe_init();texture_init();globe_init_verts(GLOBE_DEFAULT_LONGITUDE,-1,GLOBE_RADIUS);
-    assert(globe_longitude==512);
+    assert(GLOBE_DEFAULT_LONGITUDE==128&&globe_longitude==128);
     frame();assert(drawn==globe_tris_num);
     before=emitted;frame();assert(emitted==before);
     for(i='1';i<='5';++i){igl_keyboard((unsigned char)i);assert(globe_longitude==(32<<(i-'1')));frame();}
@@ -326,7 +391,8 @@ int main(int argc,char **argv)
     }
     enqueue(MOUSEX,170);enqueue(MOUSEY,175);igl_event(LEFTMOUSE,0);assert(!drv_lmouse_pressed);
     before=text_calls;igl_keyboard('o');frame();assert(text_calls==before);igl_keyboard('O');frame();
-    igl_keyboard('T');assert(drv_texture_enabled);frame();
+    igl_keyboard('T');assert(drv_texture_enabled);
+    for(i='1';i<='5';++i){igl_keyboard((unsigned char)i);frame();}
     if(!software_texture_expected())assert(texture_definitions==1&&coordinate_calls>0&&texture_pixels==512UL*256UL);
     else assert(texture_definitions==0);
     igl_keyboard('t');assert(!drv_texture_enabled);frame();
@@ -348,7 +414,7 @@ int main(int argc,char **argv)
     if(mode_indexed){assert(palette_changes>=512);assert(memcmp(saved_palette,actual_palette,sizeof(saved_palette))==0);}
     assert(texture_data==NULL);
     assert(globe_verts==NULL);
-    puts("PASS IRIS GL rendering: five indexed LODs, independent native triangle colors/winding, transforms, depth/cull, texture packing and OSD state");
+    puts("PASS IRIS GL rendering: default 128 and five indexed LODs, native tmesh provoking colors/winding/UVs, transforms, depth/cull, texture packing and OSD state");
     puts("PASS IRIS GL input/capabilities: native queue, keys, tied mouse, resize, focus, buffering and texture fallbacks");
     puts("PASS IRIS GL cleanup: objects, resources, window and shared palette restored");
     return 0;

@@ -74,6 +74,10 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "qd_strips")])
         run([str(output / "qd_strips")])
+        run(cc + common + ["-DFLAT", "-DDRV_IGL", str(ROOT / "tests/igl_strips.c"),
+            str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl_strips")])
+        run([str(output / "igl_strips")])
         if args.qd_contract:
             run(cc + common + qd + [str(ROOT / "tests/qd.c"),
                 str(ROOT / "src/qd_fpu.c"), str(ROOT / "src/soft3d.c"),

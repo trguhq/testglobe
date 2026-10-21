@@ -47,7 +47,7 @@
 #define DRV_FPS_HISTORY 60
 #define DRV_FPS_DEFAULT TRUE
 #define DRV_ROTATE 10.0f
-#define GLOBE_DEFAULT_LONGITUDE 512
+#define GLOBE_DEFAULT_LONGITUDE 128
 
 #define EARTH
 #define EARTH_32
@@ -58,6 +58,6 @@
 #define TEXTURE
 #define TEXTURE_DEFAULT_SIZE 512
 #define TEXTURE_RGB
-#define TRI
+#define TRISTRIP
 
 #endif /* drv_igl_h */

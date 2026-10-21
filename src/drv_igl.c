@@ -357,12 +357,17 @@ void drv_texture_disable(void)
     igl_dirty = TRUE;
 }
 
-void drv_draw_tri_flat_color(Vertex *a, Vertex *b, Vertex *c, unsigned char index)
+static void igl_set_index_color(unsigned char index)
 {
     if (igl_indexed) color((Colorindex)index);
     else cpack(0xff000000UL | (unsigned long)earth_cmap[index][0] |
                  ((unsigned long)earth_cmap[index][1] << 8) |
                  ((unsigned long)earth_cmap[index][2] << 16));
+}
+
+void drv_draw_tri_flat_color(Vertex *a, Vertex *b, Vertex *c, unsigned char index)
+{
+    igl_set_index_color(index);
     bgnpolygon();
     v3f((float *)a); v3f((float *)b); v3f((float *)c);
     endpolygon();
@@ -383,6 +388,57 @@ void drv_draw_tri_flat_uv(Vertex *a, Vertex *b, Vertex *c,
     t2f((float *)ub); v3f((float *)b);
     t2f((float *)uc); v3f((float *)c);
     endpolygon();
+#endif
+}
+
+void drv_draw_tristrip_flat_color(unsigned int count,
+                                  const Vertex TG_HUGE *vertices,
+                                  const unsigned char TG_HUGE *facet_colors)
+{
+    unsigned int i;
+    if (count < 3 || vertices == NULL || facet_colors == NULL) return;
+    /* IRIS GL retains two vertices and alternates mesh winding. In FLAT
+     * mode triangle n takes the color of vertex n+2, so every new vertex
+     * supplies exactly one facet's original palette color. */
+    bgntmesh();
+    igl_set_index_color(facet_colors[0]);
+    for (i = 0; i < count; ++i)
+    {
+        if (i >= 2U) igl_set_index_color(facet_colors[i - 2U]);
+        v3f((float *)(vertices + i));
+    }
+    endtmesh();
+}
+
+void drv_draw_tristrip_flat_uv(unsigned int count,
+                               const Vertex TG_HUGE *vertices,
+                               const Coord TG_HUGE *coords)
+{
+    unsigned int i, first, second;
+    if (count < 3 || vertices == NULL || coords == NULL) return;
+    if (!igl_native_texture)
+    {
+        /* Preserve the same alternating winding and per-vertex UVs when
+         * the CPU fallback expands the strip into individual triangles. */
+        for (i = 0; i < count - 2U; ++i)
+        {
+            first = (i & 1U) != 0 ? i + 1U : i;
+            second = (i & 1U) != 0 ? i : i + 1U;
+            texsoft_triangle(vertices + first, vertices + second,
+                                vertices + i + 2U, coords + first,
+                                coords + second, coords + i + 2U);
+        }
+        return;
+    }
+#ifdef GD_TEXTURE
+    cpack(0xffffffffUL);
+    bgntmesh();
+    for (i = 0; i < count; ++i)
+    {
+        t2f((float *)(coords + i));
+        v3f((float *)(vertices + i));
+    }
+    endtmesh();
 #endif
 }
 
@@ -477,7 +533,7 @@ void drv_render(void)
         if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
                               igl_indexed, &earth_cmap[0][0]))
             error("Cannot allocate software texture framebuffer");
-        globe_draw_tris();
+        globe_draw_tripstrip();
         /* lrectwrite addresses window pixels directly, independently of
          * object matrices, and preserves the packed native color/index. */
         if (igl_has_zbuffer) zbuffer(FALSE);
@@ -492,7 +548,7 @@ void drv_render(void)
             igl_object = genobj();
             if (igl_object < 0) error("Cannot allocate IRIS GL geometry object");
             makeobj(igl_object);
-            globe_draw_tris();
+            globe_draw_tripstrip();
             closeobj();
         }
         callobj(igl_object);
