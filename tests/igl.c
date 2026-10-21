@@ -40,6 +40,7 @@ static char rotation_axes[8];
 static int rotations;
 static struct {long device;short value;} events[64];
 static unsigned int event_count, event_index;
+static int sampled_buttons_pressed;
 
 static unsigned char *earth_bytes(void)
 {
@@ -289,7 +290,7 @@ void qreset(void){event_index=event_count;}
 long qtest(void){return event_index<event_count?events[event_index].device:0;}
 long qread(short *value){assert(event_index<event_count);*value=events[event_index].value;return events[event_index++].device;}
 long getvaluator(Device device){assert(device==MOUSEX||device==MOUSEY);return device==MOUSEX?pointer_x:pointer_y;}
-Boolean getbutton(Device device){assert(device==LEFTMOUSE);return drv_lmouse_pressed;}
+Boolean getbutton(Device device){assert(device==LEFTMOUSE||device==RIGHTMOUSE);if(sampled_buttons_pressed)return TRUE;return device==LEFTMOUSE?drv_lmouse_pressed:drv_rmouse_pressed;}
 void tie(Device button,Device first,Device second){assert(button==LEFTMOUSE&&first==MOUSEX&&second==MOUSEY);}
 void swapbuffers(void){assert(double_mode);++swaps;}
 void gflush(void){++flushes;}
@@ -369,7 +370,7 @@ int main(int argc,char **argv)
     assert(drv_bits_per_pixel==(mode_indexed?8U:((mode_rgba||mode_rgba_single)?32U:24U)));
     assert(drv_colormapped==mode_indexed);
     assert(sizeof(Color)==1);
-    assert(requested[KEYBD]&&requested[LEFTMOUSE]&&requested[MOUSEX]&&requested[MOUSEY]&&requested[REDRAW]&&requested[INPUTCHANGE]&&requested[WINQUIT]);
+    assert(requested[KEYBD]&&requested[LEFTMOUSE]&&requested[RIGHTMOUSE]&&requested[MOUSEX]&&requested[MOUSEY]&&requested[REDRAW]&&requested[INPUTCHANGE]&&requested[WINQUIT]);
     globe_init();texture_init();globe_init_verts(GLOBE_DEFAULT_LONGITUDE,-1,GLOBE_RADIUS);
     assert(GLOBE_DEFAULT_LONGITUDE==128&&globe_longitude==128);
     frame();assert(drawn==globe_tris_num);
@@ -391,15 +392,31 @@ int main(int argc,char **argv)
         assert(fabs(drv_rot_x-expected_x)<1e-4&&fabs(drv_rot_y-expected_y)<1e-4);
     }
     enqueue(MOUSEX,170);enqueue(MOUSEY,175);igl_event(LEFTMOUSE,0);assert(!drv_lmouse_pressed);
+    igl_event(RIGHTMOUSE,1);assert(drv_rmouse_pressed);
+    igl_event(RIGHTMOUSE,0);assert(!drv_rmouse_pressed);
+    sampled_buttons_pressed=1;
+    enqueue(MOUSEY,175);enqueue(MOUSEX,170);igl_event(LEFTMOUSE,1);
+    assert(drv_lmouse_pressed&&drv_rmouse_pressed&&event_index==event_count);
+    sampled_buttons_pressed=0;
+    enqueue(MOUSEX,170);enqueue(MOUSEY,175);igl_event(LEFTMOUSE,0);
+    igl_event(RIGHTMOUSE,0);assert(!drv_lmouse_pressed&&!drv_rmouse_pressed);
+    igl_keyboard('f');assert(!drv_fps_enabled);frame();assert(strstr(recorded_stats,"frames per second")==NULL);
+    igl_keyboard('F');assert(drv_fps_enabled);frame();assert(strstr(recorded_stats,"frames per second")!=NULL);
     before=text_calls;igl_keyboard('o');frame();assert(text_calls==before);igl_keyboard('O');frame();
     igl_keyboard('T');assert(drv_texture_enabled);
     for(i='1';i<='5';++i){igl_keyboard((unsigned char)i);frame();}
     if(!software_texture_expected())assert(texture_definitions==1&&coordinate_calls>0&&texture_pixels==512UL*256UL);
     else assert(texture_definitions==0);
     igl_keyboard('t');assert(!drv_texture_enabled);frame();
+#if !TEXTURE_CACHE_RASTER
+    assert(texsoft_pixels()==NULL);
+#else
+    if(software_texture_expected())assert(texsoft_pixels()!=NULL);
+#endif
     igl_keyboard('a');assert(drv_auto_enabled);igl_keyboard('A');assert(!drv_auto_enabled);
     window_width=500;window_height=300;igl_event(REDRAW,2);assert(drv_win_width==640&&drv_win_height==480);igl_event(REDRAW,1);assert(drv_win_width==500&&drv_win_height==300);frame();
-    igl_event(INPUTCHANGE,0);assert(!drv_lmouse_pressed&&!igl_active);igl_event(INPUTCHANGE,1);assert(igl_active);
+    igl_event(RIGHTMOUSE,1);assert(drv_rmouse_pressed);
+    igl_event(INPUTCHANGE,0);assert(!drv_lmouse_pressed&&!drv_rmouse_pressed&&!igl_active);igl_event(INPUTCHANGE,1);assert(igl_active);
     igl_event(QFULL,0);assert(event_index==event_count);
     before=drawn;enqueue(KEYBD,'2');enqueue(REDRAW,1);enqueue(WINQUIT,2);
     if(argc>1&&strcmp(argv[1],"winquit")==0)enqueue(WINQUIT,1);

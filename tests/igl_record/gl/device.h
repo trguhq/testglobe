@@ -3,6 +3,7 @@
 #define TEST_IGL_DEVICE_H
 #define KEYBD 513
 #define LEFTMOUSE 103
+#define RIGHTMOUSE 101
 #define MOUSEX 266
 #define MOUSEY 267
 #define REDRAW 528

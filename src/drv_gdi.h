@@ -15,7 +15,7 @@
 #define GDI
 
 #define DRV_NAME "Windows GDI"
-#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, Esc = exit"
+#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, F = FPS, Esc = exit"
 #define DRV_WIN_X 20
 #define DRV_WIN_Y 20
 #define DRV_WIN_WIDTH 640

@@ -1,6 +1,7 @@
 /* Analytical pixel contracts for the shared software texture fallback.
  * Numeric raster words are tested; the host's unsigned-long ABI is not IRIX. */
 #include <assert.h>
+#include <float.h>
 #include <stdio.h>
 #include <string.h>
 #include "texsoft.h"
@@ -211,7 +212,7 @@ static void row_vectors_and_perspective(void)
 
 static void indexed_and_lifetimes(void)
 {
-    unsigned char palette[768];
+    unsigned char palette[TEXTURE_PALETTE_BYTES];
     static const unsigned char green[3]={0,255,0};
     reset_matrices();
     memset(palette,0,sizeof(palette));
@@ -224,6 +225,17 @@ static void indexed_and_lifetimes(void)
     assert(texsoft_begin(5,7,model,projection,1,palette));
     solid_quad(-1,-1,1,1,0,0,0,0);
     all_pixels(5,7,17UL);
+    /* Releasing a disabled texture's viewport must preserve its image and
+     * palette lookup, so re-enable needs neither source RGB nor new mips. */
+    texsoft_release_raster();texsoft_release_raster();
+    assert(texsoft_pixels()==NULL);
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    assert(texsoft_begin(3,4,model,projection,1,palette));
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    all_pixels(3,4,17UL);
+    assert(texsoft_begin(5,7,model,projection,0,NULL));
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    all_pixels(5,7,GREEN_PIXEL);
     assert(!texsoft_begin(5,7,model,projection,1,NULL));
     assert(!texsoft_texture(3,1,green));
     assert(!texsoft_texture(0,1,green));
@@ -234,6 +246,53 @@ static void indexed_and_lifetimes(void)
     assert(!texsoft_begin(1,1,model,projection,0,NULL));
 }
 
+static float invalid_float(unsigned int bits)
+{
+    float result;
+    /* The supported graphics platforms and host fixture use IEEE single
+     * precision. memcpy avoids aliasing violations while constructing NaN. */
+    assert(sizeof(result)==sizeof(bits));
+    memcpy(&result,&bits,sizeof(result));
+    return result;
+}
+
+static void invalid_numeric_inputs(void)
+{
+    Vertex a,b,c;
+    Coord uv;
+    float values[2];
+    int i;
+    values[0]=invalid_float(0x7fc00000U);
+    values[1]=invalid_float(0x7f800000U);
+    reset_matrices();
+    assert(texsoft_texture(2,2,quadrants));
+    for(i=0;i<2;++i) {
+        assert(texsoft_begin(6,6,model,projection,0,NULL));
+        a.x=-1;a.y=-1;a.z=0;b.x=1;b.y=-1;b.z=0;c.x=0;c.y=1;c.z=0;
+        uv.u=uv.v=0.25f;
+        a.x=values[i];
+        texsoft_triangle(&a,&b,&c,&uv,&uv,&uv);
+        all_pixels(6,6,BLACK_PIXEL);
+        a.x=-1;uv.u=values[i];
+        texsoft_triangle(&a,&b,&c,&uv,&uv,&uv);
+        all_pixels(6,6,BLACK_PIXEL);
+        model[0][0]=values[i];
+        assert(!texsoft_begin(6,6,model,projection,0,NULL));
+        /* A failed frame setup must not leave the previous raster active. */
+        solid_quad(-1,-1,1,1,0,0.25f,0.25f,0);
+        all_pixels(6,6,BLACK_PIXEL);
+        reset_matrices();projection[0][0]=values[i];
+        assert(!texsoft_begin(6,6,model,projection,0,NULL));
+        reset_matrices();
+    }
+    assert(texsoft_begin(6,6,model,projection,0,NULL));
+    /* Very large finite repeating UVs remain valid without reaching an
+     * out-of-range integer conversion in the sampler or LOD calculation. */
+    solid_quad(-1,-1,1,1,0,FLT_MAX,-FLT_MAX,0);
+    all_pixels(6,6,0xff808080UL);
+    texsoft_free();
+}
+
 int main(void)
 {
     magnification_and_repeat();
@@ -242,7 +301,8 @@ int main(void)
     frustum_clipping();
     row_vectors_and_perspective();
     indexed_and_lifetimes();
+    invalid_numeric_inputs();
     puts("PASS Shared software texture pixels: bilinear/repeat, trilinear/mipmaps, perspective-correct UVs and row-vector matrices");
-    puts("PASS Shared software visibility/lifetimes: six clipping planes, depth order, culling, indexed palette rebuilds and cleanup");
+    puts("PASS Shared software visibility/lifetimes: clipping, depth, culling, palette rebuilds, raster release/reuse and invalid numeric input guards");
     return 0;
 }

@@ -1,6 +1,7 @@
 /* Execute the real Win16 driver against recorded Windows calls.
  * This host contract is not a Windows SDK, ABI check, or renderer. */
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,7 @@ static HWND main_window, capture_window;
 static WNDPROC window_callback;
 static unsigned int palette_uploads, palette_realizations, text_calls;
 static unsigned int bitblts, polygon_calls, polypolygon_calls, timer_calls;
+static unsigned int invalidations;
 static unsigned int destroyed_windows, proc_instances, quit_messages;
 static int quit_code;
 static unsigned long submitted_polygons, submitted_vertices;
@@ -57,6 +59,10 @@ static int run_contract(void);
 static int contract_started;
 static int close_with_escape;
 static BOOL last_realize_background;
+static const char *profile;
+static unsigned int fail_allocation, allocation_attempts;
+static int fail_polygon;
+static unsigned int fatal_dialogs;
 
 static HANDLE object_new(int kind)
 {
@@ -88,6 +94,8 @@ HGLOBAL GlobalAlloc(UINT flags, DWORD bytes)
 {
     HGLOBAL handle;
     assert(bytes > 0 && (flags & GMEM_MOVEABLE));
+    if (fail_allocation != 0 && ++allocation_attempts == fail_allocation)
+        return 0;
     handle = object_new(OBJ_MEMORY);
     objects[handle].memory = calloc((size_t)bytes, 1);
     assert(objects[handle].memory != NULL);
@@ -199,7 +207,8 @@ HWND CreateWindow(LPCSTR class_name, LPCSTR title, DWORD style,
     (void)style; (void)x; (void)y; (void)parameter;
     assert(class_name != NULL && title != NULL && parent == 0 && menu == 0);
     assert(instance == 1 && width > 0 && height > 0);
-    client_width = width; client_height = height;
+    assert(width <= 32767 && height <= 32767);
+    client_width = width - 8; client_height = height - 28;
     main_window = object_new(OBJ_WINDOW);
     ++created_windows;
     return main_window;
@@ -257,6 +266,7 @@ void PostQuitMessage(int code) { ++quit_messages; quit_code = code; }
 void InvalidateRect(HWND window, const RECT *rectangle, BOOL erase)
 {
     assert(window == main_window);
+    ++invalidations;
     (void)rectangle; (void)erase;
 }
 HDC GetDC(HWND window)
@@ -297,6 +307,12 @@ void GetClientRect(HWND window, RECT *rectangle)
 void AdjustWindowRect(RECT *rectangle, DWORD style, BOOL menu)
 {
     assert(rectangle != NULL && style != 0 && !menu);
+    /* Native RECT fields are signed16. The production code must query
+     * border offsets at zero, then add client dimensions in wider math. */
+    assert(rectangle->left == 0 && rectangle->top == 0 &&
+           rectangle->right == 0 && rectangle->bottom == 0);
+    rectangle->left = -4; rectangle->top = -24;
+    rectangle->right = 4; rectangle->bottom = 4;
 }
 HCURSOR LoadCursor(HINSTANCE instance, LPCSTR name)
 {
@@ -468,6 +484,7 @@ BOOL PolyPolygon(HDC dc, const POINT *points, int *counts, int polygons)
     unsigned long total;
     assert(polygons > 0 && polygons <= DRV_QUAD_BATCH_MAX);
     ++polypolygon_calls;
+    if (fail_polygon) return FALSE;
     total = 0;
     for (i = 0; i < polygons; ++i) {
         record_polygon(dc, points + total, counts[i]);
@@ -513,7 +530,8 @@ static void check_text(LPCSTR text, int length)
         last_status[length] = 0;
         assert(strstr(last_status, "quads") != NULL);
         assert(strstr(last_status, "triangles") == NULL);
-        assert(strstr(last_status, "frames per second") != NULL);
+        assert((strstr(last_status, "frames per second") != NULL) ==
+               (drv_fps_enabled != FALSE));
         assert(strstr(last_status, "math") != NULL);
     } else {
         assert(strstr(text, "1-5") != NULL);
@@ -572,7 +590,45 @@ BOOL KillTimer(HWND window, UINT id)
 }
 int MessageBox(HWND window, LPCSTR text, LPCSTR title, UINT flags)
 {
-    (void)window; (void)title; (void)flags;
+    unsigned int polygons, allocated, texts;
+    unsigned long vertices;
+    float rotation;
+    (void)title; (void)flags;
+    if (profile != NULL && strncmp(profile, "fatal-", 6) == 0) {
+        assert(gdi_failed && !gdi_ready && !gdi_dirty && !gdi_timer_active);
+        assert(!drv_auto_enabled && !drv_lmouse_pressed && !drv_rmouse_pressed);
+        assert(timer_calls == 0 && capture_window == 0);
+        assert(fatal_dialogs++ == 0);
+        if (strcmp(profile, "fatal-poly") == 0)
+            assert(strstr(text, "PolyPolygon") != NULL);
+        else if (strcmp(profile, "fatal-oom") == 0) {
+            assert(strstr(text, "vertices") != NULL);
+            assert(globe_verts == NULL && globe_verts_num == 131841UL);
+        } else {
+            assert(strcmp(profile, "fatal-size") == 0);
+            assert(strstr(text, "dimensions") != NULL && window == 0);
+        }
+        polygons = polypolygon_calls;
+        allocated = allocated_count;
+        texts = text_calls;
+        vertices = globe_verts_num;
+        rotation = drv_rot_y;
+        if (window != 0) {
+            /* A modal Win16 dialog pumps queued paint/timer/input messages.
+             * None may touch the failed or partly replaced scene. */
+            window_callback(window, WM_TIMER, GDI_TIMER, 0);
+            window_callback(window, WM_PAINT, 0, 0);
+            window_callback(window, WM_CHAR, '1', 0);
+            window_callback(window, WM_SIZE, 0, (LPARAM)(800UL | (600UL << 16)));
+            window_callback(window, WM_LBUTTONDOWN, 0, 0);
+            window_callback(window, WM_RBUTTONDOWN, 0, 0);
+            drv_render();
+        }
+        assert(polypolygon_calls == polygons && allocated_count == allocated);
+        assert(text_calls == texts && globe_verts_num == vertices);
+        assert(drv_rot_y == rotation && capture_window == 0);
+        return 1;
+    }
     fprintf(stderr, "Unexpected GDI error dialog: %s\n", text);
     assert(!"Unexpected error dialog");
     return 1;
@@ -784,7 +840,7 @@ static void check_quad_batches(void)
         colors[i] = (unsigned char)((i % 4U) * 37U);
     }
     sizes[0] = 1U; sizes[1] = 17U; sizes[2] = 64U;
-    drv_resize(32767, 32767);
+    gdi_resize(32767, 32767);
     drv_rot_x = 0.0f; drv_rot_y = 90.0f;
     gdi_set_transform();
     saved_vertices = globe_verts;
@@ -817,7 +873,7 @@ static void check_quad_batches(void)
     drv_draw_quadbatch_flat_color(0U, NULL, 0U, NULL, NULL);
     assert(recorded_count == 1 && globe_quads_num_vis == 1);
     SelectObject(gdi_buffer, previous);
-    drv_resize(640, 480);
+    gdi_resize(640, 480);
     puts("PASS GDI quad packets: arbitrary shared-vertex indices, exact colors/winding, partial and 64-quad batches, native palette grouping and individual-quad compatibility");
 }
 
@@ -905,6 +961,10 @@ static void check_clipping(void)
     gdi_float_points[3] = gdi_float_points[0];
     gdi_fixed_points[3] = gdi_fixed_points[0];
     assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 3);
+    if (gdi_has_fpu) {
+        gdi_float_points[0].x = FLT_MAX;
+        assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 0);
+    }
     test_soft3d_shared_pipeline();
 }
 
@@ -912,7 +972,11 @@ static int run_contract(void)
 {
     int resolution, pose, i;
     float old_x, old_y;
+    double expected_rotation;
     unsigned int realized, texts;
+#if DEBUG
+    unsigned int old_invalidations;
+#endif
     static const int pitch[4] = { 0, 19, 247, 71 };
     static const int yaw[4] = { 180, 37, 121, 302 };
     assert(globe_longitude == 32 && globe_latitude == 16);
@@ -923,9 +987,38 @@ static int run_contract(void)
     assert(drv_win_width == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 320 : 640));
     assert(drv_win_height == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 240 : 480));
     assert(allocated_count >= 4 && loaded_chunks > 0);
+    if (strncmp(profile, "fatal-", 6) == 0) {
+        if (strcmp(profile, "fatal-size") == 0) {
+            gdi_cleanup();
+            drv_init_window(0, 0, 32767, 300);
+        } else {
+            window_callback(main_window, WM_LBUTTONDOWN, MK_LBUTTON, 0);
+            window_callback(main_window, WM_RBUTTONDOWN, 0, 0);
+            drv_auto_enabled = TRUE;
+            if (strcmp(profile, "fatal-poly") == 0) {
+                fail_polygon = TRUE;
+                gdi_dirty = TRUE;
+                drv_render();
+            } else {
+                assert(strcmp(profile, "fatal-oom") == 0);
+                fail_allocation = 2U;
+                allocation_attempts = 0;
+                gdi_dirty = FALSE;
+                window_callback(main_window, WM_CHAR, '5', 0);
+            }
+        }
+        assert(!"Fatal GDI error must exit after the modal dialog");
+    }
     recorded_count = 0;
     drv_render();
     assert(text_calls == 2 && last_status[0] != 0);
+    window_callback(main_window, WM_CHAR, 'f', 0);
+    assert(!drv_fps_enabled);
+    recorded_count = 0;
+    drv_render();
+    assert(strstr(last_status, "frames per second") == NULL);
+    window_callback(main_window, WM_CHAR, 'F', 0);
+    assert(drv_fps_enabled);
     drv_osd_enabled = FALSE;
     for (resolution = 0; resolution < 2; ++resolution) {
         window_callback(main_window, WM_CHAR, (WPARAM)('1' + resolution), 0);
@@ -974,10 +1067,45 @@ static int run_contract(void)
     assert(drv_rot_x != old_x && drv_rot_y != old_y);
     window_callback(main_window, WM_LBUTTONUP, 0, packed_coordinates(384, 288));
     assert(!drv_lmouse_pressed && capture_window == 0);
+#if DEBUG
+    drv_osd_enabled = TRUE;
+    gdi_dirty = FALSE;
+    old_invalidations = invalidations;
+#endif
+    window_callback(main_window, WM_RBUTTONDOWN, 0, packed_coordinates(384, 288));
+    assert(drv_rmouse_pressed && capture_window == main_window);
+#if DEBUG
+    assert(gdi_dirty && invalidations == old_invalidations + 1U);
+    recorded_count = 0;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(strstr(last_status, "R=1") != NULL);
+    assert(!gdi_dirty);
+    old_invalidations = invalidations;
+#endif
+    window_callback(main_window, WM_RBUTTONUP, 0, packed_coordinates(384, 288));
+    assert(!drv_rmouse_pressed && capture_window == 0);
+#if DEBUG
+    assert(gdi_dirty && invalidations == old_invalidations + 1U);
+    recorded_count = 0;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(strstr(last_status, "R=0") != NULL);
+#endif
     window_callback(main_window, WM_LBUTTONDOWN, MK_LBUTTON, packed_coordinates(0, 0));
     window_callback(main_window, WM_MOUSEMOVE, MK_LBUTTON, packed_coordinates(-10, -5));
+    window_callback(main_window, WM_RBUTTONDOWN, 0, 0);
+#if DEBUG
+    gdi_dirty = FALSE;
+    old_invalidations = invalidations;
+#endif
     window_callback(main_window, WM_KILLFOCUS, 0, 0);
-    assert(!drv_lmouse_pressed && capture_window == 0);
+    assert(!drv_lmouse_pressed && !drv_rmouse_pressed && capture_window == 0);
+#if DEBUG
+    assert(gdi_dirty && invalidations == old_invalidations + 1U);
+    recorded_count = 0;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(strstr(last_status, "R=0") != NULL);
+    drv_osd_enabled = FALSE;
+#endif
     assert(drv_rot_x >= 0 && drv_rot_x < 360 && drv_rot_y >= 0 && drv_rot_y < 360);
     texts = text_calls;
     window_callback(main_window, WM_CHAR, 'o', 0);
@@ -997,6 +1125,19 @@ static int run_contract(void)
     old_y = drv_rot_y;
     window_callback(main_window, WM_TIMER, 1, 0);
     assert(fabs((drv_rot_y - old_y) - 0.16f) < 0.001);
+    /* A full wrapping DWORD interval stays accurate without repeated
+     * subtraction, including an invalid previous rotation. */
+    ticks = 0xfffffff0UL;
+    gdi_auto_tick = 1UL;
+    drv_rot_y = 37.0f;
+    expected_rotation = fmod(37.0 + 4294967295.0 * (double)DRV_ROTATE / 1000.0,
+                              360.0);
+    window_callback(main_window, WM_TIMER, 1, 0);
+    assert(fabs((double)drv_rot_y - expected_rotation) < 0.001);
+    drv_rot_y = FLT_MAX;
+    gdi_auto_tick = ticks;
+    window_callback(main_window, WM_TIMER, 1, 0);
+    assert(drv_rot_y >= 0.0f && drv_rot_y < 360.0f);
     window_callback(main_window, WM_CHAR, 'a', 0);
     assert(!drv_auto_enabled);
     old_y = drv_rot_y;
@@ -1027,14 +1168,14 @@ static int run_contract(void)
     check_projection();
     window_callback(main_window, WM_SIZE, SIZE_MINIMIZED, 0);
     assert(drv_win_width == 800 && drv_win_height == 600);
-    drv_resize(1, 1);
+    gdi_resize(1, 1);
     camera_triangle(-2.0, -2.0, -0.5);
     {
         POINT tiny[10];
         static const unsigned int indices[3] = { 0, 1, 2 };
         assert(gdi_prepare_polygon(indices, 3U, tiny) >= 3);
     }
-    drv_resize(800, 600);
+    gdi_resize(800, 600);
     assert(drv_win_width == 800 && drv_win_height == 600);
     ticks = 0xffffffd0UL;
     for (i = 0; i < 61; ++i) { drv_fps_start(); drv_fps_stop(); }
@@ -1042,16 +1183,33 @@ static int run_contract(void)
     /* Explicit client dimensions override the detected small-screen default. */
     gdi_cleanup();
     assert(resource_count == 0 && allocated_count == 0 && proc_instances == 0);
-    assert(drv_init_window(0, 0, 444, 333));
-    assert(drv_win_width == 444 && drv_win_height == 333);
-    assert(client_width == 444 && client_height == 333);
-    puts("PASS GDI input: production WinMain/common startup, mouse capture/drag, 1-5/O/A keys, palette events, screen defaults/overrides, resize, paint and 32-bit timer rollover");
+    if (strcmp(profile, "maxframe") == 0) {
+        assert(drv_init_window(0, 0, 32759, 32739));
+        assert(drv_win_width == 32759U && drv_win_height == 32739U);
+        assert(client_width == 32759 && client_height == 32739);
+    } else {
+        assert(drv_init_window(0, 0, 444, 333));
+        assert(drv_win_width == 444 && drv_win_height == 333);
+        assert(client_width == 444 && client_height == 333);
+    }
+    puts("PASS GDI input: production WinMain/common startup, left/right mouse capture, drag, 1-5/O/A/F keys, palette events, screen defaults/overrides, resize, paint and 32-bit timer rollover");
     return 0;
+}
+
+static void check_fatal_cleanup(void)
+{
+    assert(fatal_dialogs == 1U && gdi_failed && !gdi_ready);
+    assert(resource_count == 0 && allocated_count == 0 && proc_instances == 0);
+    assert(timer_calls == 0 && capture_window == 0 && main_window == 0);
+    puts("PASS GDI fatal error: modal paint/timer/input dispatch cannot reenter rendering or partial scene state, and cleanup releases all resources");
 }
 
 int main(int argc, char **argv)
 {
     assert(argc == 2);
+    profile = argv[1];
+    if (strncmp(profile, "fatal-", 6) == 0)
+        assert(atexit(check_fatal_cleanup) == 0);
     windows_flags = WF_CPU386;
     if (strstr(argv[1], "fpu") != NULL) windows_flags |= WF_80x87;
     if (strcmp(argv[1], "287") == 0) windows_flags = WF_CPU286 | WF_80x87;

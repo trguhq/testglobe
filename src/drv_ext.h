@@ -1,6 +1,6 @@
 /*
  * testglobe - display 3d globe to test 3d hardware
- * drv_ext.c - graphics driver externs
+ * drv_ext.h - graphics driver externs
  *
  * Copyright (C) 2024 trguhq
  *
@@ -53,6 +53,8 @@ extern int drv_auto_enabled;
 extern void drv_ext_init(void);
 extern void drv_init(int *argc, char **argv);
 extern int drv_init_window(int in_x, int in_y, int in_width, int in_height);
+extern void drv_render(void);
+extern void drv_close(void);
 /* TRI: selected traversal, separate caps, and retained driver capabilities. */
 #ifdef DRV_TRI_COLOR
 extern void drv_draw_tri_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
@@ -164,6 +166,7 @@ extern void drv_fps_stop(void);
 /* Common application actions; platform event translation stays in drivers. */
 extern int drv_handle_key(unsigned char key);
 extern void drv_rotate_drag(long dx, long dy);
+extern void drv_rotate_elapsed(double seconds);
 extern void drv_globe_rotate(void);
 
 #endif /* drv_ext_h */

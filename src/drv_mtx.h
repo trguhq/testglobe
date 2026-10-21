@@ -12,7 +12,7 @@
 #define DRV
 #endif
 #define DRV_NAME "Matrox LibShell"
-#define DRV_HELP "1-2 = facets, A = auto rotate, O = OSD, Esc = exit"
+#define DRV_HELP "1-2 = facets, A = auto rotate, F = FPS, O = OSD, Esc = exit"
 #define DRV_WIN_X 0
 #define DRV_WIN_Y 0
 #define DRV_WIN_WIDTH 640

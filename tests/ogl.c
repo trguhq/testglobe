@@ -26,6 +26,9 @@ static struct Test_window {
 static int output_width=64,output_height=48;
 static unsigned int palette_calls,draw_pixels_calls,texture_uploads,indices,rgb_calls,swaps,flushes;
 static unsigned int direct_texture_uploads,glu_mipmap_calls;
+static unsigned int texture_allocations,texture_deletions,mipmap_generations;
+static unsigned int list_attempts,list_deletions;
+static GLenum pending_error;
 static unsigned int maximum_texture_size=512;
 static unsigned int emitted_vertices,texture_coordinates;
 static unsigned int matrix_mode=GL_MODELVIEW,stack_depth[2];
@@ -34,7 +37,8 @@ static GLenum begin_mode;
 static struct Test_geometry {
     unsigned long vertices,triangles,cap_batches,strip_batches;
 } frame_geometry,list_geometry[64];
-static unsigned int current_list,list_exists[64],block_vertices,block_coordinates;
+static unsigned int current_list,list_exists[64],list_reserved[64],block_vertices,block_coordinates;
+static unsigned int list_compile_failed[64];
 static GLfloat block_polygon[3][3],block_uvs[3][2],first_uvs[2][2],last_uv[2];
 static int texture_enabled,depth_enabled,cull_enabled,unpack_alignment=4;
 static GLubyte last_index,last_rgb[3];
@@ -208,7 +212,7 @@ void glutMainLoop(void){assert(globe_verts!=NULL&&windows[active_window].display
 void glutBitmapCharacter(void *font,int c){assert(font&&c>0&&c<256);}
 void glutSetColor(int i,GLfloat r,GLfloat g,GLfloat b)
 {assert(windows[active_window].indexed&&i>=0&&i<256);assert(fabs(r-(double)earth_cmap[i][0]/255)<1e-6&&fabs(g-(double)earth_cmap[i][1]/255)<1e-6&&fabs(b-(double)earth_cmap[i][2]/255)<1e-6);++palette_calls;palette_mask[i]=1;}
-GLenum glGetError(void){return GL_NO_ERROR;}
+GLenum glGetError(void){GLenum code=pending_error;pending_error=GL_NO_ERROR;return code;}
 void glGetIntegerv(GLenum query,GLint *value)
 {
     struct Test_window *w=&windows[active_window];assert(w->live);
@@ -255,11 +259,11 @@ void glRotatef(GLfloat angle,GLfloat x,GLfloat y,GLfloat z)
     m[2]=(GLfloat)(t*x*z-s*y);m[6]=(GLfloat)(t*y*z+s*x);m[10]=(GLfloat)(t*z*z+c);postmultiply(m);
 }
 void glViewport(GLint x,GLint y,GLsizei w,GLsizei h){assert(x==0&&y==0&&w>0&&h>0);}
-GLuint glGenLists(GLsizei n){assert(n==1&&native_lists<63);return ++native_lists;}
-void glNewList(GLuint l,GLenum mode){assert(l&&l<64&&mode==GL_COMPILE_AND_EXECUTE&&!current_list);current_list=l;list_exists[l]=1;memset(&list_geometry[l],0,sizeof(list_geometry[l]));}
+GLuint glGenLists(GLsizei n){assert(n==1&&native_lists<63);++list_attempts;if(strcmp(profile,"listfail")==0)return 0;++native_lists;list_reserved[native_lists]=1;return native_lists;}
+void glNewList(GLuint l,GLenum mode){assert(l&&l<64&&list_reserved[l]&&mode==GL_COMPILE&&!current_list&&!begin_mode);if(strcmp(profile,"newlistfail")==0){pending_error=GL_OUT_OF_MEMORY;return;}current_list=l;list_exists[l]=1;memset(&list_geometry[l],0,sizeof(list_geometry[l]));}
 void glEndList(void){assert(current_list&&!begin_mode);current_list=0;}
-void glCallList(GLuint l){assert(l&&l<64&&list_exists[l]&&!current_list&&!begin_mode);geometry_add(&frame_geometry,&list_geometry[l]);}
-void glDeleteLists(GLuint l,GLsizei n){assert(l&&l<64&&list_exists[l]&&n==1);list_exists[l]=0;}
+void glCallList(GLuint l){assert(l&&l<64&&list_exists[l]&&!list_compile_failed[l]&&!current_list&&!begin_mode);geometry_add(&frame_geometry,&list_geometry[l]);}
+void glDeleteLists(GLuint l,GLsizei n){assert(l&&l<64&&list_reserved[l]&&n==1&&!current_list&&!begin_mode);list_exists[l]=list_reserved[l]=0;++list_deletions;}
 void glBegin(GLenum mode){assert((mode==GL_TRIANGLES||mode==GL_TRIANGLE_STRIP)&&!begin_mode);begin_mode=mode;block_vertices=block_coordinates=0;}
 void glEnd(void)
 {
@@ -284,8 +288,8 @@ void glEnd(void)
             geometry.triangles=block_vertices/3U;geometry.cap_batches=1;
         }
         assert(block_coordinates==(texture_enabled?block_vertices:0U));
-        geometry_add(&frame_geometry,&geometry);
-        if(current_list)geometry_add(&list_geometry[current_list],&geometry);
+        if(current_list){if(!list_compile_failed[current_list])geometry_add(&list_geometry[current_list],&geometry);}
+        else geometry_add(&frame_geometry,&geometry);
     }
     begin_mode=0;
 }
@@ -299,6 +303,9 @@ void glVertex3fv(const GLfloat *v)
     unsigned int slot;
     double xy,t,u,difference;
     assert(begin_mode&&v);
+    if(current_list&&strcmp(profile,"listcompilefail")==0&&!list_compile_failed[current_list]&&block_vertices==8U){
+        pending_error=GL_OUT_OF_MEMORY;list_compile_failed[current_list]=1;
+    }
     if(globe_verts!=NULL){
         slot=begin_mode==GL_TRIANGLES?block_vertices%3U:(block_vertices<2U?block_vertices:2U);
         memcpy(block_polygon[slot],v,sizeof(block_polygon[slot]));
@@ -341,8 +348,8 @@ void glDrawPixels(GLsizei w,GLsizei h,GLenum format,GLenum type,const GLvoid *da
     for(i=0;i<count;++i){assert(source[i]<256&&bytes[i]==(GLubyte)source[i]);if(bytes[i]!=last_clear_index)nonbackground=1;}
     assert(nonbackground);++draw_pixels_calls;
 }
-void glGenTextures(GLsizei n,GLuint *textures){assert(n==1);*textures=1;}
-void glDeleteTextures(GLsizei n,const GLuint *textures){assert(n==1&&*textures==1);}
+void glGenTextures(GLsizei n,GLuint *textures){assert(n==1);++texture_allocations;if(strcmp(profile,"texallocerror")==0){*textures=0;pending_error=GL_OUT_OF_MEMORY;}else *textures=1;}
+void glDeleteTextures(GLsizei n,const GLuint *textures){assert(n==1&&*textures==1);++texture_deletions;}
 void glBindTexture(GLenum target,GLuint texture){assert(target==GL_TEXTURE_2D&&texture<=1);}
 void glTexParameteri(GLenum target,GLenum p,GLint value){assert(target==GL_TEXTURE_2D);assert((p==GL_TEXTURE_MIN_FILTER&&value==GL_LINEAR_MIPMAP_LINEAR)||(p==GL_TEXTURE_MAG_FILTER&&value==GL_LINEAR));}
 static void texture_upload(GLsizei w,GLsizei h,const GLvoid *data)
@@ -353,8 +360,8 @@ static void texture_upload(GLsizei w,GLsizei h,const GLvoid *data)
     ++texture_uploads;
 }
 void glTexImage2D(GLenum t,GLint l,GLint internal,GLsizei w,GLsizei h,GLint border,GLenum f,GLenum type,const GLvoid *p)
-{assert(t==GL_TEXTURE_2D&&l==0&&internal==GL_RGB&&border==0&&f==GL_RGB&&type==GL_UNSIGNED_BYTE);assert(w<=(GLsizei)maximum_texture_size&&h<=(GLsizei)maximum_texture_size);++direct_texture_uploads;texture_upload(w,h,p);}
-void glGenerateMipmap(GLenum t){assert(t==GL_TEXTURE_2D);}
+{assert(t==GL_TEXTURE_2D&&l==0&&internal==GL_RGB&&border==0&&f==GL_RGB&&type==GL_UNSIGNED_BYTE);assert(w<=(GLsizei)maximum_texture_size&&h<=(GLsizei)maximum_texture_size);++direct_texture_uploads;if(strcmp(profile,"texuploaderror")==0){pending_error=GL_OUT_OF_MEMORY;return;}texture_upload(w,h,p);}
+void glGenerateMipmap(GLenum t){assert(t==GL_TEXTURE_2D);++mipmap_generations;if(strcmp(profile,"mipmaperror")==0)pending_error=GL_OUT_OF_MEMORY;}
 void glFlush(void){++flushes;}
 void glShadeModel(GLenum mode){assert(mode==GL_FLAT);}
 void glDepthFunc(GLenum function){assert(function==GL_LEQUAL);}
@@ -371,7 +378,25 @@ static void glu_failure_cleanup(void)
     assert(glu_mipmap_calls==1&&texture_uploads==0&&direct_texture_uploads==0);
     assert(window_count==destroy_count&&active_window==0);
     assert(globe_verts==NULL&&texture_data==NULL);
+    assert(texture_id==0&&texture_deletions==1);
     puts("PASS OpenGL GLU failure: failed mipmaps are not marked loaded and resources are released");
+}
+
+static void native_texture_failure_cleanup(void)
+{
+    assert(!drv_texture_loaded&&!drv_texture_enabled&&!texture_enabled);
+    assert(texture_id==0&&texture_data==NULL&&globe_verts==NULL);
+    assert(window_count==destroy_count&&active_window==0);
+    assert(texture_allocations==1&&glu_mipmap_calls==0);
+    if(strcmp(profile,"texallocerror")==0){
+        assert(texture_deletions==0&&direct_texture_uploads==0&&mipmap_generations==0);
+    }else if(strcmp(profile,"texuploaderror")==0){
+        assert(texture_deletions==1&&direct_texture_uploads==1&&texture_uploads==0&&mipmap_generations==0);
+    }else{
+        assert(strcmp(profile,"mipmaperror")==0);
+        assert(texture_deletions==1&&direct_texture_uploads==1&&texture_uploads==1&&mipmap_generations==1);
+    }
+    puts("PASS OpenGL native texture failure: allocation/upload/mipmap errors never commit loaded state and release all resources");
 }
 
 static void render_checked(int indexed)
@@ -403,16 +428,26 @@ static void check_cached_frame(int indexed)
     render_checked(indexed);
     /* Cached native lists execute again without rebuilding or resubmitting
      * vertex data. The indexed software texture raster is redrawn each time. */
-    assert(emitted_vertices==previous_vertices&&native_lists==previous_lists);
+    if(strcmp(profile,"listfail")==0&&!(indexed&&drv_texture_enabled)){
+        assert(emitted_vertices==previous_vertices+frame_geometry.vertices);
+        assert(native_lists==0&&dlist==0&&list_attempts>0);
+    }else if(strcmp(profile,"newlistfail")==0||strcmp(profile,"listcompilefail")==0){
+        assert(emitted_vertices==previous_vertices+frame_geometry.vertices*
+               (strcmp(profile,"listcompilefail")==0?2U:1U));
+        assert(native_lists==previous_lists+1U&&dlist==0&&list_deletions==native_lists);
+    }else assert(emitted_vertices==previous_vertices&&native_lists==previous_lists);
 }
 
 int main(int argc,char **argv)
 {
     Vertex a,b,c;unsigned int i,level;int indexed;
+    char stats[128];
     profile=argc>1?argv[1]:"rgba";
     if(strcmp(profile,"limited")==0)maximum_texture_size=256;
     /* Register first so the production atexit cleanup runs before assertions. */
     if(strcmp(profile,"gluerror")==0)assert(atexit(glu_failure_cleanup)==0);
+    if(strcmp(profile,"texallocerror")==0||strcmp(profile,"texuploaderror")==0||strcmp(profile,"mipmaperror")==0)
+        assert(atexit(native_texture_failure_cleanup)==0);
     matrix_identity(matrices[0][0]);matrix_identity(matrices[1][0]);
     drv_ext_init();drv_init(&argc,argv);assert(!drv_texture_enabled);
     assert(drv_init_window(0,0,64,48));assert(active_window&&windows[active_window].live);
@@ -435,9 +470,14 @@ int main(int argc,char **argv)
     glBegin(GL_TRIANGLES);drv_draw_tri_flat_color(&a,&b,&c,77);glEnd();
     if(indexed)assert(last_index==77&&indices>0);
     else assert(last_rgb[0]==earth_cmap[77][0]&&last_rgb[1]==earth_cmap[77][1]&&last_rgb[2]==earth_cmap[77][2]);
-    globe_init();texture_init();globe_init_verts(32,-1,1000);drv_resize(64,48);
+    globe_init();texture_init();globe_init_verts(32,-1,1000);ogl_resize(64,48);
     posts_before_loop=redisplay_posts;
     drv_loop();assert(loop_calls==1&&windows[active_window].display==drv_render);
+    mouse_callback(GLUT_RIGHT_BUTTON,GLUT_DOWN,4,5);assert(drv_rmouse_pressed);
+    mouse_callback(GLUT_RIGHT_BUTTON,GLUT_UP,4,5);assert(!drv_rmouse_pressed);
+    keyboard_callback('f',0,0);assert(!drv_fps_enabled);
+    drv_format_stats(stats);assert(strstr(stats,"frames per second")==NULL);
+    keyboard_callback('F',0,0);assert(drv_fps_enabled);
     for(level=0;level<5;++level){
         if(level){
             keyboard_callback((unsigned char)('1'+level),0,0);
@@ -457,17 +497,28 @@ int main(int argc,char **argv)
             assert(glu_mipmap_calls==0&&direct_texture_uploads==1);
 #endif
         }
-        keyboard_callback('T',0,0);assert(!drv_texture_enabled);render_checked(indexed);check_cached_frame(indexed);
+        keyboard_callback('T',0,0);assert(!drv_texture_enabled);
+#if !TEXTURE_CACHE_RASTER
+        assert(texsoft_pixels()==NULL&&ogl_index_pixels==NULL&&ogl_index_capacity==0);
+#else
+        if(indexed)assert(texsoft_pixels()!=NULL&&ogl_index_pixels!=NULL&&ogl_index_capacity>=64UL*48UL);
+#endif
+        render_checked(indexed);check_cached_frame(indexed);
     }
     if(indexed)assert(draw_pixels_calls==10);
     assert(stack_depth[0]==0&&stack_depth[1]==0&&attrib_depth==0&&client_depth==0&&cull_enabled);
     if(windows[active_window].doubled)assert(swaps>0);else assert(flushes>0&&swaps==0);
     ogl_cleanup();ogl_cleanup();
     assert(window_count==destroy_count&&active_window==0);
+    assert(list_deletions==native_lists);
     assert(globe_verts==NULL&&texture_data==NULL);
     puts("PASS OpenGL window lifecycle: safe per-window callbacks through early probe/setup/show redraws, renderer and redisplay activated after globe initialization");
     puts("PASS OpenGL format selection: highest verified RGBA/RGB/index precision, buffering/depth fallbacks and unknown alpha handling");
     puts("PASS OpenGL indexed/native rendering: palette bytes, indexed facets, packed CI software pixels and native RGB textures");
+    puts("PASS OpenGL retained diagnostics and controls: private error logger, right-button metadata, FPS toggle and software raster cache policy");
+    if(strcmp(profile,"listfail")==0)puts("PASS OpenGL display-list allocation failure: complete uncached geometry at every resolution without invalid list calls");
+    if(strcmp(profile,"newlistfail")==0||strcmp(profile,"listcompilefail")==0)
+        puts("PASS OpenGL display-list compilation failure: rejected or incomplete lists are deleted before complete immediate rendering");
 #ifdef TRI
     puts("PASS retained OpenGL TRI: native and indexed-texture traversal, five resolutions and display-list caching");
 #else

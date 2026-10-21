@@ -24,4 +24,15 @@
 #include "testglob.h"
 #include "types.h"
 
+/* Earth maps and the software fallback share this fixed image contract. */
+#define TEXTURE_MAX_SIZE 512U
+#define TEXTURE_PALETTE_SIZE 256U
+#define TEXTURE_PALETTE_BYTES (TEXTURE_PALETTE_SIZE * 3U)
+
+/* Keep mipmaps, but normally release inactive frame/depth/transfer buffers.
+ * Define to TRUE when faster texture toggles matter more than memory use. */
+#ifndef TEXTURE_CACHE_RASTER
+#define TEXTURE_CACHE_RASTER FALSE
+#endif
+
 #endif /* texture_h */

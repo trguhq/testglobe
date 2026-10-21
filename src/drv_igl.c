@@ -164,7 +164,7 @@ static long igl_rgb_depth(int double_buffer, long *rgb_bits, long *alpha_bits)
     return *rgb_bits + *alpha_bits;
 }
 
-void drv_resize(int width, int height)
+static void igl_resize(int width, int height)
 {
     if (width < 1 || height < 1) return;
     if (width > 32767 || height > 32767)
@@ -274,6 +274,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     igl_bind_texture(FALSE);
     qdevice(KEYBD);
     qdevice(LEFTMOUSE);
+    qdevice(RIGHTMOUSE);
     qdevice(MOUSEX);
     qdevice(MOUSEY);
     qdevice(REDRAW);
@@ -287,13 +288,13 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 #endif
     tie(LEFTMOUSE, MOUSEX, MOUSEY);
     getsize(&width, &height);
-    drv_resize((int)width, (int)height);
+    igl_resize((int)width, (int)height);
     igl_old_x = getvaluator(MOUSEX);
     igl_old_y = getvaluator(MOUSEY);
     return 1;
 }
 
-void drv_texture_load(void)
+static void igl_texture_load(void)
 {
     unsigned long *image, i, count;
 #ifdef GD_TEXTURE
@@ -342,7 +343,7 @@ void drv_texture_load(void)
 
 void drv_texture_enable(void)
 {
-    if (!drv_texture_loaded) drv_texture_load();
+    if (!drv_texture_loaded) igl_texture_load();
     igl_bind_texture(TRUE);
     drv_texture_enabled = TRUE;
     igl_invalidate_object();
@@ -353,6 +354,9 @@ void drv_texture_disable(void)
 {
     igl_bind_texture(FALSE);
     drv_texture_enabled = FALSE;
+#if !TEXTURE_CACHE_RASTER
+    texsoft_release_raster();
+#endif
     igl_invalidate_object();
     igl_dirty = TRUE;
 }
@@ -602,20 +606,26 @@ static void igl_event(long device, short value)
             {
                 qreset();
                 drv_lmouse_pressed = getbutton(LEFTMOUSE) != 0;
+                drv_rmouse_pressed = getbutton(RIGHTMOUSE) != 0;
                 igl_old_x = getvaluator(MOUSEX);
                 igl_old_y = getvaluator(MOUSEY);
             }
             break;
         case MOUSEX: igl_mouse_move(value, igl_old_y); break;
         case MOUSEY: igl_mouse_move(igl_old_x, value); break;
+        case RIGHTMOUSE:
+            drv_rmouse_pressed = value != 0;
+            igl_dirty = TRUE;
+            break;
         case REDRAW:
             if (value != 0 && value != igl_window) break;
             reshapeviewport(); getsize(&width, &height);
-            drv_resize((int)width, (int)height);
+            igl_resize((int)width, (int)height);
             break;
         case INPUTCHANGE:
             igl_active = value == igl_window;
             drv_lmouse_pressed = FALSE;
+            drv_rmouse_pressed = FALSE;
             igl_old_x = getvaluator(MOUSEX); igl_old_y = getvaluator(MOUSEY);
             igl_dirty = TRUE;
             break;
@@ -629,6 +639,7 @@ static void igl_event(long device, short value)
         case QFULL:
             qreset();
             drv_lmouse_pressed = getbutton(LEFTMOUSE) != 0;
+            drv_rmouse_pressed = getbutton(RIGHTMOUSE) != 0;
             igl_old_x = getvaluator(MOUSEX); igl_old_y = getvaluator(MOUSEY);
             igl_dirty = TRUE;
             break;

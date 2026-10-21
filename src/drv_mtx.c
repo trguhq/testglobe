@@ -283,6 +283,7 @@ void drv_draw_tri_flat_color(Vertex TG_HUGE *xyz1,
                              unsigned char color)
 {
     Vertex TG_HUGE *source[3];
+    if (xyz1 == NULL || xyz2 == NULL || xyz3 == NULL) return;
     source[0] = xyz1;
     source[1] = xyz2;
     source[2] = xyz3;
@@ -296,6 +297,7 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1,
                               unsigned char color)
 {
     Vertex TG_HUGE *source[4];
+    if (xyz1 == NULL || xyz2 == NULL || xyz3 == NULL || xyz4 == NULL) return;
     source[0] = xyz1;
     source[1] = xyz2;
     source[2] = xyz3;
@@ -336,12 +338,15 @@ static void mtx_poll_mouse(void)
 {
     union REGS regs;
     short dx, dy;
+    int right_pressed;
     if (!mtx_mouse_present) return;
     memset(&regs, 0, sizeof(regs));
     regs.x.ax = 3;
     int86(0x33, &regs, &regs);
     drv_lmouse_pressed = (regs.x.bx & 1) != 0;
-    drv_rmouse_pressed = (regs.x.bx & 2) != 0;
+    right_pressed = (regs.x.bx & 2) != 0;
+    if (drv_rmouse_pressed != right_pressed) mtx_dirty = TRUE;
+    drv_rmouse_pressed = right_pressed;
     /* Relative mickeys avoid VGA/CGA coordinate ranges and clipping when
      * the mouse controls an independent Matrox display. */
     regs.x.ax = 0x0b;

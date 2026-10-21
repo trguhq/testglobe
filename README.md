@@ -55,6 +55,7 @@ template used for the rest.
 | `1`-`5` | Select globe resolution; Matrox LibShell supports only `1` and `2`. |
 | Left mouse drag | Rotate the globe. |
 | `a` | Toggle automatic rotation / benchmark mode. |
+| `f` | Toggle FPS measurement and its OSD statistic. |
 | `o` | Toggle the on-screen display (OSD). |
 | `t` | Toggle texture mapping in OpenGL, IRIS GL, and Sun XGL. |
 | `Esc` | Exit. |
@@ -66,7 +67,9 @@ as quads even when their coincident vertices collapse to a triangle for drawing.
 
 Visible counts are shown by Matrox LibShell, GDI, and QuickDraw, which count
 polygons retained after software culling. OpenGL, IRIS GL, and XGL show total
-counts and FPS; their native culling does not return a visibility count.
+counts and, when enabled, FPS; their native culling does not return a visibility
+count. FPS starts enabled according to `DRV_FPS_DEFAULT`. Disabling it leaves
+elapsed-time measurement active so automatic rotation continues at the same speed.
 
 On displays of 640x480 or smaller, GDI and QuickDraw default to a 320x240 client area.
 Larger displays retain the 640x480 default. Explicit size requests are retained, with
@@ -118,19 +121,38 @@ The default Unix `SYS_FLAGS` includes `-DNO_SINF` for older math libraries. It s
 standard `sin` and `cos` instead of `sinf` and `cosf`. Apple OpenGL uses its separate
 `APPLE_SYS_FLAGS` and the system's modern math library.
 
+`DEBUG` defaults to `0`; setting `DEBUG=1` through compiler defines enables diagnostic
+statistics, including pixel-storage bytes and reported right-button state. For example,
+use `make opengl CPPFLAGS=-DDEBUG=1` after cleaning the affected objects. Native
+mouse-event translation stays in each driver; a System 7 single-button mouse has no
+separate right-button state.
+
+`src/texture.h` holds the shared texture limits and cache policy:
+`TEXTURE_MAX_SIZE` is 512, `TEXTURE_PALETTE_SIZE` is 256, and
+`TEXTURE_CACHE_RASTER` defaults to false. Disabling software texturing releases the
+frame/depth buffers and OpenGL's packed transfer copy while retaining mipmaps for the
+next toggle. To retain those raster caches instead, build with
+`CPPFLAGS=-DTEXTURE_CACHE_RASTER=1` (or the target's corresponding CPPFLAGS setting).
+Resizing releases the obsolete raster before allocating its replacement, limiting peak
+memory. Regenerating a staging image at the same size reuses its allocation; changing
+sizes replaces it only after the new image is complete. Clean the affected objects
+when changing these defines.
+
 <!--
 Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Solaris OpenGL uses separate `s_*.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic, Solaris, and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quad patches for Matrox LibShell, GDI, and QuickDraw, and triangles for the triangle and triangle-strip paths; pole patches remain quad entries even when drawn as triangles.
 
 The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h`, `drv_igl.h`, and `drv_xgl.h` define `TRISTRIP`; `drv_mtx.h`, `drv_gdi.h`, and `drv_qd.h` define `QUAD`. The GDI and QuickDraw headers also define the optional `DRV_QUAD_BATCH` capability and `DRV_QUAD_BATCH_MAX` of 64. Batching is a capability of `QUAD`, not a separate primitive mode. OpenGL additionally defines `DRV_TRI_CAPS` to draw its pole triangles separately. Triangle callback capabilities are declared independently: `DRV_TRI_COLOR` is available in OpenGL, IRIS GL, and Matrox; `DRV_TRI_RGB` in OpenGL; and `DRV_TRI_UV` in OpenGL and IRIS GL. These capabilities expose only implemented driver functions in the common declarations. The shared `TRI` path remains available as a reference implementation, although no driver selects it. Do not supply primitive or callback-capability defines on the compiler command line; they belong in driver headers. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
-`DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows.
+`DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows. `e_ext.h` is the authoritative Earth-data declaration header; it exposes embedded maps only for drivers that use them, and `glob_ext.h` includes it for globe consumers.
 
 -->
 
 <!--
-Globe traversal and mesh packet construction live in `src/globe.c`: `globe_draw_tris()`, `globe_draw_tristrips()`, `globe_draw_quads()`, and `globe_draw_quadbatches()` submit multiple units to their singular `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*` callbacks. Native drawing callbacks remain in each `src/drv_*.c`, grouped by primitive with color/RGB/UV variants together. Backend helpers use their own prefixes and stay private where possible; common driver utilities live in `src/drv.c`. These include application-key handling (`drv_handle_key()`), normalized drag rotation (`drv_rotate_drag()`), quad packet validation (`drv_validate_quadbatch()`), individual-quad packing (`drv_submit_quad_as_batch()`), textured-strip expansion (`drv_expand_tristrip_uv()`), the retained bounded splitter (`drv_split_tristrip_batches()`), and Earth resource ID/chunk traversal. Native input translation, redraw/cache invalidation, timing hooks, and drawing state stay in the drivers.
+Globe traversal and mesh packet construction live in `src/globe.c`: `globe_draw_tris()`, `globe_draw_tristrips()`, `globe_draw_quads()`, and `globe_draw_quadbatches()` submit multiple units to their singular `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*` callbacks. Native drawing callbacks remain in each `src/drv_*.c`, grouped by primitive with color/RGB/UV variants together. Backend helpers use their own prefixes and stay private where possible; common driver utilities live in `src/drv.c`. These include application-key handling (`drv_handle_key()`), bounded drag and elapsed-time rotation (`drv_rotate_drag()` and `drv_rotate_elapsed()`), quad packet validation (`drv_validate_quadbatch()`), individual-quad packing (`drv_submit_quad_as_batch()`), textured-strip expansion (`drv_expand_tristrip_uv()`), the retained bounded splitter (`drv_split_tristrip_batches()`), and Earth resource ID/chunk traversal. Native input translation, redraw/cache invalidation, timing hooks, and drawing state stay in the drivers.
 
-GDI and QuickDraw share `src/soft3d.c` and `src/soft3d.h` for integer IEEE-float decoding, fixed-point rotation and vertex transforms, near/far and window clipping, perspective projection, and back-face rejection. Their fixed-point caches remain in the drivers. `globe_draw_quadbatches()` supplies bounded shared-vertex packets to `drv_draw_quadbatch_flat_color()`, with a vertex array, four indices per quad, and one palette byte per quad. `globe_draw_quads()` retains individual `drv_draw_quad_flat_color()` submission, including Matrox. GDI retains its floating-point implementation, and QuickDraw retains its isolated 68881 helper so its pointer/integer-only FPU boundary is preserved. Only the GDI and QuickDraw targets compile the integer geometry object (`g_soft.obj` and `q_soft.o`). OpenGL and IRIS GL share the separate floating-point texture rasterizer `src/texsoft.c` and `src/texsoft.h` for formats without native texture mapping; their ordinary rendering remains native.
+GDI and QuickDraw share `src/soft3d.c` and `src/soft3d.h` for integer IEEE-float decoding, fixed-point rotation and vertex transforms, near/far and window clipping, perspective projection, and back-face rejection. Their fixed-point caches remain in the drivers. `globe_draw_quadbatches()` supplies bounded shared-vertex packets to `drv_draw_quadbatch_flat_color()`, with a vertex array, four indices per quad, and one palette byte per quad. `globe_draw_quads()` retains individual `drv_draw_quad_flat_color()` submission, including Matrox. Resource-backed Earth bytes are released after indexed colors are constructed, saving 128 KiB at key 5. GDI retains its floating-point implementation, and QuickDraw retains its isolated 68881 helper so its pointer/integer-only FPU boundary is preserved. Only the GDI and QuickDraw targets compile the integer geometry object (`g_soft.obj` and `q_soft.o`). OpenGL and IRIS GL share the separate floating-point texture rasterizer `src/texsoft.c` and `src/texsoft.h` for formats without native texture mapping; their ordinary rendering remains native.
+
+Shared driver APIs declare `drv_render()` and `drv_close()` explicitly. Backend resize and texture-loading helpers remain private, as do file-local timing and diagnostic state. Legacy automatic platform selection chooses its matching memory architecture before driver setup; unsupported legacy PGC/PHIGS selections report an explicit configuration error instead of selecting incomplete implementations. The old driver header stubs remain available as development references. Classic Macintosh wide OSD arithmetic uses the retained `Int` alias in `types.h`.
 
 The root and `src` Makefiles intentionally have the same rules with different source/SDK/MPW directory defaults: historical NMAKE and Solaris make do not share an include syntax. Keep the two files in step when changing rules. For an out-of-tree build, use the ordinary `SRC` macro, for example `make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src`; no VPATH search behavior is required.
 
@@ -262,6 +284,14 @@ GLUT's display-mode availability query is required. Where display-string request
 supported, the driver requests those component sizes explicitly; older GLUT
 implementations can expose fewer distinct choices. These probes do not enumerate every
 native visual.
+
+If display-list allocation, creation, or compilation fails, OpenGL discards the failed
+cache and draws the geometry immediately. Only complete, error-free lists execute;
+the driver never attempts to compile list zero.
+Native texture upload and mipmap errors are checked before a texture is marked loaded
+or enabled; failed resources are released through the controlled error path. The
+retained diagnostic logger reports OpenGL errors without requiring modern
+debug-callback extensions on legacy implementations.
 
 #### Validation
 
@@ -500,6 +530,11 @@ rather than a general-purpose depth buffer for intersecting geometry. Mouse drag
 automatic rotation, resize, palette changes, and window closure use the native Windows
 message loop.
 
+Fatal errors first stop rendering, animation, capture, and input processing before
+opening the modal error dialog. Its message loop therefore cannot render a partially
+allocated globe or recurse into a second rendering failure. Initial client dimensions
+are checked together with their nonclient borders before conversion to Win16 fields.
+
 The driver detects a math coprocessor with `GetWinFlags`; supported 80387-or-later
 systems use floating-point transforms, while other systems use fixed-point transforms
 and projection. Mesh generation and common FPS bookkeeping still use floating point.
@@ -614,6 +649,13 @@ undocumented video memory. If an offscreen world cannot be allocated or its pixe
 cannot be locked, drawing falls back to the window. The OSD appends `GWorld on` or
 `GWorld off` after its other statistics, reflecting the actual rendering path.
 
+Activation, resume, and completed window drags recheck the selected display's device,
+depth, and bounds. Changed display properties rebuild the palette and offscreen
+resources. Readiness guards prevent drawing before setup or during errors and teardown;
+widened OSD baseline calculations are checked before conversion to QuickDraw coordinates.
+Before a fatal alert, the driver releases any pending polygon, unlocks GWorld pixels,
+and restores the caller's drawing port and device. Repeated cleanup is safe.
+
 #### Validation
 
 Host tests check call contracts, geometry, and simulated devices; native MPW
@@ -655,6 +697,7 @@ systems, and hardware.
 - Switched all three OpenGL targets to latitude triangle strips with batched pole triangles; retained the shared independent-triangle mode.
 - Switched GDI and QuickDraw to shared-vertex quad batches, with `QUAD` as the primitive and `DRV_QUAD_BATCH` as an optional driver capability.
 - Standardized plural globe traversal names and driver callback declarations, separated XGL RGB/UV entry points, and shared portable driver utilities in `drv.c`.
+- Hardened allocation/error paths and native coordinate limits, enabled the FPS setting and diagnostics, and reduced retained mesh and software-raster memory.
 - Added an FPS counter and automatic rotation.
 - Changed comments to C style.
 - Fixed the Mesa bitmap-text issue by disabling texture mapping while drawing the OpenGL OSD.

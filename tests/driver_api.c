@@ -3,6 +3,7 @@
 #include "drv.h"
 #include "drv_ext.h"
 #include "glob_ext.h"
+#include "tex_ext.h"
 
 #if defined(DRV_OGL)
 #if !defined(DRV_TRI_COLOR) || !defined(DRV_TRI_RGB) || !defined(DRV_TRI_UV)
@@ -24,6 +25,8 @@
 
 void test_driver_api(void)
 {
+    (void)sizeof(&drv_render);
+    (void)sizeof(&drv_close);
 #ifdef DRV_TRI_COLOR
     (void)sizeof(&drv_draw_tri_flat_color);
 #endif

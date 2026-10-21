@@ -44,9 +44,23 @@ configuration, rejects unsupported callbacks, and checks the separate three-argu
 XGL RGB/UV signatures. `tests/driver_helpers.c` exercises the shared `drv.c` utilities
 in flat OpenGL and segmented GDI configurations: 1,026-vertex strip splitting with
 even overlap, odd limits and tails, exact UV triangle parity, invalid-input guards,
-standard and unsupported keys, multi-turn and zero-window drag handling, indexed
-quad validation, and individual-quad packing. The quad geometry fixture verifies
+standard and unsupported keys, FPS enable/disable behavior, debug metadata,
+bounded multi-turn and zero-window drag handling, very large elapsed-time rotation,
+indexed quad validation, and individual-quad packing. The quad geometry fixture verifies
 individual and batched globe traversal separately at all five resolutions.
+
+Core geometry checks also cover custom latitude counts by sampling the complete
+source map at each band's center, and reject nonfinite radii while preserving a valid
+existing mesh. Resource-backed builds must release the temporary Earth byte buffer
+after constructing indexed colors.
+Configuration checks exercise repaired platform/architecture defaults and explicit
+errors for unsupported legacy driver selections.
+
+With `--ogl-contract` or `--igl-contract`, `tests/texture.c` compares every expanded
+RGB texel with its Earth palette source at all five resolutions. It checks repeated
+generation with same-size allocation reuse, changed-size replacement-allocation
+failure, invalid sizes, idempotent cleanup, and the retained dimensions needed by
+XGL after releasing the staging image.
 
 Additional options may be combined in one invocation:
 
@@ -86,6 +100,13 @@ The GLU mipmap path is checked with a 256-pixel texture-size limit and a larger
 source image, as well as a failed mipmap build. Native-rendering statistics must
 omit visibility counts that the graphics API does not report.
 
+Failure injection checks zero display-list allocation, rejected list creation, and
+partial compilation failure with failed-list deletion and complete immediate-mode
+fallback without executing an incomplete cache. Native texture allocation, image
+upload, and mipmap errors must leave textures unloaded and disabled and release their
+resources. FPS toggling, right-button metadata, and both released and retained
+software-raster cache policies are recorded independently of geometry caching.
+
 Each window has its own display callback. Probe hiding and final-window
 resizing/showing dispatch an early initial redraw to check that callbacks exist
 before native window operations and safely do no rendering before globe
@@ -120,6 +141,9 @@ unknown/absent texture capabilities, older headers, optional affine-texture
 subdivision, keyboard controls, tied mouse movement, focus, redraw sizing, queue
 overflow, Escape, and window quit.
 
+Software-texture profiles verify both the default raster release on disable and
+the optional `TEXTURE_CACHE_RASTER=1` retained cache.
+
 At resolution 512 it verifies 1,278 native meshes and 263,676 submitted vertices,
 with 1,026-vertex interior bands and separate nondegenerate polar caps. Textured
 rendering runs at all five resolutions in both native and software capability
@@ -131,7 +155,10 @@ OpenGL's matrix calls.
 The standalone software cases use analytically predicted pixels for row-vector
 transforms, six clipping planes, depth/culling, perspective interpolation,
 wrapping, bilinear/trilinear filtering, mipmap minification, indexed conversion,
-and cleanup.
+and cleanup. Raster-release checks retain mipmaps and the indexed-color lookup
+table for re-enabling at a resized viewport. Invalid matrices, vertices, and UVs
+must be rejected before integer conversion; very large finite repeating UVs
+remain valid.
 
 The recorder headers are **not an SGI SDK or ABI**, and their optional subdivision
 constants are explicit fixture tags. Prototypes are checked against the supplied
@@ -222,6 +249,11 @@ with every native `PolyPolygon` call bounded to 64 polygons. Resource mocks chec
 native lock/unlock/release ownership. The Win16 `MakeProcInstance` callback casts
 suppress only GCC's `-Wcast-function-type` diagnostic.
 
+Fatal-error profiles inject polygon drawing failure, vertex-allocation failure during
+a resolution change, and an oversized initial window. The modal error dialog dispatches
+paint, timer, and input messages: rendering must already be disabled, partial mesh state
+must stay untouched, and cleanup must release the timer, window, heap, and GDI objects.
+
 `tests/win16_shim/windows.h` contains manual-derived call declarations,
 cross-checked against public Win16 API declarations. It is **not Microsoft's
 SDK**, an ABI-compatible replacement, or a GDI renderer. Its `POINT` coordinates
@@ -261,6 +293,15 @@ traversal rather than quadratic polygon matching. The monochrome-68000 case reje
 every Color QuickDraw, Palette Manager, and GWorld call. Tests model
 `OpenPoly`/`ClosePoly`'s automatic pen hiding so outlines cannot accidentally be
 drawn while recording filled polygons.
+
+Readiness checks cover early drawing and late events during teardown. OSD calculations
+exercise the supported 32,767-coordinate boundary with widened arithmetic. Activation,
+resume, and completed drags re-sample display properties, including depth changes that
+require palette, pattern, and GWorld reconstruction.
+
+Polygon and color-pattern allocation failures check that pending polygons are released,
+GWorld pixels unlocked, and the caller's port/device restored before a modal alert.
+Reentrant drawing during the alert is blocked, and repeated teardown must be safe.
 
 `tests/qd_shim/` contains manual-derived call declarations checked against public
 classic interface declarations. It is **not Apple's SDK**, an ABI replacement,

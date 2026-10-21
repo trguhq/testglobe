@@ -34,8 +34,8 @@
 #ifdef DRV_IGL
 #include "drv_igl.h"
 #endif
-#ifdef DRV_PGC
-#include "drv_pgc.h"
+#if defined(DRV_PGC) || defined(DRV_PHG)
+#error The retained PGC/PHIGS headers have no implemented driver; select a supported driver
 #endif
 #ifdef DRV_XGL
 #include "drv_xgl.h"
@@ -45,6 +45,11 @@
 #endif
 #ifdef DRV_QD
 #include "drv_qd.h"
+#endif
+
+#if !defined(DRV_OGL) && !defined(DRV_IGL) && !defined(DRV_MTX) && \
+    !defined(DRV_XGL) && !defined(DRV_GDI) && !defined(DRV_QD)
+#error Select a supported graphics driver through its Makefile target or DRV_ define
 #endif
 
 #if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_MTX) || defined(DRV_XGL) || defined(DRV_GDI) || defined(DRV_QD)

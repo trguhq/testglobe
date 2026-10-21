@@ -16,7 +16,8 @@ OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
 OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o texsoft.o
 OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_ogl.h $(SRC)/err_ext.h \
-    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h $(SRC)/texsoft.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h \
+    $(SRC)/texture.h $(SRC)/tex_ext.h $(SRC)/texsoft.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
@@ -57,7 +58,7 @@ XGL_LDFLAGS = -L$(XGLHOME)/lib -L$(OPENWINHOME)/lib \
 XGL_OBJECTS = x_drv.o x_xgl.o x_err.o x_globe.o x_main.o x_tex.o
 XGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_xgl.h $(SRC)/err_ext.h \
-    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
@@ -73,7 +74,7 @@ IGL_LDFLAGS = -lc_s -lgl_s -lm
 IGL_OBJECTS = i_drv.o i_igl.o i_err.o i_globe.o i_main.o i_tex.o i_soft.o
 IGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_igl.h $(SRC)/texsoft.h $(SRC)/err_ext.h \
-    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
@@ -88,7 +89,7 @@ MTX_LDFLAGS = -link /STACK:16384
 MTX_OBJECTS = drv.obj drv_mtx.obj err.obj globe.obj main.obj
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
-    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_cmap.h \
+    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
     $(SRC)\e_32.h $(SRC)\e_64.h \
     $(XGX_ROOT)\XGX1\HEADERS\DEF.H \
     $(XGX_ROOT)\XGX1\HEADERS\LIBFN.H \
@@ -112,7 +113,7 @@ GDI_DATA = ..\data
 GDI_OBJECTS = g_drv.obj g_gdi.obj g_err.obj g_globe.obj g_main.obj g_soft.obj
 GDI_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_gdi.h $(SRC)\err_ext.h \
-    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_cmap.h \
+    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
     $(SRC)\earthres.h $(SRC)\soft3d.h
 GDI_RESOURCE_DATA = $(GDI_DATA)\e32.bin $(GDI_DATA)\e64.bin \
     $(GDI_DATA)\e128.bin $(GDI_DATA)\e256_0.bin $(GDI_DATA)\e256_1.bin \

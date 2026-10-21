@@ -1,5 +1,7 @@
 /* Shared driver utilities, without native windows or a graphics renderer. */
 #include <assert.h>
+#include <float.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,9 +55,10 @@ void drv_load_earth_chunk(unsigned int resource, unsigned long length,
 #endif
 
 #ifdef GDI
+static DWORD helper_ticks;
 DWORD GetTickCount(void)
 {
-    return 0;
+    return helper_ticks;
 }
 #endif
 
@@ -64,6 +67,21 @@ static void near_float(float actual, float expected)
     float difference;
     difference = actual - expected;
     assert(difference > -0.0001f && difference < 0.0001f);
+}
+
+static float special_float(unsigned long pattern)
+{
+    float value;
+    unsigned char *bytes;
+    const unsigned short endian = 1;
+    unsigned int i, position;
+    assert(sizeof(value) == 4U);
+    bytes = (unsigned char *)&value;
+    for (i = 0; i < 4U; ++i) {
+        position = *(const unsigned char *)&endian ? i : 3U - i;
+        bytes[position] = (unsigned char)(pattern >> (8U * i));
+    }
+    return value;
 }
 
 static void test_input(void)
@@ -86,6 +104,9 @@ static void test_input(void)
     assert(drv_handle_key('A') && !drv_auto_enabled);
     assert(drv_handle_key('o') && !drv_osd_enabled);
     assert(drv_handle_key('O') && drv_osd_enabled);
+    assert(drv_fps_enabled);
+    assert(drv_handle_key('f') && !drv_fps_enabled);
+    assert(drv_handle_key('F') && drv_fps_enabled);
 #ifdef TEXTURE
     assert(!drv_texture_enabled);
     assert(drv_handle_key('t') && drv_texture_enabled);
@@ -110,7 +131,82 @@ static void test_input(void)
     drv_win_width = 640; drv_win_height = 0;
     drv_rotate_drag(-500L, -500L);
     near_float(drv_rot_x, 330.0f); near_float(drv_rot_y, 30.0f);
-    puts("PASS shared input: five resolution keys, case-insensitive toggles, unsupported controls, normalized dragging and zero-sized windows");
+    drv_win_width = drv_win_height = 1U;
+    drv_rotate_drag(2147483647L, -2147483647L);
+    assert(drv_rot_x >= 0.0f && drv_rot_x < 360.0f);
+    assert(drv_rot_y >= 0.0f && drv_rot_y < 360.0f);
+    drv_rot_x = special_float(0x7fc00000UL);
+    drv_rot_y = special_float(0x7f800000UL);
+    drv_rotate_drag(0L, 0L);
+    near_float(drv_rot_x, 0.0f); near_float(drv_rot_y, 0.0f);
+    drv_rot_y = 358.0f;
+    drv_rotate_elapsed(0.5);
+    near_float(drv_rot_y, 3.0f);
+    drv_rotate_elapsed(DBL_MAX);
+    assert(drv_rot_y >= 0.0f && drv_rot_y < 360.0f);
+    drv_rotate_elapsed((double)special_float(0x7fc00000UL));
+    near_float(drv_rot_y, 0.0f);
+    drv_rotate_elapsed((double)special_float(0x7f800000UL));
+    near_float(drv_rot_y, 0.0f);
+    drv_rot_y = special_float(0x7fc00000UL);
+    drv_rotate_elapsed(0.5);
+    near_float(drv_rot_y, 0.0f);
+    drv_rot_y = special_float(0x7f800000UL);
+    drv_rotate_elapsed(0.5);
+    near_float(drv_rot_y, 0.0f);
+    puts("PASS shared input: five resolution keys, case-insensitive toggles including FPS, unsupported controls, bounded multi-turn dragging and zero-sized windows");
+}
+
+static void test_stats(void)
+{
+    char status[128];
+    unsigned char guarded[130];
+    drv_fps_enabled = TRUE;
+    drv_fps_average = 12.5f;
+    globe_tris_num = 1024UL;
+    globe_tris_num_vis = 512UL;
+    globe_quads_num = 512UL;
+    globe_quads_num_vis = 256UL;
+    drv_bytes_per_pixel = 2U;
+    drv_rmouse_pressed = -7;
+    drv_format_stats(status);
+    assert(strstr(status, "12.50 frames per second") != NULL);
+#if DEBUG
+    assert(strstr(status, ", 2 B/px, R=1") != NULL);
+#else
+    assert(strstr(status, "B/px") == NULL && strstr(status, "R=") == NULL);
+#endif
+    assert(drv_handle_key('f') && !drv_fps_enabled);
+    assert(drv_fps_average == 0.0f);
+    drv_rmouse_pressed = FALSE;
+    drv_format_stats(status);
+    assert(strstr(status, "frames per second") == NULL);
+    assert(strstr(status, "triangles") != NULL || strstr(status, "quads") != NULL);
+#if DEBUG
+    assert(strstr(status, ", 2 B/px, R=0") != NULL);
+#endif
+#ifdef GDI
+    helper_ticks = 1000;
+    drv_fps_start();
+    helper_ticks = 1500;
+    drv_fps_stop();
+    drv_rot_y = 0.0f;
+    drv_globe_rotate();
+    near_float(drv_rot_y, 5.0f);
+    assert(drv_fps_average == 0.0f);
+#endif
+    assert(drv_handle_key('F') && drv_fps_enabled);
+    assert(drv_fps_average == 0.0f);
+    memset(guarded, 0xa5, sizeof(guarded));
+    globe_tris_num = globe_tris_num_vis = ULONG_MAX;
+    globe_quads_num = globe_quads_num_vis = ULONG_MAX;
+    drv_fps_average = FLT_MAX;
+    drv_format_stats((char *)guarded + 1);
+    assert(guarded[0] == 0xa5 && guarded[129] == 0xa5);
+    assert(strlen((char *)guarded + 1) < 128U);
+    drv_fps_average = 0.0f;
+    drv_rmouse_pressed = FALSE;
+    puts("PASS shared FPS and metadata: configurable OSD, reset on toggle, debug-only storage/button diagnostics and animation timing preserved");
 }
 
 #ifdef TRISTRIP
@@ -311,6 +407,7 @@ static void test_quad_helpers(void)
 int main(void)
 {
     test_input();
+    test_stats();
 #ifdef TRISTRIP
     test_splitter();
 #ifdef TEXTURE

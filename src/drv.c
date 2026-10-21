@@ -24,6 +24,8 @@
 #include "globe.h"
 #include "glob_ext.h"
 #include <stdio.h>
+#include <math.h>
+#include <float.h>
 #ifdef DRV_EARTH_RESOURCES
 #include "earthres.h"
 #endif
@@ -70,16 +72,19 @@ static struct timeval drv_frame_start, drv_frame_stop;
 #endif
 static float drv_frame_seconds;
 static float drv_fps_history_seconds;
-long drv_fps_history_num;               /* total number of frames recorded */
+static long drv_fps_history_num;        /* frames in this FPS sample */
 int drv_auto_enabled;                   /* automatically rotate */
 
 void drv_format_stats(char *buffer)
 {
+    char status[192];
+    size_t length;
     unsigned long total;
     const char *primitive;
 #ifdef DRV_VISIBLE_COUNTS
     unsigned long visible;
 #endif
+    if (buffer == NULL) return;
 #ifdef QUAD
     total = globe_quads_num;
     primitive = "quads";
@@ -94,13 +99,24 @@ void drv_format_stats(char *buffer)
 #endif
 #endif
 #ifdef DRV_VISIBLE_COUNTS
-    sprintf(buffer, "%lu %s (%lu visible), %.2f frames per second",
-            total, primitive, visible, (double)drv_fps_average);
+    sprintf(status, "%lu %s (%lu visible)", total, primitive, visible);
 #else
     /* Native pipelines cull internally without returning a facet count. */
-    sprintf(buffer, "%lu %s, %.2f frames per second",
-            total, primitive, (double)drv_fps_average);
+    sprintf(status, "%lu %s", total, primitive);
 #endif
+    if (drv_fps_enabled)
+        sprintf(status + strlen(status), ", %.2f frames per second",
+                 (double)drv_fps_average);
+#if DEBUG
+    sprintf(status + strlen(status), ", %u B/px, R=%d", drv_bytes_per_pixel,
+             drv_rmouse_pressed != FALSE);
+#endif
+    /* The public contract is 128 bytes, including diagnostic builds. The
+     * intermediate fits even native float maxima and 64-bit host counts. */
+    length = strlen(status);
+    if (length > 127U) length = 127U;
+    memcpy(buffer, status, length);
+    buffer[length] = 0;
 }
 
 #if defined(TRISTRIP) && defined(DRV_COLORMAP)
@@ -235,21 +251,7 @@ void drv_ext_init(void)
     /* An unsigned long is 32 bits even when the DOS compiler has 16-bit ints. */
     drv_colors = (drv_bits_per_pixel == 32 ? 0xFFFFFFFFUL : 1UL << drv_bits_per_pixel);
     drv_colormap_colors = (drv_colormap_bits == 32 ? 0xFFFFFFFFUL : 1UL << drv_colormap_bits);
-    switch (drv_bits_per_pixel)
-    {
-        case 8:
-            drv_bytes_per_pixel = 1;
-            break;
-        case 16:
-            drv_bytes_per_pixel = 2;
-            break;
-        case 24:
-            drv_bytes_per_pixel = 3;
-            break;
-        default:    /* this should really be an error as it's not handled */
-            drv_bytes_per_pixel = 4;
-            break;
-    }
+    drv_bytes_per_pixel = (drv_bits_per_pixel + 7U) / 8U;
     strcpy(drv_name, DRV_NAME);
     strcpy(drv_help, DRV_HELP);
     drv_rot_x = GLOBE_DEFAULT_ROTATION_X;
@@ -318,6 +320,13 @@ void drv_fps_stop(void)
 #endif
 #endif
 
+    if (!drv_fps_enabled)
+    {
+        drv_fps_average = 0;
+        drv_fps_history_num = 0;
+        drv_fps_history_seconds = 0;
+        return;
+    }
     if (drv_frame_seconds >= 1.0f)
     {
         drv_fps_average = 1.0f / drv_frame_seconds;
@@ -369,6 +378,12 @@ int drv_handle_key(unsigned char key)
         case 'o': case 'O':
             drv_osd_enabled = !drv_osd_enabled;
             return TRUE;
+        case 'f': case 'F':
+            drv_fps_enabled = !drv_fps_enabled;
+            drv_fps_average = 0;
+            drv_fps_history_num = 0;
+            drv_fps_history_seconds = 0;
+            return TRUE;
 #ifdef TEXTURE
         case 't': case 'T':
             globe_toggle_tex();
@@ -378,23 +393,37 @@ int drv_handle_key(unsigned char key)
     }
 }
 
-static float drv_wrap_angle(float angle)
+static float drv_wrap_angle(double angle)
 {
-    while (angle >= 360.0f) angle -= 360.0f;
-    while (angle < 0.0f) angle += 360.0f;
-    return angle;
+    double wrapped;
+    float result;
+    /* C89 comparison rejects NaN as well as either infinity. fmod bounds
+     * work even when a floating-point subtraction of 360 would not change
+     * the input value at all. Native emulation libraries supply fmod too. */
+    if (!(angle >= -DBL_MAX && angle <= DBL_MAX)) return 0.0f;
+    wrapped = fmod(angle, 360.0);
+    if (wrapped < 0.0) wrapped += 360.0;
+    result = (float)wrapped;
+    return result >= 360.0f ? 0.0f : result;
 }
 
 /* Drivers supply deltas in the application's downward-Y mouse convention. */
 void drv_rotate_drag(long dx, long dy)
 {
     if (drv_win_width == 0 || drv_win_height == 0) return;
-    drv_rot_y = drv_wrap_angle(drv_rot_y + (float)dx * 100.0f / drv_win_width);
-    drv_rot_x = drv_wrap_angle(drv_rot_x + (float)dy * 100.0f / drv_win_height);
+    drv_rot_y = drv_wrap_angle((double)drv_rot_y + (double)dx * 100.0 / drv_win_width);
+    drv_rot_x = drv_wrap_angle((double)drv_rot_x + (double)dy * 100.0 / drv_win_height);
+}
+
+/* Native event timers include their wait time in this interval. */
+void drv_rotate_elapsed(double seconds)
+{
+    drv_rot_y = drv_wrap_angle((double)drv_rot_y +
+                                (double)DRV_ROTATE * seconds);
 }
 
 /* rotate globe at a fixed speed */
 void drv_globe_rotate(void)
 {
-    drv_rot_y = drv_wrap_angle(drv_rot_y + DRV_ROTATE * drv_frame_seconds);
+    drv_rotate_elapsed((double)drv_frame_seconds);
 }

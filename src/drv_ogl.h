@@ -30,7 +30,7 @@
 #endif
 
 #define DRV_NAME "OpenGL"
-#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, T = texture mapping"
+#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, T = texture mapping, F = FPS, Esc = exit"
 #define GL_SILENCE_DEPRECATION
 
 #define DRV_WIN_X 100

@@ -58,6 +58,9 @@ static long qd_version = gestalt32BitQD;
 static long cpu_type = gestalt68000, fpu_type = gestaltNoFPU;
 static int fail_gworld;
 static int fail_lock;
+static int failure_profile;
+static int fail_polygon;
+static int fail_pattern;
 static short find_part = inGoAway;
 static unsigned long ticks;
 static unsigned int window_calls, color_calls, world_calls, copy_calls;
@@ -306,7 +309,8 @@ QDErr NewGWorld(GWorldPtr *world, short depth, const Rect *bounds,
     assert(qd_version >= gestalt32BitQD && world_live == NULL);
     assert(world != NULL && bounds != NULL && (depth == 0 || depth == display_depth));
     (void)table; (void)flags;
-    assert(device == (multiple_devices ? &second_device_ptr : &screen_device_ptr));
+    assert(device == (multiple_devices && second_pixmap.pixelSize > screen_pixmap.pixelSize ?
+                        &second_device_ptr : &screen_device_ptr));
     if (fail_gworld) { *world = NULL; return memFullErr; }
     world_live = (GWorldPtr)calloc(1, sizeof(CGrafPort));
     assert(world_live != NULL);
@@ -345,6 +349,7 @@ void PaintRect(const Rect *r) { assert(r != NULL && current_port != NULL); }
 PolyHandle OpenPoly(void)
 {
     assert(recording_poly == NULL && !pen_hidden);
+    if (fail_polygon) return NULL;
     pen_hidden = TRUE;
     recording_poly = (PolyHandle)NewHandle((Size)(sizeof(Polygon) + 12 * sizeof(Point)));
     pending_count = 0; ++poly_count;
@@ -406,7 +411,13 @@ void PenSize(short h, short v) { assert(h >= 0 && v >= 0); }
 void PenNormal(void) {}
 void HidePen(void) { assert(!pen_hidden); pen_hidden = TRUE; }
 void ShowPen(void) { assert(pen_hidden); pen_hidden = FALSE; }
-PixPatHandle NewPixPat(void) { color_api(); ++pixpat_count; return (PixPatHandle)NewHandle((Size)sizeof(PixPat)); }
+PixPatHandle NewPixPat(void)
+{
+    color_api();
+    if (fail_pattern) return NULL;
+    ++pixpat_count;
+    return (PixPatHandle)NewHandle((Size)sizeof(PixPat));
+}
 void DisposePixPat(PixPatHandle p) { color_api(); assert(pixpat_count > 0); DisposeHandle((Handle)p); --pixpat_count; }
 void MakeRGBPat(PixPatHandle p, const RGBColor *c) { color_api(); assert(p != NULL && c != NULL && current_device == qd_device); (*p)->color = *c; }
 void FillCPoly(PolyHandle p, PixPatHandle pattern) { color_api(); assert(pattern != NULL); foreground = (*pattern)->color; record_polygon(p, 64U); }
@@ -430,6 +441,7 @@ short TextWidth(const void *text, short start, short count)
 void DrawText(const void *text, short start, short count)
 {
     assert(text != NULL && start >= 0 && count > 0); ++text_calls;
+    assert(pen.h >= 0 && pen.v > 0 && pen.v <= 32767);
     assert(strstr((const char *)text + start, "texture") == NULL);
     assert(TextWidth(text, start, count) <= (int)drv_win_width - 16);
     assert(strlen(osd_text) + (size_t)count + 2 < sizeof(osd_text));
@@ -489,7 +501,19 @@ void HiliteMenu(short id) { (void)id; }
 Boolean WaitNextEvent(EventMask mask, EventRecord *event, unsigned long sleep, RgnHandle mouse)
 {
     assert(mask == everyEvent && event != NULL); (void)sleep; (void)mouse;
-    if (!contract_started) { contract_started = TRUE; run_contract(); }
+    if (!contract_started) {
+        contract_started = TRUE;
+        if (failure_profile) {
+            assert(qd_ready && qd_world != NULL);
+            SetPort(&desktop_port);
+            SetGDevice(&screen_device_ptr);
+            fail_polygon = failure_profile == 1;
+            fail_pattern = failure_profile == 2;
+            drv_render();
+            assert(!"Expected QuickDraw allocation failure");
+        }
+        run_contract();
+    }
     recorded_count = 0;
     memset(event, 0, sizeof(*event));
     switch (next_event_stage++) {
@@ -503,24 +527,35 @@ Boolean WaitNextEvent(EventMask mask, EventRecord *event, unsigned long sleep, R
             return FALSE;
         case 2:
             assert(fabs((drv_rot_y - loop_yaw) - (10.0 / 60.0)) < 0.001);
+            ticks = 0xfffffffeUL; qd_auto_tick = 0; loop_yaw = drv_rot_y;
+            return FALSE;
+        case 3:
+            assert(drv_rot_y >= 0.0f && drv_rot_y < 360.0f);
+            assert(fabs(drv_rot_y - fmod((double)loop_yaw +
+                       (double)DRV_ROTATE * (4294967295.0 / 60.0), 360.0)) < 0.001);
+            drv_rot_y = (float)HUGE_VAL;
+            ticks = qd_auto_tick = 0;
+            return FALSE;
+        case 4:
+            assert(drv_rot_y == 0.0f);
             event->what = keyDown; event->message = 'a'; loop_yaw = drv_rot_y;
             return TRUE;
-        case 3:
+        case 5:
             assert(!drv_auto_enabled && drv_rot_y == loop_yaw && sleep == 30UL);
             find_part = inContent; mouse_down = TRUE;
             mouse_position.h = 300; mouse_position.v = 200;
             event->what = mouseDown; event->where.h = 280; event->where.v = 180;
             return TRUE;
-        case 4:
+        case 6:
             assert(drv_lmouse_pressed && !drv_auto_enabled && sleep == 1UL);
             loop_yaw = drv_rot_y;
             mouse_position.h += 10; mouse_position.v += 5;
             return FALSE;
-        case 5:
+        case 7:
             assert(drv_lmouse_pressed && sleep == 1UL && drv_rot_y != loop_yaw);
             mouse_down = FALSE; event->what = mouseUp;
             return TRUE;
-        case 6:
+        case 8:
             assert(!drv_lmouse_pressed && sleep == 30UL);
             find_part = inGoAway;
             if (quit_using_key) { event->what = keyDown; event->message = 'q'; event->modifiers = cmdKey; }
@@ -544,8 +579,36 @@ void GetMouse(Point *p) { assert(p != NULL); *p = mouse_position; }
 void GlobalToLocal(Point *p) { assert(p != NULL); }
 void LocalToGlobal(Point *p) { assert(p != NULL); }
 void ParamText(ConstStr255Param a, ConstStr255Param b, ConstStr255Param c, ConstStr255Param d)
-{ (void)b; (void)c; (void)d; assert(a != NULL); fprintf(stderr, "Unexpected Toolbox error: %.*s\n", (int)a[0], a + 1); }
-short StopAlert(short id, void *filter) { assert(id == 128 && filter == NULL); ++alert_calls; return 1; }
+{
+    const char *expected;
+    (void)b; (void)c; (void)d; assert(a != NULL);
+    if (failure_profile) {
+        expected = failure_profile == 1 ? "Cannot allocate QuickDraw polygon" :
+                                          "Cannot allocate QuickDraw color pattern";
+        assert(a[0] == strlen(expected));
+        assert(memcmp(a + 1, expected, a[0]) == 0);
+    }
+    else fprintf(stderr, "Unexpected Toolbox error: %.*s\n", (int)a[0], a + 1);
+}
+short StopAlert(short id, void *filter)
+{
+    unsigned int previous_texts;
+    EventRecord event;
+    assert(id == 128 && filter == NULL); ++alert_calls;
+    if (failure_profile) {
+        assert(!qd_ready && !qd_running && !qd_active && !qd_rendering);
+        assert(!world_locked && qd_locked_pixels == NULL && qd_pending_polygon == NULL);
+        assert(current_port == &desktop_port && current_device == &screen_device_ptr);
+        assert(poly_count == 0 && recording_poly == NULL && !pen_hidden);
+        previous_texts = text_calls;
+        memset(&event, 0, sizeof(event));
+        event.what = updateEvt; event.message = (long)qd_window;
+        qd_event(&event); drv_render(); drv_draw_osd();
+        assert(text_calls == previous_texts);
+        puts("PASS QuickDraw fatal allocation: polygon and locked GWorld released, caller port/device restored before a quiescent modal alert");
+    }
+    return 1;
+}
 void SysBeep(short duration) { (void)duration; }
 void ExitToShell(void) { assert(!"Unexpected ExitToShell"); }
 
@@ -849,7 +912,7 @@ static void check_quad_batches(void)
     sizes[3] = 64; sizes[4] = 512;
     old_width = drv_win_width; old_height = drv_win_height;
     old_failure = fail_gworld; fail_gworld = TRUE;
-    SizeWindow(qd_window, 32767, 32767, TRUE); drv_resize(32767, 32767);
+    SizeWindow(qd_window, 32767, 32767, TRUE); qd_resize(32767, 32767);
     drv_rot_x = drv_rot_y = 0;
     qd_set_transform();
     for (i = 0; i < 1026; ++i) {
@@ -915,8 +978,109 @@ static void check_quad_batches(void)
     if (has_color) SetGDevice(saved_device);
     fail_gworld = old_failure;
     SizeWindow(qd_window, (short)old_width, (short)old_height, TRUE);
-    drv_resize((int)old_width, (int)old_height);
+    qd_resize((int)old_width, (int)old_height);
     puts("PASS QuickDraw quad batches: shared indexed vertices, arbitrary order, 64-quad bounds, exact colors and full seams; individual quad callback retained");
+}
+
+static void check_osd_boundaries(void)
+{
+    unsigned int old_width, old_height, old_texts;
+    int old_failure;
+    Int next;
+    Int (*wide_text)(const char *, Int, short, int);
+    old_width = drv_win_width; old_height = drv_win_height;
+    old_failure = fail_gworld; fail_gworld = TRUE;
+    SizeWindow(qd_window, 32767, 32767, TRUE);
+    qd_resize(32767, 32767);
+    SetPort((GrafPtr)qd_window);
+    if (has_color) SetGDevice(qd_device);
+    osd_text[0] = 0;
+    old_texts = text_calls;
+    wide_text = qd_osd_text;
+    next = wide_text("boundary", 32767L, 32751, TRUE);
+    assert(next == 32779L && text_calls == old_texts + 1U);
+    next = wide_text("outside", next, 32751, TRUE);
+    assert(next == 32791L && text_calls == old_texts + 1U);
+    osd_text[0] = 0;
+    drv_draw_osd();
+    assert(strstr(osd_text, "GWorld off") != NULL);
+    assert(strstr(osd_text, "1-5") != NULL);
+    fail_gworld = old_failure;
+    SizeWindow(qd_window, (short)old_width, (short)old_height, TRUE);
+    qd_resize((int)old_width, (int)old_height);
+    SetPort(&desktop_port);
+    if (has_color) SetGDevice(&screen_device_ptr);
+    puts("PASS QuickDraw OSD bounds: 32-bit baselines cross 32767 without wrapping and native text coordinates remain in range");
+}
+
+static void check_readiness(void)
+{
+    unsigned int previous_texts, previous_polygons;
+    int previous_longitude;
+    float previous_x, previous_y;
+    assert(qd_ready);
+    previous_texts = text_calls;
+    previous_polygons = recorded_count;
+    previous_longitude = globe_longitude;
+    previous_x = drv_rot_x; previous_y = drv_rot_y;
+    qd_ready = FALSE;
+    drv_lmouse_pressed = TRUE;
+    drv_render(); drv_draw_osd();
+    drv_draw_quad_flat_color(globe_verts, globe_verts + 1, globe_verts + 2,
+                              globe_verts + 3, 0);
+    qd_mouse_move(123, 234);
+    event_key('1', 0);
+    assert(globe_longitude == previous_longitude);
+    assert(text_calls == previous_texts && recorded_count == previous_polygons);
+    assert(drv_rot_x == previous_x && drv_rot_y == previous_y);
+    drv_lmouse_pressed = FALSE;
+    qd_ready = TRUE;
+    puts("PASS QuickDraw readiness: disabled lifecycle state blocks render, OSD, mesh keys and drag updates");
+}
+
+static void check_display_refresh(void)
+{
+    short original_depth, first_depth, other_depth, changed_depth;
+    EventRecord event;
+    unsigned int previous_worlds;
+    if (!has_color) return;
+    original_depth = display_depth;
+    first_depth = screen_pixmap.pixelSize;
+    other_depth = second_pixmap.pixelSize;
+    changed_depth = qd_version < gestalt32BitQD ?
+                     (original_depth == 4 ? 8 : 4) :
+                     (original_depth <= 8 ? 16 : 8);
+    memset(&event, 0, sizeof(event));
+    event.what = osEvt;
+    event.message = (long)suspendResumeMessage << 24;
+    qd_event(&event);
+    assert(!qd_active);
+    display_depth = changed_depth;
+    screen_pixmap.pixelSize = changed_depth;
+    if (multiple_devices) second_pixmap.pixelSize = changed_depth;
+    previous_worlds = world_calls;
+    event.message |= resumeFlag;
+    qd_event(&event);
+    assert(qd_active && qd_ready && qd_dirty);
+    assert(qd_depth == changed_depth && drv_bits_per_pixel == (unsigned int)changed_depth);
+    assert(qd_device == &screen_device_ptr);
+    assert((qd_palette != NULL) == (changed_depth <= 8));
+    if (qd_version >= gestalt32BitQD) assert(world_calls > previous_worlds);
+    recorded_count = 0;
+    drv_render();
+    assert(recorded_count > 0 && !world_locked);
+
+    display_depth = original_depth;
+    screen_pixmap.pixelSize = first_depth;
+    second_pixmap.pixelSize = other_depth;
+    event.what = activateEvt;
+    event.message = (long)qd_window;
+    event.modifiers = activeFlag;
+    qd_event(&event);
+    assert(qd_depth == original_depth && drv_bits_per_pixel == (unsigned int)original_depth);
+    assert(qd_device == (multiple_devices ? &second_device_ptr : &screen_device_ptr));
+    assert((qd_palette != NULL) == (original_depth <= 8));
+    puts("PASS QuickDraw display refresh: resume and activation rebuild palette/GWorld policy for changed device depth and restore the selected display");
 }
 
 static int run_contract(void)
@@ -969,6 +1133,8 @@ static int run_contract(void)
     streaming_polygons = FALSE;
     event_key('6', 0); assert(globe_longitude == 512);
     check_quad_batches();
+    check_osd_boundaries();
+    check_readiness();
     event_key('2', 0);
     drv_rot_x = 19.0f; drv_rot_y = 37.0f;
     check_clipping();
@@ -991,6 +1157,15 @@ static int run_contract(void)
     assert(strstr(osd_text, "frames per second") < strstr(osd_text, "GWorld "));
     assert(strstr(osd_text, qd_world != NULL ? "GWorld on" : "GWorld off") != NULL);
     event_key('o', 0); assert(!drv_osd_enabled);
+    event_key('f', 0); assert(!drv_fps_enabled);
+    event_key('o', 0); assert(drv_osd_enabled);
+    osd_text[0] = 0;
+    recorded_count = 0;
+    drv_render();
+    assert(strstr(osd_text, "frames per second") == NULL);
+    assert(strstr(osd_text, "GWorld ") != NULL);
+    event_key('F', 0); assert(drv_fps_enabled);
+    event_key('o', 0); assert(!drv_osd_enabled);
     event_key('a', 0); assert(drv_auto_enabled);
     event_key('a', 0); assert(!drv_auto_enabled);
     palettes = palette_calls;
@@ -1002,18 +1177,19 @@ static int run_contract(void)
     drv_lmouse_pressed = TRUE;
     qd_event(&event); assert(!qd_active && !drv_lmouse_pressed);
     event.message |= resumeFlag; qd_event(&event); assert(qd_active);
+    check_display_refresh();
     memset(&event, 0, sizeof(event)); event.what = mouseDown; find_part = inGrow;
     qd_event(&event); find_part = inGoAway;
     assert(drv_win_width == 800 && drv_win_height == 600);
     build_reference(); recorded_count = 0; drv_render(); check_projection();
-    drv_resize(1, 1); camera_triangle(-2.0, -2.0, -0.5);
+    qd_resize(1, 1); camera_triangle(-2.0, -2.0, -0.5);
     {
         Point tiny[10];
         unsigned int indices[3];
         indices[0] = 0; indices[1] = 1; indices[2] = 2;
         assert(qd_prepare_polygon(indices, 3U, tiny) >= 3);
     }
-    SizeWindow(qd_window, 800, 600, TRUE); drv_resize(800, 600);
+    SizeWindow(qd_window, 800, 600, TRUE); qd_resize(800, 600);
     ticks = 0xfffffff0UL;
     for (i = 0; i < 61; ++i) { drv_fps_start(); drv_fps_stop(); }
     assert(fabs(drv_fps_average - 60.0f) < 0.01);
@@ -1023,9 +1199,22 @@ static int run_contract(void)
     puts("PASS QuickDraw events: adaptive default/explicit window size, 1-5 keys, wrapped OSD and GWorld state, mouse, resize, port restoration and TickCount rollover");
     return 0;
 }
+static void failure_cleanup_audit(void)
+{
+    assert(failure_profile && alert_calls == 1 && contract_started);
+    assert(!qd_ready && !qd_running && !qd_rendering && !world_locked);
+    assert(window_live == NULL && world_live == NULL);
+    assert(ptr_count == 0 && handle_count == 0 && poly_count == 0 && menu_count == 0);
+    assert(world_count == 0 && palette_count == 0 && window_count == 0 && pixpat_count == 0);
+    assert(qd_locked_pixels == NULL && qd_pending_polygon == NULL && !pen_hidden);
+    qd_cleanup();
+    puts("PASS QuickDraw fatal cleanup: all transient and persistent resources released; teardown is idempotent");
+}
+
 int main(int argc, char **argv)
 {
     char *arguments[2];
+    unsigned int old_texts;
     assert(argc == 2);
     screen_mode = strstr(argv[1], "small") != NULL ||
                   strstr(argv[1], "large") != NULL ||
@@ -1052,6 +1241,10 @@ int main(int argc, char **argv)
     if (explicit_start == 1 || explicit_start == 2) expected_width = 400;
     if (explicit_start == 1 || explicit_start == 3) expected_height = 300;
     has_color = strcmp(argv[1], "mono") != 0;
+    if (strcmp(argv[1], "polyfail") == 0) failure_profile = 1;
+    if (strcmp(argv[1], "patternfail") == 0) failure_profile = 2;
+    /* Register first so the production cleanup runs before this audit. */
+    if (failure_profile) assert(atexit(failure_cleanup_audit) == 0);
     display_depth = has_color ? (short)atoi(argv[1]) : 1;
     if (display_depth == 0) display_depth = 8;
     multiple_devices = strcmp(argv[1], "multi") == 0;
@@ -1074,6 +1267,10 @@ int main(int argc, char **argv)
         second_device.gdRect.left = 1024; second_device.gdRect.right = 2048;
         screen_device.gdNextGD = &second_device_ptr;
     }
+    /* Before initialization and after close, late updates must be harmless. */
+    assert(!qd_ready);
+    drv_render(); drv_draw_osd(); event_key('a', 0);
+    assert(!drv_auto_enabled && text_calls == 0);
     arguments[0] = "testglobe"; arguments[1] = NULL;
     assert(testglobe_main(1, arguments) == 0);
     assert(contract_started && window_live == NULL);
@@ -1081,6 +1278,10 @@ int main(int argc, char **argv)
     assert(world_count == 0 && palette_count == 0 && window_count == 0 && !world_locked);
     assert(pixpat_count == 0 && !pen_hidden);
     assert(alert_calls == 0);
+    old_texts = text_calls;
+    assert(!qd_ready && !qd_running);
+    drv_render(); drv_draw_osd(); event_key('1', 0);
+    assert(text_calls == old_texts && globe_verts_num == 0);
     assert(current_device == (has_color ? &screen_device_ptr : NULL));
     puts("PASS QuickDraw cleanup: polygon/heap/palette/menu/window/GWorld ownership and close path");
     return 0;

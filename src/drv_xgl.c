@@ -145,7 +145,7 @@ static void xgl_projection(int width, int height)
                    XGL_CTX_VIEW_CLIP_BOUNDS, &bounds, 0);
 }
 
-void drv_resize(int width, int height)
+static void xgl_resize(int width, int height)
 {
     /* X11 can send zero geometry while a window is being withdrawn. */
     if (width < 1 || height < 1) return;
@@ -181,7 +181,8 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
                                    visual.visual, AllocNone);
     memset(&attributes, 0, sizeof(attributes));
     event_mask = ExposureMask | StructureNotifyMask | KeyPressMask |
-                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
+                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
+                 FocusChangeMask;
     attributes.colormap = xgl_colormap;
     attributes.border_pixel = 0;
     attributes.background_pixel = 0;
@@ -261,7 +262,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
         error("Cannot create Sun XGL contexts/transforms");
     xgl_object_set(xgl_context, XGL_CTX_LOCAL_MODEL_TRANS, xgl_model,
                    XGL_CTX_VIEW_TRANS, xgl_view, 0);
-    drv_resize((int)drv_win_width, (int)drv_win_height);
+    xgl_resize((int)drv_win_width, (int)drv_win_height);
     xgl_checkerrors();
     return 1;
 }
@@ -300,7 +301,7 @@ static void xgl_texture_switch(int enabled)
     }
 }
 
-void drv_texture_load(void)
+static void xgl_texture_load(void)
 {
     Xgl_mem_ras memory;
     Xgl_usgn32 *pixels;
@@ -383,7 +384,7 @@ void drv_texture_load(void)
 
 void drv_texture_enable(void)
 {
-    if (!drv_texture_loaded) drv_texture_load();
+    if (!drv_texture_loaded) xgl_texture_load();
     xgl_texture_switch(TRUE);
     xgl_checkerrors();
     drv_texture_enabled = TRUE;
@@ -575,7 +576,7 @@ static void xgl_event(XEvent *event)
             if (event->xexpose.count == 0) xgl_dirty = TRUE;
             break;
         case ConfigureNotify:
-            drv_resize(event->xconfigure.width, event->xconfigure.height);
+            xgl_resize(event->xconfigure.width, event->xconfigure.height);
             break;
         case KeyPress:
             length = XLookupString(&event->xkey, text, sizeof(text), &symbol, NULL);
@@ -589,12 +590,27 @@ static void xgl_event(XEvent *event)
                 xgl_old_x = event->xbutton.x;
                 xgl_old_y = event->xbutton.y;
             }
+            if (event->xbutton.button == Button3)
+            {
+                drv_rmouse_pressed = TRUE;
+                xgl_dirty = TRUE;
+            }
             break;
         case ButtonRelease:
             if (event->xbutton.button == Button1) drv_lmouse_pressed = FALSE;
+            if (event->xbutton.button == Button3)
+            {
+                drv_rmouse_pressed = FALSE;
+                xgl_dirty = TRUE;
+            }
             break;
         case MotionNotify:
             xgl_mouse_move(event->xmotion.x, event->xmotion.y);
+            break;
+        case FocusOut:
+            drv_lmouse_pressed = FALSE;
+            drv_rmouse_pressed = FALSE;
+            xgl_dirty = TRUE;
             break;
         case ClientMessage:
             if (event->xclient.message_type == xgl_wm_protocols &&

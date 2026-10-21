@@ -51,6 +51,8 @@ static unsigned char gdi_foreground;
 static int gdi_palette_foreground;
 static int gdi_has_fpu;
 static int gdi_ready;
+static int gdi_failed;
+static int gdi_timer_active;
 static int gdi_dirty = TRUE;
 static int gdi_last_x;
 static int gdi_last_y;
@@ -87,9 +89,23 @@ static void gdi_delete_buffer(void)
     gdi_previous_palette = 0;
 }
 
+/* A modal dialog can dispatch paint and timer messages. Quiesce the driver
+ * before reporting an error or destroying any of its native resources. */
+static void gdi_quiesce(void)
+{
+    gdi_ready = FALSE;
+    gdi_dirty = FALSE;
+    drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
+    ReleaseCapture();
+    if (gdi_timer_active && gdi_window != 0)
+        KillTimer(gdi_window, GDI_TIMER);
+    gdi_timer_active = FALSE;
+}
+
 static void gdi_cleanup(void)
 {
     unsigned int i;
+    gdi_quiesce();
     if (gdi_window != 0) DestroyWindow(gdi_window);
     gdi_delete_buffer();
     for (i = 0; i < 256; ++i)
@@ -112,6 +128,10 @@ static void gdi_cleanup(void)
 
 void gdi_error(char *message)
 {
+    if (gdi_failed) exit(1);
+    gdi_failed = TRUE;
+    drv_auto_enabled = FALSE;
+    gdi_quiesce();
     MessageBox(gdi_window, message, "testglobe - Windows GDI error",
                MB_OK | MB_ICONEXCLAMATION);
     exit(1);
@@ -119,6 +139,7 @@ void gdi_error(char *message)
 
 void drv_close(void)
 {
+    gdi_quiesce();
     if (gdi_window != 0)
         DestroyWindow(gdi_window);
     else
@@ -236,8 +257,9 @@ static void gdi_make_buffer(void)
     gdi_dirty = TRUE;
 }
 
-void drv_resize(int width, int height)
+static void gdi_resize(int width, int height)
 {
+    if (gdi_failed) return;
     if (width <= 0 || height <= 0) return;
     if ((unsigned long)width > 32767UL || (unsigned long)height > 32767UL)
         gdi_error("Windows GDI client dimensions exceed signed 16-bit coordinates");
@@ -256,6 +278,8 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     unsigned int i;
     unsigned int brightness, darkest, lightest;
     int screen_width, screen_height;
+    long outer_width, outer_height;
+    if (gdi_failed) return 0;
     if (in_x > 0) drv_win_x = (unsigned int)in_x;
     if (in_y > 0) drv_win_y = (unsigned int)in_y;
     dc = GetDC(0);
@@ -308,18 +332,28 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     if (!RegisterClass(&window_class)) gdi_error("Cannot register GDI window class");
     gdi_registered = TRUE;
     bounds.left = bounds.top = 0;
-    bounds.right = (int)drv_win_width;
-    bounds.bottom = (int)drv_win_height;
+    bounds.right = bounds.bottom = 0;
+    /* Query border offsets around a zero-sized client rectangle first.
+     * Adjusting a near-32767 client RECT directly can overflow Win16's
+     * signed fields before the resulting outer dimensions are checked. */
     AdjustWindowRect(&bounds, WS_OVERLAPPEDWINDOW, FALSE);
+    outer_width = (long)drv_win_width + (long)bounds.right - (long)bounds.left;
+    outer_height = (long)drv_win_height + (long)bounds.bottom - (long)bounds.top;
+    if (drv_win_width == 0 || drv_win_height == 0 ||
+        drv_win_x > 32767U || drv_win_y > 32767U ||
+        outer_width <= 0 || outer_height <= 0 ||
+        outer_width > 32767L || outer_height > 32767L)
+        gdi_error("Windows GDI window dimensions exceed signed 16-bit coordinates");
     gdi_window = CreateWindow(gdi_class_name, TESTGLOBE_NAME,
                               WS_OVERLAPPEDWINDOW, (int)drv_win_x, (int)drv_win_y,
-                              bounds.right - bounds.left, bounds.bottom - bounds.top,
+                              (int)outer_width, (int)outer_height,
                               0, 0, gdi_instance, NULL);
     if (gdi_window == 0) gdi_error("Cannot create Windows GDI window");
     gdi_realize_palette(gdi_palette_foreground);
     gdi_make_buffer();
     if (SetTimer(gdi_window, GDI_TIMER, 30, NULL) == 0)
         gdi_error("Cannot create Windows animation timer");
+    gdi_timer_active = TRUE;
     ShowWindow(gdi_window, gdi_show);
     UpdateWindow(gdi_window);
     return 1;
@@ -387,7 +421,7 @@ static int gdi_prepare_polygon(const unsigned int *indices,
 {
     Gdi_float_point float_a[GDI_MAX_POLY], float_b[GDI_MAX_POLY];
     Soft3d_screen_point screen[GDI_MAX_POLY];
-    float focal;
+    float focal, projected_x, projected_y;
     int i, count;
     if (indices == NULL || destination == NULL ||
         (index_count != 3U && index_count != 4U)) return 0;
@@ -404,10 +438,17 @@ static int gdi_prepare_polygon(const unsigned int *indices,
         focal = (float)drv_win_height * 1.2071067811865475f;
         for (i = 0; i < count; ++i)
         {
-            screen[i].x = (long)((float)drv_win_width / 2.0f +
-                                  float_a[i].x * focal / -float_a[i].z);
-            screen[i].y = (long)((float)drv_win_height / 2.0f -
-                                  float_a[i].y * focal / -float_a[i].z);
+            projected_x = (float)drv_win_width / 2.0f +
+                           float_a[i].x * focal / -float_a[i].z;
+            projected_y = (float)drv_win_height / 2.0f -
+                           float_a[i].y * focal / -float_a[i].z;
+            /* Bound conversion and the shared integer clipper's deltas,
+             * including nonfinite results from invalid external vertices. */
+            if (!(projected_x >= -134217727.0 && projected_x <= 134217727.0 &&
+                  projected_y >= -134217727.0 && projected_y <= 134217727.0))
+                return 0;
+            screen[i].x = (long)projected_x;
+            screen[i].y = (long)projected_y;
         }
     }
     else
@@ -439,7 +480,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     int row, facet, total, points, j;
     float source[3];
     HBRUSH previous;
-    if (gdi_buffer == 0 || vertex_count == 0 || quad_count == 0 ||
+    if (gdi_failed || gdi_buffer == 0 || vertex_count == 0 || quad_count == 0 ||
         vertices == NULL || indices == NULL || colors == NULL) return;
     if (!drv_validate_quadbatch(vertex_count, quad_count, indices))
         gdi_error("GDI quad batch or vertex index is out of range");
@@ -500,7 +541,7 @@ void drv_draw_osd(void)
     RECT status_bounds, help_bounds;
     int help_height;
     UINT flags;
-    if (drv_win_width <= 16 || drv_win_height <= 16) return;
+    if (gdi_failed || drv_win_width <= 16 || drv_win_height <= 16) return;
     drv_format_stats(status);
     strcat(status, gdi_has_fpu ? ", 80387 math" : ", fixed-point math");
     SetBkMode(gdi_buffer, TRANSPARENT);
@@ -529,7 +570,7 @@ void drv_render(void)
 {
     RECT bounds;
     HPEN previous;
-    if (gdi_buffer == 0 || globe_verts_num == 0) return;
+    if (gdi_failed || !gdi_ready || gdi_buffer == 0 || globe_verts_num == 0) return;
     drv_fps_start();
     bounds.left = bounds.top = 0;
     bounds.right = (int)drv_win_width;
@@ -549,7 +590,7 @@ void drv_render(void)
 static void gdi_present(HDC dc)
 {
     HPALETTE previous;
-    if (gdi_buffer == 0) return;
+    if (gdi_failed || gdi_buffer == 0) return;
     previous = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
     RealizePalette(dc);
     BitBlt(dc, 0, 0, (int)drv_win_width, (int)drv_win_height,
@@ -559,6 +600,7 @@ static void gdi_present(HDC dc)
 
 static void gdi_keyboard(unsigned char key)
 {
+    if (gdi_failed) return;
     if (key == 27) { drv_close(); return; }
     if (!drv_handle_key(key)) return;
     if (key == 'a' || key == 'A') gdi_auto_tick = GetTickCount();
@@ -578,12 +620,33 @@ static void gdi_mouse_move(int x, int y)
     gdi_last_y = y;
 }
 
+static void gdi_mouse_metadata_changed(void)
+{
+#if DEBUG
+    if (gdi_ready && !gdi_failed && gdi_window != 0)
+    {
+        gdi_dirty = TRUE;
+        InvalidateRect(gdi_window, NULL, FALSE);
+    }
+#endif
+}
+
 LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
                                  WPARAM wparam, LPARAM lparam)
 {
     PAINTSTRUCT paint;
     HDC dc;
     DWORD tick, elapsed;
+    if (gdi_failed && message != WM_DESTROY)
+    {
+        if (message == WM_PAINT)
+        {
+            dc = BeginPaint(window, &paint);
+            (void)dc;
+            EndPaint(window, &paint);
+        }
+        return 0;
+    }
     switch (message)
     {
         case WM_PAINT:
@@ -595,7 +658,7 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
         case WM_ERASEBKGND: return 1;
         case WM_SIZE:
             if (wparam != SIZE_MINIMIZED)
-                drv_resize((int)(unsigned short)LOWORD(lparam),
+                gdi_resize((int)(unsigned short)LOWORD(lparam),
                             (int)(unsigned short)HIWORD(lparam));
             return 0;
         case WM_CHAR: gdi_keyboard((unsigned char)wparam); return 0;
@@ -607,7 +670,17 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
             return 0;
         case WM_LBUTTONUP:
             drv_lmouse_pressed = FALSE;
-            ReleaseCapture();
+            if (!drv_rmouse_pressed) ReleaseCapture();
+            return 0;
+        case WM_RBUTTONDOWN:
+            drv_rmouse_pressed = TRUE;
+            SetCapture(window);
+            gdi_mouse_metadata_changed();
+            return 0;
+        case WM_RBUTTONUP:
+            drv_rmouse_pressed = FALSE;
+            if (!drv_lmouse_pressed) ReleaseCapture();
+            gdi_mouse_metadata_changed();
             return 0;
         case WM_MOUSEMOVE:
             gdi_mouse_move((int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam));
@@ -615,7 +688,9 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
         case WM_KILLFOCUS:
         case WM_CANCELMODE:
             drv_lmouse_pressed = FALSE;
+            drv_rmouse_pressed = FALSE;
             ReleaseCapture();
+            gdi_mouse_metadata_changed();
             return 0;
         case WM_ACTIVATE:
             gdi_palette_foreground = wparam != WA_INACTIVE;
@@ -651,15 +726,14 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
                 elapsed = (tick - gdi_auto_tick) & 0xffffffffUL;
                 gdi_auto_tick = tick;
                 /* Include timer wait time, not only the duration of GDI calls. */
-                drv_rot_y += (float)elapsed * (DRV_ROTATE / 1000.0f);
-                while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
+                drv_rotate_elapsed((double)elapsed / 1000.0);
                 gdi_dirty = TRUE;
                 InvalidateRect(window, NULL, FALSE);
             }
             return 0;
         case WM_CLOSE: drv_close(); return 0;
         case WM_DESTROY:
-            KillTimer(window, GDI_TIMER);
+            gdi_quiesce();
             gdi_window = 0;
             PostQuitMessage(0);
             return 0;
@@ -671,6 +745,7 @@ void drv_loop(void)
 {
     MSG message;
     int result;
+    if (gdi_failed || gdi_window == 0) return;
     gdi_ready = TRUE;
     gdi_dirty = TRUE;
     InvalidateRect(gdi_window, NULL, FALSE);

@@ -292,6 +292,9 @@ int main(void)
         globe_toggle_res((char)('1' + i));
         assert(globe_longitude == resolution);
         assert(globe_latitude == resolution / 2);
+        /* The original resource bytes are released after copying palette
+         * indices; only the mesh, colors and three bounded packets remain. */
+        assert(allocations == 5UL);
         assert(sizeof(Color) == 1U);
         batch_calls = rendered_quads = cap_quads = triangles = 0UL;
         submitted_vertices = shared_edges = 0UL;

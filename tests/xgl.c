@@ -393,9 +393,10 @@ void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
     assert(point->x >= 0 && point->x < drv_win_width);
     assert(point->y >= 0 && point->y < drv_win_height);
     assert(strstr((char *)text, "texture mapping") != NULL);
-    if (strstr((char *)text, "frames per second") != NULL) {
-        sprintf(expected, "%lu triangles,", globe_tris_num);
-        assert(strstr((char *)text, expected) == (char *)text);
+    sprintf(expected, "%lu triangles", globe_tris_num);
+    if (strstr((char *)text, expected) == (char *)text) {
+        assert((strstr((char *)text, "frames per second") != NULL) ==
+               (drv_fps_enabled != 0));
         assert(strstr((char *)text, "quads") == NULL);
         assert(strstr((char *)text, "visible") == NULL);
     }
@@ -467,7 +468,7 @@ static void send_key(KeySym symbol)
     drain_events();
 }
 
-static void send_mouse(int type, int x, int y)
+static void send_mouse(int type, unsigned int button, int x, int y)
 {
     XEvent event;
     long mask;
@@ -481,7 +482,7 @@ static void send_mouse(int type, int x, int y)
     } else {
         event.xbutton.display = xgl_display;
         event.xbutton.window = xgl_window;
-        event.xbutton.button = Button1;
+        event.xbutton.button = button;
         event.xbutton.x = x; event.xbutton.y = y;
         mask = type == ButtonPress ? ButtonPressMask : ButtonReleaseMask;
     }
@@ -538,28 +539,45 @@ int main(int argc, char **argv)
     assert(mipmap_builds == 1);
     send_key(XK_o); assert(!drv_osd_enabled); check_render();
     send_key(XK_o); assert(drv_osd_enabled); check_render();
+    send_key(XK_f); assert(!drv_fps_enabled); check_render();
+    send_key(XK_F); assert(drv_fps_enabled); check_render();
     puts("PASS XGL recorded rendering: native strip/facet packets, transforms, depth/cull, RGB texture rows, mipmap descriptor and OSD toggle");
 
     old_x = drv_rot_x; old_y = drv_rot_y;
-    send_mouse(ButtonPress, 100, 100);
+    send_mouse(ButtonPress, Button1, 100, 100);
     assert(drv_lmouse_pressed);
-    send_mouse(MotionNotify, 190, 145);
+    send_mouse(MotionNotify, Button1, 190, 145);
     assert(drv_rot_x != old_x && drv_rot_y != old_y);
-    send_mouse(ButtonRelease, 190, 145);
+    send_mouse(ButtonRelease, Button1, 190, 145);
     assert(!drv_lmouse_pressed);
     old_x = drv_rot_x; old_y = drv_rot_y;
-    send_mouse(MotionNotify, 210, 160);
+    send_mouse(MotionNotify, Button1, 210, 160);
     assert(drv_rot_x == old_x && drv_rot_y == old_y);
+    send_mouse(ButtonPress, Button3, 210, 160);
+    assert(drv_rmouse_pressed);
+    send_mouse(ButtonRelease, Button3, 210, 160);
+    assert(!drv_rmouse_pressed);
+    send_mouse(ButtonPress, Button1, 210, 160);
+    send_mouse(ButtonPress, Button3, 210, 160);
+    memset(&close, 0, sizeof(close));
+    close.xfocus.type = FocusOut;
+    close.xfocus.display = xgl_display;
+    close.xfocus.window = xgl_window;
+    close.xfocus.mode = NotifyNormal;
+    close.xfocus.detail = NotifyNonlinear;
+    assert(XSendEvent(xgl_display, xgl_window, False, FocusChangeMask, &close));
+    drain_events();
+    assert(!drv_lmouse_pressed && !drv_rmouse_pressed);
     send_key(XK_a); assert(drv_auto_enabled); check_render();
     send_key(XK_a); assert(!drv_auto_enabled);
     old_width = drv_win_width; old_height = drv_win_height;
-    drv_resize(0, 0);
+    xgl_resize(0, 0);
     assert(drv_win_width == old_width && drv_win_height == old_height);
     XResizeWindow(xgl_display, xgl_window, 800, 600);
     drain_events();
     assert(drv_win_width == 800 && drv_win_height == 600 && resize_calls > 1);
     check_render();
-    puts("PASS XGL X11 input: real window/events, all resolution keys, mouse drag/release, autorotation, resize and projection");
+    puts("PASS XGL X11 input: real window/events, all resolution keys, FPS toggle, mouse drag/release and right-button metadata, autorotation, resize and projection");
     memset(&close, 0, sizeof(close));
     close.xclient.type = ClientMessage;
     close.xclient.display = xgl_display;

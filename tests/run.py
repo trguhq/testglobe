@@ -18,7 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(command, expected_returncode=0, expected_stderr=None, required_output=None):
-    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    try:
+        result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True,
+                                timeout=60)
+    except subprocess.TimeoutExpired:
+        raise SystemExit("Timed out: " + shlex.join(str(part) for part in command))
     if (result.returncode != expected_returncode or
             (expected_stderr is not None and result.stderr != expected_stderr) or
             (required_output is not None and required_output not in result.stdout)):
@@ -46,6 +50,39 @@ def check_driver_api(command, driver, hidden_symbols):
     print("PASS " + driver + " rendering API: supported callbacks declared, unsupported primitives hidden and plural globe entry points")
 
 
+def check_configurations(cc, common):
+    source = ["-fsyntax-only", str(ROOT / "tests/configuration.c")]
+    clean = ["-U__APPLE__", "-U__MACH__", "-Uapplec", "-U__SC__", "-Usparc", "-U__sparc"]
+    modes = (
+        ["-D__APPLE__", "-D__MACH__", "-DTEST_DRIVER_OGL"],
+        ["-D__APPLE__", "-DTEST_DRIVER_QD"],
+        ["-Dapplec", "-DTEST_DRIVER_QD"],
+        ["-D__SC__", "-DTEST_DRIVER_QD"],
+        ["-Dsparc", "-DTEST_DRIVER_XGL"],
+        ["-DDRV_GDI", "-DTEST_DRIVER_GDI"],
+        ["-DDRV_MTX", "-DTEST_DRIVER_MTX"],
+        ["-DDRV_QD", "-DTEST_DRIVER_QD"],
+        ["-DDRV_OGL", "-D__APPLE__", "-DTEST_DRIVER_OGL"],
+        ["-DDRV_OGL", "-D__BORLANDC__", "-DTEST_DRIVER_OGL"],
+    )
+    for options in modes:
+        run(cc + common + clean + options + source)
+    invalid = (
+        (["-D__BORLANDC__"], "Select a supported graphics driver"),
+        (["-DDRV_PGC"], "retained PGC/PHIGS headers have no implemented driver"),
+        (["-DDRV_PHG"], "retained PGC/PHIGS headers have no implemented driver"),
+        (["-DDRV_OGL", "-DFLAT", "-DSEG86"], "Choose exactly one memory architecture"),
+    )
+    for options, expected in invalid:
+        result = subprocess.run(cc + common + clean + options + source,
+                                cwd=ROOT, text=True, capture_output=True, timeout=60)
+        if result.returncode == 0 or expected not in result.stderr:
+            print(result.stdout, end="")
+            print(result.stderr, end="")
+            raise SystemExit("Configuration guard failed: " + " ".join(options))
+    print("PASS build configuration: platform defaults infer matching memory models, explicit drivers win, unsupported legacy selections and conflicting architectures fail clearly")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sdk", default=os.environ.get("MATROX_SDK"),
@@ -69,27 +106,36 @@ def main():
               "-fno-omit-frame-pointer", "-I" + str(ROOT / "src")]
     with tempfile.TemporaryDirectory(prefix="testglobe-tests-") as temporary:
         output = Path(temporary)
+        check_configurations(cc, common)
         flat = ["-DFLAT", "-DDRV_OGL"]
         tri_mode = ["-include", str(ROOT / "tests/tri_mode.h")]
         api_source = ["-fsyntax-only", str(ROOT / "tests/driver_api.c")]
         api_modes = (
-            ("OpenGL", flat, ("drv_draw_quad_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tristrip_flat_rgb")),
-            ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_rgb", "drv_draw_quad_flat_color")),
-            ("Sun XGL", ["-DFLAT", "-DDRV_XGL"], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_color")),
-            ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tristrip_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tri_flat_uv")),
-            ("GDI", ["-DSEG86", "-DDRV_GDI", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb")),
-            ("QuickDraw", ["-DSEG68", "-DDRV_QD"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb")),
+            ("OpenGL", flat, ("drv_draw_quad_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tristrip_flat_rgb", "drv_resize", "drv_texture_load")),
+            ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_rgb", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
+            ("Sun XGL", ["-DFLAT", "-DDRV_XGL"], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
+            ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tristrip_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tri_flat_uv", "earth_data_128", "texture_generate")),
+            ("GDI", ["-DSEG86", "-DDRV_GDI", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
+            ("QuickDraw", ["-DSEG68", "-DDRV_QD"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
         )
         for driver, options, hidden in api_modes:
-            check_driver_api(cc + common + options + api_source, driver, hidden)
+            check_driver_api(cc + common + options + api_source, driver,
+                             hidden + ("drv_fps_history_num",))
         run(cc + common + flat + tri_mode + api_source)
         run(cc + common + flat + [str(ROOT / "tests/driver_helpers.c"),
             str(ROOT / "src/drv.c"), "-lm", "-o", str(output / "flat_helpers")])
         run([str(output / "flat_helpers")])
+        run(cc + common + flat + ["-DDEBUG=1", str(ROOT / "tests/driver_helpers.c"),
+            str(ROOT / "src/drv.c"), "-lm", "-o", str(output / "debug_helpers")])
+        run([str(output / "debug_helpers")])
         run(cc + common + flat + tri_mode + [str(ROOT / "tests/geometry.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "geometry")])
         run([str(output / "geometry")])
+        for mode in ("nan", "infinity"):
+            run([str(output / "geometry"), mode], expected_returncode=1,
+                expected_stderr="ERROR - Invalid globe dimensions\n",
+                required_output="PASS invalid globe radius: nonfinite input fails before replacing the existing mesh")
         run(cc + common + flat + [str(ROOT / "tests/ogl_strips.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "ogl_strips")])
@@ -128,6 +174,10 @@ def main():
                          "small512", "large800", "tall640", "explicit",
                          "explicitwidth", "explicitheight"):
                 run([str(output / "qd"), mode])
+            for mode in ("polyfail", "patternfail"):
+                run([str(output / "qd"), mode], expected_returncode=1,
+                    expected_stderr="",
+                    required_output="PASS QuickDraw fatal cleanup: all transient and persistent resources released; teardown is idempotent")
         if args.gdi_contract:
             run(cc + common + gdi + ["-fsyntax-only", str(ROOT / "src/main.c")])
             # Win16 MakeProcInstance requires FARPROC/WNDPROC casts;
@@ -137,8 +187,17 @@ def main():
                 str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi")])
             for mode in ("fpu", "fixed", "287", "small640", "small512", "tall640",
-                         "fpu-escape", "fixed-escape"):
+                         "fpu-escape", "fixed-escape", "maxframe"):
                 run([str(output / "gdi"), mode])
+            for mode in ("fatal-poly", "fatal-oom", "fatal-size"):
+                run([str(output / "gdi"), mode], expected_returncode=1,
+                    expected_stderr="",
+                    required_output="PASS GDI fatal error: modal paint/timer/input dispatch cannot reenter rendering or partial scene state, and cleanup releases all resources")
+            run(cc + common + gdi + ["-DDEBUG=1", "-Wno-cast-function-type",
+                str(ROOT / "tests/gdi.c"), str(ROOT / "src/soft3d.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_debug")])
+            run([str(output / "gdi_debug"), "fpu"])
         if args.xgl_contract:
             if not shutil.which("xvfb-run"):
                 parser.error("--xgl-contract requires xvfb-run and Xvfb on PATH")
@@ -161,13 +220,30 @@ def main():
                 str(ROOT / "src/err.c"), "-lm"]
             run(cc + common + ogl + ["-DNO_GENMIPMAP"] + ogl_sources +
                 ["-o", str(output / "ogl")])
-            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited"):
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail"):
                 run([str(output / "ogl"), mode])
+            for mode in ("newlistfail", "listcompilefail"):
+                run([str(output / "ogl"), mode],
+                    expected_stderr="OpenGL error: Out of memory!\n" * 30,
+                    required_output="PASS OpenGL display-list compilation failure: rejected or incomplete lists are deleted before complete immediate rendering")
             run([str(output / "ogl"), "gluerror"], expected_returncode=1,
                 expected_stderr="ERROR - Cannot build OpenGL texture mipmaps\n",
                 required_output="PASS OpenGL GLU failure: failed mipmaps are not marked loaded and resources are released")
             run(cc + common + ogl + ogl_sources + ["-o", str(output / "ogl_modern")])
             run([str(output / "ogl_modern"), "rgba"])
+            for mode in ("newlistfail", "listcompilefail"):
+                run([str(output / "ogl_modern"), mode],
+                    expected_stderr="OpenGL error: Out of memory!\n" * 30,
+                    required_output="PASS OpenGL display-list compilation failure: rejected or incomplete lists are deleted before complete immediate rendering")
+            for mode in ("texallocerror", "texuploaderror", "mipmaperror"):
+                message = ("Cannot allocate OpenGL texture" if mode == "texallocerror"
+                           else "Cannot upload OpenGL texture mipmaps")
+                run([str(output / "ogl_modern"), mode], expected_returncode=1,
+                    expected_stderr="OpenGL error: Out of memory!\nERROR - " + message + "\n",
+                    required_output="PASS OpenGL native texture failure: allocation/upload/mipmap errors never commit loaded state and release all resources")
+            run(cc + common + ogl + ["-DNO_GENMIPMAP", "-DTEXTURE_CACHE_RASTER=1"] +
+                ogl_sources + ["-o", str(output / "ogl_cached")])
+            run([str(output / "ogl_cached"), "indexed"])
             run(cc + common + ogl + ["-DNO_GENMIPMAP"] + tri_mode + ogl_sources +
                 ["-o", str(output / "ogl_tri")])
             for mode in ("rgba", "indexed"):
@@ -194,11 +270,20 @@ def main():
                 str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "igl_affine")])
             run([str(output / "igl_affine"), "affine"])
+            run(cc + common + igl + ["-DTEXTURE_CACHE_RASTER=1",
+                str(ROOT / "tests/igl.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / "igl_cached")])
+            run([str(output / "igl_cached"), "software"])
         if args.igl_contract or args.ogl_contract:
             run(cc + common + ["-DFLAT", "-DDRV_OGL",
                 str(ROOT / "tests/texsoft.c"), str(ROOT / "src/texsoft.c"),
                 "-lm", "-o", str(output / "texsoft")])
             run([str(output / "texsoft")])
+            run(cc + common + ["-DFLAT", "-DDRV_OGL",
+                str(ROOT / "tests/texture.c"), "-o", str(output / "texture")])
+            run([str(output / "texture")])
         if not args.sdk:
             print("SKIP Matrox SDK contract checks: supply --sdk or MATROX_SDK")
             return

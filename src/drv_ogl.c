@@ -36,7 +36,7 @@
 #endif
 
 /* OpenGL font pointer */
-void *ogl_font;
+static void *ogl_font;
 
 /* previous mouse pointer location */
 static int ogl_old_x;
@@ -45,7 +45,7 @@ static int ogl_old_y;
 /* display list for currently selected sphere tesselation. Lazily constructed
  * on first use.
  */
-static int dlist;
+static GLuint dlist;
 
 static GLuint texture_id;
 static int ogl_window;
@@ -72,6 +72,7 @@ static void ogl_cleanup(void)
         glutDestroyWindow(ogl_window);
     }
     ogl_window = 0; dlist = 0; texture_id = 0;
+    drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     free(ogl_index_pixels); ogl_index_pixels = NULL; ogl_index_capacity = 0;
     texsoft_free(); texture_free(); globe_free();
 }
@@ -238,15 +239,19 @@ void drv_close(void)
     exit(0);
 }
 
-/* error handling */
-void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const char* message, const void* userParam)
+/* Portable diagnostics do not depend on optional debug-callback extensions. */
+static void ogl_message(GLenum code, const char *message)
 {
-    (void)source; (void)id; (void)length; (void)userParam;
-    fprintf(stderr, "GL CALLBACK: type = 0x%x, severity = 0x%x, message = %s\n", type, severity, message );
+#if DEBUG
+    fprintf(stderr, "OpenGL error 0x%x: %s!\n", (unsigned int)code, message);
+#else
+    (void)code;
+    fprintf(stderr, "OpenGL error: %s!\n", message);
+#endif
 }
 
 /* keyboard input */
-void ogl_keyboard(unsigned char key, int x, int y)
+static void ogl_keyboard(unsigned char key, int x, int y)
 {
     (void)x; (void)y;
     if (key == 27)
@@ -264,7 +269,7 @@ void ogl_keyboard(unsigned char key, int x, int y)
 }
 
 /* callback for mouse movement */
-void ogl_mouse_move(int x, int y)
+static void ogl_mouse_move(int x, int y)
 {
     if (drv_lmouse_pressed)
     {
@@ -276,48 +281,40 @@ void ogl_mouse_move(int x, int y)
 }
 
 /* callback for mouse click */
-void ogl_mouse(int button, int state, int x, int y)
+static void ogl_mouse(int button, int state, int x, int y)
 {
-    if (button == GLUT_LEFT_BUTTON)
+    int pressed;
+    if (state != GLUT_DOWN && state != GLUT_UP) return;
+    pressed = state == GLUT_DOWN;
+    if (button == GLUT_RIGHT_BUTTON)
     {
-        if (state == GLUT_DOWN)
-        {
-            if (drv_lmouse_pressed == TRUE)
-            {
-                
-            }
-            else
-            {
-                drv_lmouse_pressed = TRUE;
-                ogl_old_x = x;
-                ogl_old_y = y;
-            }
-        }
-        if (state == GLUT_UP)
-        {
-            if (drv_lmouse_pressed == FALSE)
-            {
-                
-            }
-            else
-            {
-                drv_lmouse_pressed = FALSE;
-                ogl_old_x = x;
-                ogl_old_y = y;
-            }
-        }
+        drv_rmouse_pressed = pressed;
+        glutPostRedisplay();
+    }
+    else if (button == GLUT_LEFT_BUTTON && drv_lmouse_pressed != pressed)
+    {
+        drv_lmouse_pressed = pressed;
+        ogl_old_x = x;
+        ogl_old_y = y;
     }
 }
 
-/* print out description of last error */
-void ogl_checkerror(void)
+/* Drain reported errors before committing native resource state. */
+static int ogl_checkerror(void)
 {
-    char *error_msg;
-        
-    switch(glGetError())
+    const char *error_msg;
+    GLenum code;
+    unsigned int i;
+    int failed;
+    failed = FALSE;
+    /* A lost context must not trap the application in an endless error loop. */
+    for (i = 0; i < 16U; ++i)
     {
+        code = glGetError();
+        switch(code)
+        {
         case GL_NO_ERROR:
-            return;
+            return failed;
         case GL_INVALID_ENUM:
             error_msg = "Invalid enum";
             break;
@@ -354,8 +351,11 @@ void ogl_checkerror(void)
         default:
             error_msg = "Unknown";
             break;
+        }
+        failed = TRUE;
+        ogl_message(code, error_msg);
     }
-    fprintf(stderr, "OpenGL error: %s!\n", error_msg);
+    return failed;
 }
 
 /* initialize graphics subsystem */
@@ -465,12 +465,31 @@ void drv_render(void)
     }
     else if(!dlist)
     {
+        int failed;
+        /* Compile before executing so an incomplete list cannot draw a
+         * partial globe before the immediate-mode fallback. */
+        ogl_checkerror();
         dlist = glGenLists(1);
-        glNewList(dlist, GL_COMPILE_AND_EXECUTE);
-
-        ogl_draw_globe();
-
-        glEndList();
+        failed = ogl_checkerror();
+        if (dlist != 0 && !failed)
+        {
+            glNewList(dlist, GL_COMPILE);
+            failed = ogl_checkerror();
+            if (!failed)
+            {
+                ogl_draw_globe();
+                glEndList();
+                failed = ogl_checkerror();
+            }
+        }
+        if (failed && dlist != 0)
+        {
+            glDeleteLists(dlist, 1);
+            dlist = 0;
+        }
+        if (dlist != 0) glCallList(dlist);
+        /* Geometry remains drawable without the optional native cache. */
+        else ogl_draw_globe();
     } else
     {
         glCallList(dlist);
@@ -502,7 +521,7 @@ void drv_render(void)
 }
 
 /* resize window */
-void drv_resize(int width, int height) {
+static void ogl_resize(int width, int height) {
     if (width < 1 || height < 1) return;
     drv_win_width = width;
     drv_win_height = height;
@@ -513,8 +532,19 @@ void drv_resize(int width, int height) {
     gluPerspective(45, (float)width/(float)height, 1.0, 10000);
 }
 
+static void ogl_texture_failed(char *message)
+{
+    drv_texture_loaded = drv_texture_enabled = FALSE;
+    glDisable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (texture_id != 0) glDeleteTextures(1, &texture_id);
+    texture_id = 0;
+    texture_free();
+    error(message);
+}
+
 /* load texture */
-void drv_texture_load(void)
+static void ogl_texture_load(void)
 {
     texture_generate(TEXTURE_DEFAULT_SIZE);
     if (ogl_indexed)
@@ -525,21 +555,41 @@ void drv_texture_load(void)
         drv_texture_loaded = TRUE;
         return;
     }
+    /* Report unrelated earlier errors before testing this upload. */
+    ogl_checkerror();
     glGenTextures(1, &texture_id);
     glBindTexture(GL_TEXTURE_2D, texture_id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    if (ogl_checkerror())
+    {
+        ogl_texture_failed("Cannot allocate OpenGL texture");
+        return;
+    }
 #ifndef NO_GENMIPMAP
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size/2, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
+    if (ogl_checkerror())
+    {
+        ogl_texture_failed("Cannot upload OpenGL texture mipmaps");
+        return;
+    }
     glGenerateMipmap(GL_TEXTURE_2D);
 #else
     /* GLU uploads the base image and mipmaps, scaling to the implementation's
      * maximum texture size. A prior raw upload can exceed that legacy limit. */
     if (gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, texture_size, texture_size/2,
                            GL_RGB, GL_UNSIGNED_BYTE, texture_data) != 0)
-        error("Cannot build OpenGL texture mipmaps");
+    {
+        ogl_texture_failed("Cannot build OpenGL texture mipmaps");
+        return;
+    }
 #endif
+    if (ogl_checkerror())
+    {
+        ogl_texture_failed("Cannot upload OpenGL texture mipmaps");
+        return;
+    }
     texture_free();
     drv_texture_loaded = TRUE;
 }
@@ -547,7 +597,8 @@ void drv_texture_load(void)
 /* set rendering pipeline to textures */
 void drv_texture_enable(void)
 {
-    if (!drv_texture_loaded) drv_texture_load();
+    if (!drv_texture_loaded) ogl_texture_load();
+    if (!drv_texture_loaded) return;
     if (!ogl_indexed)
     {
         glBindTexture(GL_TEXTURE_2D, texture_id);
@@ -567,6 +618,12 @@ void drv_texture_disable(void)
         glBindTexture(GL_TEXTURE_2D, 0);
     }
     drv_texture_enabled = FALSE;
+#if !TEXTURE_CACHE_RASTER
+    texsoft_release_raster();
+    free(ogl_index_pixels);
+    ogl_index_pixels = NULL;
+    ogl_index_capacity = 0;
+#endif
 }
 
 /* initialize a window, all values < 1 for full screen/default */
@@ -607,7 +664,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     glutReshapeWindow(in_width, in_height);
     glutPositionWindow(in_x, in_y);
     glutSetWindowTitle(TESTGLOBE_NAME);
-    glutReshapeFunc(drv_resize);
+    glutReshapeFunc(ogl_resize);
     glutMouseFunc(ogl_mouse);
     glutMotionFunc(ogl_mouse_move);
     glutPassiveMotionFunc(ogl_mouse_move);
@@ -624,7 +681,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     }
     else glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     if (ogl_has_depth) glEnable(GL_DEPTH_TEST);
-    drv_resize(in_width, in_height);
+    ogl_resize(in_width, in_height);
     glutShowWindow();
     glutPostRedisplay();
 

@@ -19,10 +19,11 @@
 
 #include <stdlib.h>
 #include <math.h>
+#include <float.h>
+#include "testglob.h"
 #ifdef SEG86
 #include <malloc.h>
 #endif
-#include "testglob.h"
 #include "drv.h"
 #include "globe.h"
 #include "drv_ext.h"
@@ -314,25 +315,34 @@ static unsigned char TG_HUGE *globe_select_data(int longitude)
 
 static void globe_calc_colors(void)
 {
-    unsigned long index;
+    unsigned long row, source_row;
+    int column;
     unsigned char value;
     Color TG_HUGE *color_ptr;
-    unsigned char TG_HUGE *data_ptr;
+    const unsigned char TG_HUGE *data_ptr;
 
     color_ptr = globe_colors;
-    data_ptr = globe_data;
-    for (index = 0UL; index < globe_faces_num; ++index)
+    for (row = 0UL; row < (unsigned long)globe_latitude; ++row)
     {
-        value = *data_ptr++;
+        /* Center-sample the full source map when fewer latitude bands are
+         * requested; the normal source-height case selects identical bytes. */
+        source_row = ((2UL * row + 1UL) *
+                       ((unsigned long)globe_longitude / 2UL)) /
+                      (2UL * globe_latitude);
+        data_ptr = globe_data + source_row * globe_longitude;
+        for (column = 0; column < globe_longitude; ++column)
+        {
+            value = *data_ptr++;
 #ifdef DRV_COLORMAP
-        /* Preserve the original byte: the driver installs earth_cmap in its LUT. */
-        color_ptr->color = value;
+            /* The driver maps this original palette byte to its native color. */
+            color_ptr->color = value;
 #else
-        color_ptr->r = earth_cmap[value][0];
-        color_ptr->g = earth_cmap[value][1];
-        color_ptr->b = earth_cmap[value][2];
+            color_ptr->r = earth_cmap[value][0];
+            color_ptr->g = earth_cmap[value][1];
+            color_ptr->b = earth_cmap[value][2];
 #endif
-        ++color_ptr;
+            ++color_ptr;
+        }
     }
 }
 
@@ -351,7 +361,8 @@ int globe_init_verts(int longitude, int latitude, float radius)
     data = globe_select_data(longitude);
     if (latitude < 1)
         latitude = longitude / 2;
-    if (latitude < 2 || latitude > longitude / 2 || radius <= 0.0f)
+    if (latitude < 2 || latitude > longitude / 2 ||
+        !(radius > 0.0f && radius <= FLT_MAX))
         error("Invalid globe dimensions");
     globe_free();
     globe_data = data;
@@ -421,6 +432,11 @@ int globe_init_verts(int longitude, int latitude, float radius)
         }
     }
     globe_calc_colors();
+#ifdef DRV_EARTH_RESOURCES
+    /* All drawing uses globe_colors; do not retain a duplicate source map. */
+    globe_free_items(globe_data);
+    globe_data = NULL;
+#endif
     return 1;
 }
 

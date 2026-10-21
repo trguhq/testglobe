@@ -12,7 +12,7 @@
 #define DRV
 #endif
 #define DRV_NAME "QuickDraw"
-#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, Esc/Cmd-Q = quit"
+#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, F = FPS, Esc/Cmd-Q = quit"
 #define DRV_WIN_X 20
 #define DRV_WIN_Y 40
 #define DRV_WIN_WIDTH 640
