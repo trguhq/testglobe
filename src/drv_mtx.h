@@ -32,6 +32,9 @@
 #define EARTH_32
 #define EARTH_64
 #define GLOBE_DEFAULT_LONGITUDE 32
+
 /* No TEXTURE: the palette supplies polygon colors, not texture mapping. */
+/* render individual quads */
 #define QUAD
+
 #endif /* drv_mtx_h */
