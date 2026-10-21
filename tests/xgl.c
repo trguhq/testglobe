@@ -511,6 +511,7 @@ int main(int argc, char **argv)
     assert(xgl_double_buffer == !single_buffer);
     globe_init();
     assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
+    assert(GLOBE_DEFAULT_LONGITUDE == 128 && globe_longitude == 128);
     texture_init();
     drain_events();
     check_render();

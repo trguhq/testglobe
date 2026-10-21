@@ -166,7 +166,11 @@ int main(void)
     datasets[4] = earth_data_512;
     drv_ext_init();
     globe_init();
-    assert(GLOBE_DEFAULT_LONGITUDE == 512);
+    assert(GLOBE_DEFAULT_LONGITUDE == 128);
+    expected_data = earth_data_128;
+    assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
+    assert(globe_longitude == 128);
+    check_drawing();
     assert(drv_texture_avail && !drv_texture_enabled);
     for (i = 0; i < 5; ++i) {
         expected_data = datasets[i];
