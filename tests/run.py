@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Host regression checks: geometry, SDK-backed Matrox, manual-derived XGL calls.
+"""Host regressions: geometry, Matrox SDK, XGL and Win16 GDI call contracts.
 
 No test here emulates Microsoft C's segmented code generation, a Matrox board,
-or Sun's native XGL implementation.
+Sun's native XGL implementation, or Windows 3.1 GDI.
 """
 import argparse
 import os
@@ -36,6 +36,8 @@ def main():
                         help="SDK root containing XGX1/HEADERS (headers are not vendored)")
     parser.add_argument("--xgl-contract", action="store_true",
                         help="Record XGL calls using manual-derived declarations and real X11 under Xvfb; not native XGL validation")
+    parser.add_argument("--gdi-contract", action="store_true",
+                        help="Record Win16 GDI calls with host declarations; not Microsoft C 7 ABI or Windows rendering validation")
     args = parser.parse_args()
     cc = shlex.split(os.environ.get("CC", "cc"))
     common = ["-std=c89", "-pedantic-errors", "-Wall", "-Wextra",
@@ -54,6 +56,21 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "strips")])
         run([str(output / "strips")])
+        gdi = ["-DSEG86", "-DDRV_GDI", "-D_huge=", "-D_far=", "-D_near=",
+               "-I" + str(ROOT / "tests/win16_shim")]
+        run(cc + common + gdi + [str(ROOT / "tests/gdi_strips.c"),
+            str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_strips")])
+        run([str(output / "gdi_strips")])
+        if args.gdi_contract:
+            run(cc + common + gdi + ["-fsyntax-only", str(ROOT / "src/main.c")])
+            # Win16 MakeProcInstance requires FARPROC/WNDPROC casts;
+            # GCC diagnoses those historical, intentional callback casts.
+            run(cc + common + gdi + ["-Wno-cast-function-type", str(ROOT / "tests/gdi.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi")])
+            for mode in ("fpu", "fixed", "287", "fpu-escape", "fixed-escape"):
+                run([str(output / "gdi"), mode])
         if args.xgl_contract:
             if not shutil.which("xvfb-run"):
                 parser.error("--xgl-contract requires xvfb-run and Xvfb on PATH")

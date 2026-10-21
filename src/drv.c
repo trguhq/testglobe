@@ -21,10 +21,14 @@
 #include "testglob.h"
 #include "drv.h"
 #include "globe.h"
+#ifdef GDI
+#include <windows.h>
+#else
 #ifdef SEG86
 #include <time.h>
 #else /* FLAT */
 #include <sys/time.h>
+#endif
 #endif
 
 unsigned int drv_win_x, drv_win_y;              /* window geometry */
@@ -47,10 +51,14 @@ int drv_rmouse_pressed;                 /* */
 char drv_help[256];                     /* OSD help string to print */
 int drv_fps_enabled;                    /* fps counter enabled */
 float drv_fps_average;                  /* average fps */
+#ifdef GDI
+static unsigned long drv_frame_start, drv_frame_stop;
+#else
 #ifdef SEG86
 static clock_t drv_frame_start, drv_frame_stop;
 #else /* FLAT */
 static struct timeval drv_frame_start, drv_frame_stop;
+#endif
 #endif
 static float drv_frame_seconds;
 static float drv_fps_history_seconds;
@@ -68,8 +76,16 @@ void drv_ext_init(void)
     drv_win_width = DRV_WIN_WIDTH;
     drv_win_height = DRV_WIN_HEIGHT;
     drv_colormapped = DRV_COLORMAPPED;
+#ifdef DRV_TEXTURE
     drv_texture_avail = DRV_TEXTURE;
+#else
+    drv_texture_avail = FALSE;
+#endif
+#ifdef DRV_TEXTURE_DEFAULT
     drv_texture_enabled = DRV_TEXTURE_DEFAULT;
+#else
+    drv_texture_enabled = FALSE;
+#endif
     drv_osd_enabled = DRV_OSD_DEFAULT;
     drv_bits_per_pixel = DRV_DEPTH;
     drv_colormap_bits = DRV_COLORMAPDEPTH;
@@ -109,17 +125,27 @@ void drv_ext_init(void)
 /* frame start */
 void drv_fps_start(void)
 {
+#ifdef GDI
+    drv_frame_start = GetTickCount();
+#else
 #ifdef SEG86
     /* Microsoft C's DOS clock() reports elapsed time without POSIX headers. */
     drv_frame_start = clock();
 #else /* FLAT */
     gettimeofday(&drv_frame_start, NULL);
 #endif
+#endif
 }
 
 /* frame stop */
 void drv_fps_stop(void)
 {
+#ifdef GDI
+    drv_frame_stop = GetTickCount();
+    /* GetTickCount is a wrapping 32-bit counter, including on test hosts. */
+    drv_frame_seconds = (float)((drv_frame_stop - drv_frame_start) &
+                                0xFFFFFFFFUL) / 1000.0f;
+#else
 #ifdef SEG86
     drv_frame_stop = clock();
     if (drv_frame_start == (clock_t)-1 || drv_frame_stop == (clock_t)-1)
@@ -140,6 +166,7 @@ void drv_fps_stop(void)
                         1000000.0f;
     if (drv_frame_seconds < 0)
         drv_frame_seconds = 0;
+#endif
 #endif
 
     if (drv_frame_seconds >= 1.0f)

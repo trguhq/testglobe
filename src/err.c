@@ -20,9 +20,15 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include "testglob.h"
+#include "drv.h"
 
 void error(char *message)
 {
+#ifdef GDI
+    gdi_error(message);
+#else
     fprintf(stderr, "ERROR - %s\n", message);
     exit(1);
+#endif
 }

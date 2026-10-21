@@ -1,8 +1,34 @@
-Run the OpenGL triangle and XGL triangle-strip geometry regression checks with:
+Run the OpenGL triangle, XGL RGB strip, and GDI indexed strip geometry checks with:
 
 ```sh
 python3 tests/run.py
 ```
+
+To exercise the native Win16 GDI driver's actual `WinMain`, common startup,
+message loop, and rendering calls against a host call recorder:
+
+```sh
+python3 tests/run.py --gdi-contract
+```
+
+These checks cover both Earth resolutions, exact palette bytes and strip
+topology, independent double-precision projection references at rotated poses,
+80387 selection and the integer fallback (including a 286/287 machine),
+near/far and screen clipping, bounded PolyPolygon packets, foreground/background
+palette handling, buffering, mouse/keyboard/resize messages, timer rollover,
+Escape/window-close cleanup, and global-heap/object ownership. Tests use strict
+C89, AddressSanitizer, and UndefinedBehaviorSanitizer. The unavoidable
+Win16 `MakeProcInstance` callback casts suppress only GCC's
+`-Wcast-function-type` diagnostic.
+
+`tests/win16_shim/windows.h` contains manual-derived call declarations,
+cross-checked against public Win16 API declarations. It is **not Microsoft's
+SDK**, an ABI-compatible replacement, or a GDI renderer. Its `POINT` coordinates
+are 16-bit, but the host's C `int`, `long`, calling conventions, and pointers do
+not reproduce Microsoft C 7 code generation. Passing the checks does not verify
+the executable's Windows loader format, segmented pointer arithmetic,
+floating-point emulator dispatch, physical display palette mapping, or rendered
+pixels. Those require Microsoft C 7, the Windows 3.1 SDK, and Windows itself.
 
 To also exercise the actual Sun XGL driver with real X11 windows/events under
 Xvfb and a recording replacement for XGL calls:

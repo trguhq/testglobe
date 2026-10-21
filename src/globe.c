@@ -27,6 +27,9 @@
 #include "globe.h"
 #include "drv_ext.h"
 #include "types.h"
+#ifdef GDI
+#include <windows.h>
+#endif
 
 /* Only the selected driver's embedded Earth resolutions enter its image. */
 #ifdef EARTH
@@ -55,8 +58,12 @@ Coord TG_HUGE *globe_coords;
 #endif
 #ifdef TRISTRIP
 /* One whole latitude band is contiguous for a single native strip call. */
-static Vertex *globe_strip_verts;
-static Color_RGB *globe_strip_colors;
+static Vertex TG_HUGE *globe_strip_verts;
+#ifdef DRV_COLORMAP
+static unsigned char TG_HUGE *globe_strip_colors;
+#else
+static Color_RGB TG_HUGE *globe_strip_colors;
+#endif
 #ifdef TEXTURE
 static Coord *globe_strip_coords;
 #endif
@@ -72,22 +79,75 @@ int globe_longitude;
 int globe_latitude;
 static unsigned char TG_HUGE *globe_data;
 
+#ifdef GDI
+/* Win16's global heap supplies tiled selectors for objects over 64 KiB.
+ * Keep the original handles; huge-pointer normalization can change selectors. */
+#define GLOBE_ALLOCATION_SLOTS 7
+static struct
+{
+    HGLOBAL handle;
+    void TG_HUGE *memory;
+} globe_allocations[GLOBE_ALLOCATION_SLOTS];
+#endif
+
 /* Allocations and arithmetic must not truncate at the 16-bit size_t boundary. */
 static void TG_HUGE *globe_alloc_items(unsigned long count, unsigned int size)
 {
+#ifdef GDI
+    int slot;
+    HGLOBAL handle;
+    void TG_HUGE *memory;
+    if (size == 0 || count == 0 || count > 0xFFFFFFFFUL / size)
+        return NULL;
+    for (slot = 0; slot < GLOBE_ALLOCATION_SLOTS; ++slot)
+    {
+        if (globe_allocations[slot].handle != 0)
+            continue;
+        handle = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, count * size);
+        if (handle == 0)
+            return NULL;
+        memory = (void TG_HUGE *)GlobalLock(handle);
+        if (memory == NULL)
+        {
+            GlobalFree(handle);
+            return NULL;
+        }
+        globe_allocations[slot].handle = handle;
+        globe_allocations[slot].memory = memory;
+        return memory;
+    }
+    return NULL;
+#else
 #ifdef SEG86
     return _halloc((long)count, size);
 #else
     return malloc((size_t)count * size);
 #endif
+#endif
 }
 
 static void globe_free_items(void TG_HUGE *memory)
 {
+#ifdef GDI
+    int slot;
+    for (slot = 0; slot < GLOBE_ALLOCATION_SLOTS; ++slot)
+    {
+        if (globe_allocations[slot].handle != 0 &&
+            globe_allocations[slot].memory == memory)
+        {
+            GlobalUnlock(globe_allocations[slot].handle);
+            GlobalFree(globe_allocations[slot].handle);
+            globe_allocations[slot].handle = 0;
+            globe_allocations[slot].memory = NULL;
+            return;
+        }
+    }
+#else
 #ifdef SEG86
     _hfree(memory);
 #else
     free(memory);
+#endif
 #endif
 }
 
@@ -155,10 +215,15 @@ static void globe_alloc(void)
         error("Couldn't allocate memory for texture coordinates!");
 #endif
 #ifdef TRISTRIP
-    globe_strip_verts = (Vertex *)globe_alloc_items(2UL * (globe_longitude + 1UL),
-                                                  sizeof(Vertex));
-    globe_strip_colors = (Color_RGB *)globe_alloc_items(2UL * globe_longitude,
-                                                       sizeof(Color_RGB));
+    globe_strip_verts = (Vertex TG_HUGE *)globe_alloc_items(
+        2UL * (globe_longitude + 1UL), sizeof(Vertex));
+#ifdef DRV_COLORMAP
+    globe_strip_colors = (unsigned char TG_HUGE *)globe_alloc_items(
+        2UL * globe_longitude, sizeof(unsigned char));
+#else
+    globe_strip_colors = (Color_RGB TG_HUGE *)globe_alloc_items(
+        2UL * globe_longitude, sizeof(Color_RGB));
+#endif
     if (globe_strip_verts == NULL || globe_strip_colors == NULL)
         error("Couldn't allocate memory for triangle strips!");
 #ifdef TEXTURE
@@ -247,6 +312,7 @@ int globe_init_verts(int longitude, int latitude, float radius)
     globe_quads_num = globe_faces_num;
     globe_quads_num_vis = globe_quads_num / 2UL;
 
+#ifndef GDI
     printf("Globe resolution: %i x %i\n", globe_longitude, globe_latitude);
     printf("Vertices: %lu\n", globe_verts_num);
 #if defined(TRI) || defined(TRISTRIP)
@@ -254,6 +320,7 @@ int globe_init_verts(int longitude, int latitude, float radius)
 #endif
 #ifdef QUAD
     printf("Quads: %lu\n", globe_quads_num);
+#endif
 #endif
     globe_alloc();
     vertex_ptr = globe_verts;
@@ -407,7 +474,9 @@ void globe_draw_tripstrip(void)
     unsigned int count;
     unsigned long top, bottom, face;
     unsigned long cap[3];
+#ifndef DRV_COLORMAP
     const Coord *coords;
+#endif
 
     /* XGL's point count is 32-bit with no smaller documented strip limit.
      * A complete latitude band needs at most 1026 vertices (EARTH_512).
@@ -421,7 +490,9 @@ void globe_draw_tripstrip(void)
         top = (unsigned long)i * (globe_longitude + 1UL);
         bottom = top + globe_longitude + 1UL;
         face = (unsigned long)i * globe_longitude;
+#ifndef DRV_COLORMAP
         coords = NULL;
+#endif
 #ifdef TEXTURE
         if (drv_texture_enabled)
             coords = globe_strip_coords;
@@ -452,9 +523,15 @@ void globe_draw_tripstrip(void)
                         globe_strip_coords[k] = globe_coords[cap[k]];
 #endif
                 }
+#ifdef DRV_COLORMAP
+                globe_strip_colors[0] = globe_colors[face + j].color;
+                drv_draw_tristrip_flat_color(3, globe_strip_verts,
+                                             globe_strip_colors);
+#else
                 globe_strip_colors[0] = globe_colors[face + j];
                 drv_draw_tristrip_flat_rgb(3, globe_strip_verts,
                                            globe_strip_colors, coords);
+#endif
             }
             continue;
         }
@@ -471,12 +548,22 @@ void globe_draw_tripstrip(void)
 #endif
             if (j < globe_longitude)
             {
+#ifdef DRV_COLORMAP
+                globe_strip_colors[2 * j] = globe_colors[face + j].color;
+                globe_strip_colors[2 * j + 1] = globe_colors[face + j].color;
+#else
                 globe_strip_colors[2 * j] = globe_colors[face + j];
                 globe_strip_colors[2 * j + 1] = globe_colors[face + j];
+#endif
             }
         }
+#ifdef DRV_COLORMAP
+        drv_draw_tristrip_flat_color(count, globe_strip_verts,
+                                     globe_strip_colors);
+#else
         drv_draw_tristrip_flat_rgb(count, globe_strip_verts, globe_strip_colors,
                                    coords);
+#endif
     }
 }
 #endif

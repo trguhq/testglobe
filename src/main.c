@@ -26,10 +26,17 @@
 #include "glob_ext.h"
 #include "tex_ext.h"
 
-int main(int argc, char **argv) {
+#ifdef GDI
+/* The Win16 driver owns WinMain and its instance/show-window arguments. */
+int testglobe_main(int argc, char **argv)
+#else
+int main(int argc, char **argv)
+#endif
+{
     drv_ext_init();
     drv_init(&argc, argv);
 
+#ifndef GDI
     printf("%s %i.%i\n", TESTGLOBE_NAME, TESTGLOBE_VERSION_MAJOR, TESTGLOBE_VERSION_MINOR);
     printf("Driver: %s\n", drv_name);
     printf("Resolution: %u x %u\n", drv_win_width, drv_win_height);
@@ -42,6 +49,7 @@ int main(int argc, char **argv) {
     printf("Texture mapping: %s (%s)\n", (drv_texture_avail == TRUE ? "available" : "none"),
            (drv_texture_enabled == TRUE ? "enabled" : "disabled"));
 #endif
+#endif /* !GDI: native Windows applications have no console. */
     
     drv_init_window(0,0,0,0);
     globe_init();

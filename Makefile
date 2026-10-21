@@ -54,6 +54,25 @@ MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(XGX_ROOT)\XGX1\HEADERS\LIBFN.H \
     $(XGX_ROOT)\XGX1\HEADERS\IOLIB.H
 
+# Native 16-bit Windows 3.1, Microsoft C 7 and the Windows 3.1 SDK.
+# /FPi uses a coprocessor when present and emulates otherwise. Keep /Gw
+# for Windows prologs and /AH for normalized cross-segment mesh pointers.
+# GDI objects and output are separate from the Matrox DOS program.
+GDI_CC = cl
+GDI_LINK = link
+GDI_RC = rc
+GDI_CFLAGS = -AH -G2 -Gw -Zp1 -FPi -O -W3
+GDI_DEFINES = -DSEG86 -DDRV_GDI -DDRV -D_WINDOWS -DNO_SINF
+GDI_CPPFLAGS =
+GDI_LIBS = llibcew.lib libw.lib
+GDI_LDFLAGS = /NOD /ALIGN:16
+GDI_RCFLAGS = -t
+GDI_OBJECTS = g_drv.obj g_gdi.obj g_err.obj g_globe.obj g_main.obj
+GDI_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
+    $(SRC)\drv_ext.h $(SRC)\drv_gdi.h $(SRC)\err_ext.h \
+    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_cmap.h \
+    $(SRC)\e_32.h $(SRC)\e_64.h
+
 # Unix default; with DOS NMAKE use: nmake clean RM=del
 RM = rm -f
 
@@ -147,10 +166,53 @@ main.obj: $(SRC)\main.c $(MTX_HEADERS)
 	@echo -Fomain.obj $(SRC)\main.c >> main.rsp
 	$(MTX_CC) @main.rsp
 
+gdi: testgdi.exe
+
+# Use the 16-bit linker, not the compiler's DOS default startup libraries.
+# RC marks the module for Windows 3.1 even though it has no resources.
+testgdi.exe: $(GDI_OBJECTS) $(SRC)\gdi.def
+	@echo $(GDI_OBJECTS) $(GDI_LDFLAGS) > g_link.rsp
+	@echo testgdi.exe >> g_link.rsp
+	@echo NUL >> g_link.rsp
+	@echo $(GDI_LIBS) >> g_link.rsp
+	@echo $(SRC)\gdi.def; >> g_link.rsp
+	$(GDI_LINK) @g_link.rsp
+	$(GDI_RC) $(GDI_RCFLAGS) testgdi.exe
+
+g_drv.obj: $(SRC)\drv.c $(GDI_HEADERS)
+	@echo $(GDI_DEFINES) > g_drv.rsp
+	@echo $(GDI_CFLAGS) $(GDI_CPPFLAGS) -c >> g_drv.rsp
+	@echo -Fog_drv.obj $(SRC)\drv.c >> g_drv.rsp
+	$(GDI_CC) @g_drv.rsp
+
+g_gdi.obj: $(SRC)\drv_gdi.c $(GDI_HEADERS)
+	@echo $(GDI_DEFINES) > g_gdi.rsp
+	@echo $(GDI_CFLAGS) $(GDI_CPPFLAGS) -c >> g_gdi.rsp
+	@echo -Fog_gdi.obj $(SRC)\drv_gdi.c >> g_gdi.rsp
+	$(GDI_CC) @g_gdi.rsp
+
+g_err.obj: $(SRC)\err.c $(GDI_HEADERS)
+	@echo $(GDI_DEFINES) > g_err.rsp
+	@echo $(GDI_CFLAGS) $(GDI_CPPFLAGS) -c >> g_err.rsp
+	@echo -Fog_err.obj $(SRC)\err.c >> g_err.rsp
+	$(GDI_CC) @g_err.rsp
+
+g_globe.obj: $(SRC)\globe.c $(GDI_HEADERS)
+	@echo $(GDI_DEFINES) > g_globe.rsp
+	@echo $(GDI_CFLAGS) $(GDI_CPPFLAGS) -c >> g_globe.rsp
+	@echo -Fog_globe.obj $(SRC)\globe.c >> g_globe.rsp
+	$(GDI_CC) @g_globe.rsp
+
+g_main.obj: $(SRC)\main.c $(GDI_HEADERS)
+	@echo $(GDI_DEFINES) > g_main.rsp
+	@echo $(GDI_CFLAGS) $(GDI_CPPFLAGS) -c >> g_main.rsp
+	@echo -Fog_main.obj $(SRC)\main.c >> g_main.rsp
+	$(GDI_CC) @g_main.rsp
+
 # Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-xgl clean-matrox
+clean: clean-opengl clean-xgl clean-matrox clean-gdi
 
 clean-opengl:
 	-$(RM) drv.o
@@ -183,3 +245,17 @@ clean-matrox:
 	-$(RM) main.rsp
 	-$(RM) link.rsp
 	-$(RM) testglob.exe
+
+clean-gdi:
+	-$(RM) g_drv.obj
+	-$(RM) g_gdi.obj
+	-$(RM) g_err.obj
+	-$(RM) g_globe.obj
+	-$(RM) g_main.obj
+	-$(RM) g_drv.rsp
+	-$(RM) g_gdi.rsp
+	-$(RM) g_err.rsp
+	-$(RM) g_globe.rsp
+	-$(RM) g_main.rsp
+	-$(RM) g_link.rsp
+	-$(RM) testgdi.exe

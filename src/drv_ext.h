@@ -79,10 +79,17 @@ extern void drv_draw_quad_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
 #endif
 #endif
 #ifdef TRISTRIP
+#ifdef DRV_COLORMAP
+/* One palette byte for each of the count-2 strip facets. */
+extern void drv_draw_tristrip_flat_color(unsigned int count,
+                                        const Vertex TG_HUGE *vertices,
+                                        const unsigned char TG_HUGE *facet_colors);
+#else
 /* Colors describe count-2 facets; NULL coords requests untextured rendering. */
 extern void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
                                       const Color_RGB *facet_colors,
                                       const Coord *coords);
+#endif
 #endif
 extern void drv_loop(void);
 #ifdef TEXTURE

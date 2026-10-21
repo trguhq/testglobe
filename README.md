@@ -2,7 +2,7 @@
 * [testglobe website](https://testglobe.dev)
 * [testglobe repository](https://github.com/trguhq/testglobe/)
 
-testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, Sun XGL on Solaris, and MS-DOS Matrox LibShell. The Earth data uses 8-bit palette indices: OpenGL and XGL expand these to RGB, while LibShell installs the palette in the card's LUT and draws indexed-color polygons.
+testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, Sun XGL on Solaris, MS-DOS Matrox LibShell, and native 16-bit Windows 3.1 GDI. The Earth data uses 8-bit palette indices: OpenGL and XGL expand these to RGB, while LibShell and GDI draw indexed-color polygons using the Earth palette.
 
 This was originally conceived as a test for lower spec systems (late 80s and early 90s 3D hardware) and was initially implemented on more modern high spec systems for convenience, but it may envolve into a general 3D demo for medium-high spec.
 
@@ -14,7 +14,7 @@ A feature is the ability to compare detail from the number of quads or triangles
 External: *[Video of testglobe running on Sun Ultra 60 with Elite3D-m6 graphics](https://www.youtube.com/watch?v=CffPcvwioUA)*
 
 ## Interface
-* keys 1-5 adjust number of faces of globe for OpenGL and XGL; LibShell supports keys 1-2
+* keys 1-5 adjust number of faces of globe for OpenGL and XGL; LibShell and GDI support keys 1-2
 * mouse spins globe
 * a key toggles auto-rotate / benchmark mode
 * o key toggles on-screen display
@@ -37,9 +37,9 @@ The following binaries are available in the corresponding releases:
 * OpenGL / Solaris / SPARCv8: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
 ## Build notes
-The Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds the OpenGL `testglobe`; `make xgl` builds the XGL `testglobe`; under MS-DOS, `nmake matrox` builds `testglob.exe` with Microsoft C 7.0. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, XGL uses `x_*.o`, and DOS uses `.obj` files. Selecting a Unix backend relinks `testglobe` so that switching targets selects the requested driver even when its objects are older than the other backend's executable.
+The Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds the OpenGL `testglobe`; `make xgl` builds the XGL `testglobe`; `nmake matrox` builds the DOS `testglob.exe`; `nmake gdi` builds the Windows 3.1 `testgdi.exe`. The two segmented targets use Microsoft C 7.0. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, and Windows uses `g_*.obj`. Selecting a Unix backend relinks `testglobe` so that switching targets selects the requested driver even when its objects are older than the other backend's executable.
 
-The Makefile selects `FLAT` with `DRV_OGL` or `DRV_XGL`, or `SEG86` with `DRV_MTX` and Microsoft C's `-AH`. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_xgl.h` defines `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The Matrox header also defines `DRV_COLORMAP`; indexed-color draw functions take one palette byte, while RGB functions retain RGB color parameters. On Unix, `make clean` removes all targets' generated files; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-xgl`, and `clean-matrox` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+The Makefile selects `FLAT` with `DRV_OGL` or `DRV_XGL`, or `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_xgl.h` and `drv_gdi.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The Matrox and GDI headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-xgl`, `clean-matrox`, and `clean-gdi` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
 Run the appropriate clean target after changing the compiler or build flags; traditional make does not track command-line changes.
 
@@ -68,6 +68,20 @@ The driver assumes a 640x480, 256-color PG-641-compatible LibShell display. Init
 LibShell performs the model/view transforms, orthographic projection, viewport clipping, and filled world-coordinate polygon drawing through `v3arwplygn` (`V3ARWPLYGN`). Each ordinary patch is a quad; coincident vertices at the poles are collapsed to a triangle. The host rejects back-facing polygons of the convex globe because the base PG-641 interface does not document a depth buffer or back-face switch. The original palette index colors each polygon; all 256 LUT entries come directly from `earth_cmap`. `SEG86` uses normalized huge pointers, `_halloc`/`_hfree`, long mesh counts, and DOS-compatible timing rather than POSIX calls. The SDK and Microsoft tools are external dependencies and are not redistributed here.
 
 Host regression checks are available with `python3 tests/run.py`. To also check the Matrox driver against the original SDK declarations, run `python3 tests/run.py --sdk /path/to/sdk`; see [tests/README.md](tests/README.md). The tests record DOS/LibShell calls and use sanitizers; they do not emulate segmented code generation or the board. Native validation requires building with Microsoft C 7 and running on the Matrox hardware.
+### Windows GDI
+The GDI target is a native 16-bit Windows 3.1 program, not Win32 or Win32s. It requires Microsoft C/C++ 7.0 with its Windows emulation runtime (`LLIBCEW.LIB`), and the Windows 3.1 SDK headers, import library (`LIBW.LIB`), 16-bit linker, and resource compiler. Configure the tools' `PATH`, `INCLUDE`, and `LIB` environment variables, then run:
+
+```text
+nmake gdi
+```
+
+Run the resulting `testgdi.exe` inside Windows 3.1 configured for a 256-color (8-bit paletted) display. GDI windows share the display's color depth; the driver checks the display instead of claiming to create an independent 8-bit visual. It creates a 256-entry logical palette from `earth_cmap`, realizes the palette on activation, and shades polygons with the original palette indices. Windows retains its reserved system palette colors. Rendering uses an 8-bit compatible bitmap and memory DC before copying the finished frame to the window.
+
+The default is `EARTH_32` (key 1), and key 2 selects `EARTH_64`; higher globe resolutions and texture mapping are excluded, including from the OSD and keyboard controls. GDI fills color-grouped triangle polygons with `PolyPolygon`; latitude strips supply the same nondegenerate triangles as the other triangle paths. Model/view rotation, perspective projection, clipping, and back-face rejection are implemented in the driver. Visibility relies on the convex globe's front surface rather than a general-purpose depth buffer for intersecting geometry. Mouse dragging, automatic rotation, resize, palette changes, and window closure use the native Windows message loop.
+
+The driver detects a math coprocessor with `GetWinFlags`; supported 80387-or-later systems use floating-point transforms, while other systems use fixed-point transforms and projection. Mesh generation and common FPS bookkeeping still use floating point. Keep `-FPi`: the Microsoft Windows runtime uses an available coprocessor and emulates these remaining operations otherwise. `-FPi87` would incorrectly require a coprocessor. Windows prologs (`-Gw`) and the huge model (`-AH`) preserve Windows selector handling and cross-segment mesh arithmetic; Windows global-memory allocation supplies blocks larger than 64 KiB. The segmented pointer model is shared with DOS, while Windows allocation, startup, errors, and timing are selected with `GDI`.
+
+`GDI_CC`, `GDI_LINK`, `GDI_RC`, `GDI_CFLAGS`, `GDI_CPPFLAGS`, `GDI_LIBS`, `GDI_LDFLAGS`, and `GDI_RCFLAGS` are overridable. The supplied `.def` file exports the window procedure and specifies Windows segment attributes, an 8 KiB local heap, and a 16 KiB stack. `RC -t testgdi.exe` marks the executable for protected-mode Windows even without resources. The build uses DOS response files and 8.3 output names, independently of the Matrox objects and executable. The huge-model application permits one running instance at a time. Native Microsoft C 7 compilation, segmented code generation, and Windows 3.1 display behavior require validation with those external tools and runtime; host contract tests do not substitute for it.
 ### OpenGL
 OpenGL is currently written to support a 24-bit (true color) desktop. It would not be hard to adjust this but it seems unlikely that there is much 8-bit 3D hardware with OpenGL.
 

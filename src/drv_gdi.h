@@ -1,0 +1,43 @@
+/*
+ * testglobe - 16-bit Windows 3.1 GDI / Microsoft C 7 huge-model driver.
+ * Copyright (C) 2026 trguhq
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+#ifndef drv_gdi_h
+#define drv_gdi_h
+
+#ifndef SEG86
+#error Windows GDI requires the SEG86 memory model
+#endif
+#ifndef DRV
+#define DRV
+#endif
+#define GDI
+
+#define DRV_NAME "Windows GDI"
+#define DRV_HELP "1-2 = facets, A = auto rotate, O = OSD, Esc = exit"
+#define DRV_WIN_X 20
+#define DRV_WIN_Y 20
+#define DRV_WIN_WIDTH 640
+#define DRV_WIN_HEIGHT 480
+#define DRV_COLORMAPPED TRUE
+#define DRV_COLORMAP
+#define DRV_OSD_DEFAULT TRUE
+#define DRV_DEPTH 8
+#define DRV_COLORMAPDEPTH 8
+#define Color Color_Index
+#define DRV_FPS_HISTORY 60
+#define DRV_FPS_DEFAULT TRUE
+#define DRV_ROTATE 10.0f
+#define GLOBE_DEFAULT_LONGITUDE 32
+#define EARTH
+#define EARTH_32
+#define EARTH_64
+
+/* GDI has no differently colored facets in one PolyPolygon call: the
+ * driver expands a strip and batches its polygons by palette byte. */
+#define TRISTRIP
+
+extern void gdi_error(char *message);
+
+#endif /* drv_gdi_h */
