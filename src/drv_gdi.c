@@ -20,20 +20,16 @@
 #include "globe.h"
 #include "glob_ext.h"
 #include "earthres.h"
+#include "soft3d.h"
 
 /* Split latitude strips into even-sized facet packets. Each packet and its
  * PolyPolygon arrays fit within one Win16 segment at every Earth resolution. */
-#define GDI_MAX_VERTICES 130
+#define GDI_MAX_VERTICES SOFT3D_MAX_VERTICES
 #define GDI_MAX_FACETS (GDI_MAX_VERTICES - 2)
-#define GDI_MAX_POLY 10
+#define GDI_MAX_POLY SOFT3D_MAX_POLY
 #define GDI_TIMER 1
-#define GDI_Q14 16384L
-#define GDI_COORD_SCALE 16L
-#define GDI_FOCAL_Q14 19777L /* cot(45 degrees / 2) / 2, in Q14 */
 
-typedef struct Gdi_fixed_point { long x, y, z; } Gdi_fixed_point;
 typedef struct Gdi_float_point { float x, y, z; } Gdi_float_point;
-typedef struct Gdi_screen_point { long x, y; } Gdi_screen_point;
 
 static HINSTANCE gdi_instance;
 static int gdi_show;
@@ -59,24 +55,13 @@ static DWORD gdi_auto_tick;
 static float gdi_float_matrix[3][3];
 static long gdi_fixed_matrix[3][3];
 static Gdi_float_point gdi_float_points[GDI_MAX_VERTICES];
-static Gdi_fixed_point gdi_fixed_points[GDI_MAX_VERTICES];
+static Soft3d_fixed_point gdi_fixed_points[GDI_MAX_VERTICES];
 static POINT gdi_polygons[GDI_MAX_FACETS][GDI_MAX_POLY];
 static int gdi_polygon_counts[GDI_MAX_FACETS];
 static int gdi_color_head[256];
 static int gdi_color_next[GDI_MAX_FACETS];
 static POINT gdi_batch_points[GDI_MAX_FACETS * GDI_MAX_POLY];
 static int gdi_batch_counts[GDI_MAX_FACETS];
-static const unsigned short gdi_sine_quadrant[91] = {
-    0, 286, 572, 857, 1143, 1428, 1713, 1997, 2280, 2563, 2845, 3126, 3406,
-    3686, 3964, 4240, 4516, 4790, 5063, 5334, 5604, 5872, 6138, 6402, 6664, 6924,
-    7182, 7438, 7692, 7943, 8192, 8438, 8682, 8923, 9162, 9397, 9630, 9860, 10087,
-    10311, 10531, 10749, 10963, 11174, 11381, 11585, 11786, 11982, 12176,
-    12365, 12551, 12733, 12911, 13085, 13255, 13421, 13583, 13741, 13894,
-    14044, 14189, 14330, 14466, 14598, 14726, 14849, 14968, 15082, 15191,
-    15296, 15396, 15491, 15582, 15668, 15749, 15826, 15897, 15964, 16026,
-    16083, 16135, 16182, 16225, 16262, 16294, 16322, 16344, 16362, 16374,
-    16382, 16384
-};
 
 extern int testglobe_main(int argc, char **argv);
 LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
@@ -172,49 +157,33 @@ void drv_init(int *argc, char **argv)
         gdi_error("Cannot register Windows GDI cleanup");
 }
 
-void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
+void drv_load_earth_chunk(unsigned int id, unsigned long length,
+                           unsigned char TG_HUGE *destination)
 {
     HRSRC resource;
     HGLOBAL loaded;
     const unsigned char FAR *source;
-    unsigned long remaining, length;
-    unsigned int base, chunk, i;
-    switch (longitude)
+    unsigned int i;
+    if (destination == NULL || length == 0 || length > TG_EARTH_CHUNK_SIZE)
+        gdi_error("Invalid Earth resource chunk");
+    resource = FindResource(gdi_instance, MAKEINTRESOURCE(id), RT_RCDATA);
+    if (resource == 0) gdi_error("Cannot find Earth resource");
+    if (SizeofResource(gdi_instance, resource) != length)
+        gdi_error("Earth resource has an invalid size");
+    loaded = LoadResource(gdi_instance, resource);
+    if (loaded == 0) gdi_error("Cannot load Earth resource");
+    source = (const unsigned char FAR *)LockResource(loaded);
+    if (source == NULL)
     {
-        case 32: base = TG_EARTH_32_ID; break;
-        case 64: base = TG_EARTH_64_ID; break;
-        case 128: base = TG_EARTH_128_ID; break;
-        case 256: base = TG_EARTH_256_ID; break;
-        case 512: base = TG_EARTH_512_ID; break;
-        default: gdi_error("Unsupported Earth resource resolution"); return;
-    }
-    if (destination == NULL) gdi_error("Missing Earth resource destination");
-    remaining = (unsigned long)longitude * (unsigned long)(longitude / 2);
-    chunk = 0;
-    while (remaining != 0)
-    {
-        length = remaining < TG_EARTH_CHUNK_SIZE ? remaining : TG_EARTH_CHUNK_SIZE;
-        resource = FindResource(gdi_instance, MAKEINTRESOURCE(base + chunk), RT_RCDATA);
-        if (resource == 0) gdi_error("Cannot find Earth resource");
-        if (SizeofResource(gdi_instance, resource) != length)
-            gdi_error("Earth resource has an invalid size");
-        loaded = LoadResource(gdi_instance, resource);
-        if (loaded == 0) gdi_error("Cannot load Earth resource");
-        source = (const unsigned char FAR *)LockResource(loaded);
-        if (source == NULL)
-        {
-            FreeResource(loaded);
-            gdi_error("Cannot lock Earth resource");
-        }
-        /* Each resource is at most 16 KiB. Only the destination traverses
-         * the full huge allocation; no far source pointer crosses a segment. */
-        for (i = 0; (unsigned long)i < length; ++i)
-            *destination++ = source[i];
-        UnlockResource(loaded);
         FreeResource(loaded);
-        remaining -= length;
-        ++chunk;
+        gdi_error("Cannot lock Earth resource");
     }
+    /* Only the huge destination crosses selectors; each far source fits
+     * within one resource segment. The shared loader advances chunks. */
+    for (i = 0; (unsigned long)i < length; ++i)
+        *destination++ = source[i];
+    UnlockResource(loaded);
+    FreeResource(loaded);
 }
 
 static HBRUSH gdi_brush(unsigned int color)
@@ -353,49 +322,8 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     return 1;
 }
 
-/* Extract an IEEE single-precision value without floating instructions.
- * All driver inputs are bounded globe coordinates or rotation angles. */
-static long gdi_float_fixed(const float TG_HUGE *value, int fraction_bits)
-{
-    const unsigned char TG_HUGE *bytes;
-    unsigned long bits, magnitude;
-    int exponent, shift;
-    bytes = (const unsigned char TG_HUGE *)value;
-    bits = (unsigned long)bytes[0] | ((unsigned long)bytes[1] << 8) |
-           ((unsigned long)bytes[2] << 16) | ((unsigned long)bytes[3] << 24);
-    exponent = (int)((bits >> 23) & 255UL);
-    if (exponent < 127 - fraction_bits) return 0;
-    if (exponent > 157 - fraction_bits)
-        gdi_error("Windows GDI coordinate is out of range");
-    magnitude = (bits & 0x7fffffUL) | 0x800000UL;
-    shift = exponent - 150 + fraction_bits;
-    if (shift < 0) magnitude >>= -shift;
-    else magnitude <<= shift;
-    return (bits & 0x80000000UL) != 0 ? -(long)magnitude : (long)magnitude;
-}
-
-static long gdi_sine(long angle)
-{
-    long position;
-    long first, second;
-    int negative;
-    unsigned int degree, fraction;
-    angle %= 360L * 256L;
-    if (angle < 0) angle += 360L * 256L;
-    negative = angle >= 180L * 256L;
-    if (negative) angle -= 180L * 256L;
-    position = angle > 90L * 256L ? 180L * 256L - angle : angle;
-    degree = (unsigned int)(position / 256L);
-    fraction = (unsigned int)(position % 256L);
-    first = gdi_sine_quadrant[degree];
-    second = degree == 90 ? first : gdi_sine_quadrant[degree + 1];
-    first = (first * (256U - fraction) + second * fraction) / 256L;
-    return negative ? -first : first;
-}
-
 static void gdi_set_transform(void)
 {
-    long ax, ay, sx, cx, sy, cy;
     float fsx, fcx, fsy, fcy;
     /* R = Rx(user x) Ry(user y) Rx(-90) Rz(-90), followed by z=-3000. */
     if (gdi_has_fpu)
@@ -414,75 +342,8 @@ static void gdi_set_transform(void)
         gdi_float_matrix[2][1] = -fcx * fsy;
         gdi_float_matrix[2][2] = fsx;
     }
-    else
-    {
-        ax = gdi_float_fixed(&drv_rot_x, 8);
-        ay = gdi_float_fixed(&drv_rot_y, 8);
-        sx = gdi_sine(ax); cx = gdi_sine(ax + 90L * 256L);
-        sy = gdi_sine(ay); cy = gdi_sine(ay + 90L * 256L);
-        gdi_fixed_matrix[0][0] = sy;
-        gdi_fixed_matrix[0][1] = cy;
-        gdi_fixed_matrix[0][2] = 0;
-        gdi_fixed_matrix[1][0] = -sx * cy / GDI_Q14;
-        gdi_fixed_matrix[1][1] = sx * sy / GDI_Q14;
-        gdi_fixed_matrix[1][2] = cx;
-        gdi_fixed_matrix[2][0] = cx * cy / GDI_Q14;
-        gdi_fixed_matrix[2][1] = -cx * sy / GDI_Q14;
-        gdi_fixed_matrix[2][2] = sx;
-    }
-}
-
-/* a * numerator / denominator, with |numerator| <= |denominator|.
- * Screen clipping can otherwise overflow a 32-bit long intermediate.
- * Bounds here are below 2^29, so remainder*2+numerator also fits. */
-static long gdi_mul_ratio(long a, long numerator, long denominator)
-{
-    unsigned long value, num, den, remainder, result, bit;
-    int negative;
-    if (denominator == 0) return 0;
-    negative = (a < 0) != ((numerator < 0) != (denominator < 0));
-    value = (unsigned long)(a < 0 ? -a : a);
-    num = (unsigned long)(numerator < 0 ? -numerator : numerator);
-    den = (unsigned long)(denominator < 0 ? -denominator : denominator);
-    result = remainder = 0;
-    for (bit = 0x40000000UL; bit != 0; bit >>= 1)
-    {
-        result <<= 1;
-        remainder <<= 1;
-        if ((value & bit) != 0) remainder += num;
-        if (remainder >= den)
-        {
-            result += remainder / den;
-            remainder %= den;
-        }
-    }
-    return negative ? -(long)result : (long)result;
-}
-
-static int gdi_clip_fixed_z(const Gdi_fixed_point *in, int count,
-                            Gdi_fixed_point *out, long plane, int greater)
-{
-    int i, total, a_inside, b_inside;
-    Gdi_fixed_point a, b, point;
-    total = 0;
-    a = in[count - 1];
-    a_inside = greater ? a.z >= plane : a.z <= plane;
-    for (i = 0; i < count; ++i)
-    {
-        b = in[i];
-        b_inside = greater ? b.z >= plane : b.z <= plane;
-        if (a_inside != b_inside)
-        {
-            point.x = a.x + gdi_mul_ratio(b.x - a.x, plane - a.z, b.z - a.z);
-            point.y = a.y + gdi_mul_ratio(b.y - a.y, plane - a.z, b.z - a.z);
-            point.z = plane;
-            out[total++] = point;
-        }
-        if (b_inside) out[total++] = b;
-        a = b;
-        a_inside = b_inside;
-    }
-    return total;
+    else if (!soft3d_fixed_prepare(gdi_fixed_matrix, &drv_rot_x, &drv_rot_y))
+        gdi_error("Windows GDI coordinate is out of range");
 }
 
 static int gdi_clip_float_z(const Gdi_float_point *in, int count,
@@ -513,45 +374,12 @@ static int gdi_clip_float_z(const Gdi_float_point *in, int count,
     return total;
 }
 
-static int gdi_clip_screen(const Gdi_screen_point *in, int count,
-                           Gdi_screen_point *out, int axis, long edge, int greater)
-{
-    int i, total, a_inside, b_inside;
-    long av, bv;
-    Gdi_screen_point a, b, point;
-    total = 0;
-    a = in[count - 1];
-    av = axis ? a.y : a.x;
-    a_inside = greater ? av >= edge : av <= edge;
-    for (i = 0; i < count; ++i)
-    {
-        b = in[i];
-        bv = axis ? b.y : b.x;
-        b_inside = greater ? bv >= edge : bv <= edge;
-        if (a_inside != b_inside)
-        {
-            point.x = a.x + gdi_mul_ratio(b.x - a.x, edge - av, bv - av);
-            point.y = a.y + gdi_mul_ratio(b.y - a.y, edge - av, bv - av);
-            if (axis) point.y = edge;
-            else point.x = edge;
-            out[total++] = point;
-        }
-        if (b_inside) out[total++] = b;
-        a = b;
-        av = bv;
-        a_inside = b_inside;
-    }
-    return total;
-}
-
 static int gdi_prepare_polygon(unsigned int first, unsigned int second,
                                unsigned int third, POINT *destination)
 {
-    Gdi_fixed_point fixed_a[GDI_MAX_POLY], fixed_b[GDI_MAX_POLY];
     Gdi_float_point float_a[GDI_MAX_POLY], float_b[GDI_MAX_POLY];
-    Gdi_screen_point screen_a[GDI_MAX_POLY], screen_b[GDI_MAX_POLY];
-    long focal, area;
-    float float_focal;
+    Soft3d_screen_point screen[GDI_MAX_POLY];
+    float focal;
     int i, count;
     if (gdi_has_fpu)
     {
@@ -562,56 +390,23 @@ static int gdi_prepare_polygon(unsigned int first, unsigned int second,
         if (count < 3) return 0;
         count = gdi_clip_float_z(float_b, count, float_a, -10000.0f, TRUE);
         if (count < 3) return 0;
-        float_focal = (float)drv_win_height * 1.2071067811865475f;
+        focal = (float)drv_win_height * 1.2071067811865475f;
         for (i = 0; i < count; ++i)
         {
-            screen_a[i].x = (long)((float)drv_win_width / 2.0f +
-                                    float_a[i].x * float_focal / -float_a[i].z);
-            screen_a[i].y = (long)((float)drv_win_height / 2.0f -
-                                    float_a[i].y * float_focal / -float_a[i].z);
+            screen[i].x = (long)((float)drv_win_width / 2.0f +
+                                  float_a[i].x * focal / -float_a[i].z);
+            screen[i].y = (long)((float)drv_win_height / 2.0f -
+                                  float_a[i].y * focal / -float_a[i].z);
         }
     }
     else
-    {
-        fixed_a[0] = gdi_fixed_points[first];
-        fixed_a[1] = gdi_fixed_points[second];
-        fixed_a[2] = gdi_fixed_points[third];
-        count = gdi_clip_fixed_z(fixed_a, 3, fixed_b, -GDI_COORD_SCALE, FALSE);
-        if (count < 3) return 0;
-        count = gdi_clip_fixed_z(fixed_b, count, fixed_a,
-                                 -10000L * GDI_COORD_SCALE, TRUE);
-        if (count < 3) return 0;
-        focal = (long)drv_win_height * GDI_FOCAL_Q14 / GDI_Q14;
-        for (i = 0; i < count; ++i)
-        {
-            screen_a[i].x = (long)drv_win_width / 2L +
-                            fixed_a[i].x * focal / -fixed_a[i].z;
-            screen_a[i].y = (long)drv_win_height / 2L -
-                            fixed_a[i].y * focal / -fixed_a[i].z;
-        }
-    }
-    count = gdi_clip_screen(screen_a, count, screen_b, 0, 0, TRUE);
-    if (count < 3) return 0;
-    count = gdi_clip_screen(screen_b, count, screen_a, 0,
-                            (long)drv_win_width, FALSE);
-    if (count < 3) return 0;
-    count = gdi_clip_screen(screen_a, count, screen_b, 1, 0, TRUE);
-    if (count < 3) return 0;
-    count = gdi_clip_screen(screen_b, count, screen_a, 1,
-                            (long)drv_win_height, FALSE);
-    if (count < 3) return 0;
-    /* OpenGL's CCW front faces are clockwise in Windows' downward Y. */
-    area = 0;
-    for (i = 1; i < count - 1 && area == 0; ++i)
-        area = (screen_a[i].x - screen_a[0].x) *
-               (screen_a[i + 1].y - screen_a[0].y) -
-               (screen_a[i].y - screen_a[0].y) *
-               (screen_a[i + 1].x - screen_a[0].x);
-    if (area >= 0) return 0;
+        count = soft3d_fixed_project(gdi_fixed_points, first, second, third,
+                                     drv_win_width, drv_win_height, screen);
+    count = soft3d_finish_polygon(screen, count, drv_win_width, drv_win_height);
     for (i = 0; i < count; ++i)
     {
-        destination[i].x = (int)screen_a[i].x;
-        destination[i].y = (int)screen_a[i].y;
+        destination[i].x = (int)screen[i].x;
+        destination[i].y = (int)screen[i].y;
     }
     return count;
 }
@@ -622,48 +417,29 @@ static void gdi_draw_strip_packet(unsigned int count,
 {
     unsigned int i, color;
     int row, facet, total, points, j;
-    long source[3];
-    float fsource[3];
+    float source[3];
     HBRUSH previous;
-    for (i = 0; i < count; ++i)
+    if (gdi_has_fpu)
     {
-        if (gdi_has_fpu)
+        for (i = 0; i < count; ++i)
         {
-            fsource[0] = vertices[i].x;
-            fsource[1] = vertices[i].y;
-            fsource[2] = vertices[i].z;
+            source[0] = vertices[i].x;
+            source[1] = vertices[i].y;
+            source[2] = vertices[i].z;
             for (row = 0; row < 3; ++row)
             {
-                float transformed = gdi_float_matrix[row][0] * fsource[0] +
-                                    gdi_float_matrix[row][1] * fsource[1] +
-                                    gdi_float_matrix[row][2] * fsource[2];
+                float transformed = gdi_float_matrix[row][0] * source[0] +
+                                    gdi_float_matrix[row][1] * source[1] +
+                                    gdi_float_matrix[row][2] * source[2];
                 if (row == 0) gdi_float_points[i].x = transformed;
                 if (row == 1) gdi_float_points[i].y = transformed;
                 if (row == 2) gdi_float_points[i].z = transformed - 3000.0f;
             }
         }
-        else
-        {
-            source[0] = gdi_float_fixed(&vertices[i].x, 4);
-            source[1] = gdi_float_fixed(&vertices[i].y, 4);
-            source[2] = gdi_float_fixed(&vertices[i].z, 4);
-            /* The application's radius is 1000. With Q4 input coordinates
-             * each matrix sum is < 3*16000*16384 = 786432000 (32-bit safe). */
-            if (source[0] < -16000L || source[0] > 16000L ||
-                source[1] < -16000L || source[1] > 16000L ||
-                source[2] < -16000L || source[2] > 16000L)
-                gdi_error("GDI fixed-point path supports globe radius up to 1000");
-            for (row = 0; row < 3; ++row)
-            {
-                long transformed = (gdi_fixed_matrix[row][0] * source[0] +
-                                    gdi_fixed_matrix[row][1] * source[1] +
-                                    gdi_fixed_matrix[row][2] * source[2]) / GDI_Q14;
-                if (row == 0) gdi_fixed_points[i].x = transformed;
-                if (row == 1) gdi_fixed_points[i].y = transformed;
-                if (row == 2) gdi_fixed_points[i].z = transformed - 3000L * GDI_COORD_SCALE;
-            }
-        }
     }
+    else if (!soft3d_fixed_transform(gdi_fixed_matrix, count, vertices,
+                                      gdi_fixed_points))
+        gdi_error("GDI fixed-point path supports globe radius up to 1000");
     for (color = 0; color < 256; ++color) gdi_color_head[color] = -1;
     for (i = 0; i < count - 2; ++i)
     {
@@ -700,21 +476,9 @@ void drv_draw_tristrip_flat_color(unsigned int count,
                                  const Vertex TG_HUGE *vertices,
                                  const unsigned char TG_HUGE *facet_colors)
 {
-    unsigned int first, facets;
-    if (count < 3 || vertices == NULL || facet_colors == NULL || gdi_buffer == 0)
-        return;
-    /* A strip's facet i uses vertices i..i+2. Retain those two shared
-     * vertices at each boundary and advance by an even number of facets
-     * so every packet begins with the original winding. */
-    first = 0;
-    while (first < count - 2U)
-    {
-        facets = count - 2U - first;
-        if (facets > GDI_MAX_FACETS) facets = GDI_MAX_FACETS;
-        gdi_draw_strip_packet(facets + 2U, vertices + first,
-                               facet_colors + first);
-        first += facets;
-    }
+    if (gdi_buffer == 0) return;
+    drv_draw_strip_batches(count, vertices, facet_colors, GDI_MAX_FACETS,
+                            gdi_draw_strip_packet);
 }
 
 void drv_draw_osd(void)

@@ -37,14 +37,10 @@
 #pragma segment QuickDraw
 #endif
 
-#define QD_MAX_VERTICES 130
-#define QD_MAX_POLY 10
-#define QD_Q14 16384L
-#define QD_COORD_SCALE 16L
-#define QD_FOCAL_Q14 19777L
+#define QD_MAX_VERTICES SOFT3D_MAX_VERTICES
+#define QD_MAX_POLY SOFT3D_MAX_POLY
 #define QD_FILE_MENU 128
 
-typedef struct Qd_fixed_point { long x, y, z; } Qd_fixed_point;
 QDGlobals qd;
 static WindowPtr qd_window;
 static GDHandle qd_device;
@@ -66,19 +62,7 @@ static int qd_old_x, qd_old_y;
 static unsigned long qd_auto_tick;
 static Rect qd_screen;
 static long qd_fixed_matrix[3][3];
-static Qd_fixed_point qd_fixed_points[QD_MAX_VERTICES];
-static const unsigned short qd_sine_quadrant[91] = {
-    0, 286, 572, 857, 1143, 1428, 1713, 1997, 2280, 2563, 2845, 3126, 3406,
-    3686, 3964, 4240, 4516, 4790, 5063, 5334, 5604, 5872, 6138, 6402, 6664, 6924,
-    7182, 7438, 7692, 7943, 8192, 8438, 8682, 8923, 9162, 9397, 9630, 9860, 10087,
-    10311, 10531, 10749, 10963, 11174, 11381, 11585, 11786, 11982, 12176,
-    12365, 12551, 12733, 12911, 13085, 13255, 13421, 13583, 13741, 13894,
-    14044, 14189, 14330, 14466, 14598, 14726, 14849, 14968, 15082, 15191,
-    15296, 15396, 15491, 15582, 15668, 15749, 15826, 15897, 15964, 16026,
-    16083, 16135, 16182, 16225, 16262, 16294, 16322, 16344, 16362, 16374,
-    16382, 16384
-};
-
+static Soft3d_fixed_point qd_fixed_points[QD_MAX_VERTICES];
 
 static void qd_pascal(Str255 result, const char *text)
 {
@@ -170,47 +154,30 @@ void drv_init(int *argc, char **argv)
     qd_active = TRUE;
 }
 
-void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
+void drv_load_earth_chunk(unsigned int id, unsigned long length,
+                           unsigned char TG_HUGE *destination)
 {
-    unsigned long bytes, offset, expected;
-    short first_resource, chunk;
     Handle resource;
-    if (destination == NULL) qd_error("No Earth data destination");
-    switch (longitude)
+    if (destination == NULL || length == 0 || length > TG_EARTH_CHUNK_SIZE)
+        qd_error("Invalid QuickDraw Earth resource chunk");
+    resource = Get1Resource((ResType)0x45415254UL, (short)id);
+    if (resource == NULL) qd_error("Cannot load QuickDraw Earth resource");
+    if (GetHandleSize(resource) != (Size)length)
     {
-        case 32: first_resource = TG_EARTH_32_ID; break;
-        case 64: first_resource = TG_EARTH_64_ID; break;
-        case 128: first_resource = TG_EARTH_128_ID; break;
-        case 256: first_resource = TG_EARTH_256_ID; break;
-        case 512: first_resource = TG_EARTH_512_ID; break;
-        default: qd_error("Unsupported QuickDraw Earth resolution"); return;
+        ReleaseResource(resource);
+        qd_error("QuickDraw Earth resource has the wrong size");
     }
-    bytes = (unsigned long)longitude * ((unsigned long)longitude / 2UL);
-    chunk = 0;
-    for (offset = 0; offset < bytes; offset += expected, ++chunk)
+    HLock(resource);
+    if (*resource == NULL)
     {
-        expected = bytes - offset;
-        if (expected > TG_EARTH_CHUNK_SIZE) expected = TG_EARTH_CHUNK_SIZE;
-        /* Keep the maps out of the limited A5-relative globals and load
-         * bounded resources so neither MPW C nor Rez needs a huge object. */
-        resource = Get1Resource((ResType)0x45415254UL, (short)(first_resource + chunk));
-        if (resource == NULL) qd_error("Cannot load QuickDraw Earth resource");
-        if (GetHandleSize(resource) != (Size)expected)
-        {
-            ReleaseResource(resource);
-            qd_error("QuickDraw Earth resource has the wrong size");
-        }
-        HLock(resource);
-        if (*resource == NULL)
-        {
-            HUnlock(resource);
-            ReleaseResource(resource);
-            qd_error("Cannot lock QuickDraw Earth resource");
-        }
-        memcpy(destination + offset, *resource, (size_t)expected);
         HUnlock(resource);
         ReleaseResource(resource);
+        qd_error("Cannot lock QuickDraw Earth resource");
     }
+    /* The shared loader limits every locked resource to 16 KiB. */
+    memcpy(destination, *resource, (size_t)length);
+    HUnlock(resource);
+    ReleaseResource(resource);
 }
 
 static void qd_display_info(void)
@@ -326,201 +293,30 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     return 1;
 }
 
-/* IEEE single decoding uses integer operations. The byte-order probe is
- * constant on native big-endian 68000 and little-endian host tests alike. */
-static long qd_float_fixed(const float *value, int fraction_bits)
-{
-    const unsigned char *bytes;
-    const unsigned short endian = 1;
-    unsigned long bits, magnitude;
-    int exponent, shift;
-    bytes = (const unsigned char *)value;
-    if (*(const unsigned char *)&endian)
-        bits = (unsigned long)bytes[0] | ((unsigned long)bytes[1] << 8) |
-               ((unsigned long)bytes[2] << 16) | ((unsigned long)bytes[3] << 24);
-    else
-        bits = (unsigned long)bytes[3] | ((unsigned long)bytes[2] << 8) |
-               ((unsigned long)bytes[1] << 16) | ((unsigned long)bytes[0] << 24);
-    exponent = (int)((bits >> 23) & 255UL);
-    if (exponent < 127 - fraction_bits) return 0;
-    if (exponent > 157 - fraction_bits) qd_error("QuickDraw coordinate is out of range");
-    magnitude = (bits & 0x7fffffUL) | 0x800000UL;
-    shift = exponent - 150 + fraction_bits;
-    if (shift < 0) magnitude >>= -shift;
-    else magnitude <<= shift;
-    return (bits & 0x80000000UL) != 0 ? -(long)magnitude : (long)magnitude;
-}
-static long qd_sine(long angle)
-{
-    long position;
-    long first, second;
-    int negative;
-    unsigned int degree, fraction;
-    angle %= 360L * 256L;
-    if (angle < 0) angle += 360L * 256L;
-    negative = angle >= 180L * 256L;
-    if (negative) angle -= 180L * 256L;
-    position = angle > 90L * 256L ? 180L * 256L - angle : angle;
-    degree = (unsigned int)(position / 256L);
-    fraction = (unsigned int)(position % 256L);
-    first = qd_sine_quadrant[degree];
-    second = degree == 90 ? first : qd_sine_quadrant[degree + 1];
-    first = (first * (256U - fraction) + second * fraction) / 256L;
-    return negative ? -first : first;
-}
-
-
 static void qd_set_transform(void)
 {
-    long ax, ay, sx, cx, sy, cy;
     if (qd_has_fpu)
-    {
         qd_fpu_prepare(&drv_rot_x, &drv_rot_y);
-        return;
-    }
-    ax = qd_float_fixed(&drv_rot_x, 8);
-    ay = qd_float_fixed(&drv_rot_y, 8);
-    sx = qd_sine(ax); cx = qd_sine(ax + 90L * 256L);
-    sy = qd_sine(ay); cy = qd_sine(ay + 90L * 256L);
-    qd_fixed_matrix[0][0] = sy;
-    qd_fixed_matrix[0][1] = cy;
-    qd_fixed_matrix[0][2] = 0;
-    qd_fixed_matrix[1][0] = -sx * cy / QD_Q14;
-    qd_fixed_matrix[1][1] = sx * sy / QD_Q14;
-    qd_fixed_matrix[1][2] = cx;
-    qd_fixed_matrix[2][0] = cx * cy / QD_Q14;
-    qd_fixed_matrix[2][1] = -cx * sy / QD_Q14;
-    qd_fixed_matrix[2][2] = sx;
+    else if (!soft3d_fixed_prepare(qd_fixed_matrix, &drv_rot_x, &drv_rot_y))
+        qd_error("QuickDraw coordinate is out of range");
 }
-static long qd_mul_ratio(long a, long numerator, long denominator)
-{
-    unsigned long value, num, den, remainder, result, bit;
-    int negative;
-    if (denominator == 0) return 0;
-    negative = (a < 0) != ((numerator < 0) != (denominator < 0));
-    value = (unsigned long)(a < 0 ? -a : a);
-    num = (unsigned long)(numerator < 0 ? -numerator : numerator);
-    den = (unsigned long)(denominator < 0 ? -denominator : denominator);
-    result = remainder = 0;
-    for (bit = 0x40000000UL; bit != 0; bit >>= 1)
-    {
-        result <<= 1;
-        remainder <<= 1;
-        if ((value & bit) != 0) remainder += num;
-        if (remainder >= den)
-        {
-            result += remainder / den;
-            remainder %= den;
-        }
-    }
-    return negative ? -(long)result : (long)result;
-}
-
-static int qd_clip_fixed_z(const Qd_fixed_point *in, int count,
-                            Qd_fixed_point *out, long plane, int greater)
-{
-    int i, total, a_inside, b_inside;
-    Qd_fixed_point a, b, point;
-    total = 0;
-    a = in[count - 1];
-    a_inside = greater ? a.z >= plane : a.z <= plane;
-    for (i = 0; i < count; ++i)
-    {
-        b = in[i];
-        b_inside = greater ? b.z >= plane : b.z <= plane;
-        if (a_inside != b_inside)
-        {
-            point.x = a.x + qd_mul_ratio(b.x - a.x, plane - a.z, b.z - a.z);
-            point.y = a.y + qd_mul_ratio(b.y - a.y, plane - a.z, b.z - a.z);
-            point.z = plane;
-            out[total++] = point;
-        }
-        if (b_inside) out[total++] = b;
-        a = b;
-        a_inside = b_inside;
-    }
-    return total;
-}
-
-static int qd_clip_screen(const Qd_screen_point *in, int count,
-                           Qd_screen_point *out, int axis, long edge, int greater)
-{
-    int i, total, a_inside, b_inside;
-    long av, bv;
-    Qd_screen_point a, b, point;
-    total = 0;
-    a = in[count - 1];
-    av = axis ? a.y : a.x;
-    a_inside = greater ? av >= edge : av <= edge;
-    for (i = 0; i < count; ++i)
-    {
-        b = in[i];
-        bv = axis ? b.y : b.x;
-        b_inside = greater ? bv >= edge : bv <= edge;
-        if (a_inside != b_inside)
-        {
-            point.x = a.x + qd_mul_ratio(b.x - a.x, edge - av, bv - av);
-            point.y = a.y + qd_mul_ratio(b.y - a.y, edge - av, bv - av);
-            if (axis) point.y = edge;
-            else point.x = edge;
-            out[total++] = point;
-        }
-        if (b_inside) out[total++] = b;
-        a = b;
-        av = bv;
-        a_inside = b_inside;
-    }
-    return total;
-}
-
 
 static int qd_prepare_polygon(unsigned int first, unsigned int second,
                                unsigned int third, Point *destination)
 {
-    Qd_fixed_point fixed_a[QD_MAX_POLY], fixed_b[QD_MAX_POLY];
-    Qd_screen_point screen_a[QD_MAX_POLY], screen_b[QD_MAX_POLY];
-    long focal, area;
+    Qd_screen_point screen[QD_MAX_POLY];
     int i, count;
     if (qd_has_fpu)
-    {
         count = qd_fpu_project(first, second, third,
-                               drv_win_width, drv_win_height, screen_a);
-        if (count < 3) return 0;
-    }
+                               drv_win_width, drv_win_height, screen);
     else
-    {
-        fixed_a[0] = qd_fixed_points[first];
-        fixed_a[1] = qd_fixed_points[second];
-        fixed_a[2] = qd_fixed_points[third];
-        count = qd_clip_fixed_z(fixed_a, 3, fixed_b, -QD_COORD_SCALE, FALSE);
-        if (count < 3) return 0;
-        count = qd_clip_fixed_z(fixed_b, count, fixed_a,
-                                 -10000L * QD_COORD_SCALE, TRUE);
-        if (count < 3) return 0;
-        focal = (long)drv_win_height * QD_FOCAL_Q14 / QD_Q14;
-        for (i = 0; i < count; ++i)
-        {
-            screen_a[i].x = (long)drv_win_width / 2L + fixed_a[i].x * focal / -fixed_a[i].z;
-            screen_a[i].y = (long)drv_win_height / 2L - fixed_a[i].y * focal / -fixed_a[i].z;
-        }
-    }
-    count = qd_clip_screen(screen_a, count, screen_b, 0, 0, TRUE);
-    if (count < 3) return 0;
-    count = qd_clip_screen(screen_b, count, screen_a, 0, (long)drv_win_width, FALSE);
-    if (count < 3) return 0;
-    count = qd_clip_screen(screen_a, count, screen_b, 1, 0, TRUE);
-    if (count < 3) return 0;
-    count = qd_clip_screen(screen_b, count, screen_a, 1, (long)drv_win_height, FALSE);
-    if (count < 3) return 0;
-    area = 0;
-    for (i = 1; i < count - 1 && area == 0; ++i)
-        area = (screen_a[i].x - screen_a[0].x) * (screen_a[i + 1].y - screen_a[0].y) -
-               (screen_a[i].y - screen_a[0].y) * (screen_a[i + 1].x - screen_a[0].x);
-    if (area >= 0) return 0; /* QuickDraw Y points downward. */
+        count = soft3d_fixed_project(qd_fixed_points, first, second, third,
+                                     drv_win_width, drv_win_height, screen);
+    count = soft3d_finish_polygon(screen, count, drv_win_width, drv_win_height);
     for (i = 0; i < count; ++i)
     {
-        destination[i].h = (short)screen_a[i].x;
-        destination[i].v = (short)screen_a[i].y;
+        destination[i].h = (short)screen[i].x;
+        destination[i].v = (short)screen[i].y;
     }
     return count;
 }
@@ -589,35 +385,14 @@ static void qd_draw_strip_batch(unsigned int count,
 {
     Point projected[QD_MAX_POLY];
     unsigned int i;
-    int row, j, total;
-    long source[3], transformed;
+    int j, total;
     PolyHandle polygon;
     if (count < 3 || vertices == NULL || facet_colors == NULL) return;
     if (count > QD_MAX_VERTICES) qd_error("QuickDraw strip batch is too large");
     if (qd_has_fpu) qd_fpu_transform(count, vertices);
-    else
-    {
-        for (i = 0; i < count; ++i)
-        {
-            source[0] = qd_float_fixed(&vertices[i].x, 4);
-            source[1] = qd_float_fixed(&vertices[i].y, 4);
-            source[2] = qd_float_fixed(&vertices[i].z, 4);
-            if (source[0] < -16000L || source[0] > 16000L ||
-                source[1] < -16000L || source[1] > 16000L ||
-                source[2] < -16000L || source[2] > 16000L)
-                qd_error("QuickDraw fixed path supports radius up to 1000");
-            /* Q4 coordinates * Q14 matrix: each sum is below 786432000. */
-            for (row = 0; row < 3; ++row)
-            {
-                transformed = (qd_fixed_matrix[row][0] * source[0] +
-                               qd_fixed_matrix[row][1] * source[1] +
-                               qd_fixed_matrix[row][2] * source[2]) / QD_Q14;
-                if (row == 0) qd_fixed_points[i].x = transformed;
-                if (row == 1) qd_fixed_points[i].y = transformed;
-                if (row == 2) qd_fixed_points[i].z = transformed - 48000L;
-            }
-        }
-    }
+    else if (!soft3d_fixed_transform(qd_fixed_matrix, count, vertices,
+                                      qd_fixed_points))
+        qd_error("QuickDraw fixed path supports radius up to 1000");
     for (i = 0; i < count - 2; ++i)
     {
         total = (i & 1) ? qd_prepare_polygon(i + 1, i, i + 2, projected) :
@@ -639,18 +414,8 @@ void drv_draw_tristrip_flat_color(unsigned int count,
                                   const Vertex TG_HUGE *vertices,
                                   const unsigned char TG_HUGE *facet_colors)
 {
-    unsigned int first, facets, batch;
-    if (count < 3 || vertices == NULL || facet_colors == NULL) return;
-    facets = count - 2;
-    /* Keep the 68000 A5 globals and optional 68881 cache small. An even
-     * 128-facet batch keeps strip winding unchanged; the next batch starts
-     * with the previous batch's last two vertices and next facet color. */
-    for (first = 0; first < facets; first += batch)
-    {
-        batch = facets - first;
-        if (batch > QD_MAX_VERTICES - 2U) batch = QD_MAX_VERTICES - 2U;
-        qd_draw_strip_batch(batch + 2U, vertices + first, facet_colors + first);
-    }
+    drv_draw_strip_batches(count, vertices, facet_colors,
+                            QD_MAX_VERTICES - 2U, qd_draw_strip_batch);
 }
 
 /* Native font metrics keep both the statistics and help readable on a

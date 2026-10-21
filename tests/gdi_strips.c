@@ -86,20 +86,15 @@ void gdi_error(char *message)
     abort();
 }
 
-void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
+void drv_load_earth_chunk(unsigned int resource, unsigned long size,
+                           unsigned char TG_HUGE *destination)
 {
-    unsigned long offset, count, total;
+    unsigned long count;
     unsigned char *chunk;
-    short resource;
-    total = (unsigned long)longitude * longitude / 2UL;
-    resource = test_earth_resource_id(longitude);
-    for (offset = 0; offset < total; offset += count)
-    {
-        chunk = test_earth_resource(resource++, &count);
-        assert(count > 0 && count <= total - offset);
-        memcpy(destination + offset, chunk, (size_t)count);
-        free(chunk);
-    }
+    chunk = test_earth_resource((short)resource, &count);
+    assert(count == size && count > 0 && count <= TG_EARTH_CHUNK_SIZE);
+    memcpy(destination, chunk, (size_t)count);
+    free(chunk);
 }
 
 static void same_vertex(const Vertex *a, const Vertex *b)

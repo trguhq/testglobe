@@ -6,16 +6,12 @@
 #ifndef qd_math_h
 #define qd_math_h
 
-#include "types.h"
+#include "soft3d.h"
 
-#define QD_FPU_MAX_VERTICES 130
-#define QD_FPU_MAX_POLY 10
+#define QD_FPU_MAX_VERTICES SOFT3D_MAX_VERTICES
+#define QD_FPU_MAX_POLY SOFT3D_MAX_POLY
 
-typedef struct Qd_screen_point
-{
-    long x;
-    long y;
-} Qd_screen_point;
+typedef Soft3d_screen_point Qd_screen_point;
 
 /* Compile qd_fpu.c separately for the 68881. The baseline 68000 driver
  * must check both CPU and FPU Gestalt results before calling any of these

@@ -71,7 +71,8 @@ def main():
         run([str(output / "qd_strips")])
         if args.qd_contract:
             run(cc + common + qd + [str(ROOT / "tests/qd.c"),
-                str(ROOT / "src/qd_fpu.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/qd_fpu.c"), str(ROOT / "src/soft3d.c"),
+                str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "qd")])
             for mode in ("mono", "1", "4", "8", "16", "32", "fpu", "falsefpu",
@@ -84,7 +85,8 @@ def main():
             # Win16 MakeProcInstance requires FARPROC/WNDPROC casts;
             # GCC diagnoses those historical, intentional callback casts.
             run(cc + common + gdi + ["-Wno-cast-function-type", str(ROOT / "tests/gdi.c"),
-                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/soft3d.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi")])
             for mode in ("fpu", "fixed", "287", "small640", "small512", "tall640",
                          "fpu-escape", "fixed-escape"):

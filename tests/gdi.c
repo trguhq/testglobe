@@ -13,6 +13,7 @@
 #include "glob_ext.h"
 #include "globe.h"
 #include "earth_resources.h"
+#include "soft3d_cases.h"
 
 #include "../src/drv_gdi.c"
 
@@ -799,7 +800,6 @@ static void check_clipping(void)
 {
     POINT polygon[10];
     int count, i;
-    long values[6], numerators[6], denominators[6], expected;
     camera_triangle(-9000.0, -9000.0, -11000.0);
     count = gdi_prepare_polygon(0, 1, 2, polygon);
     assert(count == 4);
@@ -814,18 +814,7 @@ static void check_clipping(void)
         assert(polygon[i].x >= 0 && polygon[i].x <= (int)drv_win_width);
         assert(polygon[i].y >= 0 && polygon[i].y <= (int)drv_win_height);
     }
-    /* Products here exceed a 32-bit intermediate. Compare the clipping
-     * ratio helper against independently evaluated double arithmetic. */
-    values[0] = 536000000L; numerators[0] = 412000000L; denominators[0] = 536000000L;
-    values[1] = -536000000L; numerators[1] = 312000000L; denominators[1] = 536000000L;
-    values[2] = 123456789L; numerators[2] = -1234567L; denominators[2] = 256000000L;
-    values[3] = -123456789L; numerators[3] = -1234567L; denominators[3] = -256000000L;
-    values[4] = 128L; numerators[4] = 0L; denominators[4] = 900L;
-    values[5] = -128L; numerators[5] = 900L; denominators[5] = 900L;
-    for (i = 0; i < 6; ++i) {
-        expected = (long)((double)values[i] * numerators[i] / denominators[i]);
-        assert(labs(gdi_mul_ratio(values[i], numerators[i], denominators[i]) - expected) <= 1L);
-    }
+    test_soft3d_shared_pipeline();
 }
 
 static int run_contract(void)

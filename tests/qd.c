@@ -14,6 +14,7 @@
 #include "globe.h"
 #include "qd_math.h"
 #include "earth_resources.h"
+#include "soft3d_cases.h"
 
 #include "../src/drv_qd.c"
 static int explicit_start;
@@ -740,7 +741,7 @@ static void check_clipping(void)
         assert(polygon[i].h >= 0 && polygon[i].h <= (int)drv_win_width);
         assert(polygon[i].v >= 0 && polygon[i].v <= (int)drv_win_height);
     }
-    assert(labs(qd_mul_ratio(536000000L, 412000000L, 536000000L) - 412000000L) <= 1L);
+    test_soft3d_shared_pipeline();
 }
 static void event_key(unsigned char key, short modifiers)
 {

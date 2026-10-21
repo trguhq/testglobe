@@ -68,11 +68,11 @@ GDI_LIBS = llibcew.lib libw.lib
 GDI_LDFLAGS = /NOD /ALIGN:16
 GDI_RCFLAGS = -t
 GDI_DATA = ..\data
-GDI_OBJECTS = g_drv.obj g_gdi.obj g_err.obj g_globe.obj g_main.obj
+GDI_OBJECTS = g_drv.obj g_gdi.obj g_err.obj g_globe.obj g_main.obj g_soft.obj
 GDI_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_gdi.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\earthres.h
+    $(SRC)\earthres.h $(SRC)\soft3d.h
 GDI_RESOURCE_DATA = $(GDI_DATA)\e32.bin $(GDI_DATA)\e64.bin \
     $(GDI_DATA)\e128.bin $(GDI_DATA)\e256_0.bin $(GDI_DATA)\e256_1.bin \
     $(GDI_DATA)\e512_0.bin $(GDI_DATA)\e512_1.bin $(GDI_DATA)\e512_2.bin \
@@ -226,6 +226,12 @@ g_main.obj: $(SRC)\main.c $(GDI_HEADERS)
 	@echo -Fog_main.obj $(SRC)\main.c >> g_main.rsp
 	$(GDI_CC) @g_main.rsp
 
+g_soft.obj: $(SRC)\soft3d.c $(GDI_HEADERS)
+	@echo $(GDI_DEFINES) > g_soft.rsp
+	@echo $(GDI_CFLAGS) $(GDI_CPPFLAGS) -c >> g_soft.rsp
+	@echo -Fog_soft.obj $(SRC)\soft3d.c >> g_soft.rsp
+	$(GDI_CC) @g_soft.rsp
+
 # Keep the Macintosh object/resource format out of the other four builds.
 quickdraw: FORCE
 	$(MPW_EXEC) -f $(QD_MAKEFILE) -d "QD_SRC=$(QD_SOURCE)" -d "QD_DEFINES=$(QD_DEFINES)" quickdraw
@@ -237,6 +243,7 @@ clean-quickdraw:
 	-$(RM) q_globe.o
 	-$(RM) q_main.o
 	-$(RM) q_fpu.o
+	-$(RM) q_soft.o
 	-$(RM) TestglobeQD
 
 # Separate targets can clean one backend; "clean" removes all.
@@ -282,11 +289,13 @@ clean-gdi:
 	-$(RM) g_err.obj
 	-$(RM) g_globe.obj
 	-$(RM) g_main.obj
+	-$(RM) g_soft.obj
 	-$(RM) g_drv.rsp
 	-$(RM) g_gdi.rsp
 	-$(RM) g_err.rsp
 	-$(RM) g_globe.rsp
 	-$(RM) g_main.rsp
+	-$(RM) g_soft.rsp
 	-$(RM) g_link.rsp
 	-$(RM) g_earth.res
 	-$(RM) testglob.exe

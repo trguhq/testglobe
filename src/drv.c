@@ -20,9 +20,13 @@
 
 #include "testglob.h"
 #include "drv.h"
+#include "drv_ext.h"
 #include "globe.h"
 #include "glob_ext.h"
 #include <stdio.h>
+#ifdef DRV_EARTH_RESOURCES
+#include "earthres.h"
+#endif
 #ifdef GDI
 #include <windows.h>
 #elif defined(SEG68)
@@ -79,6 +83,66 @@ void drv_format_stats(char *buffer)
             globe_tris_num, globe_tris_num_vis, (double)drv_fps_average);
 #endif
 }
+
+#if defined(TRISTRIP) && defined(DRV_COLORMAP)
+void drv_draw_strip_batches(unsigned int count,
+                            const Vertex TG_HUGE *vertices,
+                            const unsigned char TG_HUGE *facet_colors,
+                            unsigned int max_facets,
+                            Drv_strip_batch draw_batch)
+{
+    unsigned int first, facets;
+    if (count < 3 || vertices == NULL || facet_colors == NULL || draw_batch == NULL)
+        return;
+    /* Every nonfinal batch starts at the strip's original even winding.
+     * Facet i uses vertices i..i+2, so adjoining batches share two vertices. */
+    max_facets &= ~1U;
+    if (max_facets < 2U)
+    {
+        error("Strip batch must hold at least two facets");
+        return;
+    }
+    first = 0;
+    while (first < count - 2U)
+    {
+        facets = count - 2U - first;
+        if (facets > max_facets) facets = max_facets;
+        draw_batch(facets + 2U, vertices + first, facet_colors + first);
+        first += facets;
+    }
+}
+#endif
+
+#ifdef DRV_EARTH_RESOURCES
+void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
+{
+    unsigned int resource;
+    unsigned long remaining, length;
+    switch (longitude)
+    {
+        case 32: resource = TG_EARTH_32_ID; break;
+        case 64: resource = TG_EARTH_64_ID; break;
+        case 128: resource = TG_EARTH_128_ID; break;
+        case 256: resource = TG_EARTH_256_ID; break;
+        case 512: resource = TG_EARTH_512_ID; break;
+        default: error("Unsupported Earth resource resolution"); return;
+    }
+    if (destination == NULL)
+    {
+        error("Missing Earth resource destination");
+        return;
+    }
+    remaining = (unsigned long)longitude * ((unsigned long)longitude / 2UL);
+    while (remaining != 0)
+    {
+        length = remaining < TG_EARTH_CHUNK_SIZE ? remaining : TG_EARTH_CHUNK_SIZE;
+        drv_load_earth_chunk(resource, length, destination);
+        destination += length;
+        remaining -= length;
+        ++resource;
+    }
+}
+#endif
 
 /* call first */
 void drv_ext_init(void)

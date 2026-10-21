@@ -65,6 +65,15 @@ C89, AddressSanitizer, and UndefinedBehaviorSanitizer. The unavoidable
 Win16 `MakeProcInstance` callback casts suppress only GCC's
 `-Wcast-function-type` diagnostic.
 
+Both driver contracts link the actual shared `soft3d.c` module and exercise
+the common strip batching and Earth-resource traversal in `drv.c`. In addition
+to the independent projection references, a shared public-pipeline case clips
+a triangle spanning 268 million coordinate units to exact viewport corners,
+then reverses its winding to check rejection. This exercises clipping products
+that would overflow a 32-bit intermediate without depending on private helpers.
+Large positive and negative accepted rotation angles must produce the same
+fixed matrix as their equivalent angles modulo 360 degrees.
+
 `tests/win16_shim/windows.h` contains manual-derived call declarations,
 cross-checked against public Win16 API declarations. It is **not Microsoft's
 SDK**, an ABI-compatible replacement, or a GDI renderer. Its `POINT` coordinates

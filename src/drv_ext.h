@@ -84,6 +84,15 @@ extern void drv_draw_quad_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
 extern void drv_draw_tristrip_flat_color(unsigned int count,
                                         const Vertex TG_HUGE *vertices,
                                         const unsigned char TG_HUGE *facet_colors);
+typedef void (*Drv_strip_batch)(unsigned int count,
+                                const Vertex TG_HUGE *vertices,
+                                const unsigned char TG_HUGE *facet_colors);
+/* Even facet batches retain winding and overlap their last two vertices. */
+extern void drv_draw_strip_batches(unsigned int count,
+                                   const Vertex TG_HUGE *vertices,
+                                   const unsigned char TG_HUGE *facet_colors,
+                                   unsigned int max_facets,
+                                   Drv_strip_batch draw_batch);
 #else
 /* Colors describe count-2 facets; NULL coords requests untextured rendering. */
 extern void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
@@ -102,6 +111,9 @@ extern void drv_format_stats(char *buffer);
 #ifdef DRV_EARTH_RESOURCES
 extern void drv_load_earth_data(int longitude,
                                 unsigned char TG_HUGE *destination);
+/* Native adapter: validate and copy one bounded resource into the heap. */
+extern void drv_load_earth_chunk(unsigned int id, unsigned long length,
+                                 unsigned char TG_HUGE *destination);
 #endif
 extern void drv_fps_start(void);
 extern void drv_fps_stop(void);
