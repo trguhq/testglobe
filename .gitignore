@@ -5,10 +5,8 @@
 /*.rsp
 /testglobe
 /testglob.exe
-/testgdi.exe
 /src/*.o
 /src/*.obj
 /src/*.rsp
 /src/testglobe
 /src/testglob.exe
-/src/testgdi.exe

@@ -57,7 +57,7 @@ MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
 # Native 16-bit Windows 3.1, Microsoft C 7 and the Windows 3.1 SDK.
 # /FPi uses a coprocessor when present and emulates otherwise. Keep /Gw
 # for Windows prologs and /AH for normalized cross-segment mesh pointers.
-# GDI objects and output are separate from the Matrox DOS program.
+# GDI objects are separate from the Matrox DOS program.
 GDI_CC = cl
 GDI_LINK = link
 GDI_RC = rc
@@ -130,7 +130,7 @@ matrox: testglob.exe
 
 # Each echo is short enough for COMMAND.COM. Response files also keep the
 # compiler and linker invocations below DOS's 127-character command limit.
-testglob.exe: $(MTX_OBJECTS) $(MTX_LIB)
+testglob.exe: $(MTX_OBJECTS) $(MTX_LIB) FORCE
 	@echo -AH -Fetestglob.exe > link.rsp
 	@echo $(MTX_OBJECTS) >> link.rsp
 	@echo $(MTX_LIB) $(MTX_LDFLAGS) >> link.rsp
@@ -166,18 +166,17 @@ main.obj: $(SRC)\main.c $(MTX_HEADERS)
 	@echo -Fomain.obj $(SRC)\main.c >> main.rsp
 	$(MTX_CC) @main.rsp
 
-gdi: testgdi.exe
-
 # Use the 16-bit linker, not the compiler's DOS default startup libraries.
 # RC marks the module for Windows 3.1 even though it has no resources.
-testgdi.exe: $(GDI_OBJECTS) $(SRC)\gdi.def
+# Relink the selected backend because GDI and Matrox share testglob.exe.
+gdi: $(GDI_OBJECTS) $(SRC)\gdi.def FORCE
 	@echo $(GDI_OBJECTS) $(GDI_LDFLAGS) > g_link.rsp
-	@echo testgdi.exe >> g_link.rsp
+	@echo testglob.exe >> g_link.rsp
 	@echo NUL >> g_link.rsp
 	@echo $(GDI_LIBS) >> g_link.rsp
 	@echo $(SRC)\gdi.def; >> g_link.rsp
 	$(GDI_LINK) @g_link.rsp
-	$(GDI_RC) $(GDI_RCFLAGS) testgdi.exe
+	$(GDI_RC) $(GDI_RCFLAGS) testglob.exe
 
 g_drv.obj: $(SRC)\drv.c $(GDI_HEADERS)
 	@echo $(GDI_DEFINES) > g_drv.rsp
@@ -258,4 +257,4 @@ clean-gdi:
 	-$(RM) g_globe.rsp
 	-$(RM) g_main.rsp
 	-$(RM) g_link.rsp
-	-$(RM) testgdi.exe
+	-$(RM) testglob.exe
