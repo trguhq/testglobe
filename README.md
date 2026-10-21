@@ -38,14 +38,14 @@ the mesh and choose RGB(A) or color-index drawing for the selected window format
 expands the data to RGB. Matrox LibShell, Windows GDI, and QuickDraw draw using the
 Earth palette.
 
-| Driver | Platform | Default globe | Texture toggle |
+| Driver | Platform | Default globe | Texture toggle | Origin
 | --- | --- | --- | --- |
-| [OpenGL](#opengl) | Unix and modern macOS | Key 5: `EARTH_512` | Yes |
-| [IRIS GL](#iris-gl) | IRIX 4.0, 32-bit MIPS | Key 3: `EARTH_128` | Yes |
-| [Sun XGL](#sun-xgl) | Solaris 2.6, 32-bit SPARC | Key 3: `EARTH_128` | Yes |
-| [Matrox LibShell](#matrox-libshell) | MS-DOS, PG-641-compatible hardware | Key 1: `EARTH_32` | No |
-| [Windows GDI](#windows-gdi) | Windows 3.1, 16-bit | Key 1: `EARTH_32` | No |
-| [QuickDraw](#quickdraw) | Classic Macintosh System 7, 68000 | Key 1: `EARTH_32` | No |
+| [OpenGL](#opengl) | Unix and modern macOS | Key 5: `EARTH_512` | Yes | human |
+| [IRIS GL](#iris-gl) | IRIX 4.0, 32-bit MIPS | Key 3: `EARTH_128` | Yes | AI |
+| [Sun XGL](#sun-xgl) | Solaris 2.6, 32-bit SPARC | Key 3: `EARTH_128` | Yes | AI |
+| [Matrox LibShell](#matrox-libshell) | MS-DOS, PG-641-compatible hardware | Key 1: `EARTH_32` | No | AI |
+| [Windows GDI](#windows-gdi) | Windows 3.1, 16-bit | Key 1: `EARTH_32` | No | AI |
+| [QuickDraw](#quickdraw) | Classic Macintosh System 7, 68000 | Key 1: `EARTH_32` | No | AI |
 
 ## Controls
 
