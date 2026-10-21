@@ -1,4 +1,4 @@
-# Common make syntax for Solaris/System V make and Microsoft C 7 NMAKE.
+# Common make syntax for IRIX/Solaris System V make and Microsoft C 7 NMAKE.
 # Keep this file in step with ../Makefile; directory defaults differ.
 # Binaries and objects are written in the directory where make is run.
 
@@ -11,10 +11,10 @@ CFLAGS = -O
 SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
 LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
 OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
-OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o
+OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o texsoft.o
 OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_ogl.h $(SRC)/err_ext.h \
-    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h $(SRC)/texsoft.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
@@ -33,6 +33,22 @@ XGL_LDFLAGS = -L$(XGLHOME)/lib -L$(OPENWINHOME)/lib \
 XGL_OBJECTS = x_drv.o x_xgl.o x_err.o x_globe.o x_main.o x_tex.o
 XGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_xgl.h $(SRC)/err_ext.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
+    $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
+    $(SRC)/e_256.h $(SRC)/e_512.h
+
+# Native IRIS GL on 32-bit MIPS IRIX 4.0. These shared-library names follow
+# the IRIS GL Programming Guide; override for the installed SGI toolchain.
+# i_ objects keep this driver separate from both other Unix backends.
+IGL_CC = $(CC)
+IGL_CPPFLAGS =
+IGL_CFLAGS = $(CFLAGS)
+IGL_SYS_FLAGS = -DNO_SINF
+IGL_DEFINES = -DFLAT -DDRV_IGL -DDRV
+IGL_LDFLAGS = -lc_s -lgl_s -lm
+IGL_OBJECTS = i_drv.o i_igl.o i_err.o i_globe.o i_main.o i_tex.o i_soft.o
+IGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
+    $(SRC)/drv_ext.h $(SRC)/drv_igl.h $(SRC)/texsoft.h $(SRC)/err_ext.h \
     $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
@@ -91,10 +107,10 @@ QD_DEFINES = -d SEG68 -d DRV_QD -d DRV -d NO_SINF
 RM = rm -f
 
 # The first ordinary target is the portable way to choose the default.
-opengl: testglobe
+opengl: testglobe-opengl
 
-testglobe: $(OGL_OBJECTS) FORCE
-	$(CC) -o testglobe $(OGL_OBJECTS) $(LDFLAGS)
+testglobe-opengl: $(OGL_OBJECTS) FORCE
+	$(CC) -o testglobe-opengl $(OGL_OBJECTS) $(LDFLAGS)
 
 drv.o: $(SRC)/drv.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/drv.c
@@ -114,13 +130,17 @@ main.o: $(SRC)/main.c $(OGL_HEADERS)
 texture.o: $(SRC)/texture.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/texture.c
 
-# Both Unix backends intentionally write testglobe. Always relink the
-# selected backend so switching from "xgl" to "opengl" cannot keep the other
-# driver's executable merely because its timestamp is newer than the objects.
+texsoft.o: $(SRC)/texsoft.c $(OGL_HEADERS)
+	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/texsoft.c
+
+# Keep the traditional empty-rule technique so command-line linker options
+# take effect without make-specific phony-target syntax. Unix outputs differ.
 FORCE:
 
-xgl: $(XGL_OBJECTS) FORCE
-	$(CC) -o testglobe $(XGL_OBJECTS) $(XGL_LDFLAGS)
+xgl: testglobe-xgl
+
+testglobe-xgl: $(XGL_OBJECTS) FORCE
+	$(CC) -o testglobe-xgl $(XGL_OBJECTS) $(XGL_LDFLAGS)
 
 x_drv.o: $(SRC)/drv.c $(XGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c $(SRC)/drv.c -o x_drv.o
@@ -139,6 +159,32 @@ x_main.o: $(SRC)/main.c $(XGL_HEADERS)
 
 x_tex.o: $(SRC)/texture.c $(XGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c $(SRC)/texture.c -o x_tex.o
+
+irisgl: testglobe-irisgl
+
+testglobe-irisgl: $(IGL_OBJECTS) FORCE
+	$(IGL_CC) -o testglobe-irisgl $(IGL_OBJECTS) $(IGL_LDFLAGS)
+
+i_drv.o: $(SRC)/drv.c $(IGL_HEADERS)
+	$(IGL_CC) $(CPPFLAGS) $(IGL_CPPFLAGS) $(IGL_DEFINES) $(IGL_SYS_FLAGS) $(IGL_CFLAGS) -c $(SRC)/drv.c -o i_drv.o
+
+i_igl.o: $(SRC)/drv_igl.c $(IGL_HEADERS)
+	$(IGL_CC) $(CPPFLAGS) $(IGL_CPPFLAGS) $(IGL_DEFINES) $(IGL_SYS_FLAGS) $(IGL_CFLAGS) -c $(SRC)/drv_igl.c -o i_igl.o
+
+i_err.o: $(SRC)/err.c $(IGL_HEADERS)
+	$(IGL_CC) $(CPPFLAGS) $(IGL_CPPFLAGS) $(IGL_DEFINES) $(IGL_SYS_FLAGS) $(IGL_CFLAGS) -c $(SRC)/err.c -o i_err.o
+
+i_globe.o: $(SRC)/globe.c $(IGL_HEADERS)
+	$(IGL_CC) $(CPPFLAGS) $(IGL_CPPFLAGS) $(IGL_DEFINES) $(IGL_SYS_FLAGS) $(IGL_CFLAGS) -c $(SRC)/globe.c -o i_globe.o
+
+i_main.o: $(SRC)/main.c $(IGL_HEADERS)
+	$(IGL_CC) $(CPPFLAGS) $(IGL_CPPFLAGS) $(IGL_DEFINES) $(IGL_SYS_FLAGS) $(IGL_CFLAGS) -c $(SRC)/main.c -o i_main.o
+
+i_tex.o: $(SRC)/texture.c $(IGL_HEADERS)
+	$(IGL_CC) $(CPPFLAGS) $(IGL_CPPFLAGS) $(IGL_DEFINES) $(IGL_SYS_FLAGS) $(IGL_CFLAGS) -c $(SRC)/texture.c -o i_tex.o
+
+i_soft.o: $(SRC)/texsoft.c $(IGL_HEADERS)
+	$(IGL_CC) $(CPPFLAGS) $(IGL_CPPFLAGS) $(IGL_DEFINES) $(IGL_SYS_FLAGS) $(IGL_CFLAGS) -c $(SRC)/texsoft.c -o i_soft.o
 
 matrox: testglob.exe
 
@@ -232,7 +278,7 @@ g_soft.obj: $(SRC)\soft3d.c $(GDI_HEADERS)
 	@echo -Fog_soft.obj $(SRC)\soft3d.c >> g_soft.rsp
 	$(GDI_CC) @g_soft.rsp
 
-# Keep the Macintosh object/resource format out of the other four builds.
+# Keep the Macintosh object/resource format out of the other builds.
 quickdraw: FORCE
 	$(MPW_EXEC) -f $(QD_MAKEFILE) -d "QD_SRC=$(QD_SOURCE)" -d "QD_DEFINES=$(QD_DEFINES)" quickdraw
 
@@ -249,7 +295,8 @@ clean-quickdraw:
 # Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-xgl clean-matrox clean-gdi clean-quickdraw
+clean: clean-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw
+	-$(RM) testglobe
 
 clean-opengl:
 	-$(RM) drv.o
@@ -258,7 +305,8 @@ clean-opengl:
 	-$(RM) globe.o
 	-$(RM) main.o
 	-$(RM) texture.o
-	-$(RM) testglobe
+	-$(RM) texsoft.o
+	-$(RM) testglobe-opengl
 
 clean-xgl:
 	-$(RM) x_drv.o
@@ -267,7 +315,17 @@ clean-xgl:
 	-$(RM) x_globe.o
 	-$(RM) x_main.o
 	-$(RM) x_tex.o
-	-$(RM) testglobe
+	-$(RM) testglobe-xgl
+
+clean-irisgl:
+	-$(RM) i_drv.o
+	-$(RM) i_igl.o
+	-$(RM) i_err.o
+	-$(RM) i_globe.o
+	-$(RM) i_main.o
+	-$(RM) i_tex.o
+	-$(RM) i_soft.o
+	-$(RM) testglobe-irisgl
 
 clean-matrox:
 	-$(RM) drv.obj

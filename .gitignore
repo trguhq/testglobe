@@ -5,6 +5,9 @@
 /*.rsp
 /g_earth.res
 /testglobe
+/testglobe-opengl
+/testglobe-xgl
+/testglobe-irisgl
 /testglob.exe
 /TestglobeQD
 /QDBuild
@@ -13,6 +16,9 @@
 /src/*.rsp
 /src/g_earth.res
 /src/testglobe
+/src/testglobe-opengl
+/src/testglobe-xgl
+/src/testglobe-irisgl
 /src/testglob.exe
 /src/TestglobeQD
 /src/QDBuild

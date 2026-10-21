@@ -1,4 +1,49 @@
-Run the OpenGL triangle, XGL RGB strip, and GDI/QuickDraw indexed strip geometry checks with:
+Record OpenGL/GLUT format selection and the indexed rendering path:
+
+```sh
+python3 tests/run.py --ogl-contract
+```
+
+These host records check RGBA32, a 32-bit single-buffer visual competing with
+24-bit double buffering, RGB24/RGB16 and color-index8 fallbacks, unknown alpha
+queries, destruction of every probe context, a fresh final window at its
+requested size, initial redisplay, absent depth buffers, exact Earth palette installation, index-byte
+facets and native RGB textures. The indexed texture path uses the real shared
+software renderer; its transferred bytes are compared with every numeric
+framebuffer index, including on hosts with 64-bit `unsigned long`. Pixel-transfer
+and unpack state is deliberately nondefault to verify restoration. These
+records supplement actual OpenGL GUI smoke tests; they do not emulate a GL
+implementation or prove availability of indexed visuals on a particular system.
+
+Record the production IRIS GL driver against manual-derived native call
+declarations, and check the real software texture fallback's pixels:
+
+```sh
+python3 tests/run.py --igl-contract
+```
+
+The native recorder checks all five Earth levels and the default 512 level,
+triangle winding and colors independently located by spherical centroids,
+matrix composition and OSD restoration, native object caching/invalidation,
+every packed texture word, RGBA32/RGB24/color-index8 format selection,
+precision before buffering, unknown alpha queries, exact indexed palette
+colors/restoration, missing depth buffers, unknown/absent texture capabilities,
+older headers, optional affine-texture subdivision, keyboard controls, tied
+mouse movement, focus, redraw sizing, queue overflow, Escape and window quit.
+It models IRIS GL's implicit projection-matrix behavior rather than OpenGL's
+matrix calls. The standalone software cases use analytically predicted pixels
+for row-vector transforms, six clipping planes, depth/culling, perspective
+interpolation, wrapping, bilinear/trilinear filtering, mipmap minification,
+indexed conversion and cleanup. All use strict C89, ASan and UBSan.
+
+The recorder headers are **not an SGI SDK or ABI**, and their optional
+subdivision constants are explicit fixture tags. Prototypes are checked against
+the uploaded SGI guides and 1990 reference; host `unsigned long` image words
+are compared numerically. Native IRIX 4.0 compilation, 32-bit ABI, graphics
+hardware, fonts, window-manager behavior and pixel transfer require SGI tools
+and runtime validation.
+
+Run the OpenGL indexed triangle, XGL RGB strip, and GDI/QuickDraw indexed strip geometry checks with:
 
 ```sh
 python3 tests/run.py

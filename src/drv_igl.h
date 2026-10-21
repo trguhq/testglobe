@@ -21,24 +21,43 @@
 #ifndef drv_igl_h
 #define drv_igl_h
 
+#if !defined(FLAT)
+#error IRIS GL requires the FLAT build option
+#endif
+
 #ifndef DRV
 #define DRV
 #endif
 
 #define DRV_NAME "IRIS GL"
-#define DRV_HELP "1-5 = facets, O = OSD, T = texturing"
+#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, T = texture mapping, Esc = exit"
 
 #define DRV_WIN_X 100
 #define DRV_WIN_Y 100
 #define DRV_WIN_WIDTH 640
 #define DRV_WIN_HEIGHT 480
 #define DRV_COLORMAPPED FALSE
+#define DRV_COLORMAP
 #define DRV_TEXTURE TRUE
 #define DRV_TEXTURE_DEFAULT FALSE
 #define DRV_OSD_DEFAULT TRUE
 #define DRV_DEPTH 24
 #define DRV_COLORMAPDEPTH 24
-#define Color Color_RGB
+#define Color Color_Index
+#define DRV_FPS_HISTORY 60
+#define DRV_FPS_DEFAULT TRUE
+#define DRV_ROTATE 10.0f
+#define GLOBE_DEFAULT_LONGITUDE 512
 
+#define EARTH
+#define EARTH_32
+#define EARTH_64
+#define EARTH_128
+#define EARTH_256
+#define EARTH_512
+#define TEXTURE
+#define TEXTURE_DEFAULT_SIZE 512
+#define TEXTURE_RGB
+#define TRI
 
 #endif /* drv_igl_h */

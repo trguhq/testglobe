@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Host regressions: geometry, Matrox SDK, XGL, GDI and QuickDraw contracts.
+"""Host regressions: geometry, Matrox SDK, XGL, GDI, QuickDraw and IRIS GL.
 
 No test here emulates Microsoft C's segmented code generation, a Matrox board,
-Sun's native XGL implementation, Windows 3.1 GDI, or the Macintosh Toolbox.
+Sun's native XGL implementation, Windows 3.1 GDI, the Macintosh Toolbox,
+or SGI's native IRIS GL implementation and IRIX ABI.
 """
 import argparse
 import os
@@ -40,6 +41,10 @@ def main():
                         help="Record Win16 GDI calls with host declarations; not Microsoft C 7 ABI or Windows rendering validation")
     parser.add_argument("--qd-contract", action="store_true",
                         help="Record Classic Macintosh calls with host declarations; not MPW ABI or QuickDraw rendering validation")
+    parser.add_argument("--igl-contract", action="store_true",
+                        help="Record IRIS GL calls and check software fallback pixels; not SGI SDK, native rendering or IRIX ABI validation")
+    parser.add_argument("--ogl-contract", action="store_true",
+                        help="Record GLUT format selection, indexed palettes and software pixel transfer; not graphics-driver validation")
     args = parser.parse_args()
     cc = shlex.split(os.environ.get("CC", "cc"))
     common = ["-std=c89", "-pedantic-errors", "-Wall", "-Wextra",
@@ -105,6 +110,42 @@ def main():
             for mode in ("double", "single"):
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode])
+        if args.ogl_contract:
+            ogl = ["-DFLAT", "-DDRV_OGL", "-DNO_GENMIPMAP",
+                   "-I" + str(ROOT / "tests/ogl_record")]
+            run(cc + common + ogl + [str(ROOT / "tests/ogl.c"),
+                str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
+                str(ROOT / "src/err.c"), "-lm", "-o", str(output / "ogl")])
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth"):
+                run([str(output / "ogl"), mode])
+        if args.igl_contract:
+            igl = ["-DFLAT", "-DDRV_IGL", "-I" + str(ROOT / "tests/igl_record")]
+            run(cc + common + igl + ["-fsyntax-only", str(ROOT / "src/main.c")])
+            run(cc + common + igl + [str(ROOT / "tests/igl.c"),
+                str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
+                str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl")])
+            for mode in ("double", "single", "indexed", "indexed-single", "noz", "software", "unknown", "affine", "winquit", "winshut",
+                         "rgba", "rgba-single", "rgb-single", "unknown-alpha"):
+                run([str(output / "igl"), mode])
+            run(cc + common + igl + ["-DIGL_TEST_OLD_HEADERS",
+                str(ROOT / "tests/igl.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / "igl_oldheaders")])
+            run([str(output / "igl_oldheaders"), "oldheaders"])
+            run(cc + common + igl + ["-DIGL_TEST_OLD_HEADERS", "-DIGL_TEST_SUBDIVIDE",
+                str(ROOT / "tests/igl.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / "igl_affine")])
+            run([str(output / "igl_affine"), "affine"])
+        if args.igl_contract or args.ogl_contract:
+            run(cc + common + ["-DFLAT", "-DDRV_OGL",
+                str(ROOT / "tests/texsoft.c"), str(ROOT / "src/texsoft.c"),
+                "-lm", "-o", str(output / "texsoft")])
+            run([str(output / "texsoft")])
         if not args.sdk:
             print("SKIP Matrox SDK contract checks: supply --sdk or MATROX_SDK")
             return

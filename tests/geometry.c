@@ -12,7 +12,7 @@
 #include "globe.h"
 
 extern Vertex *globe_verts;
-extern Color_RGB *globe_colors;
+extern Color *globe_colors;
 extern Coord *globe_coords;
 extern int globe_longitude, globe_latitude;
 
@@ -36,17 +36,24 @@ static void check_triangle(Vertex *a, Vertex *b, Vertex *c)
     assert(dot > 0.0); /* outward winding; no degenerate polar triangles */
 }
 
-void drv_draw_tri_flat_rgb(Vertex *a, Vertex *b, Vertex *c, Color_RGB *color)
+void drv_draw_tri_flat_color(Vertex *a, Vertex *b, Vertex *c, unsigned char color)
 {
-    unsigned long face;
-    unsigned char index;
+    unsigned long row, column, index, vertex[3], r, cindex;
+    int i;
     check_triangle(a, b, c);
-    face = (unsigned long)(color - globe_colors);
-    assert(face < globe_faces_num);
-    index = expected_data[face];
-    assert(color->r == earth_cmap[index][0]);
-    assert(color->g == earth_cmap[index][1]);
-    assert(color->b == earth_cmap[index][2]);
+    vertex[0] = (unsigned long)(a - globe_verts);
+    vertex[1] = (unsigned long)(b - globe_verts);
+    vertex[2] = (unsigned long)(c - globe_verts);
+    row = column = 0xffffffffUL;
+    for (i = 0; i < 3; ++i) {
+        r = vertex[i] / (globe_longitude + 1UL);
+        cindex = vertex[i] % (globe_longitude + 1UL);
+        if (r < row) row = r;
+        if (cindex < column) column = cindex;
+    }
+    index = row * globe_longitude + column;
+    assert(index < globe_faces_num);
+    assert(color == expected_data[index]);
     ++flat_calls;
 }
 
@@ -116,9 +123,10 @@ int main(void)
         globe_toggle_tex();
     }
     assert(globe_verts_num * sizeof(Vertex) > 65535UL);
-    assert(globe_faces_num * sizeof(Color_RGB) > 65535UL);
+    assert(sizeof(Color) == 1);
+    assert(globe_faces_num * sizeof(Color) > 65535UL);
     assert(globe_verts_num * sizeof(Coord) > 65535UL);
     globe_free();
-    puts("PASS geometry: five resolutions, outward triangles, RGB mapping, texture UVs, large buffers");
+    puts("PASS geometry: five resolutions, outward triangles, original palette indices, texture UVs, large buffers");
     return 0;
 }

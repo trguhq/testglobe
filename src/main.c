@@ -35,6 +35,8 @@ int main(int argc, char **argv)
 {
     drv_ext_init();
     drv_init(&argc, argv);
+    /* Native window creation determines the actual color format and size. */
+    drv_init_window(0,0,0,0);
 
 #if !defined(GDI) && !defined(SEG68)
     printf("%s %i.%i\n", TESTGLOBE_NAME, TESTGLOBE_VERSION_MAJOR, TESTGLOBE_VERSION_MINOR);
@@ -51,7 +53,6 @@ int main(int argc, char **argv)
 #endif
 #endif /* Native GUI applications have no console. */
     
-    drv_init_window(0,0,0,0);
     globe_init();
     globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS);
 #ifdef TEXTURE

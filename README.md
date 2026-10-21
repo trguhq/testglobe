@@ -2,11 +2,11 @@
 * [testglobe website](https://testglobe.dev)
 * [testglobe repository](https://github.com/trguhq/testglobe/)
 
-testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, Sun XGL on Solaris, MS-DOS Matrox LibShell, native 16-bit Windows 3.1 GDI, and classic Macintosh QuickDraw. The Earth data uses 8-bit palette indices: OpenGL and XGL expand these to RGB, while LibShell, GDI, and QuickDraw retain the indices until drawing with the Earth palette. This version contains a number of AI-generated driver templates for development - only the OpenGL driver is fully hand coded.
+testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, IRIS GL on IRIX, Sun XGL on Solaris, MS-DOS Matrox LibShell, native 16-bit Windows 3.1 GDI, and classic Macintosh QuickDraw. The Earth data uses 8-bit palette indices. OpenGL and IRIS GL retain those indices in the mesh and choose RGB or color-index drawing for the selected window format; XGL expands the data to RGB, while LibShell, GDI, and QuickDraw draw with the Earth palette. This version contains a number of AI-generated driver templates for development - only the OpenGL driver is fully hand coded.
 
 This was originally conceived as a test for lower spec systems (late 80s and early 90s 3D hardware) and was initially implemented on more modern high spec systems for convenience, but it may envolve into a general 3D demo for medium-high spec.
 
-A feature is the ability to compare detail from the number of quads or triangles used on screen vs. detail from hardware texture mapping. Texture mapping is off by default. OpenGL and XGL start at the highest globe resolution (key 5); GDI, QuickDraw, and LibShell start at the lowest (key 1). Higher resolutions require more memory and rendering time on older systems. Note that it still appears texture mapped, however it is all flat shaded single color quads mapped to the texture of earth by the program itself, rather than texture mapping per se through the graphical API and hardware. Adjust as needed per the Interface section below.
+A feature is the ability to compare detail from the number of quads or triangles used on screen vs. detail from hardware texture mapping. Texture mapping is off by default. OpenGL, IRIS GL, and XGL start at the highest globe resolution (key 5); GDI, QuickDraw, and LibShell start at the lowest (key 1). Higher resolutions require more memory and rendering time on older systems. Note that it still appears texture mapped, however it is all flat shaded single color quads mapped to the texture of earth by the program itself, rather than texture mapping per se through the graphical API and hardware. Adjust as needed per the Interface section below.
 
 ![raw image](https://github.com/trguhq/testglobe/blob/main/testglobe.png?raw=true)
 *OpenGL driver running on macOS (OS X)*
@@ -14,16 +14,15 @@ A feature is the ability to compare detail from the number of quads or triangles
 External: *[Video of testglobe running on Sun Ultra 60 with Elite3D-m6 graphics](https://www.youtube.com/watch?v=CffPcvwioUA)*
 
 ## Interface
-* keys 1-5 adjust globe resolution for OpenGL, XGL, GDI, and QuickDraw; LibShell supports keys 1-2
+* keys 1-5 adjust globe resolution for OpenGL, IRIS GL, XGL, GDI, and QuickDraw; LibShell supports keys 1-2
 * mouse spins globe
 * a key toggles auto-rotate / benchmark mode
 * o key toggles on-screen display
-* t key toggles texture mapping for OpenGL and XGL (off by default)
+* t key toggles texture mapping for OpenGL, IRIS GL, and XGL (off by default)
 * esc key exits immediately
   
 ## Planned drivers
 * IBM PGC and derivatives
-* IRIS GL
 * PHIGS
 * WebGL
 * IBM Adapter Interface? VBE/AF? Amiga? others?
@@ -36,13 +35,15 @@ The following binaries are available in the corresponding releases:
 * OpenGL / Solaris / SPARCv8: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
 ## Build notes
-The portable Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds the OpenGL `testglobe`; `make xgl` builds the XGL `testglobe`; `nmake matrox` builds the DOS `testglob.exe`; `nmake gdi` builds the Windows 3.1 `testglob.exe`. Those two segmented targets use Microsoft C 7.0. The `quickdraw` target delegates to the native MPW build described below. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. Each Unix/DOS/Windows target relinks its executable so that switching between OpenGL/XGL or Matrox/GDI selects the requested driver even when its objects are older than the other backend's executable. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
+The portable Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, IRIX/Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds `testglobe-opengl`; `make irisgl` builds `testglobe-irisgl`; `make xgl` builds `testglobe-xgl`; `nmake matrox` builds the DOS `testglob.exe`; `nmake gdi` builds the Windows 3.1 `testglob.exe`. Those two segmented targets use Microsoft C 7.0. The `quickdraw` target delegates to the native MPW build described below. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
 
-The Makefile selects `FLAT` with `DRV_OGL` or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h` and `drv_igl.h` define `TRI`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+
+`DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows.
 
 Run the appropriate clean target after changing the compiler or build flags; traditional make does not track command-line changes.
 
-GDI and QuickDraw share `src/soft3d.c` and `src/soft3d.h` for integer IEEE-float decoding, fixed-point rotation and vertex transforms, near/far and window clipping, perspective projection, and back-face rejection. Their fixed-point caches remain in the drivers. `src/drv.c` also shares the bounded strip traversal and Earth resource ID/chunk traversal; each driver supplies native polygon drawing and resource loading. GDI retains its floating-point implementation, and QuickDraw retains its isolated 68881 helper. Only the GDI and QuickDraw targets compile the shared software geometry object (`g_soft.obj` and `q_soft.o`); the OpenGL, XGL, and Matrox builds use their native rendering pipelines.
+GDI and QuickDraw share `src/soft3d.c` and `src/soft3d.h` for integer IEEE-float decoding, fixed-point rotation and vertex transforms, near/far and window clipping, perspective projection, and back-face rejection. Their fixed-point caches remain in the drivers. `src/drv.c` also shares the bounded strip traversal and Earth resource ID/chunk traversal; each driver supplies native polygon drawing and resource loading. GDI retains its floating-point implementation, and QuickDraw retains its isolated 68881 helper. Only the GDI and QuickDraw targets compile the integer geometry object (`g_soft.obj` and `q_soft.o`). OpenGL and IRIS GL share the separate floating-point texture rasterizer `src/texsoft.c` and `src/texsoft.h` for formats without native texture mapping; their ordinary rendering remains native.
 
 The root and `src` Makefiles intentionally have the same rules with different source/SDK/MPW directory defaults: historical NMAKE and Solaris make do not share an include syntax. Keep the two files in step when changing rules. For an out-of-tree build, use the ordinary `SRC` macro, for example `make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src`; no VPATH search behavior is required.
 
@@ -107,7 +108,9 @@ The driver detects a math coprocessor with `GetWinFlags`; supported 80387-or-lat
 
 `GDI_CC`, `GDI_LINK`, `GDI_RC`, `GDI_CFLAGS`, `GDI_CPPFLAGS`, `GDI_LIBS`, `GDI_LDFLAGS`, `GDI_RCFLAGS`, and `GDI_DATA` are overridable. The supplied `.def` file exports the window procedure and specifies Windows segment attributes, an 8 KiB local heap, and a 16 KiB stack. The build compiles `src/gdi.rc` and all 13 `data/*.bin` files into `g_earth.res` with `RC -r -fo`, then attaches it with `RC -t g_earth.res testglob.exe`. These discardable `RCDATA` resources hold the Earth palette indices in chunks of at most 16 KiB, keeping large arrays out of Win16 static data segments. The binary data files must retain their original bytes. `GDI_DATA` defaults to `data` in the root Makefile and `..\data` in `src/Makefile`. The build uses DOS response files and separate objects from Matrox; both targets write `testglob.exe`, relinking it for the selected driver. The huge-model application permits one running instance at a time. Native Microsoft C 7 compilation, segmented code generation, and Windows 3.1 display behavior require validation with those external tools and runtime; host contract tests do not substitute for it.
 ### OpenGL
-OpenGL is currently written to support a 24-bit (true color) desktop. It would not be hard to adjust this but it seems unlikely that there is much 8-bit 3D hardware with OpenGL.
+The OpenGL driver probes RGB(A) requests for at least 8/8/8/8, 8/8/8, 5/6/5, 5/5/5, unconstrained RGB(A), and color-index windows with at least eight bits, with single/double-buffered and depth-buffered alternatives. It ranks the actual returned formats, preferring RGB(A) over color index and greater RGB-plus-alpha precision before buffering. This selects a supported 32-bit RGBA format ahead of 24-bit RGB. It keeps the original Earth palette index for each flat-shaded triangle, converting it to RGB for an RGB(A) window or submitting it directly in a color-index window. Color-index texturing uses the shared software texture rasterizer because classic OpenGL texture mapping requires RGB(A) mode.
+
+GLUT's display-mode availability query is required. Where display-string requests are supported, the driver requests those component sizes explicitly; older GLUT implementations can expose fewer distinct choices. These probes do not enumerate every native visual. Host format/palette contracts are available with `python3 tests/run.py --ogl-contract`; physical color-index behavior still requires an implementation offering that visual.
 
 GLUT is required. If your system did not include GLUT out of the box you may have to hunt around for it:
 * Linux: ```sudo apt-get install freeglut3-dev```
@@ -127,7 +130,7 @@ make CC=cc CPPFLAGS=-I/usr/openwin/include \
 The default optimization option is the traditional Unix `-O`; override `CFLAGS` and the library locations for the installed compiler and GLUT package.
 
 ### Sun XGL
-The XGL target is intended for native 32-bit SPARC Solaris 2.6 with the Sun XGL 3.x SDK/runtime and X11/OpenWindows. It uses Xlib directly, without XView or GLUT. The window requires a 24-bit TrueColor visual, matching the OpenGL driver's RGB display assumption.
+The XGL target is intended for native 32-bit SPARC Solaris 2.6 with the Sun XGL 3.x SDK/runtime and X11/OpenWindows. It uses Xlib directly, without XView or GLUT. The window requires a 24-bit TrueColor visual.
 
 ```sh
 make xgl
@@ -140,6 +143,23 @@ The default locations are `/opt/SUNWits/Graphics-sw/xgl` and `/usr/openwin`. `XG
 The driver submits each interior latitude band to `xgl_triangle_strip`: up to 1,026 vertices and 1,024 facet colors per call at `EARTH_512`. Alternating row vertices reproduce the individual-triangle path's winding; both triangles of each globe patch retain the same flat color. Polar caps use the original nondegenerate three-vertex triangles as short strips, preserving their per-triangle UVs and avoiding undefined normals from duplicate pole vertices. Model/view/projection transforms, clipping, back-face handling, depth, and texture mapping use XGL. The `t` key enables the native texture-map/MipMap path; the XGL runtime provides its software pipeline where hardware cannot accelerate texturing, as described in Sun's programmer's guide. No Mesa replacement is needed.
 
 X11 supplies keyboard, button, drag, expose, resize, and window-close events. The same keys and default `EARTH_512` resolution are retained as in OpenGL. Native SDK compilation and physical XGL rendering require the Sun SDK/runtime; host tests using manual-derived XGL contracts do not replace that validation.
+### IRIS GL
+The `irisgl` target is for a native 32-bit MIPS IRIX 4.0 system with the IRIS GL development headers and runtime. It uses IRIS GL windowing, input, and rendering without GLUT, OpenGL, or XGL libraries. Build from the repository root or `src`:
+
+```sh
+make irisgl
+```
+
+The output is `testglobe-irisgl`. `IGL_CC` defaults to `CC`, and `IGL_CPPFLAGS`, `IGL_CFLAGS`, `IGL_SYS_FLAGS`, and `IGL_LDFLAGS` can be overridden for the installed SGI compiler and libraries. The default flags select `FLAT`, `DRV_IGL`, and standard `sin`/`cos` through `NO_SINF`. The default link libraries, `-lc_s -lgl_s -lm`, follow the supplied IRIS GL Programming Guide's IRIX shared-library example. No later MIPS ISA or ABI flag is imposed on the IRIX 4.0 compiler.
+
+The driver retains keys 1-5 and default `EARTH_512`, with texture mapping off until `t` is pressed. Native IRIS GL handles the model/view transforms, 45-degree perspective, clipping, filled triangles, back-face rejection, and bitmap-font OSD. Geometry is cached in a native GL object and rebuilt when the resolution or texture mode changes. IRIS GL's event queue supplies keyboard, mouse drag, resize, focus, and close events; `a` toggles automatic rotation, `o` the OSD, and Escape exits.
+
+Runtime capability queries compare single- and double-buffered RGB(A) channel counts, preferring the greater total including reported alpha bits, then alpha and RGB precision, then double buffering. Thus a reported 32-bit RGBA format is preferred to 24-bit RGB. If RGB is unavailable, the driver chooses the largest color-index mode with at least eight bits. The original Earth index is retained for flat-shaded triangles, converting to RGB(A) when needed. In color-index mode the Earth palette is installed and restored at cleanup. A native z-buffer is used when present. The globe's convex front surface also permits native drawing without a z-buffer, rather than requiring a general intersecting-geometry renderer.
+
+When native texture mapping is available, `texdef2d`, `t2f`, and the GL texture environment provide texturing with native mipmaps and bilinear filtering. On systems without it, the shared `src/texsoft.c` rasterizer supplies perspective-correct texture interpolation, homogeneous clipping, depth testing, repeated UVs, and filtered mipmaps, then presents the resulting pixel raster through IRIS GL. Native transforms still provide the matrices, and ordinary flat drawing stays native. The OSD identifies whether enabled texturing is native or software. OpenGL links this floating-point fallback as `texsoft.o`, and IRIS GL as `i_soft.o`; the segmented GDI/QuickDraw integer module remains separate.
+
+Run the host IRIS GL contract and software-pixel checks with `python3 tests/run.py --igl-contract`; see [tests/README.md](tests/README.md). Native IRIX compilation and physical graphics validation require the original SGI development tools and runtime. Host call-contract tests and Makefile graph checks do not replace them.
+
 ### Xcode
 No .xcodeproj is provided at this time (as of v0.1), however testglobe was built for macOS with Xcode. This will be provided at some point in the future.
 ## Known issues

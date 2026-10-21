@@ -43,7 +43,9 @@
 #define DRV_OSD_DEFAULT TRUE
 #define DRV_DEPTH 24
 #define DRV_COLORMAPDEPTH 24
-#define Color Color_RGB
+#define DRV_COLORMAP
+/* Keep the original palette byte even when the selected window is RGB(A). */
+#define Color Color_Index
 #define DRV_FPS_HISTORY 60
 #define DRV_FPS_DEFAULT TRUE
 #define DRV_ROTATE 10.0f
