@@ -135,7 +135,7 @@ make CC=cc CPPFLAGS=-I/usr/openwin/include \
 
 The default optimization option is the traditional Unix `-O`; override `CFLAGS` and the library locations for the installed compiler and GLUT package.
 
-### Apple OpenGL (modern macOS)
+#### Modern macOS (`apple-opengl`)
 Use the selected Xcode Command Line Tools and the macOS SDK they provide. Build from the repository root or `src`:
 
 ```sh
