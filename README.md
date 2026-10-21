@@ -126,6 +126,7 @@ GLUT is required. If your system did not include GLUT out of the box you may hav
       
 The default `SYS_FLAGS` also includes `-DNO_GENMIPMAP`, which builds mipmaps with GLU for older OpenGL implementations. On newer systems, `SYS_FLAGS=-DGL_GLEXT_PROTOTYPES` enables the `glGenerateMipmap` path.
 
+#### Solaris (`opengl`)
 On Solaris, select the installed C compiler and OpenWindows paths as needed, for example:
 
 ```sh
