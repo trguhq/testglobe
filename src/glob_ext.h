@@ -34,6 +34,10 @@ extern void globe_draw_quads(void);
 #endif
 #ifdef TRISTRIP
 extern void globe_draw_tripstrip(void);
+#ifdef DRV_TRI_CAPS
+/* Separate cap triangles retain their original colors and texture UVs. */
+extern void globe_draw_pole_tris(void);
+#endif
 #endif
 extern void globe_toggle_res(char);
 #ifdef TEXTURE

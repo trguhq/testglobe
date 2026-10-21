@@ -120,7 +120,7 @@ standard `sin` and `cos` instead of `sinf` and `cosf`. Apple OpenGL uses its sep
 <!--
 Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Solaris OpenGL uses separate `s_*.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic, Solaris, and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
 
-The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_igl.h`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h`, `drv_igl.h`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. OpenGL additionally defines `DRV_TRI_CAPS` to draw its pole triangles separately. The shared `TRI` path remains available as a reference implementation, although no driver selects it. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows.
 
@@ -230,6 +230,17 @@ compiler flags; `make clean` also removes them.
 
 #### Rendering and color formats
 
+All three OpenGL targets use one native `GL_TRIANGLE_STRIP` per complete interior
+latitude band and one `GL_TRIANGLES` batch for both polar caps. The strips preserve
+the original triangles' winding, flat colors, and per-vertex texture coordinates;
+separate, nondegenerate cap triangles retain the pole UV seams. Display lists cache
+the native geometry. The default remains `EARTH_512` (key 5), and the OSD counts
+triangles, including those within strips. The shared `TRI` mode is retained and
+checked as an independent-triangle reference in the host tests.
+
+At key 5, 254 interior strips plus one cap batch submit 263,676 vertices for the
+same 261,120 triangles. Independent triangles submitted 783,360 vertices.
+
 The OpenGL driver probes RGB(A) requests for at least 8/8/8/8, 8/8/8, 5/6/5, 5/5/5,
 unconstrained RGB(A), and color-index windows with at least eight bits, with
 single/double-buffered and depth-buffered alternatives. It ranks the actual returned
@@ -238,7 +249,8 @@ buffering. This selects a supported 32-bit RGBA format ahead of 24-bit RGB. It k
 original Earth palette index for each flat-shaded triangle, converting it to RGB for an
 RGB(A) window or submitting it directly in a color-index window. Color-index texturing
 uses the shared software texture rasterizer because classic OpenGL texture mapping
-requires RGB(A) mode.
+requires RGB(A) mode. That fallback expands strips into alternating triangles and
+draws the same separate cap triangles, preserving their texture coordinates.
 
 GLUT's display-mode availability query is required. Where display-string requests are
 supported, the driver requests those component sizes explicitly; older GLUT
@@ -613,6 +625,7 @@ systems, and hardware.
 
 - Added AI-generated driver code for Matrox LibShell, Windows GDI, QuickDraw, Sun XGL, and IRIS GL.
 - Added native macOS framework build rules for OpenGL.
+- Switched all three OpenGL targets to latitude triangle strips with batched pole triangles; retained the shared independent-triangle mode.
 - Added an FPS counter and automatic rotation.
 - Changed comments to C style.
 - Fixed the Mesa bitmap-text issue by disabling texture mapping while drawing the OpenGL OSD.

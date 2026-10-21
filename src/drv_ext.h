@@ -60,7 +60,7 @@ extern void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
                                      Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
                                      unsigned char color);
 #endif
-#ifdef TRI
+#if defined(TRI) || defined(DRV_TRI_CAPS)
 #ifndef DRV_COLORMAP
 extern void drv_draw_tri_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
                                   Vertex TG_HUGE *xyz3, Color_RGB TG_HUGE *color);

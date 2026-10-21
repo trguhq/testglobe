@@ -64,7 +64,8 @@
 #define TEXTURE_DEFAULT_SIZE 512
 /* currently means 24-bit RGB */
 #define TEXTURE_RGB
-/* render individual triangles */
-#define TRI
+/* Native latitude strips and separately batched pole triangles. */
+#define TRISTRIP
+#define DRV_TRI_CAPS
 
 #endif /* drv_ogl_h */

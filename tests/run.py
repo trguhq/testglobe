@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host regressions: geometry, Matrox SDK, XGL, GDI, QuickDraw and IRIS GL.
+"""Host regressions: geometry, OpenGL, Matrox, XGL, GDI, QuickDraw and IRIS GL.
 
 No test here emulates Microsoft C's segmented code generation, a Matrox board,
 Sun's native XGL implementation, Windows 3.1 GDI, the Macintosh Toolbox,
@@ -57,10 +57,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix="testglobe-tests-") as temporary:
         output = Path(temporary)
         flat = ["-DFLAT", "-DDRV_OGL"]
-        run(cc + common + flat + [str(ROOT / "tests/geometry.c"),
+        tri_mode = ["-include", str(ROOT / "tests/tri_mode.h")]
+        run(cc + common + flat + tri_mode + [str(ROOT / "tests/geometry.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "geometry")])
         run([str(output / "geometry")])
+        run(cc + common + flat + [str(ROOT / "tests/ogl_strips.c"),
+            str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "ogl_strips")])
+        run([str(output / "ogl_strips")])
         strips = ["-DFLAT", "-DDRV_XGL"]
         run(cc + common + strips + [str(ROOT / "tests/strips.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
@@ -118,17 +123,24 @@ def main():
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode])
         if args.ogl_contract:
-            ogl = ["-DFLAT", "-DDRV_OGL", "-DNO_GENMIPMAP",
-                   "-I" + str(ROOT / "tests/ogl_record")]
-            run(cc + common + ogl + [str(ROOT / "tests/ogl.c"),
+            ogl = ["-DFLAT", "-DDRV_OGL", "-I" + str(ROOT / "tests/ogl_record")]
+            ogl_sources = [str(ROOT / "tests/ogl.c"),
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
-                str(ROOT / "src/err.c"), "-lm", "-o", str(output / "ogl")])
+                str(ROOT / "src/err.c"), "-lm"]
+            run(cc + common + ogl + ["-DNO_GENMIPMAP"] + ogl_sources +
+                ["-o", str(output / "ogl")])
             for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited"):
                 run([str(output / "ogl"), mode])
             run([str(output / "ogl"), "gluerror"], expected_returncode=1,
                 expected_stderr="ERROR - Cannot build OpenGL texture mipmaps\n",
                 required_output="PASS OpenGL GLU failure: failed mipmaps are not marked loaded and resources are released")
+            run(cc + common + ogl + ogl_sources + ["-o", str(output / "ogl_modern")])
+            run([str(output / "ogl_modern"), "rgba"])
+            run(cc + common + ogl + ["-DNO_GENMIPMAP"] + tri_mode + ogl_sources +
+                ["-o", str(output / "ogl_tri")])
+            for mode in ("rgba", "indexed"):
+                run([str(output / "ogl_tri"), mode])
         if args.igl_contract:
             igl = ["-DFLAT", "-DDRV_IGL", "-I" + str(ROOT / "tests/igl_record")]
             run(cc + common + igl + ["-fsyntax-only", str(ROOT / "src/main.c")])

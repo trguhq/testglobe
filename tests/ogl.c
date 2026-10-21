@@ -1,5 +1,6 @@
 /* Production OpenGL driver with public GL/GLUT call records.
- * Format probing and pixel packing are tested; no visual or GPU is emulated. */
+ * Native geometry, format probing and pixel packing are tested; no visual
+ * or GPU is emulated. */
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -8,8 +9,10 @@
 #include "../src/drv_ogl.c"
 #include "texsoft.h"
 
+#define TEST_PI 3.14159265358979323846
+
 extern Vertex *globe_verts;
-extern int globe_longitude;
+extern int globe_longitude,globe_latitude;
 
 static const char *profile;
 static unsigned int requested_mode;
@@ -28,6 +31,11 @@ static unsigned int emitted_vertices,texture_coordinates;
 static unsigned int matrix_mode=GL_MODELVIEW,stack_depth[2];
 static GLfloat matrices[2][16][16];
 static GLenum begin_mode;
+static struct Test_geometry {
+    unsigned long vertices,triangles,cap_batches,strip_batches;
+} frame_geometry,list_geometry[64];
+static unsigned int current_list,list_exists[64],block_vertices,block_coordinates;
+static GLfloat block_polygon[3][3],block_uvs[3][2],first_uvs[2][2],last_uv[2];
 static int texture_enabled,depth_enabled,cull_enabled,unpack_alignment=4;
 static GLubyte last_index,last_rgb[3];
 static int last_clear_index,index_shift,index_offset,map_color;
@@ -54,6 +62,46 @@ static void postmultiply(const GLfloat *b)
     a=current_matrix();
     for(col=0;col<4;++col)for(row=0;row<4;++row){result[col*4+row]=0;for(k=0;k<4;++k)result[col*4+row]+=a[k*4+row]*b[col*4+k];}
     memcpy(a,result,sizeof(result));
+}
+
+static void geometry_add(struct Test_geometry *to,const struct Test_geometry *from)
+{
+    to->vertices+=from->vertices;to->triangles+=from->triangles;
+    to->cap_batches+=from->cap_batches;to->strip_batches+=from->strip_batches;
+}
+
+static unsigned char *earth_bytes(void)
+{
+    switch(globe_longitude){
+    case 32:return earth_data_32;case 64:return earth_data_64;
+    case 128:return earth_data_128;case 256:return earth_data_256;
+    case 512:return earth_data_512;
+    }
+    assert(!"Unknown globe resolution");return NULL;
+}
+
+/* Reconstruct OpenGL's alternating strip winding and check the flat-shaded
+ * color on the newly submitted (provoking) vertex against its Earth cell. */
+static void check_triangle(const GLfloat *a,const GLfloat *b,const GLfloat *c)
+{
+    double ux,uy,uz,vx,vy,vz,cx,cy,cz,area,phi,theta;
+    unsigned int latitude,longitude,index;
+    ux=b[0]-a[0];uy=b[1]-a[1];uz=b[2]-a[2];
+    vx=c[0]-a[0];vy=c[1]-a[1];vz=c[2]-a[2];
+    cx=(a[0]+b[0]+c[0])/3.0;cy=(a[1]+b[1]+c[1])/3.0;
+    cz=(a[2]+b[2]+c[2])/3.0;
+    area=(uy*vz-uz*vy)*cx+(uz*vx-ux*vz)*cy+(ux*vy-uy*vx)*cz;
+    assert(area>0.0);
+    if(!texture_enabled){
+        phi=atan2(cy,cx);if(phi<0)phi+=2.0*TEST_PI;
+        theta=atan2(sqrt(cx*cx+cy*cy),cz);
+        longitude=(unsigned int)(phi*globe_longitude/(2.0*TEST_PI));
+        latitude=(unsigned int)(theta*globe_latitude/TEST_PI);
+        assert(longitude<(unsigned int)globe_longitude&&latitude<(unsigned int)globe_latitude);
+        index=earth_bytes()[(unsigned long)latitude*globe_longitude+longitude];
+        if(windows[active_window].indexed)assert(last_index==index);
+        else assert(last_rgb[0]==earth_cmap[index][0]&&last_rgb[1]==earth_cmap[index][1]&&last_rgb[2]==earth_cmap[index][2]);
+    }
 }
 
 static int available(unsigned int request)
@@ -187,7 +235,7 @@ void glPopClientAttrib(void){assert(client_depth);unpack_alignment=client_alignm
 void glTexEnvi(GLenum target,GLenum parameter,GLint value){assert(target==GL_TEXTURE_ENV&&parameter==GL_TEXTURE_ENV_MODE&&value==GL_REPLACE);}
 void glGetFloatv(GLenum query,GLfloat *value)
 {unsigned int s;if(query==GL_ZOOM_X){*value=zoom_x;return;}if(query==GL_ZOOM_Y){*value=zoom_y;return;}assert(query==GL_MODELVIEW_MATRIX||query==GL_PROJECTION_MATRIX);s=query==GL_PROJECTION_MATRIX?1U:0U;memcpy(value,matrices[s][stack_depth[s]],16*sizeof(*value));}
-void glClear(GLbitfield mask){assert((mask&GL_COLOR_BUFFER_BIT)!=0);assert(((mask&GL_DEPTH_BUFFER_BIT)!=0)==(windows[active_window].depth>0));++frame_clears;}
+void glClear(GLbitfield mask){assert((mask&GL_COLOR_BUFFER_BIT)!=0);assert(((mask&GL_DEPTH_BUFFER_BIT)!=0)==(windows[active_window].depth>0));memset(&frame_geometry,0,sizeof(frame_geometry));++frame_clears;}
 void glClearColor(GLclampf r,GLclampf g,GLclampf b,GLclampf a){assert(r==0&&g==0&&b==0&&a==1);}
 void glClearIndex(GLfloat index){assert(index>=0&&index<256);last_clear_index=(int)index;}
 void glEnable(GLenum c){if(c==GL_TEXTURE_2D)texture_enabled=1;else if(c==GL_DEPTH_TEST){assert(windows[active_window].depth>0);depth_enabled=1;}else if(c==GL_CULL_FACE)cull_enabled=1;else assert(!"Unexpected glEnable");}
@@ -207,20 +255,79 @@ void glRotatef(GLfloat angle,GLfloat x,GLfloat y,GLfloat z)
     m[2]=(GLfloat)(t*x*z-s*y);m[6]=(GLfloat)(t*y*z+s*x);m[10]=(GLfloat)(t*z*z+c);postmultiply(m);
 }
 void glViewport(GLint x,GLint y,GLsizei w,GLsizei h){assert(x==0&&y==0&&w>0&&h>0);}
-GLuint glGenLists(GLsizei n){assert(n==1);return ++native_lists;}
-void glNewList(GLuint l,GLenum mode){assert(l&&mode==GL_COMPILE_AND_EXECUTE);}
-void glEndList(void){}
-void glCallList(GLuint l){assert(l);}
-void glDeleteLists(GLuint l,GLsizei n){assert(l&&n==1);}
-void glBegin(GLenum mode){assert(mode==GL_TRIANGLES&&!begin_mode);begin_mode=mode;}
-void glEnd(void){assert(begin_mode==GL_TRIANGLES);begin_mode=0;}
+GLuint glGenLists(GLsizei n){assert(n==1&&native_lists<63);return ++native_lists;}
+void glNewList(GLuint l,GLenum mode){assert(l&&l<64&&mode==GL_COMPILE_AND_EXECUTE&&!current_list);current_list=l;list_exists[l]=1;memset(&list_geometry[l],0,sizeof(list_geometry[l]));}
+void glEndList(void){assert(current_list&&!begin_mode);current_list=0;}
+void glCallList(GLuint l){assert(l&&l<64&&list_exists[l]&&!current_list&&!begin_mode);geometry_add(&frame_geometry,&list_geometry[l]);}
+void glDeleteLists(GLuint l,GLsizei n){assert(l&&l<64&&list_exists[l]&&n==1);list_exists[l]=0;}
+void glBegin(GLenum mode){assert((mode==GL_TRIANGLES||mode==GL_TRIANGLE_STRIP)&&!begin_mode);begin_mode=mode;block_vertices=block_coordinates=0;}
+void glEnd(void)
+{
+    struct Test_geometry geometry;
+    assert(begin_mode);
+    if(globe_verts!=NULL){
+        memset(&geometry,0,sizeof(geometry));
+        geometry.vertices=block_vertices;
+        if(begin_mode==GL_TRIANGLE_STRIP){
+            assert(block_vertices==2U*((unsigned int)globe_longitude+1U));
+            geometry.triangles=block_vertices-2U;geometry.strip_batches=1;
+            if(texture_enabled){
+                assert(first_uvs[0][0]==0&&first_uvs[1][0]==0);
+                assert(block_uvs[0][0]==1&&block_uvs[1][0]==1);
+            }
+        }else{
+#ifdef TRI
+            assert(block_vertices==3UL*globe_tris_num);
+#else
+            assert(block_vertices==6U*(unsigned int)globe_longitude);
+#endif
+            geometry.triangles=block_vertices/3U;geometry.cap_batches=1;
+        }
+        assert(block_coordinates==(texture_enabled?block_vertices:0U));
+        geometry_add(&frame_geometry,&geometry);
+        if(current_list)geometry_add(&list_geometry[current_list],&geometry);
+    }
+    begin_mode=0;
+}
 void glColor3ub(GLubyte r,GLubyte g,GLubyte b){last_rgb[0]=r;last_rgb[1]=g;last_rgb[2]=b;++rgb_calls;}
 void glColor3f(GLfloat r,GLfloat g,GLfloat b){glColor3ub((GLubyte)(r*255),(GLubyte)(g*255),(GLubyte)(b*255));}
 void glIndexub(GLubyte i){last_index=i;++indices;}
 void glIndexi(GLint i){assert(i>=0&&i<256);glIndexub((GLubyte)i);}
 void glIndexf(GLfloat i){assert(i>=0&&i<256);glIndexub((GLubyte)i);}
-void glVertex3fv(const GLfloat *v){assert(begin_mode==GL_TRIANGLES&&v);++emitted_vertices;}
-void glTexCoord2fv(const GLfloat *v){assert(v&&v[0]>=0&&v[0]<=1&&v[1]>=0&&v[1]<=1);++texture_coordinates;}
+void glVertex3fv(const GLfloat *v)
+{
+    unsigned int slot;
+    double xy,t,u,difference;
+    assert(begin_mode&&v);
+    if(globe_verts!=NULL){
+        slot=begin_mode==GL_TRIANGLES?block_vertices%3U:(block_vertices<2U?block_vertices:2U);
+        memcpy(block_polygon[slot],v,sizeof(block_polygon[slot]));
+        if(texture_enabled){
+            assert(block_coordinates==block_vertices+1U);
+            memcpy(block_uvs[slot],last_uv,sizeof(last_uv));
+            if(block_vertices<2U)memcpy(first_uvs[block_vertices],last_uv,sizeof(last_uv));
+            xy=sqrt((double)v[0]*v[0]+(double)v[1]*v[1]);
+            t=atan2(xy,(double)v[2])/TEST_PI;assert(fabs(t-last_uv[1])<1e-5);
+            if(xy>0.001){
+                u=atan2((double)v[1],(double)v[0])/(2.0*TEST_PI);if(u<0)u+=1;
+                difference=fabs(u-last_uv[0]);if(difference>0.5)difference=1-difference;
+                assert(difference<1e-5);
+            }
+        }else assert(block_coordinates==0);
+        if(begin_mode==GL_TRIANGLES){
+            if(slot==2U)check_triangle(block_polygon[0],block_polygon[1],block_polygon[2]);
+        }else if(block_vertices>=2U){
+            if((block_vertices&1U)!=0)check_triangle(block_polygon[1],block_polygon[0],block_polygon[2]);
+            else check_triangle(block_polygon[0],block_polygon[1],block_polygon[2]);
+            memcpy(block_polygon[0],block_polygon[1],sizeof(block_polygon[0]));
+            memcpy(block_polygon[1],block_polygon[2],sizeof(block_polygon[1]));
+            memcpy(block_uvs[0],block_uvs[1],sizeof(block_uvs[0]));
+            memcpy(block_uvs[1],block_uvs[2],sizeof(block_uvs[1]));
+        }
+    }
+    ++block_vertices;++emitted_vertices;
+}
+void glTexCoord2fv(const GLfloat *v){assert(begin_mode&&v&&v[0]>=0&&v[0]<=1&&v[1]>=0&&v[1]<=1);memcpy(last_uv,v,sizeof(last_uv));++block_coordinates;++texture_coordinates;}
 void glRasterPos2i(GLint x,GLint y){assert(x>=0&&x<=(int)drv_win_width&&y>=0&&y<=(int)drv_win_height);}
 void glRasterPos2f(GLfloat x,GLfloat y){assert(x>=-1&&x<=drv_win_width&&y>=-1&&y<=drv_win_height);}
 void glPixelStorei(GLenum p,GLint v){if(p==GL_UNPACK_ALIGNMENT){assert(v==1||v==2||v==4||v==8);unpack_alignment=v;}else assert(v==0);}
@@ -267,9 +374,41 @@ static void glu_failure_cleanup(void)
     puts("PASS OpenGL GLU failure: failed mipmaps are not marked loaded and resources are released");
 }
 
+static void render_checked(int indexed)
+{
+    unsigned int previous_pixels=draw_pixels_calls;
+    drv_render();
+    if(indexed&&drv_texture_enabled){
+        assert(draw_pixels_calls==previous_pixels+1U);
+        assert(frame_geometry.vertices==0&&frame_geometry.triangles==0);
+    }else{
+        assert(draw_pixels_calls==previous_pixels);
+        assert(frame_geometry.triangles==globe_tris_num);
+        assert(frame_geometry.cap_batches==1);
+#ifdef TRI
+        assert(frame_geometry.vertices==3UL*globe_tris_num);
+        assert(frame_geometry.strip_batches==0);
+#else
+        assert(frame_geometry.vertices==6UL*globe_longitude+
+               2UL*(globe_longitude+1UL)*(globe_latitude-2UL));
+        assert(frame_geometry.strip_batches==(unsigned long)globe_latitude-2UL);
+#endif
+    }
+    assert(!begin_mode&&!current_list);
+}
+
+static void check_cached_frame(int indexed)
+{
+    unsigned int previous_vertices=emitted_vertices,previous_lists=native_lists;
+    render_checked(indexed);
+    /* Cached native lists execute again without rebuilding or resubmitting
+     * vertex data. The indexed software texture raster is redrawn each time. */
+    assert(emitted_vertices==previous_vertices&&native_lists==previous_lists);
+}
+
 int main(int argc,char **argv)
 {
-    Vertex a,b,c;unsigned int i;int indexed;
+    Vertex a,b,c;unsigned int i,level;int indexed;
     profile=argc>1?argv[1]:"rgba";
     if(strcmp(profile,"limited")==0)maximum_texture_size=256;
     /* Register first so the production atexit cleanup runs before assertions. */
@@ -299,20 +438,28 @@ int main(int argc,char **argv)
     globe_init();texture_init();globe_init_verts(32,-1,1000);drv_resize(64,48);
     posts_before_loop=redisplay_posts;
     drv_loop();assert(loop_calls==1&&windows[active_window].display==drv_render);
-    drv_render();assert(emitted_vertices>=globe_tris_num*3UL);assert(depth_enabled==(windows[active_window].depth>0));
-    if(indexed){unpack_alignment=8;index_shift=2;index_offset=17;map_color=1;zoom_x=2;zoom_y=-1;}
-    keyboard_callback('t',0,0);assert(drv_texture_enabled);drv_render();
-    if(indexed)assert(unpack_alignment==8&&index_shift==2&&index_offset==17&&map_color==1&&zoom_x==2&&zoom_y==-1);
-    if(indexed)assert(draw_pixels_calls==1&&texture_uploads==0);
-    else {
-        assert(texture_uploads==1&&texture_coordinates>0&&texture_enabled);
+    for(level=0;level<5;++level){
+        if(level){
+            keyboard_callback((unsigned char)('1'+level),0,0);
+            assert(globe_longitude==(32<<level));
+        }
+        render_checked(indexed);check_cached_frame(indexed);
+        assert(depth_enabled==(windows[active_window].depth>0));
+        if(indexed){unpack_alignment=8;index_shift=2;index_offset=17;map_color=1;zoom_x=2;zoom_y=-1;}
+        keyboard_callback('t',0,0);assert(drv_texture_enabled);render_checked(indexed);check_cached_frame(indexed);
+        if(indexed)assert(unpack_alignment==8&&index_shift==2&&index_offset==17&&map_color==1&&zoom_x==2&&zoom_y==-1);
+        if(indexed)assert(texture_uploads==0);
+        else {
+            assert(texture_uploads==1&&texture_coordinates>0&&texture_enabled);
 #ifdef NO_GENMIPMAP
-        assert(glu_mipmap_calls==1&&direct_texture_uploads==0);
+            assert(glu_mipmap_calls==1&&direct_texture_uploads==0);
 #else
-        assert(glu_mipmap_calls==0&&direct_texture_uploads==1);
+            assert(glu_mipmap_calls==0&&direct_texture_uploads==1);
 #endif
+        }
+        keyboard_callback('T',0,0);assert(!drv_texture_enabled);render_checked(indexed);check_cached_frame(indexed);
     }
-    keyboard_callback('T',0,0);assert(!drv_texture_enabled);drv_render();
+    if(indexed)assert(draw_pixels_calls==10);
     assert(stack_depth[0]==0&&stack_depth[1]==0&&attrib_depth==0&&client_depth==0&&cull_enabled);
     if(windows[active_window].doubled)assert(swaps>0);else assert(flushes>0&&swaps==0);
     ogl_cleanup();ogl_cleanup();
@@ -321,5 +468,10 @@ int main(int argc,char **argv)
     puts("PASS OpenGL window lifecycle: safe per-window callbacks through early probe/setup/show redraws, renderer and redisplay activated after globe initialization");
     puts("PASS OpenGL format selection: highest verified RGBA/RGB/index precision, buffering/depth fallbacks and unknown alpha handling");
     puts("PASS OpenGL indexed/native rendering: palette bytes, indexed facets, packed CI software pixels and native RGB textures");
+#ifdef TRI
+    puts("PASS retained OpenGL TRI: native and indexed-texture traversal, five resolutions and display-list caching");
+#else
+    puts("PASS native OpenGL strips: five resolutions, one combined cap batch, full-band strips, outward winding, provoking colors, UV seams and display-list caching");
+#endif
     return 0;
 }

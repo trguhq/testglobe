@@ -10,6 +10,7 @@ CPPFLAGS =
 CFLAGS = -O
 SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
 LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
+# drv_ogl.h selects latitude strips with separately batched pole triangles.
 OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
 OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o texsoft.o
 OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
@@ -43,7 +44,7 @@ APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o
 
 # Sun XGL 3.x / 32-bit SPARC on Solaris 2.6. Select native SDK locations
 # on the make command line if they differ from the Sun installation defaults.
-# x_ objects keep this driver's TRISTRIP layout separate from OpenGL's TRI.
+# x_ objects keep XGL's RGB strip packets separate from OpenGL driver objects.
 XGLHOME = /opt/SUNWits/Graphics-sw/xgl
 XGL_CPPFLAGS = -I$(XGLHOME)/include -I$(OPENWINHOME)/include
 XGL_CFLAGS = $(CFLAGS)

@@ -21,12 +21,15 @@ development headers and libraries.
 python3 tests/run.py
 ```
 
-The baseline checks cover OpenGL indexed triangles, XGL RGB strips, and IRIS GL,
-GDI, and QuickDraw indexed strips. They verify all five globe resolutions,
-TRI-equivalent winding and colors, nondegenerate polar caps, UV seams, and
-texture-toggle dispatch where supported. XGL and IRIS GL default to `EARTH_128`
-(key 3). Primitive modes come from the driver headers; do not pass `TRI`,
-`TRISTRIP`, or `QUAD` on the compiler command line.
+The baseline checks cover OpenGL indexed strips with separate pole triangles, XGL
+RGB strips, and IRIS GL, GDI, and QuickDraw indexed strips. They verify all five
+globe resolutions, TRI-equivalent winding and colors, nondegenerate polar caps,
+UV seams, and texture-toggle dispatch where supported. OpenGL defaults to
+`EARTH_512` (key 5); XGL and IRIS GL default to `EARTH_128` (key 3). The retained
+independent-triangle path has a separate reference check using the test-only
+forced-include header `tests/tri_mode.h`. Normal builds select primitive modes in
+driver headers; do not pass `TRI`, `TRISTRIP`, or `QUAD` on the compiler command
+line.
 
 Additional options may be combined in one invocation:
 
@@ -55,6 +58,12 @@ double buffering, RGB24/RGB16 and color-index8 fallbacks, unknown alpha queries,
 destruction of every probe context, a fresh final window at its requested size,
 initial redisplay, absent depth buffers, exact Earth palette installation,
 index-byte facets, and native RGB textures.
+
+The native geometry checks cover full interior latitude strips, a single
+`GL_TRIANGLES` batch for both polar caps, original winding and provoking-vertex
+colors, per-vertex UV seams, and display-list caching and invalidation. Strip and
+cap topology is checked against the retained independent-triangle reference at
+all five Earth resolutions.
 
 The GLU mipmap path is checked with a 256-pixel texture-size limit and a larger
 source image, as well as a failed mipmap build. Native-rendering statistics must

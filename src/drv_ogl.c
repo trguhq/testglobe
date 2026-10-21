@@ -469,6 +469,35 @@ static void ogl_present_indexed_texture(void)
     glPopClientAttrib(); glPopAttrib();
 }
 
+/* Keep the pole triangles in one batch; each latitude band opens its own
+ * native strip. Indexed textures expand the same geometry in software. */
+static void ogl_draw_globe(void)
+{
+#ifdef TRI
+    if (ogl_indexed && drv_texture_enabled)
+        globe_draw_tris();
+    else
+    {
+        glBegin(GL_TRIANGLES);
+        globe_draw_tris();
+        glEnd();
+    }
+#endif
+#ifdef TRISTRIP
+#ifdef DRV_TRI_CAPS
+    if (ogl_indexed && drv_texture_enabled)
+        globe_draw_pole_tris();
+    else
+    {
+        glBegin(GL_TRIANGLES);
+        globe_draw_pole_tris();
+        glEnd();
+    }
+#endif
+    globe_draw_tripstrip();
+#endif
+}
+
 /* render current scene */
 void drv_render(void)
 {
@@ -492,7 +521,7 @@ void drv_render(void)
         if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
                              TRUE, &earth_cmap[0][0]))
             error("Cannot allocate indexed OpenGL texture raster");
-        globe_draw_tris();
+        ogl_draw_globe();
         ogl_present_indexed_texture();
     }
     else if(!dlist)
@@ -500,9 +529,7 @@ void drv_render(void)
         dlist = glGenLists(1);
         glNewList(dlist, GL_COMPILE_AND_EXECUTE);
 
-        glBegin(GL_TRIANGLES);
-        globe_draw_tris();
-        glEnd();
+        ogl_draw_globe();
 
         glEndList();
     } else
@@ -650,6 +677,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     glEnable(GL_CULL_FACE);
     glFrontFace(GL_CCW);
     glCullFace(GL_BACK);
+    glShadeModel(GL_FLAT);
     if (ogl_indexed)
     {
         ogl_install_palette();
@@ -685,11 +713,16 @@ void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *
     glVertex3fv((GLfloat *)xyz3);
 }
 
-void drv_draw_tri_flat_color(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3,
-                              unsigned char color)
+static void ogl_set_index_color(unsigned char color)
 {
     if (ogl_indexed) glIndexi((GLint)color);
     else glColor3ub(earth_cmap[color][0], earth_cmap[color][1], earth_cmap[color][2]);
+}
+
+void drv_draw_tri_flat_color(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3,
+                              unsigned char color)
+{
+    ogl_set_index_color(color);
     glVertex3fv((GLfloat *)xyz1);
     glVertex3fv((GLfloat *)xyz2);
     glVertex3fv((GLfloat *)xyz3);
@@ -710,6 +743,53 @@ void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, 
     glTexCoord2fv((GLfloat *)uv3);
     glVertex3fv((GLfloat *)xyz3);
 }
+
+#ifdef TRISTRIP
+/* In OpenGL flat shading, a strip's newly submitted vertex supplies that
+ * triangle's color. The first two vertices do not complete a triangle. */
+void drv_draw_tristrip_flat_color(unsigned int count,
+                                const Vertex TG_HUGE *vertices,
+                                const unsigned char TG_HUGE *facet_colors)
+{
+    unsigned int i;
+    if (count < 3U || vertices == NULL || facet_colors == NULL) return;
+    glBegin(GL_TRIANGLE_STRIP);
+    ogl_set_index_color(facet_colors[0]);
+    for (i = 0; i < count; ++i)
+    {
+        if (i >= 2U) ogl_set_index_color(facet_colors[i - 2U]);
+        glVertex3fv((const GLfloat *)(vertices + i));
+    }
+    glEnd();
+}
+
+void drv_draw_tristrip_flat_uv(unsigned int count,
+                             const Vertex TG_HUGE *vertices,
+                             const Coord TG_HUGE *coords)
+{
+    unsigned int i, first, second;
+    if (count < 3U || vertices == NULL || coords == NULL) return;
+    if (ogl_indexed)
+    {
+        for (i = 0; i < count - 2U; ++i)
+        {
+            first = (i & 1U) ? i + 1U : i;
+            second = (i & 1U) ? i : i + 1U;
+            texsoft_triangle(vertices + first, vertices + second,
+                             vertices + i + 2U, coords + first,
+                             coords + second, coords + i + 2U);
+        }
+        return;
+    }
+    glBegin(GL_TRIANGLE_STRIP);
+    for (i = 0; i < count; ++i)
+    {
+        glTexCoord2fv((const GLfloat *)(coords + i));
+        glVertex3fv((const GLfloat *)(vertices + i));
+    }
+    glEnd();
+}
+#endif /* TRISTRIP */
 
 /* draw the OSD */
 void drv_draw_osd(void)

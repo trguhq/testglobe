@@ -394,8 +394,9 @@ int globe_init_verts(int longitude, int latitude, float radius)
     return 1;
 }
 
-#ifdef TRI
-void globe_draw_tris(void)
+#if defined(TRI) || defined(DRV_TRI_CAPS)
+/* Keep the individual-triangle traversal for TRI and separate strip caps. */
+static void globe_draw_tri_rows(int first, int last)
 {
     Color TG_HUGE *color_ptr;
     Vertex TG_HUGE *v1;
@@ -411,8 +412,9 @@ void globe_draw_tris(void)
     int i, j;
     unsigned long row;
 
-    color_ptr = globe_colors;
-    for (i = 0; i < globe_latitude; ++i)
+    if (first >= last) return;
+    color_ptr = globe_colors + (unsigned long)first * globe_longitude;
+    for (i = first; i < last; ++i)
     {
         row = (unsigned long)i * (globe_longitude + 1UL);
         v1 = globe_verts + row;
@@ -465,6 +467,20 @@ void globe_draw_tris(void)
         }
     }
 }
+#ifdef TRI
+void globe_draw_tris(void)
+{
+    globe_draw_tri_rows(0, globe_latitude);
+}
+#endif
+#if defined(TRISTRIP) && defined(DRV_TRI_CAPS)
+void globe_draw_pole_tris(void)
+{
+    if (globe_latitude < 2) return;
+    globe_draw_tri_rows(0, 1);
+    globe_draw_tri_rows(globe_latitude - 1, globe_latitude);
+}
+#endif
 #endif
 
 #ifdef QUAD
@@ -526,15 +542,19 @@ static void globe_draw_strip(unsigned int count)
 
 void globe_draw_tripstrip(void)
 {
-    int i, j, k;
+    int i, j;
     unsigned int count;
     unsigned long top, bottom, face;
+#ifndef DRV_TRI_CAPS
+    int k;
     unsigned long cap[3];
+#endif
     /* A complete latitude band needs at most 1026 vertices (EARTH_512).
      * Alternating top/bottom rows gives exactly the TRI path's winding;
      * the two facets for each longitude patch use the same flat color.
-     * Three-vertex pole strips preserve the TRI path's exact UVs and avoid
-     * zero-area facets in native pipelines that compute facet normals. */
+     * Drivers with DRV_TRI_CAPS submit poles separately as triangles.
+     * Other drivers use three-vertex pole strips to preserve the TRI path's
+     * exact UVs and avoid zero-area facets in native normal calculations. */
     count = 2U * ((unsigned int)globe_longitude + 1U);
     for (i = 0; i < globe_latitude; ++i)
     {
@@ -543,6 +563,7 @@ void globe_draw_tripstrip(void)
         face = (unsigned long)i * globe_longitude;
         if (i == 0 || i == globe_latitude - 1)
         {
+#ifndef DRV_TRI_CAPS
             for (j = 0; j < globe_longitude; ++j)
             {
                 /* Preserve the individual TRI path's exact pole UVs,
@@ -574,6 +595,7 @@ void globe_draw_tripstrip(void)
 #endif
                 globe_draw_strip(3);
             }
+#endif
             continue;
         }
         for (j = 0; j <= globe_longitude; ++j)
