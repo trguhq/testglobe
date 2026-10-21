@@ -39,18 +39,22 @@ The following binaries are available in the corresponding releases:
 * OpenGL / Solaris / SPARCv8: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
 ## Build notes
-GNU make is required. From the repository root or `src`, `make` (or `make opengl`) builds `testglobe`; `make matrox` builds `testglob.exe` with Microsoft C 7.0. The root Makefile forwards builds to `src`, where the binaries are placed. OpenGL and DOS objects are kept separately in `objogl` and `objmtx`; switching targets does not reuse incompatible objects.
+The Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: on Unix, `make` (or `make opengl`) builds `testglobe`; under MS-DOS, `nmake matrox` builds `testglob.exe` with Microsoft C 7.0. Objects and binaries are placed in the directory where make is run. OpenGL uses `.o` files and DOS uses `.obj` files, so switching targets does not reuse incompatible objects.
 
-The OpenGL target defines `FLAT`, `DRV_OGL`, and `TRI`. The Matrox target defines `SEG86`, `DRV_MTX`, and `QUAD`, and compiles all of its objects with `-AH`. These select the memory model, graphics driver, and primitive independently. `make clean` removes both targets' generated files.
+The OpenGL target defines `FLAT`, `DRV_OGL`, and `TRI`. The Matrox target defines `SEG86`, `DRV_MTX`, and `QUAD`, and compiles all of its objects with `-AH`. These select the memory model, graphics driver, and primitive independently. On Unix, `make clean` removes both targets' generated files; under DOS use `nmake clean RM=del`. `clean-opengl` and `clean-matrox` clean individual targets using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+
+Run the appropriate clean target after changing the compiler or build flags; traditional make does not track command-line changes.
+
+The root and `src` Makefiles intentionally have the same rules with different source/SDK directory defaults: historical NMAKE and Solaris make do not share an include syntax. Keep the two files in step when changing rules. For an out-of-tree build, use the ordinary `SRC` macro, for example `make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src`; no VPATH search behavior is required.
 
 ### cosf and sinf
-If you don't have cosf and sinf (some old Unixes) define NO_SINF as in the Makefile example.
+The default `SYS_FLAGS` includes `-DNO_SINF` for older Unix math libraries. It selects the standard `sin` and `cos` functions instead of `sinf` and `cosf`.
 ### Classic Mac (QuickDraw)
 The files provided here are in Unix format and can't be used directly on Classic Mac without conversion. The utility "dos2unix" can do this conversion, e.g. with its alias "unix2mac".
 
 Symantec Think C++ was used for testing but a cross-compiler like Retro68 (https://github.com/autc04/Retro68) should work.
 ### DOS
-The Matrox target requires MS-DOS, Microsoft C 7.0 with its huge-model runtime, a DOS port of GNU make, and the Matrox LibShell C binding library matching that compiler/model. Put the SDK at the repository root:
+The Matrox target requires MS-DOS, Microsoft C 7.0 with its huge-model runtime and NMAKE, and the Matrox LibShell C binding library matching that compiler/model. Put the SDK at the repository root:
 
 ```text
 XGX1/HEADERS/DEF.H
@@ -59,7 +63,7 @@ XGX1/HEADERS/IOLIB.H
 libsv5/lscl.lib
 ```
 
-With the compiler and linker on `PATH`, run `make matrox`. From `src`, an external SDK location can be selected with `make matrox XGX_ROOT=C:/MATROX`; `MTX_CC`, `MTX_CFLAGS`, `MTX_CPPFLAGS`, `MTX_LIB`, and `MTX_LDFLAGS` are overridable. Keep `-AH` when overriding compiler flags. `XGX_ROOT` defaults to `..` relative to `src`. Under COMMAND.COM, GNU make detects `COMSPEC` and emits DOS paths and directory commands. Compiler/linker response files avoid the DOS command-line length limit; generated DOS names fit 8.3.
+With the compiler and linker on `PATH`, run `nmake matrox`. An external SDK location can be selected with `nmake matrox XGX_ROOT=C:\MATROX`; `MTX_CC`, `MTX_CFLAGS`, `MTX_CPPFLAGS`, `MTX_LIB`, and `MTX_LDFLAGS` are overridable. Keep `-AH` when overriding compiler flags. `XGX_ROOT` defaults to `.` in the root Makefile and `..` in `src/Makefile`. DOS rules use native backslash paths. Compiler/linker response files avoid the DOS command-line length limit; generated DOS names fit 8.3. No GNU make functions, conditional directives, pattern rules, or shell directory commands are used.
 
 The driver assumes a 640x480, 256-color PG-641-compatible LibShell display. Initialize the board and its LibShell firmware according to the SDK before starting `testglob.exe`. Load a Microsoft-compatible DOS mouse driver for mouse dragging; keyboard controls work without a mouse. The default globe is `EARTH_32` (key 1), and key 2 selects `EARTH_64`. Other globe sizes and texture mapping are excluded from this build, including its help and status text.
 
@@ -75,7 +79,16 @@ GLUT is required. If your system did not include GLUT out of the box you may hav
     * https://web.archive.org/web/20010726192034/http://reality.sgi.com/opengl/glut3/glut-3.7b.sparc_solaris_64.tar.gz
     * https://web.archive.org/web/20010726175006/http://reality.sgi.com/opengl/glut3/glut-3.7b.sparc_solaris.tar.gz
       
-If you don't have glGenerateMipmap define NO_GENMIPMAP as in the Makefile example.
+The default `SYS_FLAGS` also includes `-DNO_GENMIPMAP`, which builds mipmaps with GLU for older OpenGL implementations. On newer systems, `SYS_FLAGS=-DGL_GLEXT_PROTOTYPES` enables the `glGenerateMipmap` path.
+
+On Solaris, select the installed C compiler and OpenWindows paths as needed, for example:
+
+```sh
+make CC=cc CPPFLAGS=-I/usr/openwin/include \
+  LDFLAGS="-L/usr/openwin/lib -lglut -lGL -lGLU -lX11 -lXmu -lm"
+```
+
+The default optimization option is the traditional Unix `-O`; override `CFLAGS` and the library locations for the installed compiler and GLUT package.
 ### Xcode
 No .xcodeproj is provided at this time (as of v0.1), however testglobe was built for macOS with Xcode. This will be provided at some point in the future.
 ## Known issues

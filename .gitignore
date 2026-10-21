@@ -1,4 +1,12 @@
 /src/objogl/
 /src/objmtx/
+/*.o
+/*.obj
+/*.rsp
+/testglobe
+/testglob.exe
+/src/*.o
+/src/*.obj
+/src/*.rsp
 /src/testglobe
 /src/testglob.exe
