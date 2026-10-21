@@ -41,7 +41,7 @@ template used for the rest.
 
 | Driver | Platform | Default globe | Texture toggle | Origin |
 | --- | --- | --- | --- | --- |
-| [OpenGL](#opengl) | Unix and modern macOS | Key 5: `EARTH_512` | Yes | human |
+| [OpenGL](#opengl) | Linux, Unix and modern macOS | Key 5: `EARTH_512` | Yes | human |
 | [IRIS GL](#iris-gl) | IRIX 4.0, 32-bit MIPS | Key 3: `EARTH_128` | Yes | AI |
 | [Sun XGL](#sun-xgl) | Solaris 2.6, 32-bit SPARC | Key 3: `EARTH_128` | Yes | AI |
 | [Matrox LibShell](#matrox-libshell) | MS-DOS, PG-641-compatible hardware | Key 1: `EARTH_32` | No | AI |
