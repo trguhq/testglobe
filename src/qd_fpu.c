@@ -118,27 +118,30 @@ static int qd_fpu_clip_z(const Qd_fpu_point *in, int count,
     return total;
 }
 
-int qd_fpu_project(unsigned int first, unsigned int second,
-                   unsigned int third, unsigned int width,
-                   unsigned int height, Qd_screen_point *out)
+int qd_fpu_project_polygon(const unsigned int *indices, unsigned int count,
+                            unsigned int width, unsigned int height,
+                            Qd_screen_point *out)
 {
     Qd_fpu_point a[QD_FPU_MAX_POLY], b[QD_FPU_MAX_POLY];
     double focal, x, y;
-    int i, count;
-    if (first >= qd_fpu_count || second >= qd_fpu_count ||
-        third >= qd_fpu_count || out == NULL || width == 0 || height == 0 ||
+    unsigned int index;
+    int i, clipped_count;
+    if (indices == NULL || (count != 3U && count != 4U) ||
+        out == NULL || width == 0 || height == 0 ||
         width > 32767U || height > 32767U)
         return 0;
-    a[0] = qd_fpu_points[first];
-    a[1] = qd_fpu_points[second];
-    a[2] = qd_fpu_points[third];
-    count = qd_fpu_clip_z(a, 3, b, -1.0f, FALSE);
-    if (count < 3) return 0;
-    count = qd_fpu_clip_z(b, count, a, -10000.0f, TRUE);
-    if (count < 3) return 0;
+    for (index = 0; index < count; ++index)
+    {
+        if (indices[index] >= qd_fpu_count) return 0;
+        a[index] = qd_fpu_points[indices[index]];
+    }
+    clipped_count = qd_fpu_clip_z(a, (int)count, b, -1.0f, FALSE);
+    if (clipped_count < 3) return 0;
+    clipped_count = qd_fpu_clip_z(b, clipped_count, a, -10000.0f, TRUE);
+    if (clipped_count < 3) return 0;
     /* 45-degree vertical field of view, downward-Y QuickDraw coordinates. */
     focal = (double)height * 1.2071067811865475244;
-    for (i = 0; i < count; ++i)
+    for (i = 0; i < clipped_count; ++i)
     {
         x = (double)width / 2.0 + (double)a[i].x * focal / -(double)a[i].z;
         y = (double)height / 2.0 - (double)a[i].y * focal / -(double)a[i].z;
@@ -151,6 +154,15 @@ int qd_fpu_project(unsigned int first, unsigned int second,
         out[i].x = (long)x;
         out[i].y = (long)y;
     }
-    return count;
+    return clipped_count;
+}
+
+int qd_fpu_project(unsigned int first, unsigned int second,
+                     unsigned int third, unsigned int width,
+                     unsigned int height, Qd_screen_point *out)
+{
+    unsigned int indices[3];
+    indices[0] = first; indices[1] = second; indices[2] = third;
+    return qd_fpu_project_polygon(indices, 3U, width, height, out);
 }
 #endif /* SEG68 && DRV_QD */

@@ -302,24 +302,25 @@ static void qd_set_transform(void)
         qd_error("QuickDraw coordinate is out of range");
 }
 
-static int qd_prepare_polygon(unsigned int first, unsigned int second,
-                               unsigned int third, Point *destination)
+static int qd_prepare_polygon(const unsigned int *indices, unsigned int count,
+                               Point *destination)
 {
     Qd_screen_point screen[QD_MAX_POLY];
-    int i, count;
+    int i, projected_count;
     if (qd_has_fpu)
-        count = qd_fpu_project(first, second, third,
+        projected_count = qd_fpu_project_polygon(indices, count,
                                drv_win_width, drv_win_height, screen);
     else
-        count = soft3d_fixed_project(qd_fixed_points, first, second, third,
+        projected_count = soft3d_fixed_project_polygon(qd_fixed_points, indices, count,
                                      drv_win_width, drv_win_height, screen);
-    count = soft3d_finish_polygon(screen, count, drv_win_width, drv_win_height);
-    for (i = 0; i < count; ++i)
+    projected_count = soft3d_finish_polygon(screen, projected_count,
+                                            drv_win_width, drv_win_height);
+    for (i = 0; i < projected_count; ++i)
     {
         destination[i].h = (short)screen[i].x;
         destination[i].v = (short)screen[i].y;
     }
-    return count;
+    return projected_count;
 }
 
 static void qd_flat_color(PolyHandle polygon, unsigned char index)
@@ -380,43 +381,58 @@ static void qd_flat_color(PolyHandle polygon, unsigned char index)
     }
 }
 
-static void qd_draw_strip_batch(unsigned int count,
-                                const Vertex TG_HUGE *vertices,
-                                const unsigned char TG_HUGE *facet_colors)
+/* One indexed packet shares transformed vertices between adjacent quads.
+ * Classic QuickDraw still fills one polygon per retained quad. */
+void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
+                                    const Vertex TG_HUGE *vertices,
+                                    unsigned int quad_count,
+                                    const unsigned int TG_HUGE *indices,
+                                    const unsigned char TG_HUGE *colors)
 {
     Point projected[QD_MAX_POLY];
-    unsigned int i;
-    int j, total;
+    unsigned int i, j, corners[4];
+    int point, total;
     PolyHandle polygon;
-    if (count < 3 || vertices == NULL || facet_colors == NULL) return;
-    if (count > QD_MAX_VERTICES) qd_error("QuickDraw strip batch is too large");
-    if (qd_has_fpu) qd_fpu_transform(count, vertices);
-    else if (!soft3d_fixed_transform(qd_fixed_matrix, count, vertices,
+    if (vertex_count == 0 || quad_count == 0 || vertices == NULL ||
+        indices == NULL || colors == NULL) return;
+    if (vertex_count > QD_MAX_VERTICES || quad_count > DRV_QUAD_BATCH_MAX)
+        qd_error("QuickDraw quad batch is too large");
+    for (i = 0; i < quad_count * 4U; ++i)
+        if (indices[i] >= vertex_count)
+            qd_error("QuickDraw quad vertex index is out of range");
+    if (qd_has_fpu) qd_fpu_transform(vertex_count, vertices);
+    else if (!soft3d_fixed_transform(qd_fixed_matrix, vertex_count, vertices,
                                       qd_fixed_points))
         qd_error("QuickDraw fixed path supports radius up to 1000");
-    for (i = 0; i < count - 2; ++i)
+    for (i = 0; i < quad_count; ++i)
     {
-        total = (i & 1) ? qd_prepare_polygon(i + 1, i, i + 2, projected) :
-                          qd_prepare_polygon(i, i + 1, i + 2, projected);
+        for (j = 0; j < 4U; ++j) corners[j] = indices[i * 4U + j];
+        total = qd_prepare_polygon(corners, 4U, projected);
         if (total == 0) continue;
         polygon = OpenPoly();
         if (polygon == NULL) qd_error("Cannot allocate QuickDraw polygon");
         MoveTo(projected[0].h, projected[0].v);
-        for (j = 1; j < total; ++j) LineTo(projected[j].h, projected[j].v);
+        for (point = 1; point < total; ++point)
+            LineTo(projected[point].h, projected[point].v);
         LineTo(projected[0].h, projected[0].v);
         ClosePoly();
-        qd_flat_color(polygon, facet_colors[i]);
+        qd_flat_color(polygon, colors[i]);
         KillPoly(polygon);
-        ++globe_tris_num_vis;
+        ++globe_quads_num_vis;
     }
 }
 
-void drv_draw_tristrip_flat_color(unsigned int count,
-                                  const Vertex TG_HUGE *vertices,
-                                  const unsigned char TG_HUGE *facet_colors)
+void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                               Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
+                               unsigned char color)
 {
-    drv_draw_strip_batches(count, vertices, facet_colors,
-                            QD_MAX_VERTICES - 2U, qd_draw_strip_batch);
+    Vertex vertices[4];
+    unsigned int indices[4];
+    if (xyz1 == NULL || xyz2 == NULL || xyz3 == NULL || xyz4 == NULL) return;
+    vertices[0] = *xyz1; vertices[1] = *xyz2;
+    vertices[2] = *xyz3; vertices[3] = *xyz4;
+    indices[0] = 0; indices[1] = 1; indices[2] = 2; indices[3] = 3;
+    drv_draw_quadbatch_flat_color(4U, vertices, 1U, indices, &color);
 }
 
 /* Native font metrics keep both the statistics and help readable on a
@@ -526,8 +542,8 @@ void drv_render(void)
     EraseRect(&bounds);
     PenNormal();
     qd_set_transform();
-    globe_tris_num_vis = 0;
-    globe_draw_tripstrip();
+    globe_quads_num_vis = 0;
+    globe_draw_quads();
     if (drv_osd_enabled) drv_draw_osd();
     if (buffered)
     {

@@ -97,6 +97,7 @@ MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
 # /FPi uses a coprocessor when present and emulates otherwise. Keep /Gw
 # for Windows prologs and /AH for normalized cross-segment mesh pointers.
 # GDI objects are separate from the Matrox DOS program.
+# drv_gdi.h selects QUAD and optional DRV_QUAD_BATCH, not compiler flags.
 GDI_CC = cl
 GDI_LINK = link
 GDI_RC = rc
@@ -121,6 +122,7 @@ GDI_RESOURCE_DATA = $(GDI_DATA)\e32.bin $(GDI_DATA)\e64.bin \
 # MPW Make has its own grammar. mpw-make is an external bridge that runs the
 # native Make tool and executes its generated MPW commands; override MPW_EXEC
 # for a configured equivalent. Native MPW users use Makefile.mpw directly.
+# drv_qd.h selects QUAD with DRV_QUAD_BATCH for bounded shared-vertex packets.
 MPW_EXEC = mpw-make
 QD_MAKEFILE = ../Makefile.mpw
 QD_SOURCE = :

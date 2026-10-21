@@ -53,4 +53,15 @@
 #endif
 #endif
 
+#ifdef DRV_QUAD_BATCH
+#if !defined(QUAD) || !defined(DRV_COLORMAP)
+#error Indexed quad batching requires QUAD and DRV_COLORMAP
+#endif
+#ifndef DRV_QUAD_BATCH_MAX
+#error A quad batch driver must define DRV_QUAD_BATCH_MAX
+#elif DRV_QUAD_BATCH_MAX < 1 || DRV_QUAD_BATCH_MAX > 16383
+#error Quad batch indices must fit in a 16-bit unsigned int
+#endif
+#endif
+
 #endif /* drv_h */

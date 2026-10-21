@@ -41,8 +41,16 @@ extern int soft3d_fixed_project(const Soft3d_fixed_point *points,
                                 unsigned int first, unsigned int second,
                                 unsigned int third, unsigned int width,
                                 unsigned int height, Soft3d_screen_point *out);
+/* The indexed polygon form accepts three or four ordered packet corners.
+ * Quads are clipped and projected as polygons, without an internal diagonal. */
+extern int soft3d_fixed_project_polygon(const Soft3d_fixed_point *points,
+                                        const unsigned int TG_HUGE *indices,
+                                        unsigned int count, unsigned int width,
+                                        unsigned int height,
+                                        Soft3d_screen_point *out);
 /* Clip a convex projected polygon to its viewport and reject back faces.
  * The array has SOFT3D_MAX_POLY elements; retained points replace its input.
+ * Consecutive duplicate points (including collapsed poles) are compacted.
  * This also accepts polygons projected by the driver's native FPU path. */
 extern int soft3d_finish_polygon(Soft3d_screen_point *points, int count,
                                  unsigned int width, unsigned int height);

@@ -59,6 +59,15 @@ extern void drv_draw_tri_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
 extern void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
                                      Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
                                      unsigned char color);
+#ifdef DRV_QUAD_BATCH
+/* Four ordered vertex indices and one palette byte per quad. Vertices may
+ * be shared; all indices are relative to this bounded vertex packet. */
+extern void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
+                                          const Vertex TG_HUGE *vertices,
+                                          unsigned int quad_count,
+                                          const unsigned int TG_HUGE *indices,
+                                          const unsigned char TG_HUGE *colors);
+#endif
 #endif
 #if defined(TRI) || defined(DRV_TRI_CAPS)
 #ifndef DRV_COLORMAP

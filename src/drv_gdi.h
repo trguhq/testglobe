@@ -39,9 +39,10 @@
 #define EARTH_256
 #define EARTH_512
 
-/* GDI has no differently colored facets in one PolyPolygon call: the
- * driver expands a strip and batches its polygons by palette byte. */
-#define TRISTRIP
+/* One indexed quad per Earth patch; native batches group by palette byte. */
+#define QUAD
+#define DRV_QUAD_BATCH
+#define DRV_QUAD_BATCH_MAX 64
 
 extern void gdi_error(char *message);
 

@@ -73,6 +73,12 @@ static Color_RGB TG_HUGE *globe_strip_colors;
 static Coord TG_HUGE *globe_strip_coords;
 #endif
 #endif
+#ifdef DRV_QUAD_BATCH
+/* Bounded indexed packets retain shared corners even on segmented heaps. */
+static Vertex TG_HUGE *globe_quad_verts;
+static unsigned int TG_HUGE *globe_quad_indices;
+static unsigned char TG_HUGE *globe_quad_colors;
+#endif
 float globe_radius;
 unsigned long globe_verts_num;
 unsigned long globe_faces_num;
@@ -177,6 +183,11 @@ void globe_init(void)
     globe_strip_coords = NULL;
 #endif
 #endif
+#ifdef DRV_QUAD_BATCH
+    globe_quad_verts = NULL;
+    globe_quad_indices = NULL;
+    globe_quad_colors = NULL;
+#endif
     globe_radius = 0;
     globe_verts_num = 0UL;
     globe_faces_num = 0UL;
@@ -213,6 +224,14 @@ void globe_free(void)
         globe_free_items(globe_strip_coords);
 #endif
 #endif
+#ifdef DRV_QUAD_BATCH
+    if (globe_quad_verts != NULL)
+        globe_free_items(globe_quad_verts);
+    if (globe_quad_indices != NULL)
+        globe_free_items(globe_quad_indices);
+    if (globe_quad_colors != NULL)
+        globe_free_items(globe_quad_colors);
+#endif
     globe_init();
 }
 
@@ -248,6 +267,17 @@ static void globe_alloc(void)
     if (globe_strip_coords == NULL)
         error("Couldn't allocate memory for strip texture coordinates!");
 #endif
+#endif
+#ifdef DRV_QUAD_BATCH
+    globe_quad_verts = (Vertex TG_HUGE *)globe_alloc_items(
+        2UL * (DRV_QUAD_BATCH_MAX + 1UL), sizeof(Vertex));
+    globe_quad_indices = (unsigned int TG_HUGE *)globe_alloc_items(
+        4UL * DRV_QUAD_BATCH_MAX, sizeof(unsigned int));
+    globe_quad_colors = (unsigned char TG_HUGE *)globe_alloc_items(
+        DRV_QUAD_BATCH_MAX, sizeof(unsigned char));
+    if (globe_quad_verts == NULL || globe_quad_indices == NULL ||
+        globe_quad_colors == NULL)
+        error("Couldn't allocate memory for quad batches!");
 #endif
 }
 
@@ -486,6 +516,39 @@ void globe_draw_pole_tris(void)
 #ifdef QUAD
 void globe_draw_quads(void)
 {
+#ifdef DRV_QUAD_BATCH
+    unsigned long top, bottom, face;
+    unsigned int first, count, j, index;
+    int i;
+
+    for (i = 0; i < globe_latitude; ++i)
+    {
+        top = (unsigned long)i * (globe_longitude + 1UL);
+        bottom = top + globe_longitude + 1UL;
+        face = (unsigned long)i * globe_longitude;
+        for (first = 0; first < (unsigned int)globe_longitude; first += count)
+        {
+            count = (unsigned int)globe_longitude - first;
+            if (count > DRV_QUAD_BATCH_MAX) count = DRV_QUAD_BATCH_MAX;
+            for (j = 0; j <= count; ++j)
+            {
+                index = 2U * j;
+                globe_quad_verts[index] = globe_verts[top + first + j];
+                globe_quad_verts[index + 1U] = globe_verts[bottom + first + j];
+                if (j == count) continue;
+                /* Same outward order as the individual QUAD path below. */
+                globe_quad_indices[4U * j] = index;
+                globe_quad_indices[4U * j + 1U] = index + 1U;
+                globe_quad_indices[4U * j + 2U] = index + 3U;
+                globe_quad_indices[4U * j + 3U] = index + 2U;
+                globe_quad_colors[j] = globe_colors[face + first + j].color;
+            }
+            drv_draw_quadbatch_flat_color(2U * (count + 1U), globe_quad_verts,
+                                          count, globe_quad_indices,
+                                          globe_quad_colors);
+        }
+    }
+#else
     Color TG_HUGE *color_ptr;
     Vertex TG_HUGE *v1;
     Vertex TG_HUGE *v2;
@@ -514,6 +577,7 @@ void globe_draw_quads(void)
             ++v2_1;
         }
     }
+#endif
 }
 #endif
 

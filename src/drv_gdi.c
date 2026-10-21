@@ -22,10 +22,10 @@
 #include "earthres.h"
 #include "soft3d.h"
 
-/* Split latitude strips into even-sized facet packets. Each packet and its
+/* Indexed quad packets share their boundary vertices. Each packet and its
  * PolyPolygon arrays fit within one Win16 segment at every Earth resolution. */
 #define GDI_MAX_VERTICES SOFT3D_MAX_VERTICES
-#define GDI_MAX_FACETS (GDI_MAX_VERTICES - 2)
+#define GDI_MAX_FACETS DRV_QUAD_BATCH_MAX
 #define GDI_MAX_POLY SOFT3D_MAX_POLY
 #define GDI_TIMER 1
 
@@ -365,28 +365,36 @@ static int gdi_clip_float_z(const Gdi_float_point *in, int count,
             point.x = a.x + (b.x - a.x) * fraction;
             point.y = a.y + (b.y - a.y) * fraction;
             point.z = plane;
+            if (total >= GDI_MAX_POLY) return 0;
             out[total++] = point;
         }
-        if (b_inside) out[total++] = b;
+        if (b_inside)
+        {
+            if (total >= GDI_MAX_POLY) return 0;
+            out[total++] = b;
+        }
         a = b;
         a_inside = b_inside;
     }
     return total;
 }
 
-static int gdi_prepare_polygon(unsigned int first, unsigned int second,
-                               unsigned int third, POINT *destination)
+static int gdi_prepare_polygon(const unsigned int *indices,
+                               unsigned int index_count, POINT *destination)
 {
     Gdi_float_point float_a[GDI_MAX_POLY], float_b[GDI_MAX_POLY];
     Soft3d_screen_point screen[GDI_MAX_POLY];
     float focal;
     int i, count;
+    if (indices == NULL || destination == NULL ||
+        (index_count != 3U && index_count != 4U)) return 0;
+    for (i = 0; i < (int)index_count; ++i)
+        if (indices[i] >= GDI_MAX_VERTICES) return 0;
     if (gdi_has_fpu)
     {
-        float_a[0] = gdi_float_points[first];
-        float_a[1] = gdi_float_points[second];
-        float_a[2] = gdi_float_points[third];
-        count = gdi_clip_float_z(float_a, 3, float_b, -1.0f, FALSE);
+        for (i = 0; i < (int)index_count; ++i)
+            float_a[i] = gdi_float_points[indices[i]];
+        count = gdi_clip_float_z(float_a, (int)index_count, float_b, -1.0f, FALSE);
         if (count < 3) return 0;
         count = gdi_clip_float_z(float_b, count, float_a, -10000.0f, TRUE);
         if (count < 3) return 0;
@@ -400,8 +408,8 @@ static int gdi_prepare_polygon(unsigned int first, unsigned int second,
         }
     }
     else
-        count = soft3d_fixed_project(gdi_fixed_points, first, second, third,
-                                     drv_win_width, drv_win_height, screen);
+        count = soft3d_fixed_project_polygon(gdi_fixed_points, indices, index_count,
+                                             drv_win_width, drv_win_height, screen);
     count = soft3d_finish_polygon(screen, count, drv_win_width, drv_win_height);
     for (i = 0; i < count; ++i)
     {
@@ -411,17 +419,26 @@ static int gdi_prepare_polygon(unsigned int first, unsigned int second,
     return count;
 }
 
-static void gdi_draw_strip_packet(unsigned int count,
-                                  const Vertex TG_HUGE *vertices,
-                                  const unsigned char TG_HUGE *facet_colors)
+void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
+                                   const Vertex TG_HUGE *vertices,
+                                   unsigned int quad_count,
+                                   const unsigned int TG_HUGE *indices,
+                                   const unsigned char TG_HUGE *colors)
 {
-    unsigned int i, color;
+    unsigned int i, color, corner, quad_indices[4];
     int row, facet, total, points, j;
     float source[3];
     HBRUSH previous;
+    if (gdi_buffer == 0 || vertex_count == 0 || quad_count == 0 ||
+        vertices == NULL || indices == NULL || colors == NULL) return;
+    if (vertex_count > GDI_MAX_VERTICES || quad_count > GDI_MAX_FACETS)
+        gdi_error("GDI quad batch is too large");
+    for (i = 0; i < quad_count * 4U; ++i)
+        if (indices[i] >= vertex_count)
+            gdi_error("GDI quad index is out of range");
     if (gdi_has_fpu)
     {
-        for (i = 0; i < count; ++i)
+        for (i = 0; i < vertex_count; ++i)
         {
             source[0] = vertices[i].x;
             source[1] = vertices[i].y;
@@ -437,23 +454,21 @@ static void gdi_draw_strip_packet(unsigned int count,
             }
         }
     }
-    else if (!soft3d_fixed_transform(gdi_fixed_matrix, count, vertices,
+    else if (!soft3d_fixed_transform(gdi_fixed_matrix, vertex_count, vertices,
                                       gdi_fixed_points))
         gdi_error("GDI fixed-point path supports globe radius up to 1000");
     for (color = 0; color < 256; ++color) gdi_color_head[color] = -1;
-    for (i = 0; i < count - 2; ++i)
+    for (i = 0; i < quad_count; ++i)
     {
-        if ((i & 1) != 0)
-            gdi_polygon_counts[i] = gdi_prepare_polygon(i + 1, i, i + 2,
-                                                        gdi_polygons[i]);
-        else
-            gdi_polygon_counts[i] = gdi_prepare_polygon(i, i + 1, i + 2,
-                                                        gdi_polygons[i]);
+        for (corner = 0; corner < 4U; ++corner)
+            quad_indices[corner] = indices[4U * i + corner];
+        gdi_polygon_counts[i] = gdi_prepare_polygon(quad_indices, 4U,
+                                                   gdi_polygons[i]);
         if (gdi_polygon_counts[i] == 0) continue;
-        color = facet_colors[i];
+        color = colors[i];
         gdi_color_next[i] = gdi_color_head[color];
         gdi_color_head[color] = (int)i;
-        ++globe_tris_num_vis;
+        ++globe_quads_num_vis;
     }
     for (color = 0; color < 256; ++color)
     {
@@ -472,13 +487,18 @@ static void gdi_draw_strip_packet(unsigned int count,
     }
 }
 
-void drv_draw_tristrip_flat_color(unsigned int count,
-                                 const Vertex TG_HUGE *vertices,
-                                 const unsigned char TG_HUGE *facet_colors)
+void drv_draw_quad_flat_color(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
+                               Vertex TG_HUGE *third, Vertex TG_HUGE *fourth,
+                               unsigned char color)
 {
-    if (gdi_buffer == 0) return;
-    drv_draw_strip_batches(count, vertices, facet_colors, GDI_MAX_FACETS,
-                            gdi_draw_strip_packet);
+    Vertex vertices[4];
+    static const unsigned int indices[4] = { 0, 1, 2, 3 };
+    if (first == NULL || second == NULL || third == NULL || fourth == NULL) return;
+    vertices[0] = *first;
+    vertices[1] = *second;
+    vertices[2] = *third;
+    vertices[3] = *fourth;
+    drv_draw_quadbatch_flat_color(4U, vertices, 1U, indices, &color);
 }
 
 void drv_draw_osd(void)
@@ -525,8 +545,8 @@ void drv_render(void)
     previous = (HPEN)SelectObject(gdi_buffer, GetStockObject(NULL_PEN));
     SetPolyFillMode(gdi_buffer, WINDING);
     gdi_set_transform();
-    globe_tris_num_vis = 0;
-    globe_draw_tripstrip();
+    globe_quads_num_vis = 0;
+    globe_draw_quads();
     SelectObject(gdi_buffer, previous);
     if (drv_osd_enabled) drv_draw_osd();
     drv_fps_stop();

@@ -73,15 +73,15 @@ def main():
         run([str(output / "strips")])
         gdi = ["-DSEG86", "-DDRV_GDI", "-D_huge=", "-D_far=", "-D_near=",
                "-I" + str(ROOT / "tests/win16_shim")]
-        run(cc + common + gdi + [str(ROOT / "tests/gdi_strips.c"),
+        run(cc + common + gdi + [str(ROOT / "tests/quad_batches.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
-            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_strips")])
-        run([str(output / "gdi_strips")])
+            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_quads")])
+        run([str(output / "gdi_quads")])
         qd = ["-DSEG68", "-DDRV_QD", "-I" + str(ROOT / "tests/qd_shim")]
-        run(cc + common + qd + [str(ROOT / "tests/qd_strips.c"),
+        run(cc + common + qd + [str(ROOT / "tests/quad_batches.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
-            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "qd_strips")])
-        run([str(output / "qd_strips")])
+            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "qd_quads")])
+        run([str(output / "qd_quads")])
         run(cc + common + ["-DFLAT", "-DDRV_IGL", str(ROOT / "tests/igl_strips.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl_strips")])

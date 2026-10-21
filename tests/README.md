@@ -22,9 +22,12 @@ python3 tests/run.py
 ```
 
 The baseline checks cover OpenGL indexed strips with separate pole triangles, XGL
-RGB strips, and IRIS GL, GDI, and QuickDraw indexed strips. They verify all five
-globe resolutions, TRI-equivalent winding and colors, nondegenerate polar caps,
-UV seams, and texture-toggle dispatch where supported. OpenGL defaults to
+RGB strips, IRIS GL indexed strips, and GDI/QuickDraw indexed quad batches. They
+verify all five globe resolutions, exact primitive tuples and palette bytes,
+outward winding, pole geometry, packet seams and shared vertices, UV seams, and
+texture-toggle dispatch where supported. The shared `tests/quad_batches.c` fixture
+is built separately for GDI and QuickDraw; at key 5 it checks 2,048 packets and
+131,072 quad patches, with no packet larger than 130 vertices. OpenGL defaults to
 `EARTH_512` (key 5); XGL and IRIS GL default to `EARTH_128` (key 3). The retained
 independent-triangle path has a separate reference check using the test-only
 forced-include header `tests/tri_mode.h`. Normal builds select primitive modes in
@@ -43,7 +46,7 @@ Additional options may be combined in one invocation:
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
 
 Without `--sdk` or `MATROX_SDK`, the Matrox SDK contract checks are explicitly
-reported as skipped. The baseline strip checks require no XGL SDK.
+reported as skipped. The baseline geometry checks require no XGL SDK.
 
 ## OpenGL
 
@@ -186,19 +189,19 @@ python3 tests/run.py --gdi-contract
 ```
 
 The checks cover all five Earth resolutions, resource chunks compared with the
-original data, large global-heap buffers, exact palette bytes and strip topology,
-independent double-precision projection references at rotated poses, 80387
+original data, large global-heap buffers, exact palette bytes and indexed quad
+topology, independent double-precision projection references at rotated poses, 80387
 selection and the integer fallback (including a 286/287 machine), near/far and
 screen clipping, bounded `PolyPolygon` packets, foreground/background palette
 handling, buffering, mouse/keyboard/resize messages, timer rollover,
 Escape/window-close cleanup, and global-heap/object ownership.
 
-Small-screen defaults, explicit size overrides, and wrapped triangle/FPS/math
-statistics are recorded. Synthetic full-width and odd-tail strips verify exact
-facet colors and winding with every native `PolyPolygon` packet bounded to 128
-facets. Resource mocks check native lock/unlock/release ownership. The Win16
-`MakeProcInstance` callback casts suppress only GCC's `-Wcast-function-type`
-diagnostic.
+Small-screen defaults, explicit size overrides, and wrapped quad/FPS/math
+statistics are recorded. Synthetic indexed quad batches verify shared-vertex
+projection, exact colors, winding, clipping, pole compaction, and packet boundaries,
+with every native `PolyPolygon` call bounded to 64 polygons. Resource mocks check
+native lock/unlock/release ownership. The Win16 `MakeProcInstance` callback casts
+suppress only GCC's `-Wcast-function-type` diagnostic.
 
 `tests/win16_shim/windows.h` contains manual-derived call declarations,
 cross-checked against public Win16 API declarations. It is **not Microsoft's
@@ -220,7 +223,7 @@ python3 tests/run.py --qd-contract
 
 The checks cover all five Earth resolutions, the default low-resolution globe,
 resource chunks compared byte-for-byte with the original source data, buffers
-larger than 64 KiB, exact palette uploads and strip topology, independent
+larger than 64 KiB, exact palette uploads and indexed quad topology, independent
 double-precision projections at rotated poses, fixed-point and FPU paths,
 CPU/FPU dispatch guards, near/far/window clipping, native polygon/text calls,
 1-bit luminance dithering, 4/8/16/32-bit color paths, maximum-depth device
@@ -231,12 +234,12 @@ resize and 1×1 viewports, `TickCount` rollover, animation,
 window-close/Command-Q exits, and heap/Toolbox ownership.
 
 The small-screen checks cover 640×480 and 512×342 desktops, larger screens, and
-explicit per-dimension overrides. OSD checks verify wrapped text, triangle/FPS
+explicit per-dimension overrides. OSD checks verify wrapped text, quad/FPS
 statistics, and the actual GWorld on/off state after allocation or lock failure.
-A synthetic 1,026-vertex strip independently checks all 1,024 facet colors and
-winding across native batch boundaries; large globe checks use linear traversal
-rather than quadratic polygon matching. The monochrome-68000 case rejects every
-Color QuickDraw, Palette Manager, and GWorld call. Tests model
+Synthetic indexed quad packets independently check shared vertices, colors, winding,
+clipping, pole compaction, and packet boundaries; large globe checks use linear
+traversal rather than quadratic polygon matching. The monochrome-68000 case rejects
+every Color QuickDraw, Palette Manager, and GWorld call. Tests model
 `OpenPoly`/`ClosePoly`'s automatic pen hiding so outlines cannot accidentally be
 drawn while recording filled polygons.
 
@@ -254,10 +257,19 @@ or QuickDraw hardware acceleration.
 ## Shared GDI and QuickDraw pipeline
 
 Both driver contracts link the actual shared `soft3d.c` module and exercise the
-common strip batching and Earth-resource traversal in `drv.c`. In addition to
+quad batching in `globe_draw_quads()` and Earth-resource traversal in `drv.c`. The
+quad packets contain at most 64 quads and 130 shared vertices, with four indices
+and one palette byte per quad. The `DRV_QUAD_BATCH` capability retains `QUAD` as
+the primitive; Matrox continues through individual quad submission. In addition to
 the independent projection references, a shared public-pipeline case clips a
 triangle spanning 268 million coordinate units to exact viewport corners, then
 reverses its winding to check rejection. This exercises clipping products that
 would overflow a 32-bit intermediate without depending on private helpers.
 Large positive and negative accepted rotation angles must produce the same
 fixed matrix as their equivalent angles modulo 360 degrees.
+
+Quad projection cases check exact screen coordinates, near/far rejection, both
+collapsed poles, and the retained triangle projection entry point. Polygon culling
+uses the whole signed area: a rounded silhouette whose first fan triangle has the
+opposite orientation must still be classified correctly. A full 32,767-pixel
+viewport checks the area calculation at the supported integer coordinate limit.

@@ -60,8 +60,9 @@ template used for the rest.
 | `Esc` | Exit. |
 
 Keys `1`-`5` select maps 32, 64, 128, 256, and 512 pixels wide, respectively (`EARTH_32`
-through `EARTH_512`). The OSD reports quads for the Matrox quad path and triangles for
-the triangle and triangle-strip paths.
+through `EARTH_512`). The OSD reports quad patches for Matrox LibShell, GDI, and
+QuickDraw, and triangles for the triangle and triangle-strip paths. Pole patches count
+as quads even when their coincident vertices collapse to a triangle for drawing.
 
 Visible counts are shown by Matrox LibShell, GDI, and QuickDraw, which count
 polygons retained after software culling. OpenGL, IRIS GL, and XGL show total
@@ -118,16 +119,16 @@ standard `sin` and `cos` instead of `sinf` and `cosf`. Apple OpenGL uses its sep
 `APPLE_SYS_FLAGS` and the system's modern math library.
 
 <!--
-Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Solaris OpenGL uses separate `s_*.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic, Solaris, and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
+Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Solaris OpenGL uses separate `s_*.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic, Solaris, and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quad patches for Matrox LibShell, GDI, and QuickDraw, and triangles for the triangle and triangle-strip paths; pole patches remain quad entries even when drawn as triangles.
 
-The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h`, `drv_igl.h`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. OpenGL additionally defines `DRV_TRI_CAPS` to draw its pole triangles separately. The shared `TRI` path remains available as a reference implementation, although no driver selects it. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h`, `drv_igl.h`, and `drv_xgl.h` define `TRISTRIP`; `drv_mtx.h`, `drv_gdi.h`, and `drv_qd.h` define `QUAD`. The GDI and QuickDraw headers also define the optional `DRV_QUAD_BATCH` capability and `DRV_QUAD_BATCH_MAX` of 64. Batching is a capability of `QUAD`, not a separate primitive mode. OpenGL additionally defines `DRV_TRI_CAPS` to draw its pole triangles separately. The shared `TRI` path remains available as a reference implementation, although no driver selects it. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows.
 
 -->
 
 <!--
-GDI and QuickDraw share `src/soft3d.c` and `src/soft3d.h` for integer IEEE-float decoding, fixed-point rotation and vertex transforms, near/far and window clipping, perspective projection, and back-face rejection. Their fixed-point caches remain in the drivers. `src/drv.c` also shares the bounded strip traversal and Earth resource ID/chunk traversal; each driver supplies native polygon drawing and resource loading. GDI retains its floating-point implementation, and QuickDraw retains its isolated 68881 helper. Only the GDI and QuickDraw targets compile the integer geometry object (`g_soft.obj` and `q_soft.o`). OpenGL and IRIS GL share the separate floating-point texture rasterizer `src/texsoft.c` and `src/texsoft.h` for formats without native texture mapping; their ordinary rendering remains native.
+GDI and QuickDraw share `src/soft3d.c` and `src/soft3d.h` for integer IEEE-float decoding, fixed-point rotation and vertex transforms, near/far and window clipping, perspective projection, and back-face rejection. Their fixed-point caches remain in the drivers. `src/globe.c` supplies bounded shared-vertex quad packets through `globe_draw_quads()`, while `src/drv.c` shares Earth resource ID/chunk traversal; each driver supplies native polygon drawing and resource loading. Drivers with `DRV_QUAD_BATCH` receive `drv_draw_quadbatch_flat_color()` calls with a vertex array, four indices per quad, and one palette byte per quad. Other quad drivers retain individual `drv_draw_quad_flat_color()` calls. GDI retains its floating-point implementation, and QuickDraw retains its isolated 68881 helper. Only the GDI and QuickDraw targets compile the integer geometry object (`g_soft.obj` and `q_soft.o`). OpenGL and IRIS GL share the separate floating-point texture rasterizer `src/texsoft.c` and `src/texsoft.h` for formats without native texture mapping; their ordinary rendering remains native.
 
 The root and `src` Makefiles intentionally have the same rules with different source/SDK/MPW directory defaults: historical NMAKE and Solaris make do not share an include syntax. Keep the two files in step when changing rules. For an out-of-tree build, use the ordinary `SRC` macro, for example `make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src`; no VPATH search behavior is required.
 
@@ -475,13 +476,19 @@ the finished frame to the window.
 
 The default is `EARTH_32` (key 1). Keys 1-5 select `EARTH_32`, `EARTH_64`, `EARTH_128`,
 `EARTH_256`, and `EARTH_512`; texture mapping remains excluded, including from the OSD
-and keyboard controls. GDI fills color-grouped triangle polygons with `PolyPolygon`;
-latitude strips supply the same nondegenerate triangles as the other triangle paths.
-Model/view rotation, perspective projection, clipping, and back-face rejection use the
-shared integer pipeline or the driver's floating-point path. Visibility relies on the
-convex globe's front surface rather than a general-purpose depth buffer for intersecting
-geometry. Mouse dragging, automatic rotation, resize, palette changes, and window
-closure use the native Windows message loop.
+and keyboard controls. Its header selects `QUAD` with `DRV_QUAD_BATCH`. Shared
+`globe_draw_quads()` builds packets of at most 64 quads and 130 shared vertices;
+`drv_draw_quadbatch_flat_color()` receives four vertex indices and one palette byte
+per quad. Adjacent quads reuse transformed vertices. The driver groups retained
+polygons by palette byte and fills them with `PolyPolygon`, with at most 64 polygons
+in each native call. Each Earth patch is one filled polygon, and coincident pole
+vertices collapse to a triangle. `drv_draw_quad_flat_color()` remains the individual
+quad entry point. Model/view rotation, perspective projection, clipping, and back-face
+rejection operate on the whole polygon using the shared integer pipeline or the
+driver's floating-point path. Visibility relies on the convex globe's front surface
+rather than a general-purpose depth buffer for intersecting geometry. Mouse dragging,
+automatic rotation, resize, palette changes, and window closure use the native Windows
+message loop.
 
 The driver detects a math coprocessor with `GetWinFlags`; supported 80387-or-later
 systems use floating-point transforms, while other systems use fixed-point transforms
@@ -575,11 +582,21 @@ texture mapping remains excluded.
 
 #### Rendering and color formats
 
-The driver uses native QuickDraw polygon/text drawing. It detects monochrome versus
-Color QuickDraw and uses the selected display's current maximum drawing depth without
-changing the desktop's mode. At 1 bit it approximates Earth colors with ordered
-luminance patterns; at 4/8 bits QuickDraw maps RGB colors to the device palette, and
-16/32-bit displays use their native RGB drawing. On systems with 32-bit QuickDraw, an
+The driver selects `QUAD` with `DRV_QUAD_BATCH` and uses the same bounded
+`globe_draw_quads()` packets as GDI: at most 64 quads, 130 shared vertices, four
+indices per quad, and one palette byte per quad. Its
+`drv_draw_quadbatch_flat_color()` transforms each shared vertex once per packet,
+clips and culls each whole polygon, and collapses coincident pole vertices to a
+triangle. The individual `drv_draw_quad_flat_color()` entry point remains available.
+Classic QuickDraw fills one retained polygon at a time with `PaintPoly`, `FillCPoly`,
+or `FillPoly`; the batch shares geometry work rather than introducing a native
+multiple-polygon drawing call. Text drawing remains native QuickDraw.
+
+The driver detects monochrome versus Color QuickDraw and uses the selected display's
+current maximum drawing depth without changing the desktop's mode. At 1 bit it
+approximates Earth colors with ordered luminance patterns; at 4/8 bits QuickDraw maps
+RGB colors to the device palette, and 16/32-bit displays use their native RGB drawing.
+On systems with 32-bit QuickDraw, an
 optional GWorld provides an offscreen back buffer and `CopyBits` presents it. This is a
 useful application of GWorld pixel memory, rather than a separate kind of hardware RAM.
 QuickDraw chooses available display acceleration; the program does not access
@@ -626,6 +643,7 @@ systems, and hardware.
 - Added AI-generated driver code for Matrox LibShell, Windows GDI, QuickDraw, Sun XGL, and IRIS GL.
 - Added native macOS framework build rules for OpenGL.
 - Switched all three OpenGL targets to latitude triangle strips with batched pole triangles; retained the shared independent-triangle mode.
+- Switched GDI and QuickDraw to shared-vertex quad batches, with `QUAD` as the primitive and `DRV_QUAD_BATCH` as an optional driver capability.
 - Added an FPS counter and automatic rotation.
 - Changed comments to C style.
 - Fixed the Mesa bitmap-text issue by disabling texture mapping while drawing the OpenGL OSD.

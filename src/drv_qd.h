@@ -35,6 +35,9 @@
 #define EARTH_256
 #define EARTH_512
 #define DRV_EARTH_RESOURCES
-#define TRISTRIP
+/* Bounded indexed packets retain shared vertices; QuickDraw fills each quad. */
+#define QUAD
+#define DRV_QUAD_BATCH
+#define DRV_QUAD_BATCH_MAX 64
 extern void qd_error(char *message);
 #endif /* drv_qd_h */
