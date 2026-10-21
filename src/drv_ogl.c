@@ -76,6 +76,13 @@ static void ogl_cleanup(void)
     texsoft_free(); texture_free(); globe_free();
 }
 
+/* Apple GLUT can service pending redraws during window management. Every
+ * window needs a display callback, even a short-lived format probe. Keep
+ * drawing disabled until the application window and globe are ready. */
+static void ogl_pending_display(void)
+{
+}
+
 static int ogl_better_format(const Ogl_format *candidate, const Ogl_format *best)
 {
     int total, previous, rgb, old_rgb;
@@ -147,6 +154,7 @@ static int ogl_select_window(Ogl_format *selected, int x, int y, int width, int 
 #endif
                 window = glutCreateWindow("testglobe pixel-format probe");
                 if (window <= 0) continue;
+                glutDisplayFunc(ogl_pending_display);
                 glutHideWindow();
                 memset(&current, 0, sizeof(current));
                 current.rgba = glutGet(GLUT_WINDOW_RGBA) > 0;
@@ -202,7 +210,9 @@ static int ogl_select_window(Ogl_format *selected, int x, int y, int width, int 
 #endif
     glutInitWindowSize(width, height);
     glutInitWindowPosition(x, y);
-    return glutCreateWindow(TESTGLOBE_NAME);
+    window = glutCreateWindow(TESTGLOBE_NAME);
+    if (window > 0) glutDisplayFunc(ogl_pending_display);
+    return window;
 }
 
 static void ogl_install_palette(void)
@@ -627,7 +637,6 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     glutReshapeWindow(in_width, in_height);
     glutPositionWindow(in_x, in_y);
     glutSetWindowTitle(TESTGLOBE_NAME);
-    glutDisplayFunc(drv_render);
     glutReshapeFunc(drv_resize);
     glutMouseFunc(ogl_mouse);
     glutMotionFunc(ogl_mouse_move);
@@ -655,6 +664,10 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 /* main loop */
 void drv_loop(void)
 {
+    /* main initializes the globe after drv_init_window returns. Window
+     * operations may redraw earlier, so only enable rendering here. */
+    glutDisplayFunc(drv_render);
+    glutPostRedisplay();
     glutMainLoop();
 }
 

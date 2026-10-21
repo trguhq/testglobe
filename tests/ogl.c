@@ -15,8 +15,10 @@ static const char *profile;
 static unsigned int requested_mode;
 static int active_window, next_window=1, window_count, destroy_count;
 static unsigned int probe_windows,probe_destroys,final_windows;
+static unsigned int probe_callbacks,probe_redraws,initial_window_redraws;
 static struct Test_window {
     int live,indexed,doubled,red,green,blue,alpha,depth,width,height,probe;
+    void (*display)(void);
 } windows[64];
 static int output_width=64,output_height=48;
 static unsigned int palette_calls,draw_pixels_calls,texture_uploads,indices,rgb_calls,swaps,flushes;
@@ -28,12 +30,12 @@ static int texture_enabled,depth_enabled,cull_enabled,unpack_alignment=4;
 static GLubyte last_index,last_rgb[3];
 static int last_clear_index,index_shift,index_offset,map_color;
 static GLfloat zoom_x=1,zoom_y=1;
-static unsigned int native_lists,redisplay_posts;
+static unsigned int native_lists,redisplay_posts,frame_clears;
+static unsigned int posts_before_loop,loop_calls;
 static struct Test_attrib {GLbitfield mask;int texture,depth,cull,shift,offset,map;GLfloat x,y;GLubyte index,rgb[3];} attribs[16];
 static unsigned int attrib_depth,client_depth;
 static int client_alignment[16];
 static unsigned int palette_mask[256];
-static void (*display_callback)(void);
 static void (*reshape_callback)(int,int);
 static void (*mouse_callback)(int,int,int,int);
 static void (*motion_callback)(int,int);
@@ -61,6 +63,23 @@ static int available(unsigned int request)
     if((strcmp(profile,"rgb24")==0||strcmp(profile,"rgb16")==0)&&alpha)return 0;
     if(strcmp(profile,"rgba-single")==0&&alpha&&doubled)return 0;
     return 1;
+}
+
+/* A native window operation may process its pending initial redraw before
+ * GLUT's main loop. Every window owns its callback; it does not inherit the
+ * previous window's callback. Probe/setup callbacks must not render a globe. */
+static void initial_redraw(void)
+{
+    struct Test_window *w=&windows[active_window];
+    unsigned int old_clears,old_lists,old_vertices,old_swaps,old_flushes;
+    assert(w->live&&w->display!=NULL&&w->display!=drv_render);
+    assert(globe_verts==NULL);
+    old_clears=frame_clears;old_lists=native_lists;old_vertices=emitted_vertices;
+    old_swaps=swaps;old_flushes=flushes;
+    w->display();
+    assert(frame_clears==old_clears&&native_lists==old_lists&&
+           emitted_vertices==old_vertices&&swaps==old_swaps&&flushes==old_flushes);
+    if(w->probe)++probe_redraws;else ++initial_window_redraws;
 }
 
 void glutInit(int *argc,char **argv){assert(argc&&argv);}
@@ -119,15 +138,15 @@ int glutCreateWindow(const char *title)
         if(strcmp(profile,"rgb16")==0){w->red=5;w->green=6;w->blue=5;w->alpha=0;}}
     ++window_count;return active_window;
 }
-void glutDestroyWindow(int window){assert(window>0&&windows[window].live);if(windows[window].probe)++probe_destroys;windows[window].live=0;++destroy_count;if(window==active_window)active_window=0;}
+void glutDestroyWindow(int window){assert(window>0&&windows[window].live&&windows[window].display!=NULL);if(windows[window].probe)++probe_destroys;windows[window].live=0;++destroy_count;if(window==active_window)active_window=0;}
 int glutGetWindow(void){return active_window;}
 void glutSetWindow(int window){assert(window>0&&windows[window].live);active_window=window;}
-void glutHideWindow(void){assert(active_window&&windows[active_window].live);}
-void glutShowWindow(void){assert(active_window&&windows[active_window].live&&!windows[active_window].probe);}
+void glutHideWindow(void){assert(active_window&&windows[active_window].live);initial_redraw();}
+void glutShowWindow(void){assert(active_window&&windows[active_window].live&&!windows[active_window].probe);initial_redraw();}
 void glutSetWindowTitle(const char *s){assert(s&&strcmp(s,TESTGLOBE_NAME)==0);}
 void glutPositionWindow(int x,int y){assert(x>=0&&y>=0);}
-void glutReshapeWindow(int w,int h){assert(w>0&&h>0);windows[active_window].width=w;windows[active_window].height=h;}
-void glutDisplayFunc(void (*f)(void)){display_callback=f;}
+void glutReshapeWindow(int w,int h){assert(w>0&&h>0);initial_redraw();windows[active_window].width=w;windows[active_window].height=h;}
+void glutDisplayFunc(void (*f)(void)){struct Test_window *w=&windows[active_window];assert(active_window&&w->live&&f!=NULL);if(f==drv_render)assert(globe_verts!=NULL&&!w->probe);if(w->probe&&w->display==NULL)++probe_callbacks;w->display=f;}
 void glutReshapeFunc(void (*f)(int,int)){reshape_callback=f;}
 void glutMouseFunc(void (*f)(int,int,int,int)){mouse_callback=f;}
 void glutMotionFunc(void (*f)(int,int)){motion_callback=f;}
@@ -135,7 +154,7 @@ void glutPassiveMotionFunc(void (*f)(int,int)){assert(f==motion_callback);}
 void glutKeyboardFunc(void (*f)(unsigned char,int,int)){keyboard_callback=f;}
 void glutPostRedisplay(void){++redisplay_posts;}
 void glutSwapBuffers(void){assert(windows[active_window].doubled);++swaps;}
-void glutMainLoop(void){assert(display_callback&&reshape_callback&&mouse_callback&&motion_callback&&keyboard_callback);}
+void glutMainLoop(void){assert(globe_verts!=NULL&&windows[active_window].display==drv_render&&reshape_callback&&mouse_callback&&motion_callback&&keyboard_callback);assert(redisplay_posts>posts_before_loop);++loop_calls;}
 void glutBitmapCharacter(void *font,int c){assert(font&&c>0&&c<256);}
 void glutSetColor(int i,GLfloat r,GLfloat g,GLfloat b)
 {assert(windows[active_window].indexed&&i>=0&&i<256);assert(fabs(r-(double)earth_cmap[i][0]/255)<1e-6&&fabs(g-(double)earth_cmap[i][1]/255)<1e-6&&fabs(b-(double)earth_cmap[i][2]/255)<1e-6);++palette_calls;palette_mask[i]=1;}
@@ -166,7 +185,7 @@ void glPopClientAttrib(void){assert(client_depth);unpack_alignment=client_alignm
 void glTexEnvi(GLenum target,GLenum parameter,GLint value){assert(target==GL_TEXTURE_ENV&&parameter==GL_TEXTURE_ENV_MODE&&value==GL_REPLACE);}
 void glGetFloatv(GLenum query,GLfloat *value)
 {unsigned int s;if(query==GL_ZOOM_X){*value=zoom_x;return;}if(query==GL_ZOOM_Y){*value=zoom_y;return;}assert(query==GL_MODELVIEW_MATRIX||query==GL_PROJECTION_MATRIX);s=query==GL_PROJECTION_MATRIX?1U:0U;memcpy(value,matrices[s][stack_depth[s]],16*sizeof(*value));}
-void glClear(GLbitfield mask){assert((mask&GL_COLOR_BUFFER_BIT)!=0);assert(((mask&GL_DEPTH_BUFFER_BIT)!=0)==(windows[active_window].depth>0));}
+void glClear(GLbitfield mask){assert((mask&GL_COLOR_BUFFER_BIT)!=0);assert(((mask&GL_DEPTH_BUFFER_BIT)!=0)==(windows[active_window].depth>0));++frame_clears;}
 void glClearColor(GLclampf r,GLclampf g,GLclampf b,GLclampf a){assert(r==0&&g==0&&b==0&&a==1);}
 void glClearIndex(GLfloat index){assert(index>=0&&index<256);last_clear_index=(int)index;}
 void glEnable(GLenum c){if(c==GL_TEXTURE_2D)texture_enabled=1;else if(c==GL_DEPTH_TEST){assert(windows[active_window].depth>0);depth_enabled=1;}else if(c==GL_CULL_FACE)cull_enabled=1;else assert(!"Unexpected glEnable");}
@@ -254,13 +273,18 @@ int main(int argc,char **argv)
     else assert(windows[active_window].doubled);
     assert(window_count-destroy_count==1&&final_windows==1);
     assert(probe_windows==probe_destroys&&!windows[active_window].probe);
-    assert(display_callback&&reshape_callback&&mouse_callback&&motion_callback&&keyboard_callback);
+    assert(probe_callbacks==probe_windows&&probe_redraws==probe_windows);
+    assert(initial_window_redraws>=2U);
+    assert(windows[active_window].display!=NULL&&windows[active_window].display!=drv_render);
+    assert(reshape_callback&&mouse_callback&&motion_callback&&keyboard_callback);
     if(indexed){assert(palette_calls==256);for(i=0;i<256;++i)assert(palette_mask[i]);}
     a.x=0;a.y=0;a.z=0;b.x=1;b.y=0;b.z=0;c.x=0;c.y=1;c.z=0;
     glBegin(GL_TRIANGLES);drv_draw_tri_flat_color(&a,&b,&c,77);glEnd();
     if(indexed)assert(last_index==77&&indices>0);
     else assert(last_rgb[0]==earth_cmap[77][0]&&last_rgb[1]==earth_cmap[77][1]&&last_rgb[2]==earth_cmap[77][2]);
     globe_init();texture_init();globe_init_verts(32,-1,1000);drv_resize(64,48);
+    posts_before_loop=redisplay_posts;
+    drv_loop();assert(loop_calls==1&&windows[active_window].display==drv_render);
     drv_render();assert(emitted_vertices>=globe_tris_num*3UL);assert(depth_enabled==(windows[active_window].depth>0));
     if(indexed){unpack_alignment=8;index_shift=2;index_offset=17;map_color=1;zoom_x=2;zoom_y=-1;}
     keyboard_callback('t',0,0);assert(drv_texture_enabled);drv_render();
@@ -273,6 +297,7 @@ int main(int argc,char **argv)
     ogl_cleanup();ogl_cleanup();
     assert(window_count==destroy_count&&active_window==0);
     assert(globe_verts==NULL&&texture_data==NULL);
+    puts("PASS OpenGL window lifecycle: safe per-window callbacks through early probe/setup/show redraws, renderer and redisplay activated after globe initialization");
     puts("PASS OpenGL format selection: highest verified RGBA/RGB/index precision, buffering/depth fallbacks and unknown alpha handling");
     puts("PASS OpenGL indexed/native rendering: palette bytes, indexed facets, packed CI software pixels and native RGB textures");
     return 0;

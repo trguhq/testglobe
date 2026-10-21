@@ -8,7 +8,15 @@ These host records check RGBA32, a 32-bit single-buffer visual competing with
 24-bit double buffering, RGB24/RGB16 and color-index8 fallbacks, unknown alpha
 queries, destruction of every probe context, a fresh final window at its
 requested size, initial redisplay, absent depth buffers, exact Earth palette installation, index-byte
-facets and native RGB textures. The indexed texture path uses the real shared
+facets and native RGB textures. Each window has its own display callback;
+probe hiding and final-window resizing/showing dispatch an early initial redraw to
+check that callbacks exist before native window operations and safely do no
+rendering before globe initialization. The final window keeps its temporary
+callback until globe data is initialized; entering the driver loop must then
+register the globe renderer and request a fresh redraw before the GLUT loop.
+This covers the callback ordering
+required by Apple's GLUT without modeling its Cocoa event loop.
+The indexed texture path uses the real shared
 software renderer; its transferred bytes are compared with every numeric
 framebuffer index, including on hosts with 64-bit `unsigned long`. Pixel-transfer
 and unpack state is deliberately nondefault to verify restoration. These
