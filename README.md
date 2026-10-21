@@ -2,7 +2,7 @@
 * [testglobe website](https://testglobe.dev)
 * [testglobe repository](https://github.com/trguhq/testglobe/)
 
-testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, IRIS GL on IRIX, Sun XGL on Solaris, MS-DOS Matrox LibShell, native 16-bit Windows 3.1 GDI, and classic Macintosh QuickDraw. The Earth data uses 8-bit palette indices. OpenGL and IRIS GL retain those indices in the mesh and choose RGB or color-index drawing for the selected window format; XGL expands the data to RGB, while LibShell, GDI, and QuickDraw draw with the Earth palette. This version contains a number of AI-generated driver templates for development - only the OpenGL driver is fully hand coded.
+testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, IRIS GL on IRIX, Sun XGL on Solaris, MS-DOS Matrox LibShell, native 16-bit Windows 3.1 GDI, and classic Macintosh QuickDraw. The Earth data uses 8-bit palette indices. OpenGL and IRIS GL retain those indices in the mesh and choose RGB or color-index drawing for the selected window format; XGL expands the data to RGB, while LibShell, GDI, and QuickDraw draw with the Earth palette. *This version contains a number of AI-generated driver templates for development - only the OpenGL driver is fully hand coded.*
 
 This was originally conceived as a test for lower spec systems (late 80s and early 90s 3D hardware) and was initially implemented on more modern high spec systems for convenience, but it may envolve into a general 3D demo for medium-high spec.
 
@@ -20,12 +20,18 @@ External: *[Video of testglobe running on Sun Ultra 60 with Elite3D-m6 graphics]
 * o key toggles on-screen display
 * t key toggles texture mapping for OpenGL, IRIS GL, and XGL (off by default)
 * esc key exits immediately
-  
+
+## Current drivers
+* IRIS GL (AI)
+* Matrox LibShell (AI)
+* OpenGL (mostly hand-coded and tested to be working)
+* QuickDraw (AI)
+* Windows GDI (AI)
+
 ## Planned drivers
-* IBM PGC and derivatives
-* PHIGS
-* WebGL
-* IBM Adapter Interface? VBE/AF? Amiga? others?
+* IBM PGC and derivatives (probably too slow)
+* WebGL (different language)
+* IBM Adapter Interface? VBE/AF? Amiga chipset? others?
 
 ## Binary builds
 The following binaries are available in the corresponding releases:
