@@ -41,18 +41,34 @@ The following binaries are available in the corresponding releases:
 * OpenGL / Solaris / SPARCv8: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
 ## Build notes
-The portable Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, IRIX/Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds `testglobe-opengl`; `make apple-opengl` builds the same binary with native macOS frameworks; `make irisgl` builds `testglobe-irisgl`; `make xgl` builds `testglobe-xgl`; `nmake matrox` builds the DOS `testglob.exe`; `nmake gdi` builds the Windows 3.1 `testglob.exe`. Those two segmented targets use Microsoft C 7.0. The `quickdraw` target delegates to the native MPW build described below. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
+The portable Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, IRIX/Solaris make, and Microsoft NMAKE. GNU make is not required.
+
+Run from the repository root or `src`:
+* `make` (or `make opengl`) builds `testglobe-opengl`
+* `make apple-opengl` builds the same binary with native macOS frameworks
+* `make irisgl` builds `testglobe-irisgl`
+* `make xgl` builds `testglobe-xgl`
+* `nmake matrox` builds the DOS `testglob.exe`
+* `nmake gdi` builds the Windows 3.1 `testglob.exe`.
+
+The `quickdraw` target delegates to the native MPW build described below.
+
+<!--
+Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
 
 The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_igl.h`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows.
 
+-->
 Run the appropriate clean target after changing the compiler or build flags; traditional make does not track command-line changes.
 
+<!--
 GDI and QuickDraw share `src/soft3d.c` and `src/soft3d.h` for integer IEEE-float decoding, fixed-point rotation and vertex transforms, near/far and window clipping, perspective projection, and back-face rejection. Their fixed-point caches remain in the drivers. `src/drv.c` also shares the bounded strip traversal and Earth resource ID/chunk traversal; each driver supplies native polygon drawing and resource loading. GDI retains its floating-point implementation, and QuickDraw retains its isolated 68881 helper. Only the GDI and QuickDraw targets compile the integer geometry object (`g_soft.obj` and `q_soft.o`). OpenGL and IRIS GL share the separate floating-point texture rasterizer `src/texsoft.c` and `src/texsoft.h` for formats without native texture mapping; their ordinary rendering remains native.
 
 The root and `src` Makefiles intentionally have the same rules with different source/SDK/MPW directory defaults: historical NMAKE and Solaris make do not share an include syntax. Keep the two files in step when changing rules. For an out-of-tree build, use the ordinary `SRC` macro, for example `make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src`; no VPATH search behavior is required.
 
+-->
 ### cosf and sinf
 The default `SYS_FLAGS` includes `-DNO_SINF` for older Unix math libraries. It selects the standard `sin` and `cos` functions instead of `sinf` and `cosf`.
 ### Classic Mac (QuickDraw)
@@ -82,8 +98,8 @@ The driver uses native QuickDraw polygon/text drawing. It detects monochrome ver
 The portable `make quickdraw` target can use the external [MPW tool/shell bridge](https://github.com/ksherlock/mpw-shell) with a configured MPW installation: `MPW_EXEC` defaults to its `mpw-make` executable. It invokes the same native file and passes `QD_DEFINES` (`-d SEG68 -d DRV_QD -d DRV -d NO_SINF`) and the source directory; `MPW_EXEC`, `QD_MAKEFILE`, `QD_SOURCE`, and `QD_DEFINES` are overridable. Native MPW builds need no bridge or modern scripting language. Use `Make -f Makefile.mpw clean > QDBuild` and `Execute QDBuild` for native cleanup. The portable `clean-quickdraw` target and ordinary `make clean` remove the seven QuickDraw objects and application using `RM`, without requiring MPW tools.
 
 Host tests check call contracts, geometry, and simulated devices; native MPW compilation, code-resource linkage, FPU dispatch, physical depth/palette behavior, and System 7 rendering still require the actual tools and Macintosh runtime.
-### DOS
-The Matrox target requires MS-DOS, Microsoft C 7.0 with its huge-model runtime and NMAKE, and the Matrox LibShell C binding library matching that compiler/model. Put the SDK at the repository root:
+### Matrox MS-DOS
+The Matrox LibShell target requires MS-DOS, Microsoft C 7.0 with its huge-model runtime and NMAKE, and the Matrox LibShell C binding library matching that compiler/model. Put the SDK at the repository root:
 
 ```text
 XGX1/HEADERS/DEF.H
@@ -116,13 +132,15 @@ The driver detects a math coprocessor with `GetWinFlags`; supported 80387-or-lat
 ### OpenGL
 The OpenGL driver probes RGB(A) requests for at least 8/8/8/8, 8/8/8, 5/6/5, 5/5/5, unconstrained RGB(A), and color-index windows with at least eight bits, with single/double-buffered and depth-buffered alternatives. It ranks the actual returned formats, preferring RGB(A) over color index and greater RGB-plus-alpha precision before buffering. This selects a supported 32-bit RGBA format ahead of 24-bit RGB. It keeps the original Earth palette index for each flat-shaded triangle, converting it to RGB for an RGB(A) window or submitting it directly in a color-index window. Color-index texturing uses the shared software texture rasterizer because classic OpenGL texture mapping requires RGB(A) mode.
 
-GLUT's display-mode availability query is required. Where display-string requests are supported, the driver requests those component sizes explicitly; older GLUT implementations can expose fewer distinct choices. These probes do not enumerate every native visual. Host format/palette contracts are available with `python3 tests/run.py --ogl-contract`; physical color-index behavior still requires an implementation offering that visual.
+#### GLUT
 
 GLUT is required. If your system did not include GLUT out of the box you may have to hunt around for it:
 * Linux: ```sudo apt-get install freeglut3-dev```
 * Solaris:
     * https://web.archive.org/web/20010726192034/http://reality.sgi.com/opengl/glut3/glut-3.7b.sparc_solaris_64.tar.gz
     * https://web.archive.org/web/20010726175006/http://reality.sgi.com/opengl/glut3/glut-3.7b.sparc_solaris.tar.gz
+
+GLUT's display-mode availability query is required. Where display-string requests are supported, the driver requests those component sizes explicitly; older GLUT implementations can expose fewer distinct choices. These probes do not enumerate every native visual. Host format/palette contracts are available with `python3 tests/run.py --ogl-contract`; physical color-index behavior still requires an implementation offering that visual.
       
 The default `SYS_FLAGS` also includes `-DNO_GENMIPMAP`, which builds mipmaps with GLU for older OpenGL implementations. On newer systems, `SYS_FLAGS=-DGL_GLEXT_PROTOTYPES` enables the `glGenerateMipmap` path.
 
@@ -183,8 +201,6 @@ When native texture mapping is available, `texdef2d`, `t2f`, and the GL texture 
 
 Run the host IRIS GL contract and software-pixel checks with `python3 tests/run.py --igl-contract`; see [tests/README.md](tests/README.md). Native IRIX compilation and physical graphics validation require the original SGI development tools and runtime. Host call-contract tests and Makefile graph checks do not replace them.
 
-### Xcode
-No `.xcodeproj` is provided. The native macOS command-line build uses `make apple-opengl` with the selected Xcode Command Line Tools.
 ## Known issues
 * Linux or Mesa OpenGL seems to have an issue with drawing text when texturing is enabled (should be fixed in v0.2).
 
