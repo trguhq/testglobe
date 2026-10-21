@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 #include "testglob.h"
 #include "drv.h"
 #include "types.h"
@@ -137,12 +138,20 @@ void drv_texture_disable(void) { drv_texture_enabled = FALSE; }
 
 static void check_drawing(void)
 {
+    char stats[128], counts[80];
     strip_calls = rendered_triangles = full_bands = cap_strips = 0UL;
     globe_draw_tripstrip();
     assert(strip_calls == (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
     assert(full_bands == (unsigned long)globe_latitude - 2UL);
     assert(cap_strips == 2UL * globe_longitude);
     assert(rendered_triangles == globe_tris_num);
+    drv_fps_average = 12.5f;
+    drv_format_stats(stats);
+    sprintf(counts, "%lu triangles (%lu visible)",
+            rendered_triangles, globe_tris_num_vis);
+    assert(strstr(stats, counts) == stats);
+    assert(strstr(stats, "12.50 frames per second") != NULL);
+    assert(strstr(stats, "quads") == NULL);
 }
 
 int main(void)

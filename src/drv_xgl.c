@@ -491,9 +491,9 @@ void drv_draw_osd(void)
 {
     Xgl_pt_f2d position;
     char status[160];
-    sprintf(status, "%lu triangles (%lu visible), texture mapping %s, %.2f frames per second",
-            globe_tris_num, globe_tris_num_vis,
-            drv_texture_enabled ? "on" : "off", (double)drv_fps_average);
+    drv_format_stats(status);
+    strcat(status, drv_texture_enabled ? ", texture mapping on" :
+                                        ", texture mapping off");
     position.x = 10.0f;
     position.y = 18.0f;
     xgl_stroke_text(xgl_overlay, status, &position, NULL);

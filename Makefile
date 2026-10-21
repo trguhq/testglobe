@@ -67,11 +67,17 @@ GDI_CPPFLAGS =
 GDI_LIBS = llibcew.lib libw.lib
 GDI_LDFLAGS = /NOD /ALIGN:16
 GDI_RCFLAGS = -t
+GDI_DATA = data
 GDI_OBJECTS = g_drv.obj g_gdi.obj g_err.obj g_globe.obj g_main.obj
 GDI_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_gdi.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\e_32.h $(SRC)\e_64.h
+    $(SRC)\earthres.h
+GDI_RESOURCE_DATA = $(GDI_DATA)\e32.bin $(GDI_DATA)\e64.bin \
+    $(GDI_DATA)\e128.bin $(GDI_DATA)\e256_0.bin $(GDI_DATA)\e256_1.bin \
+    $(GDI_DATA)\e512_0.bin $(GDI_DATA)\e512_1.bin $(GDI_DATA)\e512_2.bin \
+    $(GDI_DATA)\e512_3.bin $(GDI_DATA)\e512_4.bin $(GDI_DATA)\e512_5.bin \
+    $(GDI_DATA)\e512_6.bin $(GDI_DATA)\e512_7.bin
 
 # MPW Make has its own grammar. mpw-make is an external bridge that runs the
 # native Make tool and executes its generated MPW commands; override MPW_EXEC
@@ -175,16 +181,20 @@ main.obj: $(SRC)\main.c $(MTX_HEADERS)
 	$(MTX_CC) @main.rsp
 
 # Use the 16-bit linker, not the compiler's DOS default startup libraries.
-# RC marks the module for Windows 3.1 even though it has no resources.
+# RC attaches the Earth data resources and marks protected-mode Windows.
 # Relink the selected backend because GDI and Matrox share testglob.exe.
-gdi: $(GDI_OBJECTS) $(SRC)\gdi.def FORCE
+gdi: $(GDI_OBJECTS) g_earth.res $(SRC)\gdi.def FORCE
 	@echo $(GDI_OBJECTS) $(GDI_LDFLAGS) > g_link.rsp
 	@echo testglob.exe >> g_link.rsp
 	@echo NUL >> g_link.rsp
 	@echo $(GDI_LIBS) >> g_link.rsp
 	@echo $(SRC)\gdi.def; >> g_link.rsp
 	$(GDI_LINK) @g_link.rsp
-	$(GDI_RC) $(GDI_RCFLAGS) testglob.exe
+	$(GDI_RC) $(GDI_RCFLAGS) g_earth.res testglob.exe
+
+# Resources avoid huge initialized C objects and load in bounded chunks.
+g_earth.res: $(SRC)\gdi.rc $(SRC)\earthres.h $(GDI_RESOURCE_DATA)
+	$(GDI_RC) -r -fo g_earth.res -i $(SRC) -i $(GDI_DATA) $(SRC)\gdi.rc
 
 g_drv.obj: $(SRC)\drv.c $(GDI_HEADERS)
 	@echo $(GDI_DEFINES) > g_drv.rsp
@@ -278,4 +288,5 @@ clean-gdi:
 	-$(RM) g_globe.rsp
 	-$(RM) g_main.rsp
 	-$(RM) g_link.rsp
+	-$(RM) g_earth.res
 	-$(RM) testglob.exe

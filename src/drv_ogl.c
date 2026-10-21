@@ -425,7 +425,9 @@ void drv_draw_osd(void)
     glLoadIdentity();
     
     ogl_draw_string(drv_help, 10, 10);
-    snprintf(status_str, sizeof(status_str), "%lu triangles (%lu visible), texture mapping %s, %.2f frames per second", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"), drv_fps_average);
+    drv_format_stats(status_str);
+    strcat(status_str, drv_texture_enabled ? ", texture mapping on" :
+                                            ", texture mapping off");
     ogl_draw_string(status_str, 10, drv_win_height - 18);
     
     if (drv_texture_enabled)

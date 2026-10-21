@@ -380,11 +380,18 @@ void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
                       Xgl_pt_f3d direction[])
 {
     Xgl_pt_f2d *point;
+    char expected[80];
     assert(context == xgl_overlay && direction == NULL);
     point = (Xgl_pt_f2d *)position;
     assert(point->x >= 0 && point->x < drv_win_width);
     assert(point->y >= 0 && point->y < drv_win_height);
     assert(strstr((char *)text, "texture mapping") != NULL);
+    if (strstr((char *)text, "frames per second") != NULL) {
+        sprintf(expected, "%lu triangles (%lu visible)",
+                globe_tris_num, globe_tris_num_vis);
+        assert(strstr((char *)text, expected) == (char *)text);
+        assert(strstr((char *)text, "quads") == NULL);
+    }
     ++text_calls;
 }
 

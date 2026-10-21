@@ -21,6 +21,7 @@
 #include <Fonts.h>
 #include <TextEdit.h>
 #include <Memory.h>
+#include <Resources.h>
 #include <ToolUtils.h>
 #include <OSUtils.h>
 #include <Palettes.h>
@@ -31,6 +32,7 @@
 #include "globe.h"
 #include "glob_ext.h"
 #include "qd_math.h"
+#include "earthres.h"
 #if defined(__SC__) || defined(applec)
 #pragma segment QuickDraw
 #endif
@@ -168,6 +170,49 @@ void drv_init(int *argc, char **argv)
     qd_active = TRUE;
 }
 
+void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
+{
+    unsigned long bytes, offset, expected;
+    short first_resource, chunk;
+    Handle resource;
+    if (destination == NULL) qd_error("No Earth data destination");
+    switch (longitude)
+    {
+        case 32: first_resource = TG_EARTH_32_ID; break;
+        case 64: first_resource = TG_EARTH_64_ID; break;
+        case 128: first_resource = TG_EARTH_128_ID; break;
+        case 256: first_resource = TG_EARTH_256_ID; break;
+        case 512: first_resource = TG_EARTH_512_ID; break;
+        default: qd_error("Unsupported QuickDraw Earth resolution"); return;
+    }
+    bytes = (unsigned long)longitude * ((unsigned long)longitude / 2UL);
+    chunk = 0;
+    for (offset = 0; offset < bytes; offset += expected, ++chunk)
+    {
+        expected = bytes - offset;
+        if (expected > TG_EARTH_CHUNK_SIZE) expected = TG_EARTH_CHUNK_SIZE;
+        /* Keep the maps out of the limited A5-relative globals and load
+         * bounded resources so neither MPW C nor Rez needs a huge object. */
+        resource = Get1Resource((ResType)0x45415254UL, (short)(first_resource + chunk));
+        if (resource == NULL) qd_error("Cannot load QuickDraw Earth resource");
+        if (GetHandleSize(resource) != (Size)expected)
+        {
+            ReleaseResource(resource);
+            qd_error("QuickDraw Earth resource has the wrong size");
+        }
+        HLock(resource);
+        if (*resource == NULL)
+        {
+            HUnlock(resource);
+            ReleaseResource(resource);
+            qd_error("Cannot lock QuickDraw Earth resource");
+        }
+        memcpy(destination + offset, *resource, (size_t)expected);
+        HUnlock(resource);
+        ReleaseResource(resource);
+    }
+}
+
 static void qd_display_info(void)
 {
     GDHandle device;
@@ -248,12 +293,18 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 {
     Rect bounds;
     Str255 title;
+    int screen_width, screen_height, small_screen;
     int available_width, available_height;
     qd_display_info();
-    available_width = qd_screen.right - qd_screen.left - 40;
-    available_height = qd_screen.bottom - qd_screen.top - 80;
-    if (in_width > 0) drv_win_width = (unsigned int)in_width;
-    if (in_height > 0) drv_win_height = (unsigned int)in_height;
+    screen_width = qd_screen.right - qd_screen.left;
+    screen_height = qd_screen.bottom - qd_screen.top;
+    small_screen = screen_width <= 640 && screen_height <= 480;
+    available_width = screen_width - 40;
+    available_height = screen_height - 80;
+    drv_win_width = (unsigned int)(in_width > 0 ? in_width :
+                                    (small_screen ? 320 : DRV_WIN_WIDTH));
+    drv_win_height = (unsigned int)(in_height > 0 ? in_height :
+                                     (small_screen ? 240 : DRV_WIN_HEIGHT));
     if ((int)drv_win_width > available_width) drv_win_width = (unsigned int)available_width;
     if ((int)drv_win_height > available_height) drv_win_height = (unsigned int)available_height;
     if (drv_win_width < 64 || drv_win_height < 64) qd_error("Screen is too small for testglobe");
@@ -532,9 +583,9 @@ static void qd_flat_color(PolyHandle polygon, unsigned char index)
     }
 }
 
-void drv_draw_tristrip_flat_color(unsigned int count,
-                                  const Vertex TG_HUGE *vertices,
-                                  const unsigned char TG_HUGE *facet_colors)
+static void qd_draw_strip_batch(unsigned int count,
+                                const Vertex TG_HUGE *vertices,
+                                const unsigned char TG_HUGE *facet_colors)
 {
     Point projected[QD_MAX_POLY];
     unsigned int i;
@@ -542,7 +593,7 @@ void drv_draw_tristrip_flat_color(unsigned int count,
     long source[3], transformed;
     PolyHandle polygon;
     if (count < 3 || vertices == NULL || facet_colors == NULL) return;
-    if (count > QD_MAX_VERTICES) qd_error("QuickDraw strip exceeds Earth-64 size");
+    if (count > QD_MAX_VERTICES) qd_error("QuickDraw strip batch is too large");
     if (qd_has_fpu) qd_fpu_transform(count, vertices);
     else
     {
@@ -584,10 +635,58 @@ void drv_draw_tristrip_flat_color(unsigned int count,
     }
 }
 
+void drv_draw_tristrip_flat_color(unsigned int count,
+                                  const Vertex TG_HUGE *vertices,
+                                  const unsigned char TG_HUGE *facet_colors)
+{
+    unsigned int first, facets, batch;
+    if (count < 3 || vertices == NULL || facet_colors == NULL) return;
+    facets = count - 2;
+    /* Keep the 68000 A5 globals and optional 68881 cache small. An even
+     * 128-facet batch keeps strip winding unchanged; the next batch starts
+     * with the previous batch's last two vertices and next facet color. */
+    for (first = 0; first < facets; first += batch)
+    {
+        batch = facets - first;
+        if (batch > QD_MAX_VERTICES - 2U) batch = QD_MAX_VERTICES - 2U;
+        qd_draw_strip_batch(batch + 2U, vertices + first, facet_colors + first);
+    }
+}
+
+/* Native font metrics keep both the statistics and help readable on a
+ * 320-pixel window. A counting pass positions wrapped help at the bottom. */
+static int qd_osd_text(const char *text, int baseline, short width, int draw)
+{
+    short count, last_space;
+    while (*text != 0)
+    {
+        count = last_space = 0;
+        while (text[count] != 0 && TextWidth(text, 0, (short)(count + 1)) <= width)
+        {
+            if (text[count] == ' ') last_space = count;
+            ++count;
+        }
+        if (text[count] != 0 && last_space > 0) count = last_space;
+        if (count == 0) count = 1;
+        if (draw && baseline > 0 && baseline <= (int)drv_win_height)
+        {
+            MoveTo(8, (short)baseline);
+            DrawText(text, 0, count);
+        }
+        baseline += 12;
+        text += count;
+        while (*text == ' ') ++text;
+    }
+    return baseline;
+}
+
 void drv_draw_osd(void)
 {
     char status[160];
     RGBColor white;
+    short width;
+    int next_line, help_baseline;
+    if (drv_win_width <= 16 || drv_win_height < 16) return;
     if (qd_depth > 1)
     {
         white.red = white.green = white.blue = 65535U;
@@ -597,13 +696,14 @@ void drv_draw_osd(void)
     TextFont(0);
     TextSize(9);
     TextMode(srcCopy);
-    sprintf(status, "%lu triangles (%lu visible), %s, %.1f frames per second",
-             globe_tris_num, globe_tris_num_vis,
-             qd_has_fpu ? "68881 math" : "integer math", (double)drv_fps_average);
-    MoveTo(8, 14);
-    DrawText(status, 0, (short)strlen(status));
-    MoveTo(8, (short)drv_win_height - 8);
-    DrawText(drv_help, 0, (short)strlen(drv_help));
+    drv_format_stats(status);
+    sprintf(status + strlen(status), ", %s, GWorld %s",
+             qd_has_fpu ? "68881 math" : "integer math",
+             qd_world != NULL ? "on" : "off");
+    width = (short)(drv_win_width - 16U);
+    next_line = qd_osd_text(status, 14, width, TRUE);
+    help_baseline = (int)drv_win_height + 4 - qd_osd_text(drv_help, 0, width, FALSE);
+    if (help_baseline >= next_line) qd_osd_text(drv_help, help_baseline, width, TRUE);
 }
 
 static void qd_present(void)
@@ -682,7 +782,9 @@ static void qd_keyboard(unsigned char key)
     switch (key)
     {
         case 27: drv_close(); return;
-        case '1': case '2': globe_toggle_res((char)key); break;
+        case '1': case '2': case '3': case '4': case '5':
+            globe_toggle_res((char)key);
+            break;
         case 'a': case 'A':
             drv_auto_enabled = !drv_auto_enabled;
             qd_auto_tick = TickCount();

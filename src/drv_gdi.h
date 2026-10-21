@@ -15,13 +15,14 @@
 #define GDI
 
 #define DRV_NAME "Windows GDI"
-#define DRV_HELP "1-2 = facets, A = auto rotate, O = OSD, Esc = exit"
+#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, Esc = exit"
 #define DRV_WIN_X 20
 #define DRV_WIN_Y 20
 #define DRV_WIN_WIDTH 640
 #define DRV_WIN_HEIGHT 480
 #define DRV_COLORMAPPED TRUE
 #define DRV_COLORMAP
+#define DRV_EARTH_RESOURCES
 #define DRV_OSD_DEFAULT TRUE
 #define DRV_DEPTH 8
 #define DRV_COLORMAPDEPTH 8
@@ -33,6 +34,9 @@
 #define EARTH
 #define EARTH_32
 #define EARTH_64
+#define EARTH_128
+#define EARTH_256
+#define EARTH_512
 
 /* GDI has no differently colored facets in one PolyPolygon call: the
  * driver expands a strip and batches its polygons by palette byte. */

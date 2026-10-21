@@ -12,6 +12,7 @@
 #include "drv_ext.h"
 #include "glob_ext.h"
 #include "globe.h"
+#include "earth_resources.h"
 
 #include "../src/drv_gdi.c"
 
@@ -19,7 +20,7 @@ extern Vertex TG_HUGE *globe_verts;
 extern int globe_longitude, globe_latitude;
 
 enum { OBJ_NONE, OBJ_DC, OBJ_BITMAP, OBJ_BRUSH, OBJ_PEN, OBJ_PALETTE,
-       OBJ_MEMORY, OBJ_WINDOW, OBJ_FONT };
+       OBJ_MEMORY, OBJ_WINDOW, OBJ_FONT, OBJ_RESOURCE };
 typedef struct {
     int kind;
     void *memory;
@@ -28,13 +29,17 @@ typedef struct {
     HGDIOBJ brush, pen, bitmap, font;
     HPALETTE palette;
     int memory_dc;
+    unsigned int locks;
     BOOL palette_background;
 } RecordedObject;
 static RecordedObject objects[1024];
 static unsigned int resource_count, allocated_count;
+static unsigned long maximum_allocation, loaded_chunks;
 static DWORD windows_flags, ticks;
 static UINT display_depth = 8;
 static int client_width = 640, client_height = 480;
+static int screen_width = 800, screen_height = 600;
+static unsigned int created_windows;
 static HWND main_window, capture_window;
 static WNDPROC window_callback;
 static unsigned int palette_uploads, palette_realizations, text_calls;
@@ -43,6 +48,8 @@ static unsigned int destroyed_windows, proc_instances, quit_messages;
 static int quit_code;
 static unsigned long submitted_polygons, submitted_vertices;
 static unsigned int recorded_count;
+static int stream_polygons;
+static char last_status[200];
 typedef struct { unsigned char color; int count; POINT points[12]; } RecordedPolygon;
 static RecordedPolygon recorded[5000];
 static int run_contract(void);
@@ -68,6 +75,7 @@ static void object_delete(HANDLE handle)
 {
     assert(handle > 0 && handle < 900);
     assert(objects[handle].kind != OBJ_NONE && resource_count > 0);
+    assert(objects[handle].locks == 0);
     free(objects[handle].memory);
     memset(objects + handle, 0, sizeof(objects[handle]));
     --resource_count;
@@ -83,18 +91,23 @@ HGLOBAL GlobalAlloc(UINT flags, DWORD bytes)
     objects[handle].memory = calloc((size_t)bytes, 1);
     assert(objects[handle].memory != NULL);
     objects[handle].size = bytes;
+    if (bytes > maximum_allocation) maximum_allocation = bytes;
     ++allocated_count;
     return handle;
 }
 LPVOID GlobalLock(HGLOBAL handle)
 {
     assert(objects[handle].kind == OBJ_MEMORY);
+    ++objects[handle].locks;
     return objects[handle].memory;
 }
 BOOL GlobalUnlock(HGLOBAL handle)
 {
-    assert(objects[handle].kind == OBJ_MEMORY);
-    return 0;
+    assert(objects[handle].kind == OBJ_MEMORY ||
+           objects[handle].kind == OBJ_RESOURCE);
+    assert(objects[handle].locks > 0);
+    --objects[handle].locks;
+    return objects[handle].locks != 0;
 }
 HGLOBAL GlobalFree(HGLOBAL handle)
 {
@@ -108,6 +121,54 @@ DWORD GlobalSize(HGLOBAL handle)
     assert(objects[handle].kind == OBJ_MEMORY);
     return objects[handle].size;
 }
+HRSRC FindResource(HINSTANCE instance, LPCSTR name, LPCSTR type)
+{
+    unsigned char *data;
+    unsigned long size;
+    short id;
+    assert(instance == 1 && type == RT_RCDATA);
+    id = (short)(unsigned long)name;
+    data = test_earth_resource(id, &size);
+    assert(data != NULL && size > 0 && size <= TG_EARTH_CHUNK_SIZE);
+    free(data);
+    return (HRSRC)id;
+}
+DWORD SizeofResource(HINSTANCE instance, HRSRC resource)
+{
+    unsigned char *data;
+    unsigned long size;
+    assert(instance == 1);
+    data = test_earth_resource((short)resource, &size);
+    free(data);
+    return size;
+}
+HGLOBAL LoadResource(HINSTANCE instance, HRSRC resource)
+{
+    HGLOBAL handle;
+    unsigned long size;
+    unsigned char *data;
+    assert(instance == 1);
+    data = test_earth_resource((short)resource, &size);
+    assert(data != NULL && size <= TG_EARTH_CHUNK_SIZE);
+    handle = object_new(OBJ_RESOURCE);
+    objects[handle].memory = data;
+    objects[handle].size = size;
+    ++loaded_chunks;
+    return handle;
+}
+LPSTR LockResource(HGLOBAL handle)
+{
+    assert(objects[handle].kind == OBJ_RESOURCE);
+    ++objects[handle].locks;
+    return (LPSTR)objects[handle].memory;
+}
+BOOL FreeResource(HGLOBAL handle)
+{
+    assert(objects[handle].kind == OBJ_RESOURCE);
+    object_delete(handle);
+    return FALSE;
+}
+
 FARPROC MakeProcInstance(FARPROC proc, HINSTANCE instance)
 {
     assert(proc != NULL && instance == 1);
@@ -139,6 +200,7 @@ HWND CreateWindow(LPCSTR class_name, LPCSTR title, DWORD style,
     assert(instance == 1 && width > 0 && height > 0);
     client_width = width; client_height = height;
     main_window = object_new(OBJ_WINDOW);
+    ++created_windows;
     return main_window;
 }
 BOOL DestroyWindow(HWND window)
@@ -304,6 +366,8 @@ int GetDeviceCaps(HDC dc, int capability)
 {
     assert(objects[dc].kind == OBJ_DC);
     switch (capability) {
+    case HORZRES: return screen_width;
+    case VERTRES: return screen_height;
     case RASTERCAPS: return RC_PALETTE;
     case BITSPIXEL: return display_depth;
     case PLANES: return 1;
@@ -358,14 +422,24 @@ static void record_polygon(HDC dc, const POINT *points, int count)
     assert(objects[dc].kind == OBJ_DC);
     assert(objects[objects[dc].brush].kind == OBJ_BRUSH);
     assert(objects[dc].pen == GetStockObject(NULL_PEN));
-    assert(count >= 3 && count <= 12 && recorded_count < 5000);
-    polygon = recorded + recorded_count++;
-    polygon->count = count;
-    polygon->color = (unsigned char)objects[objects[dc].brush].color;
+    assert(count >= 3 && count <= 12);
+    polygon = NULL;
+    if (!stream_polygons) {
+        assert(recorded_count < 5000);
+        polygon = recorded + recorded_count++;
+        polygon->count = count;
+        polygon->color = (unsigned char)objects[objects[dc].brush].color;
+    }
     for (i = 0; i < count; ++i) {
         assert(points[i].x >= 0 && points[i].x <= (int)drv_win_width);
         assert(points[i].y >= 0 && points[i].y <= (int)drv_win_height);
-        polygon->points[i] = points[i];
+        if (polygon != NULL) polygon->points[i] = points[i];
+    }
+    {
+        long area;
+        area = (long)(points[1].x - points[0].x) * (points[2].y - points[0].y) -
+               (long)(points[1].y - points[0].y) * (points[2].x - points[0].x);
+        assert(area < 0);
     }
     ++submitted_polygons;
     submitted_vertices += count;
@@ -418,14 +492,51 @@ int SetPolyFillMode(HDC dc, int mode)
 int SetBkMode(HDC dc, int mode) { assert(objects[dc].kind == OBJ_DC); return mode; }
 COLORREF SetTextColor(HDC dc, COLORREF color) { assert(objects[dc].kind == OBJ_DC); return color; }
 COLORREF SetBkColor(HDC dc, COLORREF color) { assert(objects[dc].kind == OBJ_DC); return color; }
+static void check_text(LPCSTR text, int length)
+{
+    assert(text != NULL && length > 0 && strstr(text, "texture") == NULL);
+    if (strstr(text, "visible") != NULL) {
+        assert(length < (int)sizeof(last_status));
+        memcpy(last_status, text, (size_t)length);
+        last_status[length] = 0;
+        assert(strstr(last_status, "triangles") != NULL);
+        assert(strstr(last_status, "quads") == NULL);
+        assert(strstr(last_status, "frames per second") != NULL);
+        assert(strstr(last_status, "math") != NULL);
+    } else {
+        assert(strstr(text, "1-5") != NULL);
+    }
+}
 BOOL TextOut(HDC dc, int x, int y, LPCSTR text, int length)
 {
-    assert(objects[dc].kind == OBJ_DC && text != NULL && length > 0);
-    assert(strstr(text, "texture") == NULL);
+    assert(objects[dc].kind == OBJ_DC);
+    check_text(text, length);
     (void)x; (void)y;
     ++text_calls;
     return 1;
 }
+int DrawText(HDC dc, LPCSTR text, int length, RECT *rectangle, UINT flags)
+{
+    int columns, lines;
+    assert(objects[dc].kind == OBJ_DC && rectangle != NULL);
+    assert(flags & DT_WORDBREAK);
+    assert(flags & DT_NOPREFIX);
+    if (length < 0) length = (int)strlen(text);
+    columns = (rectangle->right - rectangle->left) / 6;
+    if (columns < 1) columns = 1;
+    lines = (length + columns - 1) / columns;
+    if (flags & DT_CALCRECT) {
+        rectangle->bottom = (short)(rectangle->top + lines * 12);
+    } else {
+        assert(rectangle->left >= 0 && rectangle->right <= (int)drv_win_width);
+        assert(rectangle->top >= 0 && rectangle->bottom <= (int)drv_win_height);
+        assert(rectangle->right > rectangle->left && rectangle->bottom > rectangle->top);
+        check_text(text, length);
+        ++text_calls;
+    }
+    return lines * 12;
+}
+
 HWND SetCapture(HWND window)
 {
     HWND previous;
@@ -508,7 +619,7 @@ static void build_reference(void)
     int latitude, longitude;
     unsigned long top, bottom, face;
     unsigned char *data;
-    data = globe_longitude == 32 ? earth_data_32 : earth_data_64;
+    data = test_earth_data(globe_longitude);
     reference_count = 0;
     for (latitude = 0; latitude < globe_latitude; ++latitude) {
         for (longitude = 0; longitude < globe_longitude; ++longitude) {
@@ -608,6 +719,55 @@ static void check_projection(void)
     }
 }
 
+/* A fully visible strip makes every chunk-boundary facet observable.
+ * Its 1,024 triangles stay several pixels wide even at the largest strip
+ * count, so rounding cannot conceal missing seams or wrong parity/colors. */
+static void check_large_strip(void)
+{
+    Vertex *vertices, *saved_vertices;
+    unsigned char *colors;
+    unsigned int i, facet, sizes[3], test;
+    vertices = (Vertex *)calloc(1026U, sizeof(*vertices));
+    colors = (unsigned char *)malloc(1024U);
+    assert(vertices != NULL && colors != NULL);
+    for (i = 0; i < 1026U; ++i) {
+        vertices[i].x = (float)((int)(i / 2U) * 2 - 512);
+        vertices[i].y = 0.0f;
+        vertices[i].z = (i & 1U) ? -100.0f : 100.0f;
+    }
+    for (i = 0; i < 1024U; ++i) colors[i] = (unsigned char)(i * 37U);
+    sizes[0] = 3U; sizes[1] = 259U; sizes[2] = 1026U;
+    drv_resize(32767, 32767);
+    drv_rot_x = 0.0f; drv_rot_y = 90.0f;
+    gdi_set_transform();
+    saved_vertices = globe_verts;
+    for (test = 0; test < 3U; ++test) {
+        reference_count = 0;
+        globe_verts = vertices;
+        for (facet = 0; facet < sizes[test] - 2U; ++facet) {
+            if (facet & 1U) add_reference(facet + 1U, facet, facet + 2U, colors[facet]);
+            else add_reference(facet, facet + 1U, facet + 2U, colors[facet]);
+        }
+        globe_verts = saved_vertices;
+        recorded_count = 0;
+        globe_tris_num_vis = 0;
+        {
+            HPEN previous;
+            previous = (HPEN)SelectObject(gdi_buffer, GetStockObject(NULL_PEN));
+            drv_draw_tristrip_flat_color(sizes[test], vertices, colors);
+            SelectObject(gdi_buffer, previous);
+        }
+        assert(recorded_count == sizes[test] - 2U);
+        assert(globe_tris_num_vis == sizes[test] - 2U);
+        check_projection();
+        for (facet = 0; facet < reference_count; ++facet) assert(reference[facet].seen);
+    }
+    free(colors);
+    free(vertices);
+    drv_resize(640, 480);
+    puts("PASS GDI strip packets: 1,026 vertices, exact colors/winding and full seam coverage, bounded 128-facet native calls");
+}
+
 static LPARAM packed_coordinates(int x, int y)
 {
     return (LPARAM)((DWORD)(WORD)x | ((DWORD)(WORD)y << 16));
@@ -680,8 +840,12 @@ static int run_contract(void)
     assert(gdi_has_fpu == ((windows_flags & WF_80x87) != 0 &&
                           (windows_flags & (WF_CPU386 | WF_CPU486)) != 0));
     assert(palette_uploads == 1 && palette_realizations > 0 && timer_calls == 1);
-    assert(drv_win_width == 640 && drv_win_height == 480);
-    assert(allocated_count == 4);
+    assert(drv_win_width == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 320 : 640));
+    assert(drv_win_height == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 240 : 480));
+    assert(allocated_count >= 4 && loaded_chunks > 0);
+    recorded_count = 0;
+    drv_render();
+    assert(text_calls == 2 && last_status[0] != 0);
     drv_osd_enabled = FALSE;
     for (resolution = 0; resolution < 2; ++resolution) {
         window_callback(main_window, WM_CHAR, (WPARAM)('1' + resolution), 0);
@@ -695,14 +859,33 @@ static int run_contract(void)
             assert(recorded_count == globe_tris_num_vis);
             check_projection();
         }
-        for (i = '3'; i <= '5'; ++i) window_callback(main_window, WM_CHAR, (WPARAM)i, 0);
-        assert(globe_longitude == (resolution == 0 ? 32 : 64));
         window_callback(main_window, WM_CHAR, 't', 0);
         assert(!drv_texture_enabled);
     }
+    /* Large real Earth meshes exercise huge allocations and all resource
+     * chunks in linear time; exact strip topology is covered independently
+     * by gdi_strips and the fully visible synthetic strip below. */
+    for (resolution = 2; resolution < 5; ++resolution) {
+        unsigned long before;
+        window_callback(main_window, WM_CHAR, (WPARAM)('1' + resolution), 0);
+        assert(globe_longitude == (32 << resolution));
+        before = submitted_polygons;
+        stream_polygons = TRUE;
+        drv_render();
+        stream_polygons = FALSE;
+        assert(submitted_polygons - before == globe_tris_num_vis);
+        assert(globe_tris_num_vis > 0 && globe_tris_num_vis < globe_tris_num);
+        window_callback(main_window, WM_CHAR, 't', 0);
+        assert(!drv_texture_enabled);
+    }
+    assert(maximum_allocation > 65536UL);
+    assert(loaded_chunks >= 12UL);
+    window_callback(main_window, WM_CHAR, '2', 0);
+    assert(globe_longitude == 64);
+    check_large_strip();
     assert(polypolygon_calls > 0 && polygon_calls == 0);
     check_clipping();
-    puts("PASS GDI rendering: eight globe poses/resolutions, independent perspective/color/winding checks, palette batches, near/far/screen clipping");
+    puts("PASS GDI rendering: five Earth resolutions, huge allocations/resources, independent pose checks, bounded palette batches, near/far/screen clipping");
 
     old_x = drv_rot_x; old_y = drv_rot_y;
     window_callback(main_window, WM_LBUTTONDOWN, MK_LBUTTON, packed_coordinates(320, 240));
@@ -775,7 +958,13 @@ static int run_contract(void)
     ticks = 0xffffffd0UL;
     for (i = 0; i < 61; ++i) { drv_fps_start(); drv_fps_stop(); }
     assert(fabs(drv_fps_average - 62.5f) < 0.01);
-    puts("PASS GDI input: production WinMain/common startup, mouse capture/drag, 1-2/O/A keys, palette events, resize, paint and 32-bit timer rollover");
+    /* Explicit client dimensions override the detected small-screen default. */
+    gdi_cleanup();
+    assert(resource_count == 0 && allocated_count == 0 && proc_instances == 0);
+    assert(drv_init_window(0, 0, 444, 333));
+    assert(drv_win_width == 444 && drv_win_height == 333);
+    assert(client_width == 444 && client_height == 333);
+    puts("PASS GDI input: production WinMain/common startup, mouse capture/drag, 1-5/O/A keys, palette events, screen defaults/overrides, resize, paint and 32-bit timer rollover");
     return 0;
 }
 
@@ -786,8 +975,11 @@ int main(int argc, char **argv)
     if (strstr(argv[1], "fpu") != NULL) windows_flags |= WF_80x87;
     if (strcmp(argv[1], "287") == 0) windows_flags = WF_CPU286 | WF_80x87;
     close_with_escape = strstr(argv[1], "escape") != NULL;
+    if (strcmp(argv[1], "small640") == 0) { screen_width = 640; screen_height = 480; }
+    if (strcmp(argv[1], "small512") == 0) { screen_width = 512; screen_height = 342; }
+    if (strcmp(argv[1], "tall640") == 0) { screen_width = 640; screen_height = 600; }
     assert(WinMain(1, 0, "", SW_SHOW) == 0);
-    assert(contract_started && destroyed_windows == 1 && quit_messages == 1);
+    assert(contract_started && created_windows == 2 && destroyed_windows == created_windows && quit_messages == created_windows);
     assert(resource_count == 0 && allocated_count == 0 && proc_instances == 0);
     assert(timer_calls == 0 && capture_window == 0 && main_window == 0);
     puts("PASS GDI cleanup: native object selection/lifetimes, global allocations, timer, window and callback thunk");

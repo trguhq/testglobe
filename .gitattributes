@@ -1,2 +1,4 @@
 # Native MPW Make needs these MacRoman bytes and CR line endings intact.
 Makefile.mpw -text -diff
+# Native Earth resources contain palette indices, not text.
+data/*.bin -text -diff

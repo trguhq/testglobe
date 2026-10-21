@@ -179,10 +179,17 @@ void sctxsalign(short horizontal, short vertical)
 }
 void sctxbstring(short x, short y, char *text)
 {
+    char expected[80];
     assert(x >= 0 && x < 640 && y >= 0 && y < 480);
     assert(strstr(text, "texture") == NULL);
     assert(strstr(text, "Texture") == NULL);
     assert(strstr(text, "T =") == NULL);
+    if (strstr(text, "frames per second") != NULL) {
+        sprintf(expected, "%lu quads (%lu visible)",
+                globe_quads_num, globe_quads_num_vis);
+        assert(strstr(text, expected) == text);
+        assert(strstr(text, "triangles") == NULL);
+    }
     ++osd_calls;
 }
 void v2gpsvwp(short xmin, short xmax, short ymin, short ymax)

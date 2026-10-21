@@ -37,6 +37,7 @@
 /* Only the selected driver's embedded Earth resolutions enter its image. */
 #ifdef EARTH
 #include "e_cmap.h"
+#ifndef DRV_EARTH_RESOURCES
 #ifdef EARTH_32
 #include "e_32.h"
 #endif
@@ -51,6 +52,7 @@
 #endif
 #ifdef EARTH_512
 #include "e_512.h"
+#endif
 #endif
 #endif
 
@@ -189,6 +191,10 @@ void globe_init(void)
 
 void globe_free(void)
 {
+#ifdef DRV_EARTH_RESOURCES
+    if (globe_data != NULL)
+        globe_free_items(globe_data);
+#endif
     if (globe_verts != NULL)
         globe_free_items(globe_verts);
     if (globe_colors != NULL)
@@ -247,26 +253,33 @@ static void globe_alloc(void)
 
 static unsigned char TG_HUGE *globe_select_data(int longitude)
 {
+#ifdef DRV_EARTH_RESOURCES
+    /* Validate the selected level here; load its bytes into the heap below. */
+#define GLOBE_DATA_POINTER(name) NULL
+#else
+#define GLOBE_DATA_POINTER(name) name
+#endif
     switch (longitude)
     {
 #ifdef EARTH_32
-        case 32: return earth_data_32;
+        case 32: return GLOBE_DATA_POINTER(earth_data_32);
 #endif
 #ifdef EARTH_64
-        case 64: return earth_data_64;
+        case 64: return GLOBE_DATA_POINTER(earth_data_64);
 #endif
 #ifdef EARTH_128
-        case 128: return earth_data_128;
+        case 128: return GLOBE_DATA_POINTER(earth_data_128);
 #endif
 #ifdef EARTH_256
-        case 256: return earth_data_256;
+        case 256: return GLOBE_DATA_POINTER(earth_data_256);
 #endif
 #ifdef EARTH_512
-        case 512: return earth_data_512;
+        case 512: return GLOBE_DATA_POINTER(earth_data_512);
 #endif
         default: error("Unsupported globe resolution");
     }
     return NULL;
+#undef GLOBE_DATA_POINTER
 }
 
 static void globe_calc_colors(void)
@@ -312,6 +325,13 @@ int globe_init_verts(int longitude, int latitude, float radius)
         error("Invalid globe dimensions");
     globe_free();
     globe_data = data;
+#ifdef DRV_EARTH_RESOURCES
+    globe_data = (unsigned char TG_HUGE *)globe_alloc_items(
+        (unsigned long)longitude * (longitude / 2UL), sizeof(unsigned char));
+    if (globe_data == NULL)
+        error("Couldn't allocate memory for Earth data!");
+    drv_load_earth_data(longitude, globe_data);
+#endif
     globe_radius = radius;
     globe_longitude = longitude;
     globe_latitude = latitude;
@@ -358,6 +378,9 @@ int globe_init_verts(int longitude, int latitude, float radius)
             vertex_ptr->x = x;
             vertex_ptr->y = y;
             vertex_ptr->z = z;
+#ifdef SEG86
+            memset(vertex_ptr->reserved, 0, sizeof(vertex_ptr->reserved));
+#endif
             ++vertex_ptr;
 #ifdef TEXTURE
             coord_ptr->u = (float)j / globe_longitude;

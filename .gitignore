@@ -3,6 +3,7 @@
 /*.o
 /*.obj
 /*.rsp
+/g_earth.res
 /testglobe
 /testglob.exe
 /TestglobeQD
@@ -10,6 +11,7 @@
 /src/*.o
 /src/*.obj
 /src/*.rsp
+/src/g_earth.res
 /src/testglobe
 /src/testglob.exe
 /src/TestglobeQD

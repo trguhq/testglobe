@@ -10,6 +10,7 @@
 #include "drv_ext.h"
 #include "glob_ext.h"
 #include "globe.h"
+#include "earth_resources.h"
 
 #if !defined(TRISTRIP) || defined(TRI) || defined(QUAD)
 #error GDI must select exactly TRISTRIP in its driver header
@@ -20,8 +21,8 @@
 #if !defined(SEG86) || !defined(DRV_COLORMAP) || !defined(GDI)
 #error GDI must select segmented indexed-color rendering
 #endif
-#if defined(EARTH_128) || defined(EARTH_256) || defined(EARTH_512)
-#error GDI may include only the two segmented Earth resolutions
+#if !defined(EARTH_32) || !defined(EARTH_64) || !defined(EARTH_128) || !defined(EARTH_256) || !defined(EARTH_512)
+#error GDI must include all five Earth resolutions
 #endif
 
 extern Vertex TG_HUGE *globe_verts;
@@ -30,6 +31,7 @@ extern int globe_longitude, globe_latitude;
 
 static unsigned long strip_calls, rendered_triangles, full_bands, cap_strips;
 static unsigned long allocations;
+static unsigned long largest_allocation;
 static unsigned char *expected_data;
 static void *memory_blocks[16];
 
@@ -38,6 +40,7 @@ HGLOBAL GlobalAlloc(UINT flags, DWORD bytes)
     HGLOBAL handle;
     assert(flags == (GMEM_MOVEABLE | GMEM_ZEROINIT));
     assert(bytes > 0);
+    if (bytes > largest_allocation) largest_allocation = bytes;
     for (handle = 1; handle < 16; ++handle) {
         if (memory_blocks[handle] != NULL) continue;
         memory_blocks[handle] = calloc((size_t)bytes, 1);
@@ -81,6 +84,22 @@ void gdi_error(char *message)
 {
     fprintf(stderr, "Unexpected GDI error: %s\n", message);
     abort();
+}
+
+void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
+{
+    unsigned long offset, count, total;
+    unsigned char *chunk;
+    short resource;
+    total = (unsigned long)longitude * longitude / 2UL;
+    resource = test_earth_resource_id(longitude);
+    for (offset = 0; offset < total; offset += count)
+    {
+        chunk = test_earth_resource(resource++, &count);
+        assert(count > 0 && count <= total - offset);
+        memcpy(destination + offset, chunk, (size_t)count);
+        free(chunk);
+    }
 }
 
 static void same_vertex(const Vertex *a, const Vertex *b)
@@ -132,7 +151,7 @@ void drv_draw_tristrip_flat_color(unsigned int count,
         assert(count == 2U * ((unsigned int)globe_longitude + 1U));
         ++full_bands;
     }
-    assert(count <= 130U);
+    assert(count <= 1026U);
     assert(vertices != NULL && colors != NULL);
     for (i = 0; i < count; ++i) {
         index = polar ? cap[i] :
@@ -175,9 +194,9 @@ int main(void)
     globe_init();
     assert(GLOBE_DEFAULT_LONGITUDE == 32);
     assert(!drv_texture_avail && !drv_texture_enabled);
-    for (i = 0; i < 2; ++i) {
-        resolution = i == 0 ? 32 : 64;
-        expected_data = i == 0 ? earth_data_32 : earth_data_64;
+    for (i = 0; i < 5; ++i) {
+        resolution = 32 << i;
+        expected_data = test_earth_data(resolution);
         globe_toggle_res((char)('1' + i));
         assert(globe_longitude == resolution);
         assert(globe_latitude == resolution / 2);
@@ -188,11 +207,12 @@ int main(void)
         assert(full_bands == (unsigned long)globe_latitude - 2UL);
         assert(cap_strips == 2UL * globe_longitude);
         assert(rendered_triangles == globe_tris_num);
-        globe_toggle_res('3');
+        globe_toggle_res('6');
         assert(globe_longitude == resolution);
     }
     globe_free();
     assert(allocations == 0UL);
-    puts("PASS GDI strips: two resolutions, exact indexed colors, TRI-equivalent winding, complete latitude bands and nondegenerate caps");
+    assert(largest_allocation > 65535UL);
+    puts("PASS GDI strips: five resolutions, exact indexed colors, TRI-equivalent winding, complete latitude bands, nondegenerate caps and large allocations");
     return 0;
 }

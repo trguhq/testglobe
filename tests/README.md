@@ -11,7 +11,9 @@ loop, and the separate FPU helper against host Toolbox call records:
 python3 tests/run.py --qd-contract
 ```
 
-The checks cover `EARTH_32`/`EARTH_64`, exact palette uploads and strip topology,
+The checks cover all five Earth resolutions, the default low-resolution globe,
+resource chunks compared byte-for-byte with the original source data, buffers
+larger than 64 KiB, exact palette uploads and strip topology,
 independent double-precision projections at rotated poses, fixed-point and FPU
 paths, CPU/FPU dispatch guards, near/far/window clipping, native polygon/text
 calls, 1-bit luminance dithering, 4/8/16/32-bit color paths, maximum-depth device
@@ -20,6 +22,12 @@ without GWorld calls, GWorld allocation/locking failure fallback, port/device
 restoration across mixed-depth drawing, short drag-poll sleeps,
 input/activation/suspend events, resize and 1×1 viewports, TickCount rollover,
 animation, window-close/Command-Q exits, and heap/Toolbox ownership. The
+small-screen checks cover 640x480 and 512x342 desktops, larger screens and
+explicit per-dimension overrides. OSD checks verify wrapped text, triangle/FPS
+statistics and the actual GWorld on/off state after allocation or lock failure.
+A synthetic 1,026-vertex strip independently checks all 1,024 facet colors and
+winding across native batch boundaries; large globe checks use linear traversal
+rather than quadratic polygon matching. The
 monochrome-68000 case rejects every Color QuickDraw, Palette Manager, and GWorld
 call. Tests model OpenPoly/ClosePoly's automatic pen hiding so outlines cannot
 accidentally be drawn while recording filled polygons.
@@ -42,12 +50,17 @@ message loop, and rendering calls against a host call recorder:
 python3 tests/run.py --gdi-contract
 ```
 
-These checks cover both Earth resolutions, exact palette bytes and strip
+These checks cover all five Earth resolutions, resource chunks compared with
+the original data, large global-heap buffers, exact palette bytes and strip
 topology, independent double-precision projection references at rotated poses,
 80387 selection and the integer fallback (including a 286/287 machine),
 near/far and screen clipping, bounded PolyPolygon packets, foreground/background
 palette handling, buffering, mouse/keyboard/resize messages, timer rollover,
-Escape/window-close cleanup, and global-heap/object ownership. Tests use strict
+Escape/window-close cleanup, and global-heap/object ownership.
+Small-screen defaults, explicit size overrides and wrapped triangle/FPS/math
+statistics are recorded. Synthetic full-width and odd-tail strips verify exact
+facet colors and winding with every native PolyPolygon packet bounded to 128
+facets. Resource mocks check native lock/unlock/release ownership. Tests use strict
 C89, AddressSanitizer, and UndefinedBehaviorSanitizer. The unavoidable
 Win16 `MakeProcInstance` callback casts suppress only GCC's
 `-Wcast-function-type` diagnostic.
@@ -99,7 +112,8 @@ pointer keywords on the host. Vendor headers are copied into a temporary
 directory with the trailing DOS EOF byte removed, and are not committed here.
 
 These tests check geometry, palette/index behavior, command arguments, input,
-and cleanup. Visibility checks independently transform outward normals through
+and cleanup, including primitive-correct triangle and quad OSD statistics.
+Visibility checks independently transform outward normals through
 the recorded model and inverse-view rotations, and compare every expected fill
 and cap count at multiple noncardinal poses in both Matrox resolutions.
 They do not validate segmented pointer code generation, DOS timing,

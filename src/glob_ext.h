@@ -39,6 +39,7 @@ extern void globe_toggle_res(char);
 #ifdef TEXTURE
 extern void globe_toggle_tex(void);
 #endif
+#ifndef DRV_EARTH_RESOURCES
 #ifdef EARTH_32
 extern unsigned char earth_data_32[];
 #endif
@@ -53,6 +54,7 @@ extern unsigned char earth_data_256[];
 #endif
 #ifdef EARTH_512
 extern unsigned char earth_data_512[];
+#endif
 #endif
 extern unsigned char earth_cmap[][3];
 extern unsigned long globe_verts_num;

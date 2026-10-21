@@ -75,7 +75,9 @@ def main():
                 str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "qd")])
             for mode in ("mono", "1", "4", "8", "16", "32", "fpu", "falsefpu",
-                         "oldcolor", "nogworld", "lockfail", "multi"):
+                         "oldcolor", "nogworld", "lockfail", "multi", "small640",
+                         "small512", "large800", "tall640", "explicit",
+                         "explicitwidth", "explicitheight"):
                 run([str(output / "qd"), mode])
         if args.gdi_contract:
             run(cc + common + gdi + ["-fsyntax-only", str(ROOT / "src/main.c")])
@@ -84,7 +86,8 @@ def main():
             run(cc + common + gdi + ["-Wno-cast-function-type", str(ROOT / "tests/gdi.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi")])
-            for mode in ("fpu", "fixed", "287", "fpu-escape", "fixed-escape"):
+            for mode in ("fpu", "fixed", "287", "small640", "small512", "tall640",
+                         "fpu-escape", "fixed-escape"):
                 run([str(output / "gdi"), mode])
         if args.xgl_contract:
             if not shutil.which("xvfb-run"):

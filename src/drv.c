@@ -21,6 +21,8 @@
 #include "testglob.h"
 #include "drv.h"
 #include "globe.h"
+#include "glob_ext.h"
+#include <stdio.h>
 #ifdef GDI
 #include <windows.h>
 #elif defined(SEG68)
@@ -66,6 +68,17 @@ static float drv_frame_seconds;
 static float drv_fps_history_seconds;
 long drv_fps_history_num;               /* total number of frames recorded */
 int drv_auto_enabled;                   /* automatically rotate */
+
+void drv_format_stats(char *buffer)
+{
+#ifdef QUAD
+    sprintf(buffer, "%lu quads (%lu visible), %.2f frames per second",
+            globe_quads_num, globe_quads_num_vis, (double)drv_fps_average);
+#else /* TRI and TRISTRIP both count the triangles submitted for drawing. */
+    sprintf(buffer, "%lu triangles (%lu visible), %.2f frames per second",
+            globe_tris_num, globe_tris_num_vis, (double)drv_fps_average);
+#endif
+}
 
 /* call first */
 void drv_ext_init(void)

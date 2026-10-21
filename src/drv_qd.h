@@ -12,7 +12,7 @@
 #define DRV
 #endif
 #define DRV_NAME "QuickDraw"
-#define DRV_HELP "1-2 = facets, A = auto rotate, O = OSD, Esc/Cmd-Q = quit"
+#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, Esc/Cmd-Q = quit"
 #define DRV_WIN_X 20
 #define DRV_WIN_Y 40
 #define DRV_WIN_WIDTH 640
@@ -30,6 +30,10 @@
 #define EARTH
 #define EARTH_32
 #define EARTH_64
+#define EARTH_128
+#define EARTH_256
+#define EARTH_512
+#define DRV_EARTH_RESOURCES
 #define TRISTRIP
 extern void qd_error(char *message);
 #endif /* drv_qd_h */

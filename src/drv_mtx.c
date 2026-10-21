@@ -285,11 +285,10 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1,
 
 void drv_draw_osd(void)
 {
-    char status[96];
+    char status[128];
     krhwsfcol(mtx_foreground);
     sctxbstring(8, DRV_WIN_HEIGHT - 20, drv_help);
-    sprintf(status, "%lu quads (%lu visible), %.2f frames per second",
-            globe_quads_num, globe_quads_num_vis, (double)drv_fps_average);
+    drv_format_stats(status);
     sctxbstring(8, 8, status);
 }
 

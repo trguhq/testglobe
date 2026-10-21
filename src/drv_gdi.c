@@ -19,8 +19,10 @@
 #include "drv_ext.h"
 #include "globe.h"
 #include "glob_ext.h"
+#include "earthres.h"
 
-/* Both the Earth-64 strip and every GDI packet fit within one segment. */
+/* Split latitude strips into even-sized facet packets. Each packet and its
+ * PolyPolygon arrays fit within one Win16 segment at every Earth resolution. */
 #define GDI_MAX_VERTICES 130
 #define GDI_MAX_FACETS (GDI_MAX_VERTICES - 2)
 #define GDI_MAX_POLY 10
@@ -170,6 +172,51 @@ void drv_init(int *argc, char **argv)
         gdi_error("Cannot register Windows GDI cleanup");
 }
 
+void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
+{
+    HRSRC resource;
+    HGLOBAL loaded;
+    const unsigned char FAR *source;
+    unsigned long remaining, length;
+    unsigned int base, chunk, i;
+    switch (longitude)
+    {
+        case 32: base = TG_EARTH_32_ID; break;
+        case 64: base = TG_EARTH_64_ID; break;
+        case 128: base = TG_EARTH_128_ID; break;
+        case 256: base = TG_EARTH_256_ID; break;
+        case 512: base = TG_EARTH_512_ID; break;
+        default: gdi_error("Unsupported Earth resource resolution"); return;
+    }
+    if (destination == NULL) gdi_error("Missing Earth resource destination");
+    remaining = (unsigned long)longitude * (unsigned long)(longitude / 2);
+    chunk = 0;
+    while (remaining != 0)
+    {
+        length = remaining < TG_EARTH_CHUNK_SIZE ? remaining : TG_EARTH_CHUNK_SIZE;
+        resource = FindResource(gdi_instance, MAKEINTRESOURCE(base + chunk), RT_RCDATA);
+        if (resource == 0) gdi_error("Cannot find Earth resource");
+        if (SizeofResource(gdi_instance, resource) != length)
+            gdi_error("Earth resource has an invalid size");
+        loaded = LoadResource(gdi_instance, resource);
+        if (loaded == 0) gdi_error("Cannot load Earth resource");
+        source = (const unsigned char FAR *)LockResource(loaded);
+        if (source == NULL)
+        {
+            FreeResource(loaded);
+            gdi_error("Cannot lock Earth resource");
+        }
+        /* Each resource is at most 16 KiB. Only the destination traverses
+         * the full huge allocation; no far source pointer crosses a segment. */
+        for (i = 0; (unsigned long)i < length; ++i)
+            *destination++ = source[i];
+        UnlockResource(loaded);
+        FreeResource(loaded);
+        remaining -= length;
+        ++chunk;
+    }
+}
+
 static HBRUSH gdi_brush(unsigned int color)
 {
     if (gdi_brushes[color] == 0)
@@ -236,12 +283,21 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     HDC dc;
     unsigned int i;
     unsigned int brightness, darkest, lightest;
+    int screen_width, screen_height;
     if (in_x > 0) drv_win_x = (unsigned int)in_x;
     if (in_y > 0) drv_win_y = (unsigned int)in_y;
-    if (in_width > 0) drv_win_width = (unsigned int)in_width;
-    if (in_height > 0) drv_win_height = (unsigned int)in_height;
     dc = GetDC(0);
     if (dc == 0) gdi_error("Cannot access Windows display");
+    screen_width = GetDeviceCaps(dc, HORZRES);
+    screen_height = GetDeviceCaps(dc, VERTRES);
+    if (screen_width > 0 && screen_width <= 640 &&
+        screen_height > 0 && screen_height <= 480)
+    {
+        if (in_width <= 0) drv_win_width = 320;
+        if (in_height <= 0) drv_win_height = 240;
+    }
+    if (in_width > 0) drv_win_width = (unsigned int)in_width;
+    if (in_height > 0) drv_win_height = (unsigned int)in_height;
     i = (unsigned int)(GetDeviceCaps(dc, BITSPIXEL) * GetDeviceCaps(dc, PLANES));
     if (i != 8 || (GetDeviceCaps(dc, RASTERCAPS) & RC_PALETTE) == 0 ||
         GetDeviceCaps(dc, SIZEPALETTE) < 256)
@@ -560,18 +616,15 @@ static int gdi_prepare_polygon(unsigned int first, unsigned int second,
     return count;
 }
 
-void drv_draw_tristrip_flat_color(unsigned int count,
-                                 const Vertex TG_HUGE *vertices,
-                                 const unsigned char TG_HUGE *facet_colors)
+static void gdi_draw_strip_packet(unsigned int count,
+                                  const Vertex TG_HUGE *vertices,
+                                  const unsigned char TG_HUGE *facet_colors)
 {
     unsigned int i, color;
     int row, facet, total, points, j;
     long source[3];
     float fsource[3];
     HBRUSH previous;
-    if (count < 3 || vertices == NULL || facet_colors == NULL) return;
-    if (count > GDI_MAX_VERTICES) gdi_error("GDI strip exceeds Earth-64 packet size");
-    if (gdi_buffer == 0) return;
     for (i = 0; i < count; ++i)
     {
         if (gdi_has_fpu)
@@ -643,17 +696,56 @@ void drv_draw_tristrip_flat_color(unsigned int count,
     }
 }
 
+void drv_draw_tristrip_flat_color(unsigned int count,
+                                 const Vertex TG_HUGE *vertices,
+                                 const unsigned char TG_HUGE *facet_colors)
+{
+    unsigned int first, facets;
+    if (count < 3 || vertices == NULL || facet_colors == NULL || gdi_buffer == 0)
+        return;
+    /* A strip's facet i uses vertices i..i+2. Retain those two shared
+     * vertices at each boundary and advance by an even number of facets
+     * so every packet begins with the original winding. */
+    first = 0;
+    while (first < count - 2U)
+    {
+        facets = count - 2U - first;
+        if (facets > GDI_MAX_FACETS) facets = GDI_MAX_FACETS;
+        gdi_draw_strip_packet(facets + 2U, vertices + first,
+                               facet_colors + first);
+        first += facets;
+    }
+}
+
 void drv_draw_osd(void)
 {
     char status[160];
-    sprintf(status, "%lu triangles (%lu visible), %s math, %.2f frames per second",
-            globe_tris_num, globe_tris_num_vis,
-            gdi_has_fpu ? "80387" : "fixed-point", (double)drv_fps_average);
+    RECT status_bounds, help_bounds;
+    int help_height;
+    UINT flags;
+    if (drv_win_width <= 16 || drv_win_height <= 16) return;
+    drv_format_stats(status);
+    strcat(status, gdi_has_fpu ? ", 80387 math" : ", fixed-point math");
     SetBkMode(gdi_buffer, TRANSPARENT);
     SetTextColor(gdi_buffer, PALETTEINDEX(gdi_foreground));
-    TextOut(gdi_buffer, 8, 8, status, (int)strlen(status));
-    TextOut(gdi_buffer, 8, (int)drv_win_height - 20,
-             drv_help, (int)strlen(drv_help));
+    flags = DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX;
+    help_bounds.left = 8;
+    help_bounds.right = (int)drv_win_width - 8;
+    help_bounds.top = help_bounds.bottom = 0;
+    DrawText(gdi_buffer, drv_help, -1, &help_bounds, flags | DT_CALCRECT);
+    help_height = help_bounds.bottom - help_bounds.top;
+    help_bounds.right = (int)drv_win_width - 8;
+    help_bounds.bottom = (int)drv_win_height - 8;
+    help_bounds.top = help_bounds.bottom - help_height;
+    if (help_bounds.top < 8) help_bounds.top = 8;
+    status_bounds.left = 8;
+    status_bounds.right = (int)drv_win_width - 8;
+    status_bounds.top = 8;
+    status_bounds.bottom = help_bounds.top - 4;
+    if (status_bounds.bottom > status_bounds.top)
+        DrawText(gdi_buffer, status, -1, &status_bounds, flags);
+    if (help_bounds.bottom > help_bounds.top)
+        DrawText(gdi_buffer, drv_help, -1, &help_bounds, flags);
 }
 
 void drv_render(void)
@@ -693,7 +785,9 @@ static void gdi_keyboard(unsigned char key)
     switch (key)
     {
         case 27: drv_close(); return;
-        case '1': case '2': globe_toggle_res((char)key); break;
+        case '1': case '2': case '3': case '4': case '5':
+            globe_toggle_res((char)key);
+            break;
         case 'a': case 'A':
             drv_auto_enabled = !drv_auto_enabled;
             gdi_auto_tick = GetTickCount();

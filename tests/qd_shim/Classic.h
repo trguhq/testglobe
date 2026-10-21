@@ -2,6 +2,7 @@
 #ifndef TEST_QD_CLASSIC_H
 #define TEST_QD_CLASSIC_H
 #include "Types.h"
+typedef OSType ResType;
 typedef long Fixed;
 typedef short QDErr;
 typedef unsigned char Style;
@@ -132,6 +133,9 @@ Handle NewHandle(Size);
 void DisposeHandle(Handle);
 void HLock(Handle);
 void HUnlock(Handle);
+Size GetHandleSize(Handle);
+Handle Get1Resource(OSType, short);
+void ReleaseResource(Handle);
 OSErr MemError(void);
 unsigned long TickCount(void);
 void InitGraf(GrafPtr *);
@@ -196,6 +200,7 @@ void RGBBackColor(const RGBColor *);
 void TextFont(short);
 void TextSize(short);
 void TextMode(short);
+short TextWidth(const void *, short, short);
 void DrawText(const void *, short, short);
 void DrawString(ConstStr255Param);
 void CopyBits(const BitMap *, const BitMap *, const Rect *, const Rect *, short, RgnHandle);

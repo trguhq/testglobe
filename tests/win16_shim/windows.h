@@ -34,6 +34,7 @@ typedef HANDLE HICON;
 typedef HANDLE HCURSOR;
 typedef HANDLE HGDIOBJ;
 typedef HANDLE HGLOBAL;
+typedef HANDLE HRSRC;
 typedef char *LPSTR;
 typedef const char *LPCSTR;
 typedef void *LPVOID;
@@ -87,6 +88,8 @@ typedef LOGPALETTE *LPLOGPALETTE;
 #define PC_RESERVED 0x01
 #define PC_NOCOLLAPSE 0x04
 #define RC_PALETTE 0x0100
+#define HORZRES 8
+#define VERTRES 10
 #define RASTERCAPS 38
 #define BITSPIXEL 12
 #define PLANES 14
@@ -98,6 +101,11 @@ typedef LOGPALETTE *LPLOGPALETTE;
 #define SYSTEM_FONT 13
 #define SRCCOPY 0x00CC0020UL
 #define BLACKNESS 0x00000042UL
+#define DT_LEFT 0x0000
+#define DT_TOP 0x0000
+#define DT_WORDBREAK 0x0010
+#define DT_CALCRECT 0x0400
+#define DT_NOPREFIX 0x0800
 #define TRANSPARENT 1
 #define OPAQUE 2
 #define WINDING 2
@@ -150,6 +158,9 @@ typedef LOGPALETTE *LPLOGPALETTE;
 #define LOWORD(value) ((WORD)((DWORD)(value) & 0xffffUL))
 #define HIWORD(value) ((WORD)(((DWORD)(value) >> 16) & 0xffffUL))
 #define RGB(r,g,b) ((COLORREF)((BYTE)(r) | ((WORD)(BYTE)(g) << 8) | ((DWORD)(BYTE)(b) << 16)))
+#define MAKEINTRESOURCE(i) ((LPCSTR)(unsigned long)(WORD)(i))
+#define RT_RCDATA MAKEINTRESOURCE(10)
+#define UnlockResource(resource) GlobalUnlock(resource)
 #define PALETTEINDEX(i) (0x01000000UL | (DWORD)(WORD)(i))
 
 DWORD GetWinFlags(void);
@@ -160,6 +171,11 @@ BOOL GlobalUnlock(HGLOBAL);
 HGLOBAL GlobalFree(HGLOBAL);
 DWORD GlobalHandle(UINT);
 DWORD GlobalSize(HGLOBAL);
+HRSRC FindResource(HINSTANCE, LPCSTR, LPCSTR);
+DWORD SizeofResource(HINSTANCE, HRSRC);
+HGLOBAL LoadResource(HINSTANCE, HRSRC);
+LPSTR LockResource(HGLOBAL);
+BOOL FreeResource(HGLOBAL);
 FARPROC MakeProcInstance(FARPROC, HINSTANCE);
 void FreeProcInstance(FARPROC);
 ATOM RegisterClass(const WNDCLASS *);
@@ -205,6 +221,7 @@ int SetBkMode(HDC, int);
 COLORREF SetTextColor(HDC, COLORREF);
 COLORREF SetBkColor(HDC, COLORREF);
 BOOL TextOut(HDC, int, int, LPCSTR, int);
+int DrawText(HDC, LPCSTR, int, RECT *, UINT);
 HWND SetCapture(HWND);
 void ReleaseCapture(void);
 UINT SetTimer(HWND, UINT, UINT, TIMERPROC);

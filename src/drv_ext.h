@@ -97,6 +97,12 @@ extern void drv_texture_enable(void);
 extern void drv_texture_disable(void);
 #endif
 extern void drv_draw_osd(void);
+/* Common OSD prefix; caller supplies at least 128 bytes. */
+extern void drv_format_stats(char *buffer);
+#ifdef DRV_EARTH_RESOURCES
+extern void drv_load_earth_data(int longitude,
+                                unsigned char TG_HUGE *destination);
+#endif
 extern void drv_fps_start(void);
 extern void drv_fps_stop(void);
 extern void drv_globe_rotate(void);

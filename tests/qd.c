@@ -13,11 +13,21 @@
 #include "glob_ext.h"
 #include "globe.h"
 #include "qd_math.h"
+#include "earth_resources.h"
 
 #include "../src/drv_qd.c"
+static int explicit_start;
+static int qd_test_init_window(int x, int y, int width, int height)
+{
+    if (explicit_start == 1 || explicit_start == 2) width = 400;
+    if (explicit_start == 1 || explicit_start == 3) height = 300;
+    return drv_init_window(x, y, width, height);
+}
+#define drv_init_window qd_test_init_window
 #define main testglobe_main
 #include "../src/main.c"
 #undef main
+#undef drv_init_window
 
 extern Vertex *globe_verts;
 extern int globe_longitude, globe_latitude;
@@ -55,6 +65,8 @@ static unsigned int ptr_count, handle_count, poly_count, menu_count;
 static unsigned int world_count, palette_count, window_count;
 static void *memory_blocks[64];
 static void *handle_blocks[64];
+static Size handle_sizes[64];
+static unsigned int handle_locks[64];
 static PaletteHandle window_palette;
 static RGBColor foreground, background;
 static Point pen;
@@ -69,6 +81,11 @@ static int mouse_down;
 static float loop_yaw;
 static Point mouse_position;
 static int run_contract(void);
+static short screen_width = 1024, screen_height = 768;
+static unsigned int expected_width = 640, expected_height = 480;
+static int screen_mode;
+static int streaming_polygons;
+static char osd_text[1024];
 
 typedef struct {
     int count;
@@ -129,7 +146,8 @@ Handle NewHandle(Size size)
     assert(*handle != NULL);
     for (i = 0; i < 64; ++i) {
         if (handle_blocks[i] != NULL) continue;
-        handle_blocks[i] = handle; ++handle_count;
+        handle_blocks[i] = handle; handle_sizes[i] = size;
+        handle_locks[i] = 0; ++handle_count;
         return handle;
     }
     assert(!"Macintosh handle leak");
@@ -140,20 +158,55 @@ void DisposeHandle(Handle handle)
     unsigned int i;
     for (i = 0; i < 64; ++i) {
         if (handle_blocks[i] != handle) continue;
-        assert(handle != NULL && handle_count > 0);
+        assert(handle != NULL && handle_count > 0 && handle_locks[i] == 0);
         free(*handle); free(handle); handle_blocks[i] = NULL; --handle_count;
         return;
     }
     assert(!"Unknown Macintosh handle");
 }
-void HLock(Handle h) { assert(h != NULL); }
-void HUnlock(Handle h) { assert(h != NULL); }
+void HLock(Handle h)
+{
+    unsigned int i;
+    for (i = 0; i < 64; ++i)
+        if (handle_blocks[i] == h) { ++handle_locks[i]; return; }
+    assert(!"Unknown locked Macintosh handle");
+}
+void HUnlock(Handle h)
+{
+    unsigned int i;
+    for (i = 0; i < 64; ++i)
+        if (handle_blocks[i] == h) {
+            assert(handle_locks[i] > 0); --handle_locks[i]; return;
+        }
+    assert(!"Unknown unlocked Macintosh handle");
+}
+Size GetHandleSize(Handle h)
+{
+    unsigned int i;
+    for (i = 0; i < 64; ++i)
+        if (handle_blocks[i] == h) return handle_sizes[i];
+    assert(!"Unknown sized Macintosh handle");
+    return 0;
+}
+Handle Get1Resource(OSType type, short id)
+{
+    unsigned long size;
+    unsigned char *bytes;
+    Handle handle;
+    assert(type == 0x45415254UL);
+    bytes = test_earth_resource(id, &size);
+    handle = NewHandle((Size)size);
+    memcpy(*handle, bytes, (size_t)size);
+    free(bytes);
+    return handle;
+}
+void ReleaseResource(Handle h) { DisposeHandle(h); }
 OSErr MemError(void) { return noErr; }
 unsigned long TickCount(void) { ticks = (ticks + 1UL) & 0xffffffffUL; return ticks; }
 void InitGraf(GrafPtr *port)
 {
     memset(&desktop_port, 0, sizeof(desktop_port));
-    desktop_port.portRect.right = 1024; desktop_port.portRect.bottom = 768;
+    desktop_port.portRect.right = screen_width; desktop_port.portRect.bottom = screen_height;
     desktop_port.portBits.bounds = desktop_port.portRect;
     qd.screenBits = desktop_port.portBits;
     memset(qd.black.pat, 255, 8); memset(qd.white.pat, 0, 8);
@@ -316,11 +369,24 @@ static void record_polygon(PolyHandle poly, unsigned int black)
 {
     RecordedPolygon *entry;
     int i, count;
-    assert(poly != NULL && current_port != NULL && recorded_count < 5000);
+    assert(poly != NULL && current_port != NULL);
     count = pending_count;
     if (count > 3 && pending_points[count - 1].h == pending_points[0].h &&
         pending_points[count - 1].v == pending_points[0].v) --count;
     assert(count >= 3 && count <= 10);
+    if (streaming_polygons) {
+        long area = 0;
+        for (i = 0; i < count; ++i) {
+            assert(pending_points[i].h >= 0 && pending_points[i].h <= (int)drv_win_width);
+            assert(pending_points[i].v >= 0 && pending_points[i].v <= (int)drv_win_height);
+            area += (long)pending_points[i].h * pending_points[(i + 1) % count].v -
+                    (long)pending_points[i].v * pending_points[(i + 1) % count].h;
+        }
+        assert(area < 0);
+        ++recorded_count;
+        return;
+    }
+    assert(recorded_count < 5000);
     entry = recorded + recorded_count++;
     entry->count = count; entry->color = rgb_value(&foreground); entry->pattern_black = black;
     for (i = 0; i < count; ++i) {
@@ -354,10 +420,16 @@ void RGBBackColor(const RGBColor *color) { color_api(); assert(color != NULL && 
 void TextFont(short font) { (void)font; }
 void TextSize(short size) { assert(size > 0); }
 void TextMode(short mode) { (void)mode; }
+short TextWidth(const void *text, short start, short count)
+{ assert(text != NULL && start >= 0 && count >= 0); return (short)(6 * count); }
 void DrawText(const void *text, short start, short count)
 {
     assert(text != NULL && start >= 0 && count > 0); ++text_calls;
     assert(strstr((const char *)text + start, "texture") == NULL);
+    assert(TextWidth(text, start, count) <= (int)drv_win_width - 16);
+    assert(strlen(osd_text) + (size_t)count + 2 < sizeof(osd_text));
+    if (osd_text[0] != 0) strcat(osd_text, " ");
+    strncat(osd_text, (const char *)text + start, (size_t)count);
 }
 void DrawString(ConstStr255Param text) { assert(text != NULL && text[0] > 0); ++text_calls; }
 void CopyBits(const BitMap *source, const BitMap *destination, const Rect *a,
@@ -527,7 +599,7 @@ static void build_reference(void)
     int latitude, longitude;
     unsigned long top, bottom, face;
     unsigned char *data;
-    data = globe_longitude == 32 ? earth_data_32 : earth_data_64;
+    data = test_earth_data(globe_longitude);
     reference_count = 0;
     for (latitude = 0; latitude < globe_latitude; ++latitude) {
         for (longitude = 0; longitude < globe_longitude; ++longitude) {
@@ -677,6 +749,67 @@ static void event_key(unsigned char key, short modifiers)
     event.what = keyDown; event.message = key; event.modifiers = modifiers;
     qd_event(&event);
 }
+
+/* A full Earth-512-width strip with wide, independently identifiable facets.
+ * This catches overlap, color-offset and winding errors at every bounded
+ * native-packet seam without an O(Earth-512 triangles squared) comparison. */
+static void check_large_strip(void)
+{
+    static Vertex vertices[1026];
+    static unsigned char colors[1024];
+    unsigned int i, j, indices[3];
+    unsigned int old_width, old_height;
+    int old_failure;
+    GrafPtr saved_port;
+    GDHandle saved_device;
+    old_width = drv_win_width; old_height = drv_win_height;
+    old_failure = fail_gworld; fail_gworld = TRUE;
+    SizeWindow(qd_window, 32767, 32767, TRUE); drv_resize(32767, 32767);
+    drv_rot_x = drv_rot_y = 0;
+    qd_set_transform();
+    reference_count = recorded_count = 0;
+    for (i = 0; i < 1026; ++i) {
+        vertices[i].x = 0;
+        vertices[i].y = (float)((int)(i / 2U) * 3 - 768);
+        vertices[i].z = (i & 1U) ? -10.0f : 10.0f;
+    }
+    for (i = 0; i < 1024; ++i) {
+        colors[i] = (unsigned char)((i * 37U) & 255U);
+        indices[0] = i + (i & 1U);
+        indices[1] = i + 1U - (i & 1U);
+        indices[2] = i + 2U;
+        for (j = 0; j < 3; ++j)
+            reference[i].point[j] = project_reference(vertices + indices[j]);
+        reference[i].color = ((unsigned long)earth_cmap[colors[i]][0] << 16) |
+                              ((unsigned long)earth_cmap[colors[i]][1] << 8) |
+                              earth_cmap[colors[i]][2];
+        reference[i].luminance = (0.299 * earth_cmap[colors[i]][0] +
+                                  0.587 * earth_cmap[colors[i]][1] +
+                                  0.114 * earth_cmap[colors[i]][2]) / 255.0;
+        reference[i].area =
+            (reference[i].point[1].x - reference[i].point[0].x) *
+            (reference[i].point[2].y - reference[i].point[0].y) -
+            (reference[i].point[1].y - reference[i].point[0].y) *
+            (reference[i].point[2].x - reference[i].point[0].x);
+        assert(reference[i].area < 0.0);
+        reference[i].seen = FALSE;
+    }
+    reference_count = 1024;
+    GetPort(&saved_port);
+    saved_device = has_color ? GetGDevice() : NULL;
+    SetPort((GrafPtr)qd_window);
+    if (has_color) SetGDevice(qd_device);
+    drv_draw_tristrip_flat_color(1026, vertices, colors);
+    SetPort(saved_port);
+    if (has_color) SetGDevice(saved_device);
+    assert(recorded_count == 1024U);
+    check_projection();
+    fail_gworld = old_failure;
+    SizeWindow(qd_window, (short)old_width, (short)old_height, TRUE);
+    drv_resize((int)old_width, (int)old_height);
+    puts("PASS QuickDraw batches: 1,026-vertex strip preserves all 1,024 facet colors and winding across native packet seams");
+}
+
 static int run_contract(void)
 {
     int resolution, pose, i;
@@ -691,14 +824,15 @@ static int run_contract(void)
     assert(qd_color_available == has_color && qd_depth == display_depth);
     assert(qd_has_fpu == (cpu_type >= gestalt68020 && fpu_type != gestaltNoFPU));
     assert(window_calls == 1 && drv_bits_per_pixel == (unsigned int)display_depth);
-    assert(drv_win_width == 640 && drv_win_height == 480);
+    assert(drv_win_width == expected_width && drv_win_height == expected_height);
+    assert(strstr(drv_help, "1-5") != NULL);
     assert(qd_world != NULL || !has_color || fail_gworld || qd_version < gestalt32BitQD);
     drv_osd_enabled = FALSE;
     saved = current_port;
     for (resolution = 0; resolution < 2; ++resolution) {
         event_key((unsigned char)('1' + resolution), 0);
         assert(globe_longitude == (resolution == 0 ? 32 : 64));
-        for (pose = 0; pose < 4; ++pose) {
+        for (pose = 0; pose < (screen_mode ? 1 : 4); ++pose) {
             drv_rot_x = (float)pitch[pose]; drv_rot_y = (float)yaw[pose];
             build_reference(); recorded_count = 0;
             drv_render();
@@ -707,12 +841,25 @@ static int run_contract(void)
             assert(current_device == (has_color ? &screen_device_ptr : NULL));
             check_projection();
         }
-        for (i = '3'; i <= '5'; ++i) event_key((unsigned char)i, 0);
-        assert(globe_longitude == (resolution == 0 ? 32 : 64));
         event_key('t', 0); assert(!drv_texture_enabled);
     }
+    streaming_polygons = TRUE;
+    for (resolution = 2; resolution < 5; ++resolution) {
+        event_key((unsigned char)('1' + resolution), 0);
+        assert(globe_longitude == (32 << resolution));
+        assert(globe_verts_num * sizeof(Vertex) > 65535UL);
+        recorded_count = 0;
+        drv_render();
+        assert(recorded_count == globe_tris_num_vis);
+        assert(recorded_count > 0 && recorded_count <= globe_tris_num);
+    }
+    streaming_polygons = FALSE;
+    event_key('6', 0); assert(globe_longitude == 512);
+    check_large_strip();
+    event_key('2', 0);
+    drv_rot_x = 19.0f; drv_rot_y = 37.0f;
     check_clipping();
-    puts("PASS QuickDraw rendering: two globe resolutions and eight poses, independent perspective/color/dither references, FPU/fixed paths, clipping and native fills");
+    puts("PASS QuickDraw rendering: five globe resolutions, independent perspective/color/dither references, FPU/fixed paths, clipping and native fills");
     old_x = drv_rot_x; old_y = drv_rot_y;
     memset(&event, 0, sizeof(event)); event.what = mouseDown;
     event.where.h = 320; event.where.v = 240; find_part = inContent;
@@ -721,9 +868,15 @@ static int run_contract(void)
     assert(drv_rot_x != old_x && drv_rot_y != old_y);
     memset(&event, 0, sizeof(event)); event.what = mouseUp;
     qd_event(&event); assert(!drv_lmouse_pressed);
-    texts = text_calls; event_key('o', 0); assert(drv_osd_enabled);
+    texts = text_calls; osd_text[0] = 0;
+    event_key('o', 0); assert(drv_osd_enabled);
     memset(&event, 0, sizeof(event)); event.what = updateEvt; event.message = (long)qd_window;
-    recorded_count = 0; qd_event(&event); assert(text_calls == texts + 2);
+    recorded_count = 0; qd_event(&event); assert(text_calls >= texts + 2);
+    assert(strstr(osd_text, "triangles") != NULL && strstr(osd_text, "quads") == NULL);
+    assert(strstr(osd_text, "frames per second") != NULL);
+    assert(strstr(osd_text, "GWorld ") != NULL);
+    assert(strstr(osd_text, "frames per second") < strstr(osd_text, "GWorld "));
+    assert(strstr(osd_text, qd_world != NULL ? "GWorld on" : "GWorld off") != NULL);
     event_key('o', 0); assert(!drv_osd_enabled);
     event_key('a', 0); assert(drv_auto_enabled);
     event_key('a', 0); assert(!drv_auto_enabled);
@@ -751,13 +904,37 @@ static int run_contract(void)
     if (!has_color) assert(color_calls == 0 && world_calls == 0 && palette_calls == 0);
     else if (!fail_gworld && !fail_lock && qd_version >= gestalt32BitQD) assert(copy_calls > 0 && world_calls >= 3);
     if (fail_gworld || fail_lock || qd_version < gestalt32BitQD) assert(copy_calls == 0);
-    puts("PASS QuickDraw events: actual common startup, keyboard/mouse, update/activate/suspend, resize, 1x1 viewport, depth handling, port restoration and TickCount rollover");
+    puts("PASS QuickDraw events: adaptive default/explicit window size, 1-5 keys, wrapped OSD and GWorld state, mouse, resize, port restoration and TickCount rollover");
     return 0;
 }
 int main(int argc, char **argv)
 {
     char *arguments[2];
     assert(argc == 2);
+    screen_mode = strstr(argv[1], "small") != NULL ||
+                  strstr(argv[1], "large") != NULL ||
+                  strstr(argv[1], "explicit") != NULL ||
+                  strstr(argv[1], "tall") != NULL;
+    if (strcmp(argv[1], "small640") == 0 || strstr(argv[1], "explicit") != NULL) {
+        screen_width = 640; screen_height = 480;
+        expected_width = 320; expected_height = 240;
+    }
+    if (strcmp(argv[1], "small512") == 0) {
+        screen_width = 512; screen_height = 342;
+        expected_width = 320; expected_height = 240;
+    }
+    if (strcmp(argv[1], "large800") == 0) {
+        screen_width = 800; screen_height = 600;
+    }
+    if (strcmp(argv[1], "tall640") == 0) {
+        screen_width = 640; screen_height = 600;
+        expected_width = 600;
+    }
+    if (strcmp(argv[1], "explicit") == 0) explicit_start = 1;
+    if (strcmp(argv[1], "explicitwidth") == 0) explicit_start = 2;
+    if (strcmp(argv[1], "explicitheight") == 0) explicit_start = 3;
+    if (explicit_start == 1 || explicit_start == 2) expected_width = 400;
+    if (explicit_start == 1 || explicit_start == 3) expected_height = 300;
     has_color = strcmp(argv[1], "mono") != 0;
     display_depth = has_color ? (short)atoi(argv[1]) : 1;
     if (display_depth == 0) display_depth = 8;
@@ -771,7 +948,7 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "falsefpu") == 0) fpu_type = gestalt68881;
     quit_using_key = strcmp(argv[1], "fpu") == 0;
     screen_pixmap.pixelSize = display_depth;
-    screen_pixmap.bounds.right = 1024; screen_pixmap.bounds.bottom = 768;
+    screen_pixmap.bounds.right = screen_width; screen_pixmap.bounds.bottom = screen_height;
     screen_device.gdPMap = &screen_pixmap_ptr;
     screen_device.gdRect = screen_pixmap.bounds;
     if (multiple_devices) {

@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "testglob.h"
 #include "drv.h"
 #include "types.h"
@@ -74,6 +75,7 @@ int main(void)
     unsigned char *datasets[5];
     unsigned long expected_tris, row;
     int n;
+    char stats[128], counts[80];
     sizes[0] = 32; sizes[1] = 64; sizes[2] = 128;
     sizes[3] = 256; sizes[4] = 512;
     datasets[0] = earth_data_32; datasets[1] = earth_data_64;
@@ -102,6 +104,13 @@ int main(void)
         globe_draw_tris();
         assert(flat_calls == expected_tris && texture_calls == 0);
         globe_toggle_tex();
+        drv_fps_average = 12.5f;
+        drv_format_stats(stats);
+        sprintf(counts, "%lu triangles (%lu visible)",
+                expected_tris, globe_tris_num_vis);
+        assert(strstr(stats, counts) == stats);
+        assert(strstr(stats, "12.50 frames per second") != NULL);
+        assert(strstr(stats, "quads") == NULL);
         globe_draw_tris();
         assert(flat_calls == expected_tris && texture_calls == expected_tris);
         globe_toggle_tex();

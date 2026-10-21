@@ -36,6 +36,11 @@ typedef struct Vertex
     float x;
     float y;
     float z;
+#ifdef SEG86
+    /* A huge Win16 element must never straddle a 64 KiB selector boundary.
+     * A 16-byte stride also meets _halloc's large-array requirements. */
+    unsigned char reserved[4];
+#endif
 } Vertex;
 
 typedef struct Color_RGB
