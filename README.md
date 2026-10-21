@@ -38,8 +38,8 @@ the mesh and choose RGB(A) or color-index drawing for the selected window format
 expands the data to RGB. Matrox LibShell, Windows GDI, and QuickDraw draw using the
 Earth palette.
 
-| Driver | Platform | Default globe | Texture toggle | Origin
-| --- | --- | --- | --- |
+| Driver | Platform | Default globe | Texture toggle | Origin |
+| --- | --- | --- | --- | --- |
 | [OpenGL](#opengl) | Unix and modern macOS | Key 5: `EARTH_512` | Yes | human |
 | [IRIS GL](#iris-gl) | IRIX 4.0, 32-bit MIPS | Key 3: `EARTH_128` | Yes | AI |
 | [Sun XGL](#sun-xgl) | Solaris 2.6, 32-bit SPARC | Key 3: `EARTH_128` | Yes | AI |
