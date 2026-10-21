@@ -34,6 +34,20 @@ forced-include header `tests/tri_mode.h`. Normal builds select primitive modes i
 driver headers; do not pass `TRI`, `TRISTRIP`, or `QUAD` on the compiler command
 line.
 
+Traversal checks use `globe_draw_tris()`, `globe_draw_tristrips()`,
+`globe_draw_quads()`, and `globe_draw_quadbatches()` as separate entry points.
+Driver callbacks retain singular primitive names; their color/RGB/UV declarations
+are grouped and selected by the driver headers' implemented capabilities.
+
+`tests/driver_api.c` checks declarations for all six drivers and the retained TRI
+configuration, rejects unsupported callbacks, and checks the separate three-argument
+XGL RGB/UV signatures. `tests/driver_helpers.c` exercises the shared `drv.c` utilities
+in flat OpenGL and segmented GDI configurations: 1,026-vertex strip splitting with
+even overlap, odd limits and tails, exact UV triangle parity, invalid-input guards,
+standard and unsupported keys, multi-turn and zero-window drag handling, indexed
+quad validation, and individual-quad packing. The quad geometry fixture verifies
+individual and batched globe traversal separately at all five resolutions.
+
 Additional options may be combined in one invocation:
 
 | Option | Additional checks | Extra requirements |
@@ -142,6 +156,11 @@ resolution keys, native-call arguments, flat facet/strip packets, packed texture
 pixels and mipmap settings, clipping and model/view setup, single/double
 buffering, X11 input/resize events, and both Escape and window-manager close
 cleanup.
+
+Separate `drv_draw_tristrip_flat_rgb()` and `drv_draw_tristrip_flat_uv()` callbacks
+verify that flat facets retain their RGB values and textured strips retain their
+UVs. The textured native facet metadata is white because XGL's REPLACE operation
+uses the texture color directly.
 
 `tests/xgl_record/xgl/xgl.h` is a small, manual-derived recording contract with
 test-local symbolic values. It is **not Sun's SDK header**, an ABI-compatible
@@ -256,12 +275,12 @@ or QuickDraw hardware acceleration.
 
 ## Shared GDI and QuickDraw pipeline
 
-Both driver contracts link the actual shared `soft3d.c` module and exercise the
-quad batching in `globe_draw_quads()` and Earth-resource traversal in `drv.c`. The
-quad packets contain at most 64 quads and 130 shared vertices, with four indices
+Both driver contracts link the actual shared `soft3d.c` module and exercise quad
+batching in `globe_draw_quadbatches()` and Earth-resource traversal in `drv.c`.
+The quad packets contain at most 64 quads and 130 shared vertices, with four indices
 and one palette byte per quad. The `DRV_QUAD_BATCH` capability retains `QUAD` as
-the primitive; Matrox continues through individual quad submission. In addition to
-the independent projection references, a shared public-pipeline case clips a
+the primitive; `globe_draw_quads()` retains individual submission, including Matrox.
+In addition to the independent projection references, a shared public-pipeline case clips a
 triangle spanning 268 million coordinate units to exact viewport corners, then
 reverses its winding to check rejection. This exercises clipping products that
 would overflow a 32-bit intermediate without depending on private helpers.

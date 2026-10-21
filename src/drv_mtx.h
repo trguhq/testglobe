@@ -37,5 +37,7 @@
 /* No TEXTURE: the palette supplies polygon colors, not texture mapping. */
 /* render individual quads */
 #define QUAD
+/* The indexed triangle leaf is also available to auxiliary callers. */
+#define DRV_TRI_COLOR
 
 #endif /* drv_mtx_h */

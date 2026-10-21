@@ -368,9 +368,16 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     for (i = 0; i < facets->num_facets; ++i) {
         face = band * globe_longitude + (polar ? cell : i / 2U);
         value = earth_data()[face];
-        assert(fabs(facets->facets.color_facets[i].color.rgb.r - (float)earth_cmap[value][0] / 255.0f) < 0.000001);
-        assert(fabs(facets->facets.color_facets[i].color.rgb.g - (float)earth_cmap[value][1] / 255.0f) < 0.000001);
-        assert(fabs(facets->facets.color_facets[i].color.rgb.b - (float)earth_cmap[value][2] / 255.0f) < 0.000001);
+        if (drv_texture_enabled) {
+            /* REPLACE takes its RGB from the texture, not a facet color. */
+            assert(facets->facets.color_facets[i].color.rgb.r == 1.0f);
+            assert(facets->facets.color_facets[i].color.rgb.g == 1.0f);
+            assert(facets->facets.color_facets[i].color.rgb.b == 1.0f);
+        } else {
+            assert(fabs(facets->facets.color_facets[i].color.rgb.r - (float)earth_cmap[value][0] / 255.0f) < 0.000001);
+            assert(fabs(facets->facets.color_facets[i].color.rgb.g - (float)earth_cmap[value][1] / 255.0f) < 0.000001);
+            assert(fabs(facets->facets.color_facets[i].color.rgb.b - (float)earth_cmap[value][2] / 255.0f) < 0.000001);
+        }
     }
     ++frame_bands;
     frame_facets += facets->num_facets;

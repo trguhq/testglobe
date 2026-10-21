@@ -29,14 +29,17 @@ extern int globe_init_verts(int, int, float);
 #ifdef TRI
 extern void globe_draw_tris(void);
 #endif
-#ifdef QUAD
-extern void globe_draw_quads(void);
-#endif
-#ifdef TRISTRIP
-extern void globe_draw_tripstrip(void);
-#ifdef DRV_TRI_CAPS
+#if defined(TRISTRIP) && defined(DRV_TRI_CAPS)
 /* Separate cap triangles retain their original colors and texture UVs. */
 extern void globe_draw_pole_tris(void);
+#endif
+#ifdef TRISTRIP
+extern void globe_draw_tristrips(void);
+#endif
+#ifdef QUAD
+extern void globe_draw_quads(void);
+#ifdef DRV_QUAD_BATCH
+extern void globe_draw_quadbatches(void);
 #endif
 #endif
 extern void globe_toggle_res(char);

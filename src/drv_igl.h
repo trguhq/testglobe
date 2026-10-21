@@ -59,5 +59,7 @@
 #define TEXTURE_DEFAULT_SIZE 512
 #define TEXTURE_RGB
 #define TRISTRIP
+#define DRV_TRI_COLOR
+#define DRV_TRI_UV
 
 #endif /* drv_igl_h */

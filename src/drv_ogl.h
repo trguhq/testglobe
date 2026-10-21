@@ -67,5 +67,8 @@
 /* Native latitude strips and separately batched pole triangles. */
 #define TRISTRIP
 #define DRV_TRI_CAPS
+#define DRV_TRI_COLOR
+#define DRV_TRI_RGB
+#define DRV_TRI_UV
 
 #endif /* drv_ogl_h */

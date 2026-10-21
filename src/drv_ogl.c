@@ -249,76 +249,26 @@ void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei
 void ogl_keyboard(unsigned char key, int x, int y)
 {
     (void)x; (void)y;
-    switch(key)
+    if (key == 27)
     {
-        case 27:
-            drv_close();
-            return;
-        case '1':
-        case '2':
-        case '3':
-        case '4':
-        case '5':
-            /* in this case the routines in globe.c understand the same keys we have for OpenGL */
-            globe_toggle_res(key);
-            if(dlist)
-            {
-                glDeleteLists(dlist, 1);
-                dlist = 0;
-            }
-            glutPostRedisplay();
-            break;
-        case 'a':
-        case 'A':
-            drv_auto_enabled = !drv_auto_enabled;
-            glutPostRedisplay();
-            break;
-        case 't':
-        case 'T':
-            globe_toggle_tex();
-            if(dlist)
-            {
-                glDeleteLists(dlist, 1);
-                dlist = 0;
-            }
-            glutPostRedisplay();
-            break;
-        case 'O':
-        case 'o':
-            drv_osd_enabled = !drv_osd_enabled;
-            glutPostRedisplay();
-            break;
-        default:
-            break;
+        drv_close();
+        return;
     }
+    if (!drv_handle_key(key)) return;
+    if (((key >= '1' && key <= '5') || key == 't' || key == 'T') && dlist)
+    {
+        glDeleteLists(dlist, 1);
+        dlist = 0;
+    }
+    glutPostRedisplay();
 }
 
 /* callback for mouse movement */
 void ogl_mouse_move(int x, int y)
 {
-    int change_x;
-    int change_y;
-    
     if (drv_lmouse_pressed)
     {
-        change_x = x - ogl_old_x;
-        change_y = y - ogl_old_y;
-        drv_rot_y += (float) change_x * 100.0f / (float)drv_win_width;
-        if (drv_rot_y > 360.0f)
-        {
-            drv_rot_y -= 360.0f;
-        } else if (drv_rot_y < 0.0f)
-        {
-            drv_rot_y += 360.0f;
-        }
-        drv_rot_x += (float) change_y * 100.0f / (float)drv_win_height;
-        if (drv_rot_x > 360.0f)
-        {
-            drv_rot_x -= 360.0f;
-        } else if (drv_rot_x < 0.0f)
-        {
-            drv_rot_x += 360.0f;
-        }
+        drv_rotate_drag((long)x - ogl_old_x, (long)y - ogl_old_y);
         ogl_old_x = x;
         ogl_old_y = y;
         glutPostRedisplay();
@@ -408,17 +358,6 @@ void ogl_checkerror(void)
     fprintf(stderr, "OpenGL error: %s!\n", error_msg);
 }
 
-/* draw a string with bitmap text */
-void ogl_draw_string(char * str, int x, int y)
-{
-    int i;
-    glRasterPos2i(x, y);
-    for (i=0; *(str+i) != 0; str++)
-    {
-        glutBitmapCharacter(ogl_font, *(str+i));
-    }
-}
-
 /* initialize graphics subsystem */
 void drv_init(int *argc, char **argv)
 {
@@ -494,7 +433,7 @@ static void ogl_draw_globe(void)
         glEnd();
     }
 #endif
-    globe_draw_tripstrip();
+    globe_draw_tristrips();
 #endif
 }
 
@@ -703,16 +642,6 @@ void drv_loop(void)
     glutMainLoop();
 }
 
-/* draw flat shaded colored triangle */
-void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *color)
-{
-    glColor3ub(color->r, color->g, color->b);
-
-    glVertex3fv((GLfloat *)xyz1);
-    glVertex3fv((GLfloat *)xyz2);
-    glVertex3fv((GLfloat *)xyz3);
-}
-
 static void ogl_set_index_color(unsigned char color)
 {
     if (ogl_indexed) glIndexi((GLint)color);
@@ -723,6 +652,14 @@ void drv_draw_tri_flat_color(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3,
                               unsigned char color)
 {
     ogl_set_index_color(color);
+    glVertex3fv((GLfloat *)xyz1);
+    glVertex3fv((GLfloat *)xyz2);
+    glVertex3fv((GLfloat *)xyz3);
+}
+
+void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *color)
+{
+    glColor3ub(color->r, color->g, color->b);
     glVertex3fv((GLfloat *)xyz1);
     glVertex3fv((GLfloat *)xyz2);
     glVertex3fv((GLfloat *)xyz3);
@@ -767,18 +704,11 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
                              const Vertex TG_HUGE *vertices,
                              const Coord TG_HUGE *coords)
 {
-    unsigned int i, first, second;
+    unsigned int i;
     if (count < 3U || vertices == NULL || coords == NULL) return;
     if (ogl_indexed)
     {
-        for (i = 0; i < count - 2U; ++i)
-        {
-            first = (i & 1U) ? i + 1U : i;
-            second = (i & 1U) ? i : i + 1U;
-            texsoft_triangle(vertices + first, vertices + second,
-                             vertices + i + 2U, coords + first,
-                             coords + second, coords + i + 2U);
-        }
+        drv_expand_tristrip_uv(count, vertices, coords, texsoft_triangle);
         return;
     }
     glBegin(GL_TRIANGLE_STRIP);
@@ -790,6 +720,14 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
     glEnd();
 }
 #endif /* TRISTRIP */
+
+/* Private bitmap text helper stays with the OSD drawing code. */
+static void ogl_draw_string(const char *str, int x, int y)
+{
+    glRasterPos2i(x, y);
+    while (*str != 0)
+        glutBitmapCharacter(ogl_font, *str++);
+}
 
 /* draw the OSD */
 void drv_draw_osd(void)

@@ -33,6 +33,19 @@ def run(command, expected_returncode=0, expected_stderr=None, required_output=No
         print(result.stderr, end="")
 
 
+def check_driver_api(command, driver, hidden_symbols):
+    run(command)
+    for symbol in hidden_symbols:
+        result = subprocess.run(command + ["-DTEST_HIDDEN_SYMBOL=" + symbol],
+                                cwd=ROOT, text=True, capture_output=True)
+        if result.returncode == 0 or symbol not in result.stderr:
+            print("COMMAND:", shlex.join(str(part) for part in command))
+            print(result.stdout, end="")
+            print(result.stderr, end="")
+            raise SystemExit("Unsupported rendering API was exposed: " + symbol)
+    print("PASS " + driver + " rendering API: supported callbacks declared, unsupported primitives hidden and plural globe entry points")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sdk", default=os.environ.get("MATROX_SDK"),
@@ -58,6 +71,21 @@ def main():
         output = Path(temporary)
         flat = ["-DFLAT", "-DDRV_OGL"]
         tri_mode = ["-include", str(ROOT / "tests/tri_mode.h")]
+        api_source = ["-fsyntax-only", str(ROOT / "tests/driver_api.c")]
+        api_modes = (
+            ("OpenGL", flat, ("drv_draw_quad_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tristrip_flat_rgb")),
+            ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_rgb", "drv_draw_quad_flat_color")),
+            ("Sun XGL", ["-DFLAT", "-DDRV_XGL"], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_color")),
+            ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tristrip_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tri_flat_uv")),
+            ("GDI", ["-DSEG86", "-DDRV_GDI", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb")),
+            ("QuickDraw", ["-DSEG68", "-DDRV_QD"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb")),
+        )
+        for driver, options, hidden in api_modes:
+            check_driver_api(cc + common + options + api_source, driver, hidden)
+        run(cc + common + flat + tri_mode + api_source)
+        run(cc + common + flat + [str(ROOT / "tests/driver_helpers.c"),
+            str(ROOT / "src/drv.c"), "-lm", "-o", str(output / "flat_helpers")])
+        run([str(output / "flat_helpers")])
         run(cc + common + flat + tri_mode + [str(ROOT / "tests/geometry.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "geometry")])
@@ -73,6 +101,9 @@ def main():
         run([str(output / "strips")])
         gdi = ["-DSEG86", "-DDRV_GDI", "-D_huge=", "-D_far=", "-D_near=",
                "-I" + str(ROOT / "tests/win16_shim")]
+        run(cc + common + gdi + [str(ROOT / "tests/driver_helpers.c"),
+            str(ROOT / "src/drv.c"), "-lm", "-o", str(output / "segmented_helpers")])
+        run([str(output / "segmented_helpers")])
         run(cc + common + gdi + [str(ROOT / "tests/quad_batches.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_quads")])

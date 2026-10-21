@@ -197,7 +197,7 @@ static void check_drawing(void)
     assert(cap_calls == expected_caps && strip_calls == 0UL);
     assert(rendered_triangles == expected_caps);
     draw_phase = 2;
-    globe_draw_tripstrip();
+    globe_draw_tristrips();
     draw_phase = 0;
     assert(cap_calls == expected_caps && strip_calls == expected_bands);
     assert(rendered_triangles == globe_tris_num);

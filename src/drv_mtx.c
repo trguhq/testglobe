@@ -328,29 +328,8 @@ void drv_render(void)
 
 static void mtx_keyboard(unsigned char key)
 {
-    switch (key)
-    {
-        case 27:
-            drv_close();
-            break;
-        case '1':
-        case '2':
-            globe_toggle_res((char)key);
-            mtx_dirty = TRUE;
-            break;
-        case 'a':
-        case 'A':
-            drv_auto_enabled = !drv_auto_enabled;
-            mtx_dirty = TRUE;
-            break;
-        case 'o':
-        case 'O':
-            drv_osd_enabled = !drv_osd_enabled;
-            mtx_dirty = TRUE;
-            break;
-        default:
-            break;
-    }
+    if (key == 27) { drv_close(); return; }
+    if (drv_handle_key(key)) mtx_dirty = TRUE;
 }
 
 static void mtx_poll_mouse(void)
@@ -371,12 +350,7 @@ static void mtx_poll_mouse(void)
     dy = (short)regs.x.dx;
     if (drv_lmouse_pressed && (dx != 0 || dy != 0))
     {
-        drv_rot_y += (float)dx * 100.0f / (float)DRV_WIN_WIDTH;
-        drv_rot_x += (float)dy * 100.0f / (float)DRV_WIN_HEIGHT;
-        while (drv_rot_y < 0.0f) drv_rot_y += 360.0f;
-        while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
-        while (drv_rot_x < 0.0f) drv_rot_x += 360.0f;
-        while (drv_rot_x >= 360.0f) drv_rot_x -= 360.0f;
+        drv_rotate_drag((long)dx, (long)dy);
         mtx_dirty = TRUE;
     }
 }

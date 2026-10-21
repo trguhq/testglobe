@@ -53,6 +53,23 @@
 #endif
 #endif
 
+#if defined(TRI) || defined(DRV_TRI_CAPS)
+#ifdef DRV_COLORMAP
+#ifndef DRV_TRI_COLOR
+#error The triangle traversal requires a palette-index triangle callback
+#endif
+#else
+#ifndef DRV_TRI_RGB
+#error The triangle traversal requires an RGB triangle callback
+#endif
+#endif
+#ifdef TEXTURE
+#ifndef DRV_TRI_UV
+#error Textured triangles require a triangle UV callback
+#endif
+#endif
+#endif
+
 #ifdef DRV_QUAD_BATCH
 #if !defined(QUAD) || !defined(DRV_COLORMAP)
 #error Indexed quad batching requires QUAD and DRV_COLORMAP

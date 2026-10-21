@@ -28,6 +28,9 @@
 #define GDI_MAX_FACETS DRV_QUAD_BATCH_MAX
 #define GDI_MAX_POLY SOFT3D_MAX_POLY
 #define GDI_TIMER 1
+#if 2 * (DRV_QUAD_BATCH_MAX + 1) > GDI_MAX_VERTICES
+#error GDI quad batches exceed the transformed vertex cache
+#endif
 
 typedef struct Gdi_float_point { float x, y, z; } Gdi_float_point;
 
@@ -419,6 +422,13 @@ static int gdi_prepare_polygon(const unsigned int *indices,
     return count;
 }
 
+void drv_draw_quad_flat_color(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
+                               Vertex TG_HUGE *third, Vertex TG_HUGE *fourth,
+                               unsigned char color)
+{
+    drv_submit_quad_as_batch(first, second, third, fourth, color);
+}
+
 void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                    const Vertex TG_HUGE *vertices,
                                    unsigned int quad_count,
@@ -431,11 +441,8 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     HBRUSH previous;
     if (gdi_buffer == 0 || vertex_count == 0 || quad_count == 0 ||
         vertices == NULL || indices == NULL || colors == NULL) return;
-    if (vertex_count > GDI_MAX_VERTICES || quad_count > GDI_MAX_FACETS)
-        gdi_error("GDI quad batch is too large");
-    for (i = 0; i < quad_count * 4U; ++i)
-        if (indices[i] >= vertex_count)
-            gdi_error("GDI quad index is out of range");
+    if (!drv_validate_quadbatch(vertex_count, quad_count, indices))
+        gdi_error("GDI quad batch or vertex index is out of range");
     if (gdi_has_fpu)
     {
         for (i = 0; i < vertex_count; ++i)
@@ -487,20 +494,6 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     }
 }
 
-void drv_draw_quad_flat_color(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
-                               Vertex TG_HUGE *third, Vertex TG_HUGE *fourth,
-                               unsigned char color)
-{
-    Vertex vertices[4];
-    static const unsigned int indices[4] = { 0, 1, 2, 3 };
-    if (first == NULL || second == NULL || third == NULL || fourth == NULL) return;
-    vertices[0] = *first;
-    vertices[1] = *second;
-    vertices[2] = *third;
-    vertices[3] = *fourth;
-    drv_draw_quadbatch_flat_color(4U, vertices, 1U, indices, &color);
-}
-
 void drv_draw_osd(void)
 {
     char status[160];
@@ -546,7 +539,7 @@ void drv_render(void)
     SetPolyFillMode(gdi_buffer, WINDING);
     gdi_set_transform();
     globe_quads_num_vis = 0;
-    globe_draw_quads();
+    globe_draw_quadbatches();
     SelectObject(gdi_buffer, previous);
     if (drv_osd_enabled) drv_draw_osd();
     drv_fps_stop();
@@ -566,19 +559,9 @@ static void gdi_present(HDC dc)
 
 static void gdi_keyboard(unsigned char key)
 {
-    switch (key)
-    {
-        case 27: drv_close(); return;
-        case '1': case '2': case '3': case '4': case '5':
-            globe_toggle_res((char)key);
-            break;
-        case 'a': case 'A':
-            drv_auto_enabled = !drv_auto_enabled;
-            gdi_auto_tick = GetTickCount();
-            break;
-        case 'o': case 'O': drv_osd_enabled = !drv_osd_enabled; break;
-        default: return;
-    }
+    if (key == 27) { drv_close(); return; }
+    if (!drv_handle_key(key)) return;
+    if (key == 'a' || key == 'A') gdi_auto_tick = GetTickCount();
     gdi_dirty = TRUE;
     InvalidateRect(gdi_window, NULL, FALSE);
 }
@@ -587,12 +570,7 @@ static void gdi_mouse_move(int x, int y)
 {
     if (drv_lmouse_pressed)
     {
-        drv_rot_y += (float)((long)x - gdi_last_x) * 100.0f / drv_win_width;
-        drv_rot_x += (float)((long)y - gdi_last_y) * 100.0f / drv_win_height;
-        while (drv_rot_x < 0) drv_rot_x += 360.0f;
-        while (drv_rot_x >= 360.0f) drv_rot_x -= 360.0f;
-        while (drv_rot_y < 0) drv_rot_y += 360.0f;
-        while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
+        drv_rotate_drag((long)x - gdi_last_x, (long)y - gdi_last_y);
         gdi_dirty = TRUE;
         InvalidateRect(gdi_window, NULL, FALSE);
     }

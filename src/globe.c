@@ -513,79 +513,10 @@ void globe_draw_pole_tris(void)
 #endif
 #endif
 
-#ifdef QUAD
-void globe_draw_quads(void)
-{
-#ifdef DRV_QUAD_BATCH
-    unsigned long top, bottom, face;
-    unsigned int first, count, j, index;
-    int i;
-
-    for (i = 0; i < globe_latitude; ++i)
-    {
-        top = (unsigned long)i * (globe_longitude + 1UL);
-        bottom = top + globe_longitude + 1UL;
-        face = (unsigned long)i * globe_longitude;
-        for (first = 0; first < (unsigned int)globe_longitude; first += count)
-        {
-            count = (unsigned int)globe_longitude - first;
-            if (count > DRV_QUAD_BATCH_MAX) count = DRV_QUAD_BATCH_MAX;
-            for (j = 0; j <= count; ++j)
-            {
-                index = 2U * j;
-                globe_quad_verts[index] = globe_verts[top + first + j];
-                globe_quad_verts[index + 1U] = globe_verts[bottom + first + j];
-                if (j == count) continue;
-                /* Same outward order as the individual QUAD path below. */
-                globe_quad_indices[4U * j] = index;
-                globe_quad_indices[4U * j + 1U] = index + 1U;
-                globe_quad_indices[4U * j + 2U] = index + 3U;
-                globe_quad_indices[4U * j + 3U] = index + 2U;
-                globe_quad_colors[j] = globe_colors[face + first + j].color;
-            }
-            drv_draw_quadbatch_flat_color(2U * (count + 1U), globe_quad_verts,
-                                          count, globe_quad_indices,
-                                          globe_quad_colors);
-        }
-    }
-#else
-    Color TG_HUGE *color_ptr;
-    Vertex TG_HUGE *v1;
-    Vertex TG_HUGE *v2;
-    Vertex TG_HUGE *v1_1;
-    Vertex TG_HUGE *v2_1;
-    int i, j;
-
-    color_ptr = globe_colors;
-    for (i = 0; i < globe_latitude; ++i)
-    {
-        v1 = globe_verts + (unsigned long)i * (globe_longitude + 1UL);
-        v1_1 = v1 + 1;
-        v2 = v1 + globe_longitude + 1;
-        v2_1 = v2 + 1;
-        for (j = 0; j < globe_longitude; ++j)
-        {
-#ifdef DRV_COLORMAP
-            drv_draw_quad_flat_color(v1, v2, v2_1, v1_1, color_ptr->color);
-#else
-            drv_draw_quad_flat_rgb(v1, v2, v2_1, v1_1, color_ptr);
-#endif
-            ++color_ptr;
-            ++v1;
-            ++v1_1;
-            ++v2;
-            ++v2_1;
-        }
-    }
-#endif
-}
-#endif
-
 #ifdef TRISTRIP
 /* Bands and nondegenerate pole triangles share the same packet dispatch. */
-static void globe_draw_strip(unsigned int count)
+static void globe_submit_tristrip(unsigned int count)
 {
-#ifdef DRV_COLORMAP
 #ifdef TEXTURE
     if (drv_texture_enabled)
     {
@@ -593,18 +524,14 @@ static void globe_draw_strip(unsigned int count)
         return;
     }
 #endif
+#ifdef DRV_COLORMAP
     drv_draw_tristrip_flat_color(count, globe_strip_verts, globe_strip_colors);
 #else
-    const Coord TG_HUGE *coords;
-    coords = NULL;
-#ifdef TEXTURE
-    if (drv_texture_enabled) coords = globe_strip_coords;
-#endif
-    drv_draw_tristrip_flat_rgb(count, globe_strip_verts, globe_strip_colors, coords);
+    drv_draw_tristrip_flat_rgb(count, globe_strip_verts, globe_strip_colors);
 #endif
 }
 
-void globe_draw_tripstrip(void)
+void globe_draw_tristrips(void)
 {
     int i, j;
     unsigned int count;
@@ -657,7 +584,7 @@ void globe_draw_tripstrip(void)
 #else
                 globe_strip_colors[0] = globe_colors[face + j];
 #endif
-                globe_draw_strip(3);
+                globe_submit_tristrip(3);
             }
 #endif
             continue;
@@ -684,9 +611,80 @@ void globe_draw_tripstrip(void)
 #endif
             }
         }
-        globe_draw_strip(count);
+        globe_submit_tristrip(count);
     }
 }
+#endif
+
+#ifdef QUAD
+void globe_draw_quads(void)
+{
+    Color TG_HUGE *color_ptr;
+    Vertex TG_HUGE *v1;
+    Vertex TG_HUGE *v2;
+    Vertex TG_HUGE *v1_1;
+    Vertex TG_HUGE *v2_1;
+    int i, j;
+
+    color_ptr = globe_colors;
+    for (i = 0; i < globe_latitude; ++i)
+    {
+        v1 = globe_verts + (unsigned long)i * (globe_longitude + 1UL);
+        v1_1 = v1 + 1;
+        v2 = v1 + globe_longitude + 1;
+        v2_1 = v2 + 1;
+        for (j = 0; j < globe_longitude; ++j)
+        {
+#ifdef DRV_COLORMAP
+            drv_draw_quad_flat_color(v1, v2, v2_1, v1_1, color_ptr->color);
+#else
+            drv_draw_quad_flat_rgb(v1, v2, v2_1, v1_1, color_ptr);
+#endif
+            ++color_ptr;
+            ++v1;
+            ++v1_1;
+            ++v2;
+            ++v2_1;
+        }
+    }
+}
+
+#ifdef DRV_QUAD_BATCH
+void globe_draw_quadbatches(void)
+{
+    unsigned long top, bottom, face;
+    unsigned int first, count, j, index;
+    int i;
+
+    for (i = 0; i < globe_latitude; ++i)
+    {
+        top = (unsigned long)i * (globe_longitude + 1UL);
+        bottom = top + globe_longitude + 1UL;
+        face = (unsigned long)i * globe_longitude;
+        for (first = 0; first < (unsigned int)globe_longitude; first += count)
+        {
+            count = (unsigned int)globe_longitude - first;
+            if (count > DRV_QUAD_BATCH_MAX) count = DRV_QUAD_BATCH_MAX;
+            for (j = 0; j <= count; ++j)
+            {
+                index = 2U * j;
+                globe_quad_verts[index] = globe_verts[top + first + j];
+                globe_quad_verts[index + 1U] = globe_verts[bottom + first + j];
+                if (j == count) continue;
+                /* Same outward order as the individual QUAD traversal. */
+                globe_quad_indices[4U * j] = index;
+                globe_quad_indices[4U * j + 1U] = index + 1U;
+                globe_quad_indices[4U * j + 2U] = index + 3U;
+                globe_quad_indices[4U * j + 3U] = index + 2U;
+                globe_quad_colors[j] = globe_colors[face + first + j].color;
+            }
+            drv_draw_quadbatch_flat_color(2U * (count + 1U), globe_quad_verts,
+                                          count, globe_quad_indices,
+                                          globe_quad_colors);
+        }
+    }
+}
+#endif
 #endif
 
 void globe_toggle_res(char key)

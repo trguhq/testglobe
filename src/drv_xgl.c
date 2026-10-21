@@ -431,24 +431,28 @@ static void xgl_reserve_strip(unsigned int count)
     xgl_strip_capacity = count;
 }
 
-void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
-                                const Color_RGB *facet_colors,
-                                const Coord *coords)
+static void xgl_draw_tristrip(unsigned int count, const Vertex *vertices,
+                               const Color_RGB *facet_colors,
+                               const Coord *coords)
 {
     Xgl_pt_list points;
     Xgl_facet_list facets;
     unsigned int i;
     float *destination;
     int textured;
-    if (count < 3 || vertices == NULL || facet_colors == NULL) return;
+    if (count < 3 || vertices == NULL ||
+        (facet_colors == NULL && coords == NULL)) return;
     xgl_reserve_strip(count);
-    textured = drv_texture_enabled && coords != NULL;
+    textured = coords != NULL;
     xgl_texture_switch(textured);
     for (i = 0; i < count - 2; ++i)
     {
-        xgl_strip_facets[i].color.rgb.r = (float)facet_colors[i].r / 255.0f;
-        xgl_strip_facets[i].color.rgb.g = (float)facet_colors[i].g / 255.0f;
-        xgl_strip_facets[i].color.rgb.b = (float)facet_colors[i].b / 255.0f;
+        xgl_strip_facets[i].color.rgb.r = facet_colors == NULL ?
+                                           1.0f : (float)facet_colors[i].r / 255.0f;
+        xgl_strip_facets[i].color.rgb.g = facet_colors == NULL ?
+                                           1.0f : (float)facet_colors[i].g / 255.0f;
+        xgl_strip_facets[i].color.rgb.b = facet_colors == NULL ?
+                                           1.0f : (float)facet_colors[i].b / 255.0f;
     }
     memset(&points, 0, sizeof(points));
     points.num_pts = (Xgl_usgn32)count;
@@ -487,6 +491,23 @@ void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
     xgl_triangle_strip(xgl_context, &facets, &points);
 }
 
+void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
+                                const Color_RGB *facet_colors)
+{
+    if (facet_colors == NULL) return;
+    xgl_draw_tristrip(count, vertices, facet_colors, NULL);
+}
+
+void drv_draw_tristrip_flat_uv(unsigned int count,
+                               const Vertex TG_HUGE *vertices,
+                               const Coord TG_HUGE *coords)
+{
+    if (coords == NULL) return;
+    /* REPLACE texture mapping supplies polygon colors independently of
+     * the white facet metadata used by the native XGL strip packet. */
+    xgl_draw_tristrip(count, vertices, NULL, coords);
+}
+
 void drv_draw_osd(void)
 {
     Xgl_pt_f2d position;
@@ -506,7 +527,7 @@ void drv_render(void)
     drv_fps_start();
     xgl_context_new_frame(xgl_context);
     xgl_model_transform();
-    globe_draw_tripstrip();
+    globe_draw_tristrips();
     if (drv_osd_enabled) drv_draw_osd();
     xgl_context_flush(xgl_context, XGL_FLUSH_SYNCHRONIZE);
     xgl_context_flush(xgl_overlay, XGL_FLUSH_SYNCHRONIZE);
@@ -524,39 +545,19 @@ void drv_render(void)
 
 static void xgl_keyboard(unsigned char key)
 {
-    switch (key)
+    if (key == 27)
     {
-        case 27: drv_close(); break;
-        case '1': case '2': case '3': case '4': case '5':
-            globe_toggle_res((char)key);
-            xgl_dirty = TRUE;
-            break;
-        case 'a': case 'A':
-            drv_auto_enabled = !drv_auto_enabled;
-            xgl_dirty = TRUE;
-            break;
-        case 'o': case 'O':
-            drv_osd_enabled = !drv_osd_enabled;
-            xgl_dirty = TRUE;
-            break;
-        case 't': case 'T':
-            globe_toggle_tex();
-            xgl_dirty = TRUE;
-            break;
-        default: break;
+        drv_close();
+        return;
     }
+    if (drv_handle_key(key)) xgl_dirty = TRUE;
 }
 
 static void xgl_mouse_move(int x, int y)
 {
     if (drv_lmouse_pressed)
     {
-        drv_rot_y += (float)(x - xgl_old_x) * 100.0f / drv_win_width;
-        drv_rot_x += (float)(y - xgl_old_y) * 100.0f / drv_win_height;
-        while (drv_rot_x < 0.0f) drv_rot_x += 360.0f;
-        while (drv_rot_x >= 360.0f) drv_rot_x -= 360.0f;
-        while (drv_rot_y < 0.0f) drv_rot_y += 360.0f;
-        while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
+        drv_rotate_drag((long)x - xgl_old_x, (long)y - xgl_old_y);
         xgl_dirty = TRUE;
     }
     xgl_old_x = x;

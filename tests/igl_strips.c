@@ -160,7 +160,7 @@ static void check_drawing(void)
     char stats[128], counts[80];
     strip_calls = rendered_triangles = full_bands = cap_strips = 0UL;
     color_calls = uv_calls = 0UL;
-    globe_draw_tripstrip();
+    globe_draw_tristrips();
     assert(strip_calls == (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
     assert(full_bands == (unsigned long)globe_latitude - 2UL);
     assert(cap_strips == 2UL * globe_longitude);

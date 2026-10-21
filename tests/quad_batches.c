@@ -41,6 +41,8 @@ extern Color TG_HUGE *globe_colors;
 extern int globe_longitude, globe_latitude;
 
 static unsigned long batch_calls, rendered_quads, cap_quads, triangles;
+static unsigned long individual_calls;
+static int individual_phase;
 static unsigned long submitted_vertices, shared_edges, allocations;
 static unsigned long largest_allocation;
 static unsigned int largest_batch, largest_vertices;
@@ -173,8 +175,25 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
                               Vertex TG_HUGE *c, Vertex TG_HUGE *d,
                               unsigned char color)
 {
-    (void)a; (void)b; (void)c; (void)d; (void)color;
-    assert(!"Batch-capable globe traversal must use the batch callback");
+    unsigned long band, cell, top, bottom;
+    assert(individual_phase);
+    band = rendered_quads / globe_longitude;
+    cell = rendered_quads % globe_longitude;
+    top = band * (globe_longitude + 1UL) + cell;
+    bottom = top + globe_longitude + 1UL;
+    assert(band < (unsigned long)globe_latitude);
+    assert(a == globe_verts + top && b == globe_verts + bottom);
+    assert(c == globe_verts + bottom + 1UL && d == globe_verts + top + 1UL);
+    assert(color == expected_data[band * globe_longitude + cell]);
+    if (band == 0UL) assert(outward_area(d, b, c) > 0.0);
+    else if (band == (unsigned long)globe_latitude - 1UL)
+        assert(outward_area(a, b, d) > 0.0);
+    else {
+        assert(outward_area(a, b, d) > 0.0);
+        assert(outward_area(d, b, c) > 0.0);
+    }
+    ++individual_calls;
+    ++rendered_quads;
 }
 
 void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
@@ -188,6 +207,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     unsigned int corners[4];
     const Vertex *a, *b, *c, *d;
 
+    assert(!individual_phase);
     band = rendered_quads / globe_longitude;
     first_cell = (unsigned int)(rendered_quads % globe_longitude);
     remaining = (unsigned int)globe_longitude - first_cell;
@@ -252,7 +272,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
 int main(void)
 {
     int i, resolution;
-    unsigned long batches_per_band;
+    unsigned long batches_per_band, previous_batches;
     char stats[128], expected_stats[80];
     drv_ext_init();
     globe_init();
@@ -260,8 +280,12 @@ int main(void)
     assert(DRV_QUAD_BATCH_MAX == 64);
     assert(!drv_texture_avail && !drv_texture_enabled);
     /* Empty traversal must not form pointers into unallocated mesh data. */
-    globe_draw_quads();
+    globe_draw_quadbatches();
     assert(batch_calls == 0UL);
+    individual_phase = TRUE;
+    globe_draw_quads();
+    individual_phase = FALSE;
+    assert(individual_calls == 0UL);
     for (i = 0; i < 5; ++i) {
         resolution = 32 << i;
         expected_data = test_earth_data(resolution);
@@ -272,7 +296,7 @@ int main(void)
         batch_calls = rendered_quads = cap_quads = triangles = 0UL;
         submitted_vertices = shared_edges = 0UL;
         largest_batch = largest_vertices = 0U;
-        globe_draw_quads();
+        globe_draw_quadbatches();
         batches_per_band = ((unsigned long)resolution + DRV_QUAD_BATCH_MAX - 1UL) /
                            DRV_QUAD_BATCH_MAX;
         assert(batch_calls == batches_per_band * globe_latitude);
@@ -287,6 +311,15 @@ int main(void)
             assert(largest_batch == 64U && largest_vertices == 130U);
             assert(submitted_vertices == 266240UL);
         }
+        /* The explicit individual traversal stays available even when the
+         * selected driver also advertises a native batching capability. */
+        previous_batches = batch_calls;
+        rendered_quads = individual_calls = 0UL;
+        individual_phase = TRUE;
+        globe_draw_quads();
+        individual_phase = FALSE;
+        assert(individual_calls == globe_quads_num);
+        assert(rendered_quads == globe_quads_num && batch_calls == previous_batches);
         drv_fps_average = 12.5f;
         globe_quads_num_vis = 17UL;
         globe_tris_num_vis = 99UL;
@@ -301,9 +334,9 @@ int main(void)
     assert(allocations == 0UL);
     assert(largest_allocation > 65535UL);
 #ifdef DRV_GDI
-    puts("PASS GDI quad batches: five resolutions/default32, exact indexed corners/colors, shared vertices, bounded packets, seams, pole triangles, quad OSD and huge allocations");
+    puts("PASS GDI quads and quad batches: distinct traversals, five resolutions/default32, exact corners/colors, shared vertices, bounded packets, seams, poles, OSD and huge allocations");
 #else
-    puts("PASS QuickDraw quad batches: five resolutions/default32, exact indexed corners/colors, shared vertices, bounded packets, seams, pole triangles, quad OSD and huge allocations");
+    puts("PASS QuickDraw quads and quad batches: distinct traversals, five resolutions/default32, exact corners/colors, shared vertices, bounded packets, seams, poles, OSD and huge allocations");
 #endif
     return 0;
 }

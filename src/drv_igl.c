@@ -414,20 +414,13 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
                                const Vertex TG_HUGE *vertices,
                                const Coord TG_HUGE *coords)
 {
-    unsigned int i, first, second;
+#ifdef GD_TEXTURE
+    unsigned int i;
+#endif
     if (count < 3 || vertices == NULL || coords == NULL) return;
     if (!igl_native_texture)
     {
-        /* Preserve the same alternating winding and per-vertex UVs when
-         * the CPU fallback expands the strip into individual triangles. */
-        for (i = 0; i < count - 2U; ++i)
-        {
-            first = (i & 1U) != 0 ? i + 1U : i;
-            second = (i & 1U) != 0 ? i : i + 1U;
-            texsoft_triangle(vertices + first, vertices + second,
-                                vertices + i + 2U, coords + first,
-                                coords + second, coords + i + 2U);
-        }
+        drv_expand_tristrip_uv(count, vertices, coords, texsoft_triangle);
         return;
     }
 #ifdef GD_TEXTURE
@@ -533,7 +526,7 @@ void drv_render(void)
         if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
                               igl_indexed, &earth_cmap[0][0]))
             error("Cannot allocate software texture framebuffer");
-        globe_draw_tripstrip();
+        globe_draw_tristrips();
         /* lrectwrite addresses window pixels directly, independently of
          * object matrices, and preserves the packed native color/index. */
         if (igl_has_zbuffer) zbuffer(FALSE);
@@ -548,7 +541,7 @@ void drv_render(void)
             igl_object = genobj();
             if (igl_object < 0) error("Cannot allocate IRIS GL geometry object");
             makeobj(igl_object);
-            globe_draw_tripstrip();
+            globe_draw_tristrips();
             closeobj();
         }
         callobj(igl_object);
@@ -567,18 +560,13 @@ void drv_render(void)
 
 static void igl_keyboard(unsigned char key)
 {
-    switch (key)
+    if (key == 27)
     {
-        case 27: drv_close(); return;
-        case '1': case '2': case '3': case '4': case '5':
-            globe_toggle_res((char)key);
-            igl_invalidate_object();
-            break;
-        case 'a': case 'A': drv_auto_enabled = !drv_auto_enabled; break;
-        case 'o': case 'O': drv_osd_enabled = !drv_osd_enabled; break;
-        case 't': case 'T': globe_toggle_tex(); break;
-        default: return;
+        drv_close();
+        return;
     }
+    if (!drv_handle_key(key)) return;
+    if (key >= '1' && key <= '5') igl_invalidate_object();
     igl_dirty = TRUE;
 }
 
@@ -586,12 +574,7 @@ static void igl_mouse_move(long x, long y)
 {
     if (drv_lmouse_pressed && drv_win_width != 0 && drv_win_height != 0)
     {
-        drv_rot_y += (float)(x - igl_old_x) * 100.0f / (float)drv_win_width;
-        drv_rot_x += (float)(igl_old_y - y) * 100.0f / (float)drv_win_height;
-        while (drv_rot_x >= 360.0f) drv_rot_x -= 360.0f;
-        while (drv_rot_x < 0.0f) drv_rot_x += 360.0f;
-        while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
-        while (drv_rot_y < 0.0f) drv_rot_y += 360.0f;
+        drv_rotate_drag(x - igl_old_x, igl_old_y - y);
         igl_dirty = TRUE;
     }
     igl_old_x = x; igl_old_y = y;

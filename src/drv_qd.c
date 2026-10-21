@@ -40,6 +40,9 @@
 #define QD_MAX_VERTICES SOFT3D_MAX_VERTICES
 #define QD_MAX_POLY SOFT3D_MAX_POLY
 #define QD_FILE_MENU 128
+#if 2 * (DRV_QUAD_BATCH_MAX + 1) > QD_MAX_VERTICES
+#error QuickDraw quad batches exceed the transformed vertex cache
+#endif
 
 QDGlobals qd;
 static WindowPtr qd_window;
@@ -381,6 +384,13 @@ static void qd_flat_color(PolyHandle polygon, unsigned char index)
     }
 }
 
+void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                               Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
+                               unsigned char color)
+{
+    drv_submit_quad_as_batch(xyz1, xyz2, xyz3, xyz4, color);
+}
+
 /* One indexed packet shares transformed vertices between adjacent quads.
  * Classic QuickDraw still fills one polygon per retained quad. */
 void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
@@ -395,11 +405,8 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     PolyHandle polygon;
     if (vertex_count == 0 || quad_count == 0 || vertices == NULL ||
         indices == NULL || colors == NULL) return;
-    if (vertex_count > QD_MAX_VERTICES || quad_count > DRV_QUAD_BATCH_MAX)
-        qd_error("QuickDraw quad batch is too large");
-    for (i = 0; i < quad_count * 4U; ++i)
-        if (indices[i] >= vertex_count)
-            qd_error("QuickDraw quad vertex index is out of range");
+    if (!drv_validate_quadbatch(vertex_count, quad_count, indices))
+        qd_error("QuickDraw quad batch or vertex index is out of range");
     if (qd_has_fpu) qd_fpu_transform(vertex_count, vertices);
     else if (!soft3d_fixed_transform(qd_fixed_matrix, vertex_count, vertices,
                                       qd_fixed_points))
@@ -420,19 +427,6 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         KillPoly(polygon);
         ++globe_quads_num_vis;
     }
-}
-
-void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
-                               Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
-                               unsigned char color)
-{
-    Vertex vertices[4];
-    unsigned int indices[4];
-    if (xyz1 == NULL || xyz2 == NULL || xyz3 == NULL || xyz4 == NULL) return;
-    vertices[0] = *xyz1; vertices[1] = *xyz2;
-    vertices[2] = *xyz3; vertices[3] = *xyz4;
-    indices[0] = 0; indices[1] = 1; indices[2] = 2; indices[3] = 3;
-    drv_draw_quadbatch_flat_color(4U, vertices, 1U, indices, &color);
 }
 
 /* Native font metrics keep both the statistics and help readable on a
@@ -543,7 +537,7 @@ void drv_render(void)
     PenNormal();
     qd_set_transform();
     globe_quads_num_vis = 0;
-    globe_draw_quads();
+    globe_draw_quadbatches();
     if (drv_osd_enabled) drv_draw_osd();
     if (buffered)
     {
@@ -561,19 +555,9 @@ void drv_render(void)
 
 static void qd_keyboard(unsigned char key)
 {
-    switch (key)
-    {
-        case 27: drv_close(); return;
-        case '1': case '2': case '3': case '4': case '5':
-            globe_toggle_res((char)key);
-            break;
-        case 'a': case 'A':
-            drv_auto_enabled = !drv_auto_enabled;
-            qd_auto_tick = TickCount();
-            break;
-        case 'o': case 'O': drv_osd_enabled = !drv_osd_enabled; break;
-        default: return;
-    }
+    if (key == 27) { drv_close(); return; }
+    if (!drv_handle_key(key)) return;
+    if (key == 'a' || key == 'A') qd_auto_tick = TickCount();
     qd_dirty = TRUE;
 }
 
@@ -581,12 +565,7 @@ static void qd_mouse_move(int x, int y)
 {
     if (drv_lmouse_pressed)
     {
-        drv_rot_y += (float)((long)x - qd_old_x) * 100.0f / drv_win_width;
-        drv_rot_x += (float)((long)y - qd_old_y) * 100.0f / drv_win_height;
-        while (drv_rot_x < 0) drv_rot_x += 360.0f;
-        while (drv_rot_x >= 360.0f) drv_rot_x -= 360.0f;
-        while (drv_rot_y < 0) drv_rot_y += 360.0f;
-        while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
+        drv_rotate_drag((long)x - qd_old_x, (long)y - qd_old_y);
         qd_dirty = TRUE;
     }
     qd_old_x = x; qd_old_y = y;
