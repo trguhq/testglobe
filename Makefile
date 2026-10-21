@@ -1,5 +1,5 @@
 # Common make syntax for Solaris/System V make and Microsoft C 7 NMAKE.
-# Keep this file in step with src/Makefile; only SRC and XGX_ROOT differ.
+# Keep this file in step with src/Makefile; directory defaults differ.
 # Binaries and objects are written in the directory where make is run.
 
 SRC = src
@@ -72,6 +72,14 @@ GDI_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_gdi.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_cmap.h \
     $(SRC)\e_32.h $(SRC)\e_64.h
+
+# MPW Make has its own grammar. mpw-make is an external bridge that runs the
+# native Make tool and executes its generated MPW commands; override MPW_EXEC
+# for a configured equivalent. Native MPW users use Makefile.mpw directly.
+MPW_EXEC = mpw-make
+QD_MAKEFILE = Makefile.mpw
+QD_SOURCE = :src:
+QD_DEFINES = -d SEG68 -d DRV_QD -d DRV -d NO_SINF
 
 # Unix default; with DOS NMAKE use: nmake clean RM=del
 RM = rm -f
@@ -208,10 +216,23 @@ g_main.obj: $(SRC)\main.c $(GDI_HEADERS)
 	@echo -Fog_main.obj $(SRC)\main.c >> g_main.rsp
 	$(GDI_CC) @g_main.rsp
 
+# Keep the Macintosh object/resource format out of the other four builds.
+quickdraw: FORCE
+	$(MPW_EXEC) -f $(QD_MAKEFILE) -d "QD_SRC=$(QD_SOURCE)" -d "QD_DEFINES=$(QD_DEFINES)" quickdraw
+
+clean-quickdraw:
+	-$(RM) q_drv.o
+	-$(RM) q_qd.o
+	-$(RM) q_err.o
+	-$(RM) q_globe.o
+	-$(RM) q_main.o
+	-$(RM) q_fpu.o
+	-$(RM) TestglobeQD
+
 # Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-xgl clean-matrox clean-gdi
+clean: clean-opengl clean-xgl clean-matrox clean-gdi clean-quickdraw
 
 clean-opengl:
 	-$(RM) drv.o

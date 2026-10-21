@@ -5,8 +5,12 @@
 /*.rsp
 /testglobe
 /testglob.exe
+/TestglobeQD
+/QDBuild
 /src/*.o
 /src/*.obj
 /src/*.rsp
 /src/testglobe
 /src/testglob.exe
+/src/TestglobeQD
+/src/QDBuild

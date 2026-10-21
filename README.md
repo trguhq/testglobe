@@ -2,7 +2,7 @@
 * [testglobe website](https://testglobe.dev)
 * [testglobe repository](https://github.com/trguhq/testglobe/)
 
-testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, Sun XGL on Solaris, MS-DOS Matrox LibShell, and native 16-bit Windows 3.1 GDI. The Earth data uses 8-bit palette indices: OpenGL and XGL expand these to RGB, while LibShell and GDI draw indexed-color polygons using the Earth palette.
+testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, Sun XGL on Solaris, MS-DOS Matrox LibShell, native 16-bit Windows 3.1 GDI, and classic Macintosh QuickDraw. The Earth data uses 8-bit palette indices: OpenGL and XGL expand these to RGB, while LibShell, GDI, and QuickDraw retain the indices until drawing with the Earth palette.
 
 This was originally conceived as a test for lower spec systems (late 80s and early 90s 3D hardware) and was initially implemented on more modern high spec systems for convenience, but it may envolve into a general 3D demo for medium-high spec.
 
@@ -14,7 +14,7 @@ A feature is the ability to compare detail from the number of quads or triangles
 External: *[Video of testglobe running on Sun Ultra 60 with Elite3D-m6 graphics](https://www.youtube.com/watch?v=CffPcvwioUA)*
 
 ## Interface
-* keys 1-5 adjust number of faces of globe for OpenGL and XGL; LibShell and GDI support keys 1-2
+* keys 1-5 adjust number of faces of globe for OpenGL and XGL; LibShell, GDI, and QuickDraw support keys 1-2
 * mouse spins globe
 * a key toggles auto-rotate / benchmark mode
 * o key toggles on-screen display
@@ -22,7 +22,6 @@ External: *[Video of testglobe running on Sun Ultra 60 with Elite3D-m6 graphics]
 * esc key exits immediately
   
 ## Planned drivers
-* Apple (classic) Macintosh QuickDraw
 * IBM PGC and derivatives
 * IRIS GL
 * PHIGS
@@ -37,20 +36,39 @@ The following binaries are available in the corresponding releases:
 * OpenGL / Solaris / SPARCv8: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
 ## Build notes
-The Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds the OpenGL `testglobe`; `make xgl` builds the XGL `testglobe`; `nmake matrox` builds the DOS `testglob.exe`; `nmake gdi` builds the Windows 3.1 `testglob.exe`. The two segmented targets use Microsoft C 7.0. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, and Windows uses `g_*.obj`. Each target relinks its executable so that switching between OpenGL/XGL or Matrox/GDI selects the requested driver even when its objects are older than the other backend's executable.
+The portable Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds the OpenGL `testglobe`; `make xgl` builds the XGL `testglobe`; `nmake matrox` builds the DOS `testglob.exe`; `nmake gdi` builds the Windows 3.1 `testglob.exe`. Those two segmented targets use Microsoft C 7.0. The `quickdraw` target delegates to the native MPW build described below. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. Each Unix/DOS/Windows target relinks its executable so that switching between OpenGL/XGL or Matrox/GDI selects the requested driver even when its objects are older than the other backend's executable.
 
-The Makefile selects `FLAT` with `DRV_OGL` or `DRV_XGL`, or `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_xgl.h` and `drv_gdi.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The Matrox and GDI headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-xgl`, `clean-matrox`, and `clean-gdi` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+The Makefile selects `FLAT` with `DRV_OGL` or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
 Run the appropriate clean target after changing the compiler or build flags; traditional make does not track command-line changes.
 
-The root and `src` Makefiles intentionally have the same rules with different source/SDK directory defaults: historical NMAKE and Solaris make do not share an include syntax. Keep the two files in step when changing rules. For an out-of-tree build, use the ordinary `SRC` macro, for example `make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src`; no VPATH search behavior is required.
+The root and `src` Makefiles intentionally have the same rules with different source/SDK/MPW directory defaults: historical NMAKE and Solaris make do not share an include syntax. Keep the two files in step when changing rules. For an out-of-tree build, use the ordinary `SRC` macro, for example `make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src`; no VPATH search behavior is required.
 
 ### cosf and sinf
 The default `SYS_FLAGS` includes `-DNO_SINF` for older Unix math libraries. It selects the standard `sin` and `cos` functions instead of `sinf` and `cosf`.
 ### Classic Mac (QuickDraw)
-The files provided here are in Unix format and can't be used directly on Classic Mac without conversion. The utility "dos2unix" can do this conversion, e.g. with its alias "unix2mac".
+The QuickDraw driver targets a System 7 application built with Apple's 68K MPW C compiler and Macintosh interfaces. Use the System 7-compatible Universal Interfaces 2.2 headers and Rez templates, the matching MPW C libraries, and the `C`, `Link`, `Rez`, and `Make` tools. Set MPW's `CIncludes`, `RIncludes`, `Libraries`, and `CLibraries` to the installed interface/library folders. These SDK files and tools are external dependencies and are not redistributed here.
 
-Symantec Think C++ was used for testing but a cross-compiler like Retro68 (https://github.com/autc04/Retro68) should work.
+`Makefile.mpw` is a separate, native MPW Make file: MPW's rule syntax, variables, and shell differ from Solaris make and Microsoft NMAKE. It is stored in MacRoman with classic CR line endings; preserve those bytes. Transfer the ASCII C/header/Rez sources as Macintosh text, converting their Unix line endings to CR in the build copy (for example, `unix2mac src/*.c src/*.h src/*.r` before transfer). Do not convert `Makefile.mpw` from UTF-8; it is already in its native encoding.
+
+In MPW Shell, set the current directory to the repository root and run:
+
+```text
+Make -f Makefile.mpw quickdraw > QDBuild
+Execute QDBuild
+```
+
+MPW Make emits commands rather than executing them; the second line runs the generated commands. From `src`, use `Make -f ::Makefile.mpw -d QD_SRC=: quickdraw > QDBuild`, then `Execute QDBuild`. Build output is `TestglobeQD`, a Finder-launchable `APPL` with creator `Tglo`. Preserve its resource fork when transferring it to another Mac, using a resource-aware copy or a MacBinary/BinHex archive.
+
+The native build compiles `main.c`, `drv.c`, `err.c`, `globe.c`, and `drv_qd.c` for the baseline 68000 with `SEG68` and `DRV_QD`. MPW's default SANE floating-point code remains safe without a coprocessor. Only `qd_fpu.c` receives `-mc68020 -mc68881`; its pointer-only API and separate `QDFPU` code segment avoid mixing SANE and hardware floating-point calling conventions. The driver calls it only after detecting both a suitable processor and FPU. `qd_math.h` supplies that internal interface. Do not enable direct FPU flags for the baseline objects. The link includes the MPW C startup/runtime, interface, standard C, `Math.o`, and `CSANELib.o` libraries. `QD_RUNTIME` defaults to `{Libraries}Runtime.o`; override it and `QD_LIBRARIES` if the installed MPW release uses different runtime filenames.
+
+`src/qd.r` supplies the `SIZE` resource (2 MiB preferred and 512 KiB minimum application partitions, suspend/resume handling, and clean 24/32-bit addressing) and the error alert's `ALRT`/`DITL` resources. Windows and menus are created by the driver. The classic A5-relative globals and segmented `CODE` model are distinct from `SEG86`; heap mesh allocation and TickCount timing are selected under `SEG68`. The default globe is `EARTH_32` (key 1), with `EARTH_64` on key 2 and no texture mapping.
+
+The driver uses native QuickDraw polygon/text drawing. It detects monochrome versus Color QuickDraw and uses the selected display's current maximum drawing depth without changing the desktop's mode. At 1 bit it approximates Earth colors with ordered luminance patterns; at 4/8 bits QuickDraw maps RGB colors to the device palette, and 16/32-bit displays use their native RGB drawing. On systems with 32-bit QuickDraw, an optional GWorld provides an offscreen back buffer and `CopyBits` presents it. This is a useful application of GWorld pixel memory, rather than a separate kind of hardware RAM. QuickDraw chooses available display acceleration; the program does not access undocumented video memory. If an offscreen world cannot be allocated, drawing falls back to the window.
+
+The portable `make quickdraw` target can use the external [MPW tool/shell bridge](https://github.com/ksherlock/mpw-shell) with a configured MPW installation: `MPW_EXEC` defaults to its `mpw-make` executable. It invokes the same native file and passes `QD_DEFINES` (`-d SEG68 -d DRV_QD -d DRV -d NO_SINF`) and the source directory; `MPW_EXEC`, `QD_MAKEFILE`, `QD_SOURCE`, and `QD_DEFINES` are overridable. Native MPW builds need no bridge or modern scripting language. Use `Make -f Makefile.mpw clean > QDBuild` and `Execute QDBuild` for native cleanup. The portable `clean-quickdraw` target and ordinary `make clean` remove the six QuickDraw objects and application using `RM`, without requiring MPW tools.
+
+Host tests check call contracts, geometry, and simulated devices; native MPW compilation, code-resource linkage, FPU dispatch, physical depth/palette behavior, and System 7 rendering still require the actual tools and Macintosh runtime.
 ### DOS
 The Matrox target requires MS-DOS, Microsoft C 7.0 with its huge-model runtime and NMAKE, and the Matrox LibShell C binding library matching that compiler/model. Put the SDK at the repository root:
 

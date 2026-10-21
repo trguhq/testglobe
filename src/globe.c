@@ -30,6 +30,9 @@
 #ifdef GDI
 #include <windows.h>
 #endif
+#ifdef SEG68
+#include <Memory.h>
+#endif
 
 /* Only the selected driver's embedded Earth resolutions enter its image. */
 #ifdef EARTH
@@ -117,6 +120,11 @@ static void TG_HUGE *globe_alloc_items(unsigned long count, unsigned int size)
         return memory;
     }
     return NULL;
+#elif defined(SEG68)
+    /* MPW's Size is signed 32-bit; never truncate through a small size_t. */
+    if (size == 0 || count == 0 || count > 0x7FFFFFFFUL / size)
+        return NULL;
+    return (void *)NewPtr((Size)(count * size));
 #else
 #ifdef SEG86
     return _halloc((long)count, size);
@@ -142,6 +150,8 @@ static void globe_free_items(void TG_HUGE *memory)
             return;
         }
     }
+#elif defined(SEG68)
+    if (memory != NULL) DisposePtr((Ptr)memory);
 #else
 #ifdef SEG86
     _hfree(memory);
@@ -312,7 +322,7 @@ int globe_init_verts(int longitude, int latitude, float radius)
     globe_quads_num = globe_faces_num;
     globe_quads_num_vis = globe_quads_num / 2UL;
 
-#ifndef GDI
+#if !defined(GDI) && !defined(SEG68)
     printf("Globe resolution: %i x %i\n", globe_longitude, globe_latitude);
     printf("Vertices: %lu\n", globe_verts_num);
 #if defined(TRI) || defined(TRISTRIP)

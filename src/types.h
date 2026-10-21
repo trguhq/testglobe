@@ -23,6 +23,10 @@
 /* Microsoft C 7 huge pointers normalize arithmetic across 64 KiB segments. */
 #ifdef SEG86
 #define TG_HUGE _huge
+#elif defined(SEG68)
+/* Classic 68K Macs segment code, but heap data uses ordinary pointers.
+ * NewPtr/DisposePtr keep mesh storage outside the A5-relative globals. */
+#define TG_HUGE
 #else
 #define TG_HUGE
 #endif

@@ -35,10 +35,10 @@
 #define TRUE 1
 #endif
 
-#if defined(FLAT) && defined(SEG86)
-#error Choose either FLAT or SEG86, not both
+#if (defined(FLAT) + defined(SEG86) + defined(SEG68)) > 1
+#error Choose exactly one memory architecture: FLAT, SEG86, or SEG68
 #endif
-#if !defined(FLAT) && !defined(SEG86)
+#if !defined(FLAT) && !defined(SEG86) && !defined(SEG68)
 #define FLAT
 #endif
 /* The selected driver header chooses TRI, QUAD, or TRISTRIP. */
@@ -61,8 +61,8 @@ typedef long Int;
 #endif
 #endif
 
-/* The 16-bit Microsoft runtime supplies double sin/cos, not C99 sinf/cosf. */
-#ifdef SEG86
+/* Historical Microsoft and MPW runtimes predate C99 sinf/cosf. */
+#if defined(SEG86) || defined(SEG68)
 #ifndef NO_SINF
 #define NO_SINF
 #endif

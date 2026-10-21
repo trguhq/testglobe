@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Host regressions: geometry, Matrox SDK, XGL and Win16 GDI call contracts.
+"""Host regressions: geometry, Matrox SDK, XGL, GDI and QuickDraw contracts.
 
 No test here emulates Microsoft C's segmented code generation, a Matrox board,
-Sun's native XGL implementation, or Windows 3.1 GDI.
+Sun's native XGL implementation, Windows 3.1 GDI, or the Macintosh Toolbox.
 """
 import argparse
 import os
@@ -38,6 +38,8 @@ def main():
                         help="Record XGL calls using manual-derived declarations and real X11 under Xvfb; not native XGL validation")
     parser.add_argument("--gdi-contract", action="store_true",
                         help="Record Win16 GDI calls with host declarations; not Microsoft C 7 ABI or Windows rendering validation")
+    parser.add_argument("--qd-contract", action="store_true",
+                        help="Record Classic Macintosh calls with host declarations; not MPW ABI or QuickDraw rendering validation")
     args = parser.parse_args()
     cc = shlex.split(os.environ.get("CC", "cc"))
     common = ["-std=c89", "-pedantic-errors", "-Wall", "-Wextra",
@@ -62,6 +64,19 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_strips")])
         run([str(output / "gdi_strips")])
+        qd = ["-DSEG68", "-DDRV_QD", "-I" + str(ROOT / "tests/qd_shim")]
+        run(cc + common + qd + [str(ROOT / "tests/qd_strips.c"),
+            str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "qd_strips")])
+        run([str(output / "qd_strips")])
+        if args.qd_contract:
+            run(cc + common + qd + [str(ROOT / "tests/qd.c"),
+                str(ROOT / "src/qd_fpu.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / "qd")])
+            for mode in ("mono", "1", "4", "8", "16", "32", "fpu", "falsefpu",
+                         "oldcolor", "nogworld", "lockfail", "multi"):
+                run([str(output / "qd"), mode])
         if args.gdi_contract:
             run(cc + common + gdi + ["-fsyntax-only", str(ROOT / "src/main.c")])
             # Win16 MakeProcInstance requires FARPROC/WNDPROC casts;

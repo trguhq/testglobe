@@ -23,6 +23,8 @@
 #include "globe.h"
 #ifdef GDI
 #include <windows.h>
+#elif defined(SEG68)
+#include <Events.h>
 #else
 #ifdef SEG86
 #include <time.h>
@@ -51,7 +53,7 @@ int drv_rmouse_pressed;                 /* */
 char drv_help[256];                     /* OSD help string to print */
 int drv_fps_enabled;                    /* fps counter enabled */
 float drv_fps_average;                  /* average fps */
-#ifdef GDI
+#if defined(GDI) || defined(SEG68)
 static unsigned long drv_frame_start, drv_frame_stop;
 #else
 #ifdef SEG86
@@ -127,6 +129,8 @@ void drv_fps_start(void)
 {
 #ifdef GDI
     drv_frame_start = GetTickCount();
+#elif defined(SEG68)
+    drv_frame_start = TickCount();
 #else
 #ifdef SEG86
     /* Microsoft C's DOS clock() reports elapsed time without POSIX headers. */
@@ -145,6 +149,10 @@ void drv_fps_stop(void)
     /* GetTickCount is a wrapping 32-bit counter, including on test hosts. */
     drv_frame_seconds = (float)((drv_frame_stop - drv_frame_start) &
                                 0xFFFFFFFFUL) / 1000.0f;
+#elif defined(SEG68)
+    drv_frame_stop = TickCount();
+    drv_frame_seconds = (float)((drv_frame_stop - drv_frame_start) &
+                                0xFFFFFFFFUL) / 60.0f;
 #else
 #ifdef SEG86
     drv_frame_stop = clock();

@@ -1,0 +1,2 @@
+# Native MPW Make needs these MacRoman bytes and CR line endings intact.
+Makefile.mpw -text -diff

@@ -1,8 +1,39 @@
-Run the OpenGL triangle, XGL RGB strip, and GDI indexed strip geometry checks with:
+Run the OpenGL triangle, XGL RGB strip, and GDI/QuickDraw indexed strip geometry checks with:
 
 ```sh
 python3 tests/run.py
 ```
+
+To exercise the System 7 QuickDraw driver, its actual common startup and event
+loop, and the separate FPU helper against host Toolbox call records:
+
+```sh
+python3 tests/run.py --qd-contract
+```
+
+The checks cover `EARTH_32`/`EARTH_64`, exact palette uploads and strip topology,
+independent double-precision projections at rotated poses, fixed-point and FPU
+paths, CPU/FPU dispatch guards, near/far/window clipping, native polygon/text
+calls, 1-bit luminance dithering, 4/8/16/32-bit color paths, maximum-depth device
+selection on a mixed-depth desktop, old Color QuickDraw
+without GWorld calls, GWorld allocation/locking failure fallback, port/device
+restoration across mixed-depth drawing, short drag-poll sleeps,
+input/activation/suspend events, resize and 1×1 viewports, TickCount rollover,
+animation, window-close/Command-Q exits, and heap/Toolbox ownership. The
+monochrome-68000 case rejects every Color QuickDraw, Palette Manager, and GWorld
+call. Tests model OpenPoly/ClosePoly's automatic pen hiding so outlines cannot
+accidentally be drawn while recording filled polygons.
+
+`tests/qd_shim/` contains manual-derived call declarations checked against public
+classic interface declarations. It is **not Apple's SDK**, an ABI replacement,
+or a renderer. Native 16-bit Point/Rect fields are modeled, while the host's
+long and pointer widths, byte order, executable format, code segments, A5 world,
+SANE/68881 dispatch, and Toolbox implementations differ. The actual FPU helper
+is compiled as ordinary host C for numerical checks; only an MPW build can
+verify its instruction selection and separate CODE segment. Native validation
+requires MPW, the stated Apple interfaces/libraries, and System 7 hardware or an
+appropriate emulator. Host sanitizer checks do not verify physical pixel colors
+or QuickDraw hardware acceleration.
 
 To exercise the native Win16 GDI driver's actual `WinMain`, common startup,
 message loop, and rendering calls against a host call recorder:
