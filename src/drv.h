@@ -18,6 +18,9 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#ifdef DRV_MTX
+#include "drv_mtx.h"
+#endif
 #ifdef DRV_OGL
 #include "drv_ogl.h"
 #endif
