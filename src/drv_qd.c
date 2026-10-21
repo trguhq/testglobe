@@ -208,7 +208,8 @@ static void qd_display_info(void)
     drv_colors = qd_depth == 32 ? 16777216UL :
                  (qd_depth == 16 ? 32768UL : 1UL << qd_depth);
     drv_colormapped = qd_depth <= 8;
-    drv_colormap_bits = qd_depth <= 8 ? (unsigned int)qd_depth : 24;
+    drv_colormap_bits = qd_depth <= 8 ? (unsigned int)qd_depth :
+                         (qd_depth == 16 ? 15U : 24U);
     drv_colormap_colors = 1UL << drv_colormap_bits;
 }
 

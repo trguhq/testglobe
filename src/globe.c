@@ -338,9 +338,10 @@ int globe_init_verts(int longitude, int latitude, float radius)
     globe_verts_num = (globe_latitude + 1UL) * (globe_longitude + 1UL);
     globe_faces_num = (unsigned long)globe_longitude * globe_latitude;
     globe_tris_num = (globe_latitude - 1UL) * globe_longitude * 2UL;
-    globe_tris_num_vis = globe_tris_num / 2UL;
+    /* Visibility is counted during rendering by drivers that report it. */
+    globe_tris_num_vis = 0UL;
     globe_quads_num = globe_faces_num;
-    globe_quads_num_vis = globe_quads_num / 2UL;
+    globe_quads_num_vis = 0UL;
 
 #if !defined(GDI) && !defined(SEG68)
     printf("Globe resolution: %i x %i\n", globe_longitude, globe_latitude);

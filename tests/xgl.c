@@ -387,10 +387,10 @@ void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
     assert(point->y >= 0 && point->y < drv_win_height);
     assert(strstr((char *)text, "texture mapping") != NULL);
     if (strstr((char *)text, "frames per second") != NULL) {
-        sprintf(expected, "%lu triangles (%lu visible)",
-                globe_tris_num, globe_tris_num_vis);
+        sprintf(expected, "%lu triangles,", globe_tris_num);
         assert(strstr((char *)text, expected) == (char *)text);
         assert(strstr((char *)text, "quads") == NULL);
+        assert(strstr((char *)text, "visible") == NULL);
     }
     ++text_calls;
 }

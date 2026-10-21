@@ -24,6 +24,7 @@
 #define DRV_COLORMAP
 #define DRV_EARTH_RESOURCES
 #define DRV_OSD_DEFAULT TRUE
+#define DRV_VISIBLE_COUNTS
 #define DRV_DEPTH 8
 #define DRV_COLORMAPDEPTH 8
 #define Color Color_Index

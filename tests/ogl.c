@@ -22,6 +22,8 @@ static struct Test_window {
 } windows[64];
 static int output_width=64,output_height=48;
 static unsigned int palette_calls,draw_pixels_calls,texture_uploads,indices,rgb_calls,swaps,flushes;
+static unsigned int direct_texture_uploads,glu_mipmap_calls;
+static unsigned int maximum_texture_size=512;
 static unsigned int emitted_vertices,texture_coordinates;
 static unsigned int matrix_mode=GL_MODELVIEW,stack_depth[2];
 static GLfloat matrices[2][16][16];
@@ -244,7 +246,7 @@ static void texture_upload(GLsizei w,GLsizei h,const GLvoid *data)
     ++texture_uploads;
 }
 void glTexImage2D(GLenum t,GLint l,GLint internal,GLsizei w,GLsizei h,GLint border,GLenum f,GLenum type,const GLvoid *p)
-{assert(t==GL_TEXTURE_2D&&l==0&&internal==GL_RGB&&border==0&&f==GL_RGB&&type==GL_UNSIGNED_BYTE);texture_upload(w,h,p);}
+{assert(t==GL_TEXTURE_2D&&l==0&&internal==GL_RGB&&border==0&&f==GL_RGB&&type==GL_UNSIGNED_BYTE);assert(w<=(GLsizei)maximum_texture_size&&h<=(GLsizei)maximum_texture_size);++direct_texture_uploads;texture_upload(w,h,p);}
 void glGenerateMipmap(GLenum t){assert(t==GL_TEXTURE_2D);}
 void glFlush(void){++flushes;}
 void glShadeModel(GLenum mode){assert(mode==GL_FLAT);}
@@ -254,12 +256,24 @@ void gluPerspective(GLdouble fov,GLdouble aspect,GLdouble near_plane,GLdouble fa
 void gluOrtho2D(GLdouble l,GLdouble r,GLdouble b,GLdouble t)
 {GLfloat m[16];matrix_identity(m);m[0]=(GLfloat)(2/(r-l));m[5]=(GLfloat)(2/(t-b));m[10]=-1;m[12]=(GLfloat)(-(r+l)/(r-l));m[13]=(GLfloat)(-(t+b)/(t-b));postmultiply(m);}
 GLint gluBuild2DMipmaps(GLenum t,GLint c,GLsizei w,GLsizei h,GLenum f,GLenum type,const GLvoid *p)
-{assert(t==GL_TEXTURE_2D&&c==GL_RGB&&f==GL_RGB&&type==GL_UNSIGNED_BYTE);texture_upload(w,h,p);return 0;}
+{assert(t==GL_TEXTURE_2D&&c==GL_RGB&&f==GL_RGB&&type==GL_UNSIGNED_BYTE);++glu_mipmap_calls;if(strcmp(profile,"gluerror")==0)return GLU_OUT_OF_MEMORY;texture_upload(w,h,p);return 0;}
+
+static void glu_failure_cleanup(void)
+{
+    assert(!drv_texture_loaded&&!drv_texture_enabled);
+    assert(glu_mipmap_calls==1&&texture_uploads==0&&direct_texture_uploads==0);
+    assert(window_count==destroy_count&&active_window==0);
+    assert(globe_verts==NULL&&texture_data==NULL);
+    puts("PASS OpenGL GLU failure: failed mipmaps are not marked loaded and resources are released");
+}
 
 int main(int argc,char **argv)
 {
     Vertex a,b,c;unsigned int i;int indexed;
     profile=argc>1?argv[1]:"rgba";
+    if(strcmp(profile,"limited")==0)maximum_texture_size=256;
+    /* Register first so the production atexit cleanup runs before assertions. */
+    if(strcmp(profile,"gluerror")==0)assert(atexit(glu_failure_cleanup)==0);
     matrix_identity(matrices[0][0]);matrix_identity(matrices[1][0]);
     drv_ext_init();drv_init(&argc,argv);assert(!drv_texture_enabled);
     assert(drv_init_window(0,0,64,48));assert(active_window&&windows[active_window].live);
@@ -290,7 +304,14 @@ int main(int argc,char **argv)
     keyboard_callback('t',0,0);assert(drv_texture_enabled);drv_render();
     if(indexed)assert(unpack_alignment==8&&index_shift==2&&index_offset==17&&map_color==1&&zoom_x==2&&zoom_y==-1);
     if(indexed)assert(draw_pixels_calls==1&&texture_uploads==0);
-    else assert(texture_uploads>0&&texture_coordinates>0&&texture_enabled);
+    else {
+        assert(texture_uploads==1&&texture_coordinates>0&&texture_enabled);
+#ifdef NO_GENMIPMAP
+        assert(glu_mipmap_calls==1&&direct_texture_uploads==0);
+#else
+        assert(glu_mipmap_calls==0&&direct_texture_uploads==1);
+#endif
+    }
     keyboard_callback('T',0,0);assert(!drv_texture_enabled);drv_render();
     assert(stack_depth[0]==0&&stack_depth[1]==0&&attrib_depth==0&&client_depth==0&&cull_enabled);
     if(windows[active_window].doubled)assert(swaps>0);else assert(flushes>0&&swaps==0);

@@ -20,6 +20,7 @@
 #define DRV_COLORMAPPED TRUE
 #define DRV_COLORMAP
 #define DRV_OSD_DEFAULT TRUE
+#define DRV_VISIBLE_COUNTS
 #define DRV_DEPTH 1
 #define DRV_COLORMAPDEPTH 8
 #define Color Color_Index

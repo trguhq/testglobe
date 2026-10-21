@@ -112,12 +112,14 @@ int main(void)
         assert(flat_calls == expected_tris && texture_calls == 0);
         globe_toggle_tex();
         drv_fps_average = 12.5f;
+        /* Native culling supplies no visibility counter to report. */
+        globe_tris_num_vis = 12345UL;
         drv_format_stats(stats);
-        sprintf(counts, "%lu triangles (%lu visible)",
-                expected_tris, globe_tris_num_vis);
+        sprintf(counts, "%lu triangles,", expected_tris);
         assert(strstr(stats, counts) == stats);
         assert(strstr(stats, "12.50 frames per second") != NULL);
         assert(strstr(stats, "quads") == NULL);
+        assert(strstr(stats, "visible") == NULL);
         globe_draw_tris();
         assert(flat_calls == expected_tris && texture_calls == expected_tris);
         globe_toggle_tex();

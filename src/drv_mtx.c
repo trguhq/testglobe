@@ -82,6 +82,28 @@ static void mtx_init_mouse(void)
     }
 }
 
+static unsigned short mtx_inquire_lut(void)
+{
+    unsigned short remaining;
+    lsinq(78);
+    ioflush();
+    /* LSINQ replies start with the number of following data words, unlike
+     * the fixed-size LSINQSYS and LSLUTRD replies. Read both header and LUT. */
+    remaining = (unsigned short)iogetw();
+    if (remaining != 1U)
+    {
+        /* Leave the Read FIFO synchronized before atexit restores the board. */
+        while (remaining != 0U)
+        {
+            (void)iogetw();
+            --remaining;
+        }
+        error("Invalid Matrox LUT inquiry reply length");
+        return 0;
+    }
+    return (unsigned short)iogetw();
+}
+
 void drv_init(int *argc, char **argv)
 {
     short system_info[10];
@@ -103,9 +125,7 @@ void drv_init(int *argc, char **argv)
         (unsigned short)system_info[2] < 256)
         error("Matrox LibShell needs a 640x480, 256-color display");
     /* Preserve the table replaced and the currently displayed LUT label. */
-    lsinq(78);
-    ioflush();
-    mtx_previous_lut = (unsigned short)iogetw();
+    mtx_previous_lut = mtx_inquire_lut();
     lslutrd(0, 0, 256);
     ioflush();
     iogetbuf((short *)mtx_saved_palette, 256 * 3);

@@ -75,12 +75,31 @@ int drv_auto_enabled;                   /* automatically rotate */
 
 void drv_format_stats(char *buffer)
 {
+    unsigned long total;
+    const char *primitive;
+#ifdef DRV_VISIBLE_COUNTS
+    unsigned long visible;
+#endif
 #ifdef QUAD
-    sprintf(buffer, "%lu quads (%lu visible), %.2f frames per second",
-            globe_quads_num, globe_quads_num_vis, (double)drv_fps_average);
+    total = globe_quads_num;
+    primitive = "quads";
+#ifdef DRV_VISIBLE_COUNTS
+    visible = globe_quads_num_vis;
+#endif
 #else /* TRI and TRISTRIP both count the triangles submitted for drawing. */
-    sprintf(buffer, "%lu triangles (%lu visible), %.2f frames per second",
-            globe_tris_num, globe_tris_num_vis, (double)drv_fps_average);
+    total = globe_tris_num;
+    primitive = "triangles";
+#ifdef DRV_VISIBLE_COUNTS
+    visible = globe_tris_num_vis;
+#endif
+#endif
+#ifdef DRV_VISIBLE_COUNTS
+    sprintf(buffer, "%lu %s (%lu visible), %.2f frames per second",
+            total, primitive, visible, (double)drv_fps_average);
+#else
+    /* Native pipelines cull internally without returning a facet count. */
+    sprintf(buffer, "%lu %s, %.2f frames per second",
+            total, primitive, (double)drv_fps_average);
 #endif
 }
 

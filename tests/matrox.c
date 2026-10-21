@@ -1,6 +1,7 @@
 /* Real driver/SDK declarations, with recorded hardware and DOS calls only. */
 #include <assert.h>
 #include <math.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,8 +13,11 @@
 #include "globe.h"
 
 /* Count every globe patch before the real driver's visibility rejection. */
+static void recorded_mtx_error(char *message);
 #define drv_draw_quad_flat_color recorded_driver_quad
+#define error recorded_mtx_error
 #include "../src/drv_mtx.c"
+#undef error
 #undef drv_draw_quad_flat_color
 
 #ifdef TEXTURE
@@ -39,12 +43,26 @@ static unsigned short current_lut;
 static unsigned int palette_uploads, init_calls, close_calls, sync_calls;
 static unsigned int model_calls, view_calls, viewport_calls, projection_calls;
 static unsigned int osd_calls, inquiry;
+static unsigned int inquiry_header, inquiry_remaining, inquiry_words = 1;
+static unsigned int inquiry_reads;
+static int expected_inquiry_error;
+static jmp_buf inquiry_error;
 static unsigned short mouse_buttons;
 static short mouse_dx, mouse_dy;
 static unsigned int mouse_resets, mouse_polls, mouse_motion_reads;
 static short last_yaw, last_pitch;
 static Vertex *submitted_vertices[4];
 static unsigned short submitted_color;
+
+static void recorded_mtx_error(char *message)
+{
+    if (expected_inquiry_error)
+    {
+        assert(strcmp(message, "Invalid Matrox LUT inquiry reply length") == 0);
+        longjmp(inquiry_error, 1);
+    }
+    error(message);
+}
 
 void *_halloc(long count, size_t size)
 {
@@ -110,19 +128,39 @@ void lsinit(short handle, short address)
     ++init_calls;
 }
 void ioflush(void) {}
-void lslibsync(void) { ++sync_calls; }
+void lslibsync(void) { assert(inquiry == 0); ++sync_calls; }
 void lsemulen(short restore)
 {
     assert(restore == 1);
     ++close_calls;
 }
 void lserror(short enabled) { assert(enabled == 0); }
-void lsinqsys(void) { inquiry = 1; }
-void lsinq(unsigned short code) { assert(code == 78); inquiry = 2; }
-short iogetw(void) { assert(inquiry == 2); inquiry = 0; return 3; }
+void lsinqsys(void) { assert(inquiry == 0); inquiry = 1; }
+void lsinq(unsigned short code)
+{
+    assert(code == 78 && inquiry == 0);
+    inquiry = 2;
+    inquiry_header = 1;
+    inquiry_remaining = inquiry_words;
+}
+short iogetw(void)
+{
+    assert(inquiry == 2);
+    ++inquiry_reads;
+    if (inquiry_header)
+    {
+        inquiry_header = 0;
+        if (inquiry_remaining == 0) inquiry = 0;
+        return (short)inquiry_words;
+    }
+    assert(inquiry_remaining != 0);
+    --inquiry_remaining;
+    if (inquiry_remaining == 0) inquiry = 0;
+    return 3;
+}
 void lslutrd(unsigned short logical, unsigned short first, unsigned short count)
 {
-    assert(logical == 0 && first == 0 && count == 256);
+    assert(logical == 0 && first == 0 && count == 256 && inquiry == 0);
     inquiry = 3;
 }
 void iogetbuf(short *buffer, unsigned short size)
@@ -341,12 +379,29 @@ static void check_noncardinal_poses(unsigned long faces, unsigned char *data)
 
 static void cleanup_checks(void)
 {
+    assert(inquiry == 0 && inquiry_header == 0 && inquiry_remaining == 0);
     assert(close_calls == 1);
     assert(palette_uploads == 2);
     assert(memcmp(supplied_palette, original_palette, sizeof(original_palette)) == 0);
     assert(current_lut == 3);
     assert(allocated_blocks == 0);
     puts("PASS Matrox cleanup: Escape, board emulation, palette selection/content, huge allocations");
+}
+
+static void check_invalid_inquiry(unsigned int words)
+{
+    unsigned int reads;
+    reads = inquiry_reads;
+    inquiry_words = words;
+    expected_inquiry_error = 1;
+    if (setjmp(inquiry_error) == 0)
+    {
+        (void)mtx_inquire_lut();
+        assert(!"Invalid inquiry reply must be rejected");
+    }
+    expected_inquiry_error = 0;
+    assert(inquiry_reads - reads == words + 1U);
+    assert(inquiry == 0 && inquiry_header == 0 && inquiry_remaining == 0);
 }
 
 static void check_indexed_triangle(void)
@@ -395,8 +450,13 @@ int main(void)
     assert(GLOBE_DEFAULT_LONGITUDE == 32);
     assert(drv_colormapped && !drv_texture_avail && !drv_texture_enabled);
     assert(strstr(drv_help, "texture") == NULL && strstr(drv_help, "1-2") != NULL);
+    check_invalid_inquiry(0);
+    check_invalid_inquiry(2);
+    inquiry_words = 1;
     drv_init(&argc, argv);
     assert(init_calls == 1 && mouse_resets > 0);
+    assert(mtx_previous_lut == 3 && inquiry == 0);
+    puts("PASS Matrox inquiry: counted LUT reply, malformed lengths drained and rejected, palette FIFO remains synchronized");
     assert(drv_init_window(0, 0, 0, 0));
     assert(drv_win_width == 640 && drv_win_height == 480);
     assert(viewport_calls > 0 && projection_calls > 0);

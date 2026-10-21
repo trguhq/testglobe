@@ -564,11 +564,15 @@ void drv_texture_load(void)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size/2, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
 #ifndef NO_GENMIPMAP
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size/2, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
     glGenerateMipmap(GL_TEXTURE_2D);
 #else
-    gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, texture_size, texture_size/2, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
+    /* GLU uploads the base image and mipmaps, scaling to the implementation's
+     * maximum texture size. A prior raw upload can exceed that legacy limit. */
+    if (gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, texture_size, texture_size/2,
+                           GL_RGB, GL_UNSIGNED_BYTE, texture_data) != 0)
+        error("Cannot build OpenGL texture mipmaps");
 #endif
     texture_free();
     drv_texture_loaded = TRUE;

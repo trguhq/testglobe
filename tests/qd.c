@@ -825,6 +825,10 @@ static int run_contract(void)
     assert(qd_color_available == has_color && qd_depth == display_depth);
     assert(qd_has_fpu == (cpu_type >= gestalt68020 && fpu_type != gestaltNoFPU));
     assert(window_calls == 1 && drv_bits_per_pixel == (unsigned int)display_depth);
+    assert(drv_colormap_bits == (unsigned int)(display_depth <= 8 ? display_depth :
+                                                (display_depth == 16 ? 15 : 24)));
+    assert(drv_colormap_colors == (1UL << drv_colormap_bits));
+    assert(drv_colors == drv_colormap_colors);
     assert(drv_win_width == expected_width && drv_win_height == expected_height);
     assert(strstr(drv_help, "1-5") != NULL);
     assert(qd_world != NULL || !has_color || fail_gworld || qd_version < gestalt32BitQD);

@@ -169,11 +169,11 @@ static void check_drawing(void)
     assert(uv_calls == (drv_texture_enabled ? strip_calls : 0UL));
     drv_fps_average = 12.5f;
     drv_format_stats(stats);
-    sprintf(counts, "%lu triangles (%lu visible)",
-            rendered_triangles, globe_tris_num_vis);
+    sprintf(counts, "%lu triangles,", rendered_triangles);
     assert(strstr(stats, counts) == stats);
     assert(strstr(stats, "12.50 frames per second") != NULL);
     assert(strstr(stats, "quads") == NULL);
+    assert(strstr(stats, "visible") == NULL);
 }
 
 int main(void)

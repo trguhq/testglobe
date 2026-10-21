@@ -62,6 +62,10 @@ Keys `1`-`5` select maps 32, 64, 128, 256, and 512 pixels wide, respectively (`E
 through `EARTH_512`). The OSD reports quads for the Matrox quad path and triangles for
 the triangle and triangle-strip paths.
 
+Visible counts are shown by Matrox LibShell, GDI, and QuickDraw, which count
+polygons retained after software culling. OpenGL, IRIS GL, and XGL show total
+counts and FPS; their native culling does not return a visibility count.
+
 On displays of 640x480 or smaller, GDI and QuickDraw default to a 320x240 client area.
 Larger displays retain the 640x480 default. Explicit size requests are retained, with
 QuickDraw clamping its window to the selected screen.

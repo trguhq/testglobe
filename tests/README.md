@@ -12,9 +12,10 @@ For native build instructions, see the [project README](../README.md#build-instr
 Run commands from the repository root. The baseline checks require Python 3 and
 a C compiler with AddressSanitizer and UndefinedBehaviorSanitizer support. The
 runner uses `cc` by default; set `CC` to select another compiler. Compilation uses
-strict C89, warnings, ASan, and UBSan. Legacy graphics API declarations come from
-test fixtures, except for the original Matrox SDK headers described below. XGL
-contracts also require real X11 development headers and libraries.
+strict C89, warnings, ASan, and UBSan, with undefined behavior treated as fatal.
+Legacy graphics API declarations come from test fixtures, except for the original
+Matrox SDK headers described below. XGL contracts also require real X11
+development headers and libraries.
 
 ```sh
 python3 tests/run.py
@@ -54,6 +55,10 @@ double buffering, RGB24/RGB16 and color-index8 fallbacks, unknown alpha queries,
 destruction of every probe context, a fresh final window at its requested size,
 initial redisplay, absent depth buffers, exact Earth palette installation,
 index-byte facets, and native RGB textures.
+
+The GLU mipmap path is checked with a 256-pixel texture-size limit and a larger
+source image, as well as a failed mipmap build. Native-rendering statistics must
+omit visibility counts that the graphics API does not report.
 
 Each window has its own display callback. Probe hiding and final-window
 resizing/showing dispatch an early initial redraw to check that callbacks exist
@@ -153,6 +158,10 @@ cleanup, including primitive-correct triangle and quad OSD statistics. Visibilit
 checks independently transform outward normals through the recorded model and
 inverse-view rotations, and compare every expected fill and cap count at
 multiple noncardinal poses in both Matrox resolutions.
+
+Inquiry records include the generic `LSINQ` reply's leading word count and
+verify that its payload is consumed before subsequent LUT reads. Empty and
+unexpected-length replies must fail without leaving unread payload words.
 
 These checks do not validate segmented pointer code generation, DOS timing,
 LibShell's binary ABI, or graphics output on a physical PG-641. Native Matrox

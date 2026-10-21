@@ -17,17 +17,19 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(command):
+def run(command, expected_returncode=0, expected_stderr=None, required_output=None):
     result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
-    if result.returncode:
+    if (result.returncode != expected_returncode or
+            (expected_stderr is not None and result.stderr != expected_stderr) or
+            (required_output is not None and required_output not in result.stdout)):
         print("COMMAND:", shlex.join(str(part) for part in command))
         print(result.stdout, end="")
         print(result.stderr, end="")
-        raise SystemExit(result.returncode)
+        raise SystemExit(result.returncode or 1)
     for line in result.stdout.splitlines():
         if line.startswith("PASS"):
             print(line)
-    if result.stderr:
+    if result.stderr and expected_stderr is None:
         print(result.stderr, end="")
 
 
@@ -50,6 +52,7 @@ def main():
     common = ["-std=c89", "-pedantic-errors", "-Wall", "-Wextra",
               "-Werror=implicit-function-declaration", "-Werror=incompatible-pointer-types",
               "-DNO_SINF", "-DDRV", "-g", "-fsanitize=address,undefined",
+              "-fno-sanitize-recover=undefined",
               "-fno-omit-frame-pointer", "-I" + str(ROOT / "src")]
     with tempfile.TemporaryDirectory(prefix="testglobe-tests-") as temporary:
         output = Path(temporary)
@@ -121,8 +124,11 @@ def main():
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "ogl")])
-            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth"):
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited"):
                 run([str(output / "ogl"), mode])
+            run([str(output / "ogl"), "gluerror"], expected_returncode=1,
+                expected_stderr="ERROR - Cannot build OpenGL texture mipmaps\n",
+                required_output="PASS OpenGL GLU failure: failed mipmaps are not marked loaded and resources are released")
         if args.igl_contract:
             igl = ["-DFLAT", "-DDRV_IGL", "-I" + str(ROOT / "tests/igl_record")]
             run(cc + common + igl + ["-fsyntax-only", str(ROOT / "src/main.c")])

@@ -340,6 +340,7 @@ static void frame(void)
         assert(matrices[MPROJECTION][2][3]==-1&&matrices[MPROJECTION][3][3]==0);
     }
     assert(strstr(recorded_stats,"triangles")!=NULL&&strstr(recorded_stats,"quads")==NULL);
+    assert(strstr(recorded_stats,"visible")==NULL);
 }
 
 int main(int argc,char **argv)
