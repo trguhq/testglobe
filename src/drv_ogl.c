@@ -19,11 +19,13 @@
  */
 
 #include <stdlib.h>
+#include <stdio.h>
 #include "testglob.h"
 #include "drv.h"
 #include "glob_ext.h"
 #include "drv_ext.h"
 #include "tex_ext.h"
+#include "texsoft.h"
 
 #ifdef DRV_OGL
 
@@ -46,6 +48,189 @@ static int ogl_old_y;
 static int dlist;
 
 static GLuint texture_id;
+static int ogl_window;
+static int ogl_indexed;
+static int ogl_double_buffer;
+static int ogl_has_depth;
+static unsigned int ogl_palette_size;
+static unsigned int ogl_foreground, ogl_background;
+static GLubyte *ogl_index_pixels;
+static unsigned long ogl_index_capacity;
+
+typedef struct Ogl_format
+{
+    int rgba, red, green, blue, alpha, buffer, depth, double_buffer, palette;
+    int alpha_known;
+} Ogl_format;
+
+static void ogl_cleanup(void)
+{
+    if (ogl_window > 0 && glutGetWindow() != 0)
+    {
+        if (dlist != 0) glDeleteLists((GLuint)dlist, 1);
+        if (texture_id != 0) glDeleteTextures(1, &texture_id);
+        glutDestroyWindow(ogl_window);
+    }
+    ogl_window = 0; dlist = 0; texture_id = 0;
+    free(ogl_index_pixels); ogl_index_pixels = NULL; ogl_index_capacity = 0;
+    texsoft_free(); texture_free(); globe_free();
+}
+
+/* Apple GLUT can service pending redraws during window management. Every
+ * window needs a display callback, even a short-lived format probe. Keep
+ * drawing disabled until the application window and globe are ready. */
+static void ogl_pending_display(void)
+{
+}
+
+static int ogl_better_format(const Ogl_format *candidate, const Ogl_format *best)
+{
+    int total, previous, rgb, old_rgb;
+    if (candidate->rgba != best->rgba) return candidate->rgba > best->rgba;
+    if (!candidate->rgba)
+    {
+        if (candidate->buffer != best->buffer) return candidate->buffer > best->buffer;
+    }
+    else
+    {
+        rgb = candidate->red + candidate->green + candidate->blue;
+        old_rgb = best->red + best->green + best->blue;
+        total = rgb + candidate->alpha; previous = old_rgb + best->alpha;
+        if (total != previous) return total > previous;
+        if (candidate->alpha != best->alpha) return candidate->alpha > best->alpha;
+        if (rgb != old_rgb) return rgb > old_rgb;
+        if (candidate->alpha_known != best->alpha_known)
+            return candidate->alpha_known > best->alpha_known;
+        if (candidate->buffer != best->buffer) return candidate->buffer > best->buffer;
+    }
+    if (candidate->double_buffer != best->double_buffer)
+        return candidate->double_buffer > best->double_buffer;
+    return candidate->depth > best->depth;
+}
+
+/* GLUT exposes requests and selected-window queries, rather than a portable
+ * enumeration of every native pixel format. Probe supported request classes
+ * and rank their actual results, giving color precision priority over buffers. */
+static int ogl_select_window(Ogl_format *selected, int x, int y, int width, int height)
+{
+    static const char *requests[] = {
+        "rgba red>=8 green>=8 blue>=8 alpha>=8",
+        "rgba red>=8 green>=8 blue>=8",
+        "rgba red>=5 green>=6 blue>=5",
+        "rgba red>=5 green>=5 blue>=5",
+        "rgba", "index buffer>=8"
+    };
+    Ogl_format current;
+    char request[160], best_request[160];
+    unsigned int mode, best_mode;
+    int quality, double_buffer, depth, window, best;
+    best = 0;
+    best_mode = 0;
+    best_request[0] = 0;
+    glutInitWindowSize(1, 1);
+    glutInitWindowPosition(-32768, -32768);
+    for (quality = 0; quality < 6; ++quality)
+        for (double_buffer = 1; double_buffer >= 0; --double_buffer)
+            for (depth = 1; depth >= 0; --depth)
+            {
+                mode = quality == 5 ? GLUT_INDEX : GLUT_RGBA;
+                if (quality == 0) mode |= GLUT_ALPHA;
+                mode |= double_buffer ? GLUT_DOUBLE : GLUT_SINGLE;
+                if (depth) mode |= GLUT_DEPTH;
+                glutInitDisplayMode(mode);
+#if defined(GLUT_API_VERSION) && GLUT_API_VERSION >= 4
+                sprintf(request, "%s %s%s", requests[quality],
+                         double_buffer ? "double" : "single",
+                         depth ? " depth>=16" : "");
+                glutInitDisplayString(request);
+#else
+                (void)requests; (void)request;
+#endif
+#ifdef GLUT_DISPLAY_MODE_POSSIBLE
+                if (!glutGet(GLUT_DISPLAY_MODE_POSSIBLE)) continue;
+#else
+                error("GLUT display-mode availability queries are required");
+                return 0;
+#endif
+                window = glutCreateWindow("testglobe pixel-format probe");
+                if (window <= 0) continue;
+                glutDisplayFunc(ogl_pending_display);
+                glutHideWindow();
+                memset(&current, 0, sizeof(current));
+                current.rgba = glutGet(GLUT_WINDOW_RGBA) > 0;
+                current.buffer = glutGet(GLUT_WINDOW_BUFFER_SIZE);
+                current.depth = glutGet(GLUT_WINDOW_DEPTH_SIZE);
+                current.double_buffer = glutGet(GLUT_WINDOW_DOUBLEBUFFER) > 0;
+                if (current.depth < 0) current.depth = 0;
+                if (current.rgba)
+                {
+                    current.red = glutGet(GLUT_WINDOW_RED_SIZE);
+                    current.green = glutGet(GLUT_WINDOW_GREEN_SIZE);
+                    current.blue = glutGet(GLUT_WINDOW_BLUE_SIZE);
+                    current.alpha = glutGet(GLUT_WINDOW_ALPHA_SIZE);
+                    current.alpha_known = current.alpha >= 0;
+                    if (current.alpha < 0) current.alpha = 0;
+                    if (current.red <= 0 || current.green <= 0 || current.blue <= 0)
+                    {
+                        glutDestroyWindow(window);
+                        continue;
+                    }
+                    if (current.buffer <= 0)
+                        current.buffer = current.red + current.green + current.blue + current.alpha;
+                }
+                else
+                {
+                    current.palette = glutGet(GLUT_WINDOW_COLORMAP_SIZE);
+                    if (current.buffer < 8 || current.palette < 256)
+                    {
+                        glutDestroyWindow(window);
+                        continue;
+                    }
+                }
+                if (best == 0 || ogl_better_format(&current, selected))
+                {
+                    best = 1;
+                    best_mode = mode;
+#if defined(GLUT_API_VERSION) && GLUT_API_VERSION >= 4
+                    strcpy(best_request, request);
+#endif
+                    *selected = current;
+                }
+                glutDestroyWindow(window);
+            }
+    if (best == 0) return 0;
+    /* Do not promote a hidden one-pixel probe to the application window.
+     * Some GLUT implementations discard its initial visibility/resize redraw.
+     * Reapply the winning request to a normal, freshly created window. */
+    glutInitDisplayMode(best_mode);
+#if defined(GLUT_API_VERSION) && GLUT_API_VERSION >= 4
+    glutInitDisplayString(best_request);
+#else
+    (void)best_request;
+#endif
+    glutInitWindowSize(width, height);
+    glutInitWindowPosition(x, y);
+    window = glutCreateWindow(TESTGLOBE_NAME);
+    if (window > 0) glutDisplayFunc(ogl_pending_display);
+    return window;
+}
+
+static void ogl_install_palette(void)
+{
+    unsigned int index, brightness, minimum, maximum;
+    minimum = 0xffffffffU; maximum = 0;
+    for (index = 0; index < 256; ++index)
+    {
+        glutSetColor((int)index, (GLfloat)earth_cmap[index][0] / 255.0f,
+                      (GLfloat)earth_cmap[index][1] / 255.0f,
+                      (GLfloat)earth_cmap[index][2] / 255.0f);
+        brightness = (unsigned int)earth_cmap[index][0] * 77U +
+                     (unsigned int)earth_cmap[index][1] * 150U +
+                     (unsigned int)earth_cmap[index][2] * 29U;
+        if (brightness < minimum) { minimum = brightness; ogl_background = index; }
+        if (brightness > maximum) { maximum = brightness; ogl_foreground = index; }
+    }
+}
 
 /* cleanly close window */
 void drv_close(void)
@@ -56,16 +241,19 @@ void drv_close(void)
 /* error handling */
 void ogl_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const char* message, const void* userParam)
 {
+    (void)source; (void)id; (void)length; (void)userParam;
     fprintf(stderr, "GL CALLBACK: type = 0x%x, severity = 0x%x, message = %s\n", type, severity, message );
 }
 
 /* keyboard input */
 void ogl_keyboard(unsigned char key, int x, int y)
 {
+    (void)x; (void)y;
     switch(key)
     {
         case 27:
             drv_close();
+            return;
         case '1':
         case '2':
         case '3':
@@ -223,8 +411,8 @@ void ogl_checkerror(void)
 /* draw a string with bitmap text */
 void ogl_draw_string(char * str, int x, int y)
 {
-    glRasterPos2i(x, y);
     int i;
+    glRasterPos2i(x, y);
     for (i=0; *(str+i) != 0; str++)
     {
         glutBitmapCharacter(ogl_font, *(str+i));
@@ -235,15 +423,58 @@ void ogl_draw_string(char * str, int x, int y)
 void drv_init(int *argc, char **argv)
 {
     glutInit(argc, argv);
-    glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
+    if (atexit(ogl_cleanup) != 0) error("Cannot register OpenGL cleanup");
     ogl_font = GLUT_BITMAP_HELVETICA_12;
+}
+
+/* A color-index OpenGL framebuffer cannot perform RGB texture mapping.
+ * Keep its texture toggle functional using the shared perspective-correct
+ * rasterizer, then transfer tightly packed palette bytes through OpenGL. */
+static void ogl_present_indexed_texture(void)
+{
+    unsigned long count, i;
+    unsigned long *source;
+    GLubyte *pixels;
+    GLint matrix_mode;
+    count = (unsigned long)drv_win_width * drv_win_height;
+    if (count > (size_t)-1) error("OpenGL texture framebuffer is too large");
+    if (count > ogl_index_capacity)
+    {
+        pixels = (GLubyte *)malloc((size_t)count);
+        if (pixels == NULL) error("Cannot allocate indexed OpenGL framebuffer");
+        free(ogl_index_pixels); ogl_index_pixels = pixels; ogl_index_capacity = count;
+    }
+    source = texsoft_pixels();
+    for (i = 0; i < count; ++i) ogl_index_pixels[i] = (GLubyte)source[i];
+    glGetIntegerv(GL_MATRIX_MODE, &matrix_mode);
+    glPushAttrib(GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT | GL_PIXEL_MODE_BIT | GL_CURRENT_BIT);
+    glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
+    glDisable(GL_DEPTH_TEST); glDisable(GL_TEXTURE_2D);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelTransferi(GL_INDEX_SHIFT, 0);
+    glPixelTransferi(GL_INDEX_OFFSET, 0);
+    glPixelTransferi(GL_MAP_COLOR, GL_FALSE);
+    glPixelZoom(1.0f, 1.0f);
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
+    gluOrtho2D(0, drv_win_width, 0, drv_win_height);
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glRasterPos2i(0, 0);
+    glDrawPixels((GLsizei)drv_win_width, (GLsizei)drv_win_height,
+                  GL_COLOR_INDEX, GL_UNSIGNED_BYTE, ogl_index_pixels);
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix();
+    glMatrixMode((GLenum)matrix_mode);
+    glPopClientAttrib(); glPopAttrib();
 }
 
 /* render current scene */
 void drv_render(void)
 {
+    float model[4][4], projection[4][4];
     drv_fps_start();
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glTranslatef(0,0, -3000.0f);
@@ -252,7 +483,19 @@ void drv_render(void)
     glRotatef(-90, 1, 0, 0);
     glRotatef(-90, 0, 0, 1);
 
-    if(!dlist)
+    if (ogl_indexed && drv_texture_enabled)
+    {
+        /* Column-major OpenGL matrix memory is the equivalent row-vector
+         * array consumed by texsoft; no further transpose is needed. */
+        glGetFloatv(GL_MODELVIEW_MATRIX, &model[0][0]);
+        glGetFloatv(GL_PROJECTION_MATRIX, &projection[0][0]);
+        if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
+                             TRUE, &earth_cmap[0][0]))
+            error("Cannot allocate indexed OpenGL texture raster");
+        globe_draw_tris();
+        ogl_present_indexed_texture();
+    }
+    else if(!dlist)
     {
         dlist = glGenLists(1);
         glNewList(dlist, GL_COMPILE_AND_EXECUTE);
@@ -280,7 +523,8 @@ void drv_render(void)
         glPopMatrix();
     }
     
-    glutSwapBuffers();
+    if (ogl_double_buffer) glutSwapBuffers();
+    else glFlush();
     ogl_checkerror();
     drv_fps_stop();
     
@@ -293,6 +537,7 @@ void drv_render(void)
 
 /* resize window */
 void drv_resize(int width, int height) {
+    if (width < 1 || height < 1) return;
     drv_win_width = width;
     drv_win_height = height;
     
@@ -306,15 +551,28 @@ void drv_resize(int width, int height) {
 void drv_texture_load(void)
 {
     texture_generate(TEXTURE_DEFAULT_SIZE);
+    if (ogl_indexed)
+    {
+        if (!texsoft_texture(texture_size, texture_size / 2U, texture_data))
+            error("Cannot allocate indexed OpenGL texture mipmaps");
+        texture_free();
+        drv_texture_loaded = TRUE;
+        return;
+    }
     glGenTextures(1, &texture_id);
     glBindTexture(GL_TEXTURE_2D, texture_id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size/2, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 #ifndef NO_GENMIPMAP
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size/2, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
     glGenerateMipmap(GL_TEXTURE_2D);
 #else
-    gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, texture_size, texture_size/2, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
+    /* GLU uploads the base image and mipmaps, scaling to the implementation's
+     * maximum texture size. A prior raw upload can exceed that legacy limit. */
+    if (gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, texture_size, texture_size/2,
+                           GL_RGB, GL_UNSIGNED_BYTE, texture_data) != 0)
+        error("Cannot build OpenGL texture mipmaps");
 #endif
     texture_free();
     drv_texture_loaded = TRUE;
@@ -324,24 +582,32 @@ void drv_texture_load(void)
 void drv_texture_enable(void)
 {
     if (!drv_texture_loaded) drv_texture_load();
-    glBindTexture(GL_TEXTURE_2D, texture_id);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glEnable(GL_TEXTURE_2D);
+    if (!ogl_indexed)
+    {
+        glBindTexture(GL_TEXTURE_2D, texture_id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glEnable(GL_TEXTURE_2D);
+    }
     drv_texture_enabled = TRUE;
 }
 
 /* turn off textures */
 void drv_texture_disable(void)
 {
-    glDisable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    if (!ogl_indexed)
+    {
+        glDisable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
     drv_texture_enabled = FALSE;
 }
 
 /* initialize a window, all values < 1 for full screen/default */
 int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 {
+    Ogl_format selected;
+    unsigned int rgb_bits;
     if (in_x > 0)
         drv_win_x = in_x;
     else
@@ -359,11 +625,22 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     else
         in_height = drv_win_height;
 
-    glutInitDisplayMode(GLUT_RGB|GLUT_DOUBLE);
-    glutInitWindowSize(in_width, in_height);
-    glutInitWindowPosition(in_x, in_y);
-    glutCreateWindow(TESTGLOBE_NAME);
-    glutDisplayFunc(drv_render);
+    ogl_window = ogl_select_window(&selected, in_x, in_y, in_width, in_height);
+    if (ogl_window == 0) error("No usable OpenGL RGB(A) or 8-bit palette window format");
+    ogl_indexed = !selected.rgba;
+    ogl_double_buffer = selected.double_buffer;
+    ogl_has_depth = selected.depth > 0;
+    ogl_palette_size = ogl_indexed ? (unsigned int)selected.palette : 0;
+    rgb_bits = (unsigned int)(selected.red + selected.green + selected.blue);
+    drv_colormapped = ogl_indexed;
+    drv_bits_per_pixel = ogl_indexed ? (unsigned int)selected.buffer : rgb_bits + (unsigned int)selected.alpha;
+    drv_colormap_bits = ogl_indexed ? (unsigned int)selected.buffer : rgb_bits;
+    drv_colors = drv_colormap_bits >= 32 ? 0xffffffffUL : 1UL << drv_colormap_bits;
+    drv_colormap_colors = ogl_indexed ? ogl_palette_size : drv_colors;
+    drv_bytes_per_pixel = ((unsigned int)selected.buffer + 7U) / 8U;
+    glutReshapeWindow(in_width, in_height);
+    glutPositionWindow(in_x, in_y);
+    glutSetWindowTitle(TESTGLOBE_NAME);
     glutReshapeFunc(drv_resize);
     glutMouseFunc(ogl_mouse);
     glutMotionFunc(ogl_mouse_move);
@@ -373,7 +650,16 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     glEnable(GL_CULL_FACE);
     glFrontFace(GL_CCW);
     glCullFace(GL_BACK);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    if (ogl_indexed)
+    {
+        ogl_install_palette();
+        glClearIndex((GLfloat)ogl_background);
+    }
+    else glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    if (ogl_has_depth) glEnable(GL_DEPTH_TEST);
+    drv_resize(in_width, in_height);
+    glutShowWindow();
+    glutPostRedisplay();
 
     ogl_checkerror();
     return 1;
@@ -382,6 +668,10 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 /* main loop */
 void drv_loop(void)
 {
+    /* main initializes the globe after drv_init_window returns. Window
+     * operations may redraw earlier, so only enable rendering here. */
+    glutDisplayFunc(drv_render);
+    glutPostRedisplay();
     glutMainLoop();
 }
 
@@ -395,9 +685,24 @@ void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *
     glVertex3fv((GLfloat *)xyz3);
 }
 
+void drv_draw_tri_flat_color(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3,
+                              unsigned char color)
+{
+    if (ogl_indexed) glIndexi((GLint)color);
+    else glColor3ub(earth_cmap[color][0], earth_cmap[color][1], earth_cmap[color][2]);
+    glVertex3fv((GLfloat *)xyz1);
+    glVertex3fv((GLfloat *)xyz2);
+    glVertex3fv((GLfloat *)xyz3);
+}
+
 /* draw flat shaded textured triangle */
 void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, Coord *uv2, Coord *uv3)
 {
+    if (ogl_indexed)
+    {
+        texsoft_triangle(xyz1, xyz2, xyz3, uv1, uv2, uv3);
+        return;
+    }
     glTexCoord2fv((GLfloat *)uv1);
     glVertex3fv((GLfloat *)xyz1);
     glTexCoord2fv((GLfloat *)uv2);
@@ -410,12 +715,10 @@ void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, 
 void drv_draw_osd(void)
 {
     char status_str[256];
-    
-    /* due to differences in implementation this has to be disabled for Mesa */
-    if (drv_texture_enabled)
-    {
-        glDisable(GL_TEXTURE_2D);
-    }
+
+    glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_TEXTURE_2D);
     
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
@@ -423,15 +726,17 @@ void drv_draw_osd(void)
     
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
+    if (ogl_indexed) glIndexi((GLint)ogl_foreground);
+    else glColor3ub(255, 255, 255);
     
     ogl_draw_string(drv_help, 10, 10);
-    snprintf(status_str, 255, "%i triangles (%i visible), texture mapping %s, %.2f frames per second", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"), drv_fps_average);
+    drv_format_stats(status_str);
+    strcat(status_str, drv_texture_enabled ?
+             (ogl_indexed ? ", software texture mapping on" : ", texture mapping on") :
+             ", texture mapping off");
     ogl_draw_string(status_str, 10, drv_win_height - 18);
     
-    if (drv_texture_enabled)
-    {
-        glEnable(GL_TEXTURE_2D);
-    }
+    glPopAttrib();
 }
 
 #endif

@@ -17,19 +17,16 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <string.h>
+#ifndef testglob_h
+#define testglob_h
 
+#include <string.h>
 #include "err_ext.h"
 
 #define DEBUG
-
 #define TESTGLOBE_NAME "testglobe"
-
 #define TESTGLOBE_VERSION_MAJOR 0
 #define TESTGLOBE_VERSION_MINOR 2
-
-#ifndef testglob_h
-#define testglob_h
 
 #ifndef FALSE
 #define FALSE 0
@@ -38,16 +35,20 @@
 #define TRUE 1
 #endif
 
-/*
- * set a graphics driver if not already set, a fallback, normally this should be in the Makefile or build settings
- * also this is not necessary anymore to exclude code that isn't being built, which is done in the Makefile
- */
+#if (defined(FLAT) + defined(SEG86) + defined(SEG68)) > 1
+#error Choose exactly one memory architecture: FLAT, SEG86, or SEG68
+#endif
+#if !defined(FLAT) && !defined(SEG86) && !defined(SEG68)
+#define FLAT
+#endif
+/* The selected driver header chooses TRI, QUAD, or TRISTRIP. */
+
+/* Fallbacks for legacy build settings; the Makefile selects the driver. */
 #ifndef DRV
 #ifdef __APPLE__
 #ifdef __MACH__
 #define DRV_OGL
-#endif
-#ifndef __MACH__
+#else
 #define DRV_QD
 typedef long Int;
 #endif
@@ -60,7 +61,12 @@ typedef long Int;
 #endif
 #endif
 
-/* system specific defines */
+/* Historical Microsoft and MPW runtimes predate C99 sinf/cosf. */
+#if defined(SEG86) || defined(SEG68)
+#ifndef NO_SINF
+#define NO_SINF
+#endif
+#endif
 #ifdef NO_SINF
 #define SIN sin
 #define COS cos

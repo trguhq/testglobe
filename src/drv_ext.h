@@ -21,6 +21,8 @@
 #ifndef drv_ext_h
 #define drv_ext_h
 
+#include "testglob.h"
+#include "drv.h"
 #include "types.h"
 
 extern unsigned int drv_win_x;
@@ -51,12 +53,74 @@ extern int drv_auto_enabled;
 extern void drv_ext_init(void);
 extern void drv_init(int *argc, char **argv);
 extern int drv_init_window(int in_x, int in_y, int in_width, int in_height);
-extern void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *color);
-extern void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, Coord* uv2, Coord* uv3);
+#ifdef DRV_COLORMAP
+extern void drv_draw_tri_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                    Vertex TG_HUGE *xyz3, unsigned char color);
+extern void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                     Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
+                                     unsigned char color);
+#endif
+#ifdef TRI
+#ifndef DRV_COLORMAP
+extern void drv_draw_tri_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                  Vertex TG_HUGE *xyz3, Color_RGB TG_HUGE *color);
+#endif
+#ifdef TEXTURE
+extern void drv_draw_tri_flat_uv(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                 Vertex TG_HUGE *xyz3, Coord TG_HUGE *uv1,
+                                 Coord TG_HUGE *uv2, Coord TG_HUGE *uv3);
+#endif
+#endif
+#ifdef QUAD
+#ifndef DRV_COLORMAP
+extern void drv_draw_quad_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                   Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
+                                   Color_RGB TG_HUGE *color);
+#endif
+#endif
+#ifdef TRISTRIP
+#ifdef DRV_COLORMAP
+/* One palette byte for each of the count-2 strip facets. */
+extern void drv_draw_tristrip_flat_color(unsigned int count,
+                                        const Vertex TG_HUGE *vertices,
+                                        const unsigned char TG_HUGE *facet_colors);
+#ifdef TEXTURE
+/* One UV per vertex; count-2 facets use the same strip winding as above. */
+extern void drv_draw_tristrip_flat_uv(unsigned int count,
+                                     const Vertex TG_HUGE *vertices,
+                                     const Coord TG_HUGE *coords);
+#endif
+typedef void (*Drv_strip_batch)(unsigned int count,
+                                const Vertex TG_HUGE *vertices,
+                                const unsigned char TG_HUGE *facet_colors);
+/* Even facet batches retain winding and overlap their last two vertices. */
+extern void drv_draw_strip_batches(unsigned int count,
+                                   const Vertex TG_HUGE *vertices,
+                                   const unsigned char TG_HUGE *facet_colors,
+                                   unsigned int max_facets,
+                                   Drv_strip_batch draw_batch);
+#else
+/* Colors describe count-2 facets; NULL coords requests untextured rendering. */
+extern void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
+                                      const Color_RGB *facet_colors,
+                                      const Coord *coords);
+#endif
+#endif
 extern void drv_loop(void);
+#ifdef TEXTURE
 extern void drv_texture_enable(void);
 extern void drv_texture_disable(void);
+#endif
 extern void drv_draw_osd(void);
+/* Common OSD prefix; caller supplies at least 128 bytes. */
+extern void drv_format_stats(char *buffer);
+#ifdef DRV_EARTH_RESOURCES
+extern void drv_load_earth_data(int longitude,
+                                unsigned char TG_HUGE *destination);
+/* Native adapter: validate and copy one bounded resource into the heap. */
+extern void drv_load_earth_chunk(unsigned int id, unsigned long length,
+                                 unsigned char TG_HUGE *destination);
+#endif
 extern void drv_fps_start(void);
 extern void drv_fps_stop(void);
 extern void drv_globe_rotate(void);

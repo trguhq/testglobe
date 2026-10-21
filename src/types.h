@@ -20,11 +20,27 @@
 #ifndef types_h
 #define types_h
 
+/* Microsoft C 7 huge pointers normalize arithmetic across 64 KiB segments. */
+#ifdef SEG86
+#define TG_HUGE _huge
+#elif defined(SEG68)
+/* Classic 68K Macs segment code, but heap data uses ordinary pointers.
+ * NewPtr/DisposePtr keep mesh storage outside the A5-relative globals. */
+#define TG_HUGE
+#else
+#define TG_HUGE
+#endif
+
 typedef struct Vertex
 {
     float x;
     float y;
     float z;
+#ifdef SEG86
+    /* A huge Win16 element must never straddle a 64 KiB selector boundary.
+     * A 16-byte stride also meets _halloc's large-array requirements. */
+    unsigned char reserved[4];
+#endif
 } Vertex;
 
 typedef struct Color_RGB

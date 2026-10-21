@@ -21,6 +21,10 @@
 #ifndef drv_ogl_h
 #define drv_ogl_h
 
+#if !defined(FLAT)
+#error OpenGL requires the FLAT build option
+#endif
+
 #ifndef DRV
 #define DRV
 #endif
@@ -39,10 +43,13 @@
 #define DRV_OSD_DEFAULT TRUE
 #define DRV_DEPTH 24
 #define DRV_COLORMAPDEPTH 24
-#define Color Color_RGB
+#define DRV_COLORMAP
+/* Keep the original palette byte even when the selected window is RGB(A). */
+#define Color Color_Index
 #define DRV_FPS_HISTORY 60
 #define DRV_FPS_DEFAULT TRUE
 #define DRV_ROTATE 10.0f
+#define GLOBE_DEFAULT_LONGITUDE 512
 
 #define EARTH
 #define EARTH_32
@@ -57,5 +64,7 @@
 #define TEXTURE_DEFAULT_SIZE 512
 /* currently means 24-bit RGB */
 #define TEXTURE_RGB
+/* render individual triangles */
+#define TRI
 
 #endif /* drv_ogl_h */

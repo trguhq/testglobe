@@ -21,7 +21,7 @@
 #define e_ext_h
 
 #ifdef EARTH
-extern unsigned char earth_cmap[][];
+extern unsigned char earth_cmap[][3];
 #ifdef EARTH_32
 extern unsigned char earth_data_32[];
 #endif

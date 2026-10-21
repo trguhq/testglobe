@@ -18,10 +18,26 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <sys/time.h>
 #include "testglob.h"
 #include "drv.h"
+#include "drv_ext.h"
 #include "globe.h"
+#include "glob_ext.h"
+#include <stdio.h>
+#ifdef DRV_EARTH_RESOURCES
+#include "earthres.h"
+#endif
+#ifdef GDI
+#include <windows.h>
+#elif defined(SEG68)
+#include <Events.h>
+#else
+#ifdef SEG86
+#include <time.h>
+#else /* FLAT */
+#include <sys/time.h>
+#endif
+#endif
 
 unsigned int drv_win_x, drv_win_y;              /* window geometry */
 unsigned int drv_win_width, drv_win_height;     /* window geometry */
@@ -43,9 +59,109 @@ int drv_rmouse_pressed;                 /* */
 char drv_help[256];                     /* OSD help string to print */
 int drv_fps_enabled;                    /* fps counter enabled */
 float drv_fps_average;                  /* average fps */
-struct timeval drv_frame_start, drv_frame_stop;     /* time of frame start and stop */
+#if defined(GDI) || defined(SEG68)
+static unsigned long drv_frame_start, drv_frame_stop;
+#else
+#ifdef SEG86
+static clock_t drv_frame_start, drv_frame_stop;
+#else /* FLAT */
+static struct timeval drv_frame_start, drv_frame_stop;
+#endif
+#endif
+static float drv_frame_seconds;
+static float drv_fps_history_seconds;
 long drv_fps_history_num;               /* total number of frames recorded */
-long drv_auto_enabled;                  /* automatically rotate */
+int drv_auto_enabled;                   /* automatically rotate */
+
+void drv_format_stats(char *buffer)
+{
+    unsigned long total;
+    const char *primitive;
+#ifdef DRV_VISIBLE_COUNTS
+    unsigned long visible;
+#endif
+#ifdef QUAD
+    total = globe_quads_num;
+    primitive = "quads";
+#ifdef DRV_VISIBLE_COUNTS
+    visible = globe_quads_num_vis;
+#endif
+#else /* TRI and TRISTRIP both count the triangles submitted for drawing. */
+    total = globe_tris_num;
+    primitive = "triangles";
+#ifdef DRV_VISIBLE_COUNTS
+    visible = globe_tris_num_vis;
+#endif
+#endif
+#ifdef DRV_VISIBLE_COUNTS
+    sprintf(buffer, "%lu %s (%lu visible), %.2f frames per second",
+            total, primitive, visible, (double)drv_fps_average);
+#else
+    /* Native pipelines cull internally without returning a facet count. */
+    sprintf(buffer, "%lu %s, %.2f frames per second",
+            total, primitive, (double)drv_fps_average);
+#endif
+}
+
+#if defined(TRISTRIP) && defined(DRV_COLORMAP)
+void drv_draw_strip_batches(unsigned int count,
+                            const Vertex TG_HUGE *vertices,
+                            const unsigned char TG_HUGE *facet_colors,
+                            unsigned int max_facets,
+                            Drv_strip_batch draw_batch)
+{
+    unsigned int first, facets;
+    if (count < 3 || vertices == NULL || facet_colors == NULL || draw_batch == NULL)
+        return;
+    /* Every nonfinal batch starts at the strip's original even winding.
+     * Facet i uses vertices i..i+2, so adjoining batches share two vertices. */
+    max_facets &= ~1U;
+    if (max_facets < 2U)
+    {
+        error("Strip batch must hold at least two facets");
+        return;
+    }
+    first = 0;
+    while (first < count - 2U)
+    {
+        facets = count - 2U - first;
+        if (facets > max_facets) facets = max_facets;
+        draw_batch(facets + 2U, vertices + first, facet_colors + first);
+        first += facets;
+    }
+}
+#endif
+
+#ifdef DRV_EARTH_RESOURCES
+void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
+{
+    unsigned int resource;
+    unsigned long remaining, length;
+    switch (longitude)
+    {
+        case 32: resource = TG_EARTH_32_ID; break;
+        case 64: resource = TG_EARTH_64_ID; break;
+        case 128: resource = TG_EARTH_128_ID; break;
+        case 256: resource = TG_EARTH_256_ID; break;
+        case 512: resource = TG_EARTH_512_ID; break;
+        default: error("Unsupported Earth resource resolution"); return;
+    }
+    if (destination == NULL)
+    {
+        error("Missing Earth resource destination");
+        return;
+    }
+    remaining = (unsigned long)longitude * ((unsigned long)longitude / 2UL);
+    while (remaining != 0)
+    {
+        length = remaining < TG_EARTH_CHUNK_SIZE ? remaining : TG_EARTH_CHUNK_SIZE;
+        drv_load_earth_chunk(resource, length, destination);
+        destination += length;
+        remaining -= length;
+        ++resource;
+    }
+}
+#endif
 
 /* call first */
 void drv_ext_init(void)
@@ -58,13 +174,22 @@ void drv_ext_init(void)
     drv_win_width = DRV_WIN_WIDTH;
     drv_win_height = DRV_WIN_HEIGHT;
     drv_colormapped = DRV_COLORMAPPED;
+#ifdef DRV_TEXTURE
     drv_texture_avail = DRV_TEXTURE;
+#else
+    drv_texture_avail = FALSE;
+#endif
+#ifdef DRV_TEXTURE_DEFAULT
     drv_texture_enabled = DRV_TEXTURE_DEFAULT;
+#else
+    drv_texture_enabled = FALSE;
+#endif
     drv_osd_enabled = DRV_OSD_DEFAULT;
     drv_bits_per_pixel = DRV_DEPTH;
     drv_colormap_bits = DRV_COLORMAPDEPTH;
-    drv_colors = (drv_bits_per_pixel == 32 ? 0xFFFFFFFF : 1<<drv_bits_per_pixel);
-    drv_colormap_colors = (drv_colormap_bits == 32 ? 0xFFFFFFFF : 1<<drv_colormap_bits);
+    /* An unsigned long is 32 bits even when the DOS compiler has 16-bit ints. */
+    drv_colors = (drv_bits_per_pixel == 32 ? 0xFFFFFFFFUL : 1UL << drv_bits_per_pixel);
+    drv_colormap_colors = (drv_colormap_bits == 32 ? 0xFFFFFFFFUL : 1UL << drv_colormap_bits);
     switch (drv_bits_per_pixel)
     {
         case 8:
@@ -89,6 +214,8 @@ void drv_ext_init(void)
     drv_fps_enabled = DRV_FPS_DEFAULT;
     drv_fps_average = 0;
     drv_fps_history_num = 0;
+    drv_fps_history_seconds = 0;
+    drv_frame_seconds = 0;
     drv_auto_enabled = FALSE;
     
 }
@@ -96,37 +223,74 @@ void drv_ext_init(void)
 /* frame start */
 void drv_fps_start(void)
 {
+#ifdef GDI
+    drv_frame_start = GetTickCount();
+#elif defined(SEG68)
+    drv_frame_start = TickCount();
+#else
+#ifdef SEG86
+    /* Microsoft C's DOS clock() reports elapsed time without POSIX headers. */
+    drv_frame_start = clock();
+#else /* FLAT */
     gettimeofday(&drv_frame_start, NULL);
+#endif
+#endif
 }
 
 /* frame stop */
 void drv_fps_stop(void)
 {
-    int diff_msec;
-    static int diff_msec_total;
-    
-    gettimeofday(&drv_frame_stop, NULL);
-    diff_msec = (drv_frame_stop.tv_sec - drv_frame_start.tv_sec) * 1000 + (drv_frame_stop.tv_usec - drv_frame_start.tv_usec) / 1000;
-    
-    if (diff_msec >= 1000)
+#ifdef GDI
+    drv_frame_stop = GetTickCount();
+    /* GetTickCount is a wrapping 32-bit counter, including on test hosts. */
+    drv_frame_seconds = (float)((drv_frame_stop - drv_frame_start) &
+                                0xFFFFFFFFUL) / 1000.0f;
+#elif defined(SEG68)
+    drv_frame_stop = TickCount();
+    drv_frame_seconds = (float)((drv_frame_stop - drv_frame_start) &
+                                0xFFFFFFFFUL) / 60.0f;
+#else
+#ifdef SEG86
+    drv_frame_stop = clock();
+    if (drv_frame_start == (clock_t)-1 || drv_frame_stop == (clock_t)-1)
     {
-        drv_fps_average = 1.0f / (float) diff_msec * 1000.0f;
+        drv_frame_seconds = 0;
+    }
+    else
+    {
+        /* Unsigned subtraction also handles a 32-bit DOS clock rollover. */
+        drv_frame_seconds = (float)((unsigned long)drv_frame_stop -
+                                    (unsigned long)drv_frame_start) /
+                            (float)CLOCKS_PER_SEC;
+    }
+#else /* FLAT */
+    gettimeofday(&drv_frame_stop, NULL);
+    drv_frame_seconds = (float)(drv_frame_stop.tv_sec - drv_frame_start.tv_sec) +
+                        (float)(drv_frame_stop.tv_usec - drv_frame_start.tv_usec) /
+                        1000000.0f;
+    if (drv_frame_seconds < 0)
+        drv_frame_seconds = 0;
+#endif
+#endif
+
+    if (drv_frame_seconds >= 1.0f)
+    {
+        drv_fps_average = 1.0f / drv_frame_seconds;
+        drv_fps_history_num = 0;
+        drv_fps_history_seconds = 0;
     } else
     {
-        if (drv_fps_history_num == 0)
-        {
-            diff_msec_total = 0;
-            
-        }
-        
-        diff_msec_total += diff_msec;
+        drv_fps_history_seconds += drv_frame_seconds;
         drv_fps_history_num++;
-        
-        if (drv_fps_history_num == DRV_FPS_HISTORY)
+
+        if (drv_fps_history_num >= DRV_FPS_HISTORY)
         {
-            drv_fps_average = (float) DRV_FPS_HISTORY / (float) diff_msec_total * 1000.0f;
+            /* A coarse DOS timer can return zero for an entire short sample. */
+            if (drv_fps_history_seconds > 0)
+                drv_fps_average = (float)drv_fps_history_num /
+                                  drv_fps_history_seconds;
             drv_fps_history_num = 0;
-            diff_msec_total = 0;
+            drv_fps_history_seconds = 0;
         }
     }
 }
@@ -134,14 +298,12 @@ void drv_fps_stop(void)
 /* rotate globe at a fixed speed */
 void drv_globe_rotate(void)
 {
-    float sec;
-    
-    sec = (float) (drv_frame_stop.tv_sec - drv_frame_start.tv_sec) + (float) (drv_frame_stop.tv_usec - drv_frame_start.tv_usec) / 1000000.0f;
-    drv_rot_y += DRV_ROTATE * sec;
-    if (drv_rot_y > 360.0f)
+    drv_rot_y += DRV_ROTATE * drv_frame_seconds;
+    while (drv_rot_y >= 360.0f)
     {
         drv_rot_y -= 360.0f;
-    } else if (drv_rot_y < 0.0f)
+    }
+    while (drv_rot_y < 0.0f)
     {
         drv_rot_y += 360.0f;
     }

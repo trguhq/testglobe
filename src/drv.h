@@ -18,8 +18,21 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#ifndef drv_h
+#define drv_h
+
+#if (defined(DRV_OGL) + defined(DRV_IGL) + defined(DRV_MTX) + defined(DRV_XGL) + defined(DRV_GDI) + defined(DRV_QD)) > 1
+#error Select only one graphics driver
+#endif
+
+#ifdef DRV_MTX
+#include "drv_mtx.h"
+#endif
 #ifdef DRV_OGL
 #include "drv_ogl.h"
+#endif
+#ifdef DRV_IGL
+#include "drv_igl.h"
 #endif
 #ifdef DRV_PGC
 #include "drv_pgc.h"
@@ -27,6 +40,17 @@
 #ifdef DRV_XGL
 #include "drv_xgl.h"
 #endif
+#ifdef DRV_GDI
+#include "drv_gdi.h"
+#endif
 #ifdef DRV_QD
 #include "drv_qd.h"
 #endif
+
+#if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_MTX) || defined(DRV_XGL) || defined(DRV_GDI) || defined(DRV_QD)
+#if (defined(TRI) + defined(QUAD) + defined(TRISTRIP)) != 1
+#error Select exactly one driver primitive: TRI, QUAD, or TRISTRIP
+#endif
+#endif
+
+#endif /* drv_h */

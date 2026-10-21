@@ -33,6 +33,8 @@
 #define GLOBE_DEFAULT_ROTATION_Y 180
 
 /* this can be 32, 64, 128, 256 and 512, provided the above are defined for each */
+#ifndef GLOBE_DEFAULT_LONGITUDE
 #define GLOBE_DEFAULT_LONGITUDE 512
+#endif
 
 #endif /* globe_h */

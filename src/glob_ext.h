@@ -20,18 +20,48 @@
 #ifndef glob_ext_h
 #define glob_ext_h
 
+#include "testglob.h"
+#include "drv.h"
+
 extern void globe_init(void);
+extern void globe_free(void);
 extern int globe_init_verts(int, int, float);
+#ifdef TRI
 extern void globe_draw_tris(void);
+#endif
+#ifdef QUAD
+extern void globe_draw_quads(void);
+#endif
+#ifdef TRISTRIP
+extern void globe_draw_tripstrip(void);
+#endif
 extern void globe_toggle_res(char);
+#ifdef TEXTURE
 extern void globe_toggle_tex(void);
+#endif
+#ifndef DRV_EARTH_RESOURCES
+#ifdef EARTH_32
 extern unsigned char earth_data_32[];
+#endif
+#ifdef EARTH_64
 extern unsigned char earth_data_64[];
+#endif
+#ifdef EARTH_128
 extern unsigned char earth_data_128[];
+#endif
+#ifdef EARTH_256
 extern unsigned char earth_data_256[];
+#endif
+#ifdef EARTH_512
 extern unsigned char earth_data_512[];
+#endif
+#endif
 extern unsigned char earth_cmap[][3];
-extern int globe_tris_num;
-extern int globe_tris_num_vis;
+extern unsigned long globe_verts_num;
+extern unsigned long globe_faces_num;
+extern unsigned long globe_tris_num;
+extern unsigned long globe_tris_num_vis;
+extern unsigned long globe_quads_num;
+extern unsigned long globe_quads_num_vis;
 
 #endif /* glob_ext_h */
