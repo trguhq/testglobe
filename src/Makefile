@@ -18,6 +18,17 @@ OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
     $(SRC)/e_256.h $(SRC)/e_512.h
 
+# Native macOS OpenGL/GLUT from the selected Xcode command line tools.
+# Apple objects stay separate from Unix GL/X11 objects. Apple's legacy
+# OpenGL context uses GLU mipmaps rather than core glGenerateMipmap.
+APPLE_CC = $(CC)
+APPLE_CPPFLAGS =
+APPLE_CFLAGS = $(CFLAGS)
+APPLE_SYS_FLAGS = -DNO_GENMIPMAP -DGLUT_SILENCE_DEPRECATION
+APPLE_DEFINES = $(OGL_DEFINES)
+APPLE_LDFLAGS = -framework GLUT -framework OpenGL -framework Cocoa
+APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o
+
 # Sun XGL 3.x / 32-bit SPARC on Solaris 2.6. Select native SDK locations
 # on the make command line if they differ from the Sun installation defaults.
 # x_ objects keep this driver's TRISTRIP layout separate from OpenGL's TRI.
@@ -132,6 +143,32 @@ texture.o: $(SRC)/texture.c $(OGL_HEADERS)
 
 texsoft.o: $(SRC)/texsoft.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/texsoft.c
+
+# This target produces the same OpenGL binary with native Apple frameworks.
+# FORCE relinks it when switching between opengl and apple-opengl.
+apple-opengl: $(APPLE_OBJECTS) FORCE
+	$(APPLE_CC) -o testglobe-opengl $(APPLE_OBJECTS) $(APPLE_LDFLAGS)
+
+a_drv.o: $(SRC)/drv.c $(OGL_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/drv.c -o a_drv.o
+
+a_ogl.o: $(SRC)/drv_ogl.c $(OGL_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/drv_ogl.c -o a_ogl.o
+
+a_err.o: $(SRC)/err.c $(OGL_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/err.c -o a_err.o
+
+a_globe.o: $(SRC)/globe.c $(OGL_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/globe.c -o a_globe.o
+
+a_main.o: $(SRC)/main.c $(OGL_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/main.c -o a_main.o
+
+a_tex.o: $(SRC)/texture.c $(OGL_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/texture.c -o a_tex.o
+
+a_soft.o: $(SRC)/texsoft.c $(OGL_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/texsoft.c -o a_soft.o
 
 # Keep the traditional empty-rule technique so command-line linker options
 # take effect without make-specific phony-target syntax. Unix outputs differ.
@@ -295,7 +332,7 @@ clean-quickdraw:
 # Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw
+clean: clean-opengl clean-apple-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw
 	-$(RM) testglobe
 
 clean-opengl:
@@ -306,6 +343,16 @@ clean-opengl:
 	-$(RM) main.o
 	-$(RM) texture.o
 	-$(RM) texsoft.o
+	-$(RM) testglobe-opengl
+
+clean-apple-opengl:
+	-$(RM) a_drv.o
+	-$(RM) a_ogl.o
+	-$(RM) a_err.o
+	-$(RM) a_globe.o
+	-$(RM) a_main.o
+	-$(RM) a_tex.o
+	-$(RM) a_soft.o
 	-$(RM) testglobe-opengl
 
 clean-xgl:

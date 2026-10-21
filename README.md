@@ -35,9 +35,9 @@ The following binaries are available in the corresponding releases:
 * OpenGL / Solaris / SPARCv8: [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
 ## Build notes
-The portable Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, IRIX/Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds `testglobe-opengl`; `make irisgl` builds `testglobe-irisgl`; `make xgl` builds `testglobe-xgl`; `nmake matrox` builds the DOS `testglob.exe`; `nmake gdi` builds the Windows 3.1 `testglob.exe`. Those two segmented targets use Microsoft C 7.0. The `quickdraw` target delegates to the native MPW build described below. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
+The portable Makefiles use plain macro assignments and explicit rules shared by traditional Unix/System V make, IRIX/Solaris make, and Microsoft NMAKE. GNU make is not required. Run from the repository root or `src`: `make` (or `make opengl`) builds `testglobe-opengl`; `make apple-opengl` builds the same binary with native macOS frameworks; `make irisgl` builds `testglobe-irisgl`; `make xgl` builds `testglobe-xgl`; `nmake matrox` builds the DOS `testglob.exe`; `nmake gdi` builds the Windows 3.1 `testglob.exe`. Those two segmented targets use Microsoft C 7.0. The `quickdraw` target delegates to the native MPW build described below. Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quads for the Matrox quad path and triangles for the triangle and triangle-strip paths.
 
-The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_igl.h`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
+The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h` defines `TRI`, `drv_igl.h`, `drv_xgl.h`, `drv_gdi.h`, and `drv_qd.h` define `TRISTRIP`, and `drv_mtx.h` defines `QUAD`. Do not supply primitive defines on the compiler command line; conflicting modes are rejected. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows.
 
@@ -129,6 +129,20 @@ make CC=cc CPPFLAGS=-I/usr/openwin/include \
 
 The default optimization option is the traditional Unix `-O`; override `CFLAGS` and the library locations for the installed compiler and GLUT package.
 
+### Apple OpenGL (modern macOS)
+Use the selected Xcode Command Line Tools and the macOS SDK they provide. Build from the repository root or `src`:
+
+```sh
+make apple-opengl
+./testglobe-opengl
+```
+
+This target uses the existing OpenGL driver with `FLAT` and `DRV_OGL`. It links Apple's native frameworks with `-framework GLUT -framework OpenGL -framework Cocoa`; GLU is included in `OpenGL.framework`, and standard math functions come from the system runtime. No Homebrew libraries or XQuartz installation are needed. The compiler's native architecture and SDK defaults are retained, supporting the host's Intel or Apple silicon toolchain without hard-coded architecture or deployment flags.
+
+`APPLE_CC` defaults to `CC` (`cc`, Apple's Clang with the standard tools selected); `APPLE_CPPFLAGS`, `APPLE_CFLAGS`, `APPLE_SYS_FLAGS`, and `APPLE_LDFLAGS` can be overridden on the make command line. `APPLE_CFLAGS` defaults to `CFLAGS`. The default `APPLE_SYS_FLAGS=-DNO_GENMIPMAP -DGLUT_SILENCE_DEPRECATION` builds mipmaps through GLU for the legacy OpenGL context used by Apple's GLUT and the driver's fixed-function rendering, and suppresses GLUT deprecation warnings. The existing Apple header path selects `<GLUT/glut.h>`.
+
+Apple objects use `a_*.o`, so they are kept separate from the generic OpenGL objects. Both targets write `testglobe-opengl` and relink when selected. Use `make clean-apple-opengl` to remove the Apple objects and that binary before changing compiler flags; `make clean` also removes them. Native macOS SDK compilation and rendering must be checked on macOS; the host build-rule and OpenGL contract checks do not provide that validation.
+
 ### Sun XGL
 The XGL target is intended for native 32-bit SPARC Solaris 2.6 with the Sun XGL 3.x SDK/runtime and X11/OpenWindows. It uses Xlib directly, without XView or GLUT. The window requires a 24-bit TrueColor visual.
 
@@ -163,7 +177,7 @@ When native texture mapping is available, `texdef2d`, `t2f`, and the GL texture 
 Run the host IRIS GL contract and software-pixel checks with `python3 tests/run.py --igl-contract`; see [tests/README.md](tests/README.md). Native IRIX compilation and physical graphics validation require the original SGI development tools and runtime. Host call-contract tests and Makefile graph checks do not replace them.
 
 ### Xcode
-No .xcodeproj is provided at this time (as of v0.1), however testglobe was built for macOS with Xcode. This will be provided at some point in the future.
+No `.xcodeproj` is provided. The native macOS command-line build uses `make apple-opengl` with the selected Xcode Command Line Tools.
 ## Known issues
 * Linux or Mesa OpenGL seems to have an issue with drawing text when texturing is enabled (should be fixed in v0.2).
 
