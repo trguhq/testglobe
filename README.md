@@ -262,9 +262,11 @@ the original triangles' winding, flat colors, and per-vertex texture coordinates
 separate, nondegenerate cap triangles retain the pole UV seams. Display lists cache
 the native geometry and start enabled according to `DRV_DLIST_DEFAULT`. Press `d`
 or `D` to toggle them: disabling deletes the current cache and draws geometry
-immediately; enabling rebuilds the cache on the next native frame. The top OSD
-shows `dlist on` or `dlist off` after FPS and before texture status. The bottom help
-line ends with `D = display list`, after texture mapping. This setting applies to
+immediately; enabling rebuilds the cache on the next native frame. After FPS and
+before texture status, the top OSD shows `dlist on` only when the current frame
+successfully uses a display list, `dlist off` when the toggle is disabled, or
+`dlist fail` when lists are enabled but unavailable, fail, or are bypassed. The bottom
+help line ends with `D = display list`, after texture mapping. This setting applies to
 all three OpenGL targets. The default remains `EARTH_512` (key 5), and the OSD counts
 triangles, including those within strips. The shared `TRI` mode is retained and
 checked as an independent-triangle reference in the host tests. Shared traversal is
@@ -287,16 +289,19 @@ into alternating triangles; the fallback also draws the separate cap triangles,
 preserving their texture coordinates.
 
 The software texture path bypasses native display lists regardless of the toggle;
-the OSD reports the selected display-list setting for native rendering.
+the OSD therefore shows `dlist fail` while lists are enabled, or `dlist off` when
+the toggle is disabled.
 
 GLUT's display-mode availability query is required. Where display-string requests are
 supported, the driver requests those component sizes explicitly; older GLUT
 implementations can expose fewer distinct choices. These probes do not enumerate every
 native visual.
 
-If display-list allocation, creation, or compilation fails, OpenGL discards the failed
-cache and draws the geometry immediately. Only complete, error-free lists execute;
-the driver never attempts to compile list zero.
+Display-list validation and error checks use OpenGL 1.1-compatible calls, including
+`glIsList` and `glGetError`; no newer context-profile queries are required. If allocation,
+creation, compilation, validation, or execution fails, OpenGL discards the failed cache
+and draws the geometry immediately, reporting `dlist fail`. Only complete lists that
+execute without errors report `dlist on`; the driver never attempts to compile list zero.
 Native texture upload and mipmap errors are checked before a texture is marked loaded
 or enabled; failed resources are released through the controlled error path. The
 retained diagnostic logger reports OpenGL errors without requiring modern

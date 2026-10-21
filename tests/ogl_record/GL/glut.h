@@ -163,6 +163,7 @@ extern void glViewport(GLint x,GLint y,GLsizei width,GLsizei height);
 extern GLuint glGenLists(GLsizei count);
 extern void glNewList(GLuint list,GLenum mode);
 extern void glEndList(void);
+extern GLboolean glIsList(GLuint list);
 extern void glCallList(GLuint list);
 extern void glDeleteLists(GLuint list,GLsizei count);
 extern void glBegin(GLenum mode);

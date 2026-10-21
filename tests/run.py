@@ -226,6 +226,10 @@ def main():
                 run([str(output / "ogl"), mode],
                     expected_stderr="OpenGL error: Out of memory!\n" * 30,
                     required_output="PASS OpenGL display-list compilation failure: rejected or incomplete lists are deleted before complete immediate rendering")
+            for mode in ("validationfail", "callfail"):
+                run([str(output / "ogl"), mode],
+                    expected_stderr="OpenGL error: Invalid operation!\n" * 30 if mode == "callfail" else "",
+                    required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
             run([str(output / "ogl"), "gluerror"], expected_returncode=1,
                 expected_stderr="ERROR - Cannot build OpenGL texture mipmaps\n",
                 required_output="PASS OpenGL GLU failure: failed mipmaps are not marked loaded and resources are released")
@@ -235,6 +239,10 @@ def main():
                 run([str(output / "ogl_modern"), mode],
                     expected_stderr="OpenGL error: Out of memory!\n" * 30,
                     required_output="PASS OpenGL display-list compilation failure: rejected or incomplete lists are deleted before complete immediate rendering")
+            for mode in ("validationfail", "callfail"):
+                run([str(output / "ogl_modern"), mode],
+                    expected_stderr="OpenGL error: Invalid operation!\n" * 30 if mode == "callfail" else "",
+                    required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
             for mode in ("texallocerror", "texuploaderror", "mipmaperror"):
                 message = ("Cannot allocate OpenGL texture" if mode == "texallocerror"
                            else "Cannot upload OpenGL texture mipmaps")

@@ -47,6 +47,7 @@ static int ogl_old_y;
  */
 static GLuint dlist;
 static int ogl_dlist_enabled = DRV_DLIST_DEFAULT;
+static int ogl_dlist_used;
 
 static GLuint texture_id;
 static int ogl_window;
@@ -73,6 +74,7 @@ static void ogl_cleanup(void)
         glutDestroyWindow(ogl_window);
     }
     ogl_window = 0; dlist = 0; texture_id = 0;
+    ogl_dlist_used = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     free(ogl_index_pixels); ogl_index_pixels = NULL; ogl_index_capacity = 0;
     texsoft_free(); texture_free(); globe_free();
@@ -269,6 +271,7 @@ static void ogl_keyboard(unsigned char key, int x, int y)
         glDeleteLists(dlist, 1);
         dlist = 0;
     }
+    ogl_dlist_used = FALSE;
     glutPostRedisplay();
 }
 
@@ -441,10 +444,57 @@ static void ogl_draw_globe(void)
 #endif
 }
 
+/* OpenGL 1.1 has no separate display-list support query. Compile and
+ * validate the native object, then accept it only after error-free use. */
+static int ogl_draw_dlist(void)
+{
+    GLboolean valid;
+    int failed;
+    ogl_checkerror();
+    failed = FALSE;
+    if (dlist == 0)
+    {
+        /* Compile before executing so a rejected or incomplete list does
+         * not draw part of the globe before the immediate fallback. */
+        dlist = glGenLists(1);
+        failed = ogl_checkerror();
+        if (dlist != 0 && !failed)
+        {
+            glNewList(dlist, GL_COMPILE);
+            failed = ogl_checkerror();
+            if (!failed)
+            {
+                ogl_draw_globe();
+                glEndList();
+                failed = ogl_checkerror();
+            }
+        }
+        else failed = TRUE;
+    }
+    if (!failed)
+    {
+        valid = glIsList(dlist);
+        failed = ogl_checkerror();
+        if (!valid) failed = TRUE;
+    }
+    if (!failed)
+    {
+        glCallList(dlist);
+        failed = ogl_checkerror();
+    }
+    if (failed)
+    {
+        if (dlist != 0) glDeleteLists(dlist, 1);
+        dlist = 0;
+    }
+    return !failed;
+}
+
 /* render current scene */
 void drv_render(void)
 {
     float model[4][4], projection[4][4];
+    ogl_dlist_used = FALSE;
     drv_fps_start();
     glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
     glMatrixMode(GL_MODELVIEW);
@@ -471,36 +521,10 @@ void drv_render(void)
     {
         ogl_draw_globe();
     }
-    else if(!dlist)
+    else
     {
-        int failed;
-        /* Compile before executing so an incomplete list cannot draw a
-         * partial globe before the immediate-mode fallback. */
-        ogl_checkerror();
-        dlist = glGenLists(1);
-        failed = ogl_checkerror();
-        if (dlist != 0 && !failed)
-        {
-            glNewList(dlist, GL_COMPILE);
-            failed = ogl_checkerror();
-            if (!failed)
-            {
-                ogl_draw_globe();
-                glEndList();
-                failed = ogl_checkerror();
-            }
-        }
-        if (failed && dlist != 0)
-        {
-            glDeleteLists(dlist, 1);
-            dlist = 0;
-        }
-        if (dlist != 0) glCallList(dlist);
-        /* Geometry remains drawable without the optional native cache. */
-        else ogl_draw_globe();
-    } else
-    {
-        glCallList(dlist);
+        ogl_dlist_used = ogl_draw_dlist();
+        if (!ogl_dlist_used) ogl_draw_globe();
     }
 
     if (drv_osd_enabled)
@@ -814,7 +838,8 @@ void drv_draw_osd(void)
     
     ogl_draw_string(drv_help, 10, 10);
     drv_format_stats(status_str);
-    strcat(status_str, ogl_dlist_enabled ? ", dlist on" : ", dlist off");
+    strcat(status_str, !ogl_dlist_enabled ? ", dlist off" :
+             (ogl_dlist_used ? ", dlist on" : ", dlist fail"));
     strcat(status_str, drv_texture_enabled ?
              (ogl_indexed ? ", software texture mapping on" : ", texture mapping on") :
              ", texture mapping off");

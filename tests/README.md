@@ -99,20 +99,23 @@ all five Earth resolutions.
 Display-list controls check the enabled default, both `d` and `D`, redraw requests,
 cache deletion on disable, complete uncached geometry without list calls, and lazy
 rebuilding after re-enabling. Resolution and texture changes are checked while lists
-are disabled. OSD checks verify `dlist on`/`dlist off` after FPS and before texture
-status, with the display-list key last in the help text. Indexed software texturing
-continues to bypass native lists in either setting.
+are disabled. OSD checks verify `dlist on` only after successful list execution,
+`dlist off` when disabled, and `dlist fail` when enabled lists fail or are bypassed.
+The status follows FPS and precedes texture status, with the display-list key last
+in the help text. Indexed software texturing continues to bypass native lists in
+either setting and reports `dlist fail` while they are enabled.
 
 The GLU mipmap path is checked with a 256-pixel texture-size limit and a larger
 source image, as well as a failed mipmap build. Native-rendering statistics must
 omit visibility counts that the graphics API does not report.
 
-Failure injection checks zero display-list allocation, rejected list creation, and
-partial compilation failure with failed-list deletion and complete immediate-mode
-fallback without executing an incomplete cache. Native texture allocation, image
-upload, and mipmap errors must leave textures unloaded and disabled and release their
-resources. FPS toggling, right-button metadata, and both released and retained
-software-raster cache policies are recorded independently of geometry caching.
+Failure injection checks zero display-list allocation, rejected list creation,
+partial compilation failure, invalid list validation, and execution errors, with
+failed-list deletion and complete immediate-mode fallback. Validation and error
+checks use OpenGL 1.1-compatible `glIsList` and `glGetError` calls. Native texture
+allocation, image upload, and mipmap errors must leave textures unloaded and disabled
+and release their resources. FPS toggling, right-button metadata, and both released
+and retained software-raster cache policies are recorded independently of geometry caching.
 
 Each window has its own display callback. Probe hiding and final-window
 resizing/showing dispatch an early initial redraw to check that callbacks exist

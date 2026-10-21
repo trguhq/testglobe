@@ -27,7 +27,8 @@ static int output_width=64,output_height=48;
 static unsigned int palette_calls,draw_pixels_calls,texture_uploads,indices,rgb_calls,swaps,flushes;
 static unsigned int direct_texture_uploads,glu_mipmap_calls;
 static unsigned int texture_allocations,texture_deletions,mipmap_generations;
-static unsigned int list_attempts,list_deletions,list_calls;
+static unsigned int list_attempts,list_deletions,list_calls,list_validations;
+static unsigned int frame_list_successes;
 static GLenum pending_error;
 static unsigned int maximum_texture_size=512;
 static unsigned int emitted_vertices,texture_coordinates;
@@ -248,7 +249,7 @@ void glPopClientAttrib(void){assert(client_depth);unpack_alignment=client_alignm
 void glTexEnvi(GLenum target,GLenum parameter,GLint value){assert(target==GL_TEXTURE_ENV&&parameter==GL_TEXTURE_ENV_MODE&&value==GL_REPLACE);}
 void glGetFloatv(GLenum query,GLfloat *value)
 {unsigned int s;if(query==GL_ZOOM_X){*value=zoom_x;return;}if(query==GL_ZOOM_Y){*value=zoom_y;return;}assert(query==GL_MODELVIEW_MATRIX||query==GL_PROJECTION_MATRIX);s=query==GL_PROJECTION_MATRIX?1U:0U;memcpy(value,matrices[s][stack_depth[s]],16*sizeof(*value));}
-void glClear(GLbitfield mask){assert((mask&GL_COLOR_BUFFER_BIT)!=0);assert(((mask&GL_DEPTH_BUFFER_BIT)!=0)==(windows[active_window].depth>0));memset(&frame_geometry,0,sizeof(frame_geometry));++frame_clears;}
+void glClear(GLbitfield mask){assert((mask&GL_COLOR_BUFFER_BIT)!=0);assert(((mask&GL_DEPTH_BUFFER_BIT)!=0)==(windows[active_window].depth>0));memset(&frame_geometry,0,sizeof(frame_geometry));frame_list_successes=0;++frame_clears;}
 void glClearColor(GLclampf r,GLclampf g,GLclampf b,GLclampf a){assert(r==0&&g==0&&b==0&&a==1);}
 void glClearIndex(GLfloat index){assert(index>=0&&index<256);last_clear_index=(int)index;}
 void glEnable(GLenum c){if(c==GL_TEXTURE_2D)texture_enabled=1;else if(c==GL_DEPTH_TEST){assert(windows[active_window].depth>0);depth_enabled=1;}else if(c==GL_CULL_FACE)cull_enabled=1;else assert(!"Unexpected glEnable");}
@@ -271,7 +272,8 @@ void glViewport(GLint x,GLint y,GLsizei w,GLsizei h){assert(x==0&&y==0&&w>0&&h>0
 GLuint glGenLists(GLsizei n){assert(n==1&&native_lists<63);++list_attempts;if(strcmp(profile,"listfail")==0)return 0;++native_lists;list_reserved[native_lists]=1;return native_lists;}
 void glNewList(GLuint l,GLenum mode){assert(l&&l<64&&list_reserved[l]&&mode==GL_COMPILE&&!current_list&&!begin_mode);if(strcmp(profile,"newlistfail")==0){pending_error=GL_OUT_OF_MEMORY;return;}current_list=l;list_exists[l]=1;memset(&list_geometry[l],0,sizeof(list_geometry[l]));}
 void glEndList(void){assert(current_list&&!begin_mode);current_list=0;}
-void glCallList(GLuint l){assert(l&&l<64&&list_exists[l]&&!list_compile_failed[l]&&!current_list&&!begin_mode);++list_calls;geometry_add(&frame_geometry,&list_geometry[l]);}
+GLboolean glIsList(GLuint l){assert(l&&l<64&&list_reserved[l]&&!current_list&&!begin_mode);++list_validations;return strcmp(profile,"validationfail")!=0&&list_exists[l]?GL_TRUE:GL_FALSE;}
+void glCallList(GLuint l){assert(l&&l<64&&list_exists[l]&&!list_compile_failed[l]&&!current_list&&!begin_mode);++list_calls;if(strcmp(profile,"callfail")==0){pending_error=GL_INVALID_OPERATION;return;}++frame_list_successes;geometry_add(&frame_geometry,&list_geometry[l]);}
 void glDeleteLists(GLuint l,GLsizei n){assert(l&&l<64&&list_reserved[l]&&n==1&&!current_list&&!begin_mode);list_exists[l]=list_reserved[l]=0;++list_deletions;}
 void glBegin(GLenum mode){assert((mode==GL_TRIANGLES||mode==GL_TRIANGLE_STRIP)&&!begin_mode);begin_mode=mode;block_vertices=block_coordinates=0;}
 void glEnd(void)
@@ -419,13 +421,15 @@ static void native_texture_failure_cleanup(void)
 
 static void check_dlist_osd(void)
 {
-    const char *option,*state,*fps,*texture;
+    const char *option,*state,*fps,*texture,*expected_state;
     option=strstr(osd_lines[0],"T = texture mapping, D = display list");
     assert(option&&strcmp(option,"T = texture mapping, D = display list")==0);
     assert(strcmp(osd_lines[0],drv_help)==0);
-    state=strstr(osd_lines[1],ogl_dlist_enabled?", dlist on":", dlist off");
+    expected_state=!ogl_dlist_enabled?", dlist off":
+                    (frame_list_successes?", dlist on":", dlist fail");
+    state=strstr(osd_lines[1],expected_state);
     assert(state);
-    texture=state+strlen(ogl_dlist_enabled?", dlist on":", dlist off");
+    texture=state+strlen(expected_state);
     assert(strcmp(texture,drv_texture_enabled?
            (ogl_indexed?", software texture mapping on":", texture mapping on"):
            ", texture mapping off")==0);
@@ -442,10 +446,14 @@ static void render_checked(int indexed)
 {
     unsigned int previous_pixels=draw_pixels_calls;
     unsigned int previous_attempts=list_attempts,previous_calls=list_calls;
+    unsigned int previous_validations=list_validations;
     drv_render();
+    assert(ogl_dlist_used==(frame_list_successes!=0));
     if(!ogl_dlist_enabled)
         assert(list_attempts==previous_attempts&&list_calls==previous_calls&&dlist==0);
     if(indexed&&drv_texture_enabled){
+        assert(!ogl_dlist_used&&list_attempts==previous_attempts&&
+               list_calls==previous_calls&&list_validations==previous_validations);
         assert(draw_pixels_calls==previous_pixels+1U);
         assert(frame_geometry.vertices==0&&frame_geometry.triangles==0);
     }else{
@@ -461,6 +469,11 @@ static void render_checked(int indexed)
         assert(frame_geometry.strip_batches==(unsigned long)globe_latitude-2UL);
 #endif
     }
+    if(!ogl_dlist_enabled)assert(list_validations==previous_validations);
+    if(ogl_dlist_enabled&&!(indexed&&drv_texture_enabled)&&
+       (strcmp(profile,"listfail")==0||strcmp(profile,"newlistfail")==0||
+        strcmp(profile,"listcompilefail")==0||strcmp(profile,"validationfail")==0||
+        strcmp(profile,"callfail")==0))assert(!ogl_dlist_used&&dlist==0);
     assert(!begin_mode&&!current_list);
     if(drv_osd_enabled)check_dlist_osd();
 }
@@ -477,9 +490,10 @@ static void check_cached_frame(int indexed)
     }else if(strcmp(profile,"listfail")==0&&!(indexed&&drv_texture_enabled)){
         assert(emitted_vertices==previous_vertices+frame_geometry.vertices);
         assert(native_lists==0&&dlist==0&&list_attempts>0);
-    }else if(strcmp(profile,"newlistfail")==0||strcmp(profile,"listcompilefail")==0){
+    }else if(strcmp(profile,"newlistfail")==0||strcmp(profile,"listcompilefail")==0||
+             strcmp(profile,"validationfail")==0||strcmp(profile,"callfail")==0){
         assert(emitted_vertices==previous_vertices+frame_geometry.vertices*
-               (strcmp(profile,"listcompilefail")==0?2U:1U));
+               (strcmp(profile,"newlistfail")==0?1U:2U));
         assert(native_lists==previous_lists+1U&&dlist==0&&list_deletions==native_lists);
     }else assert(emitted_vertices==previous_vertices&&native_lists==previous_lists);
 }
@@ -488,6 +502,17 @@ static void check_display_list_toggle(int indexed)
 {
     unsigned int level,previous_posts,previous_attempts,previous_calls;
     unsigned int previous_deletions;
+    /* Simulate a previously defined cache disappearing. The invalid object
+     * must not execute, and the next frame must recover with a fresh list. */
+    assert(ogl_dlist_enabled&&dlist!=0&&!drv_texture_enabled);
+    list_exists[dlist]=0;
+    previous_attempts=list_attempts;previous_calls=list_calls;
+    previous_deletions=list_deletions;
+    render_checked(indexed);
+    assert(!ogl_dlist_used&&dlist==0&&list_attempts==previous_attempts&&
+           list_calls==previous_calls&&list_deletions==previous_deletions+1U);
+    render_checked(indexed);
+    assert(ogl_dlist_used&&dlist!=0&&list_attempts==previous_attempts+1U);
     for(level=0;level<5;++level){
         assert(ogl_dlist_enabled&&dlist!=0&&!drv_texture_enabled);
         previous_posts=redisplay_posts;previous_deletions=list_deletions;
@@ -603,6 +628,9 @@ int main(int argc,char **argv)
     if(strcmp(profile,"listfail")==0)puts("PASS OpenGL display-list allocation failure: complete uncached geometry at every resolution without invalid list calls");
     if(strcmp(profile,"newlistfail")==0||strcmp(profile,"listcompilefail")==0)
         puts("PASS OpenGL display-list compilation failure: rejected or incomplete lists are deleted before complete immediate rendering");
+    if(strcmp(profile,"validationfail")==0||strcmp(profile,"callfail")==0)
+        puts("PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail");
+    puts("PASS OpenGL display-list OSD: on requires successful current-frame execution, disabled is off, failures and software texturing report fail using OpenGL 1.1 calls");
 #ifdef TRI
     puts("PASS retained OpenGL TRI: native and indexed-texture traversal, five resolutions and display-list caching");
 #else
