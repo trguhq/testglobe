@@ -223,8 +223,8 @@ void ogl_checkerror(void)
 /* draw a string with bitmap text */
 void ogl_draw_string(char * str, int x, int y)
 {
-    glRasterPos2i(x, y);
     int i;
+    glRasterPos2i(x, y);
     for (i=0; *(str+i) != 0; str++)
     {
         glutBitmapCharacter(ogl_font, *(str+i));
@@ -425,7 +425,7 @@ void drv_draw_osd(void)
     glLoadIdentity();
     
     ogl_draw_string(drv_help, 10, 10);
-    snprintf(status_str, 255, "%i triangles (%i visible), texture mapping %s, %.2f frames per second", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"), drv_fps_average);
+    snprintf(status_str, sizeof(status_str), "%lu triangles (%lu visible), texture mapping %s, %.2f frames per second", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"), drv_fps_average);
     ogl_draw_string(status_str, 10, drv_win_height - 18);
     
     if (drv_texture_enabled)

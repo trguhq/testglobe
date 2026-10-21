@@ -21,6 +21,8 @@
 #ifndef drv_ext_h
 #define drv_ext_h
 
+#include "testglob.h"
+#include "drv.h"
 #include "types.h"
 
 extern unsigned int drv_win_x;
@@ -51,11 +53,26 @@ extern int drv_auto_enabled;
 extern void drv_ext_init(void);
 extern void drv_init(int *argc, char **argv);
 extern int drv_init_window(int in_x, int in_y, int in_width, int in_height);
-extern void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *color);
-extern void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, Coord* uv2, Coord* uv3);
+#ifdef TRI
+extern void drv_draw_tri_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                  Vertex TG_HUGE *xyz3, Color_RGB TG_HUGE *color);
+#ifdef TEXTURE
+extern void drv_draw_tri_flat_uv(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                 Vertex TG_HUGE *xyz3, Coord TG_HUGE *uv1,
+                                 Coord TG_HUGE *uv2, Coord TG_HUGE *uv3);
+#endif
+#endif
+#ifdef QUAD
+/* The historical rgb suffix denotes a flat face; Color can be a LUT index. */
+extern void drv_draw_quad_flat_rgb(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
+                                   Vertex TG_HUGE *xyz3, Vertex TG_HUGE *xyz4,
+                                   Color TG_HUGE *color);
+#endif
 extern void drv_loop(void);
+#ifdef TEXTURE
 extern void drv_texture_enable(void);
 extern void drv_texture_disable(void);
+#endif
 extern void drv_draw_osd(void);
 extern void drv_fps_start(void);
 extern void drv_fps_stop(void);

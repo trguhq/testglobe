@@ -21,6 +21,10 @@
 #ifndef drv_ogl_h
 #define drv_ogl_h
 
+#if !defined(FLAT) || !defined(TRI)
+#error OpenGL requires the FLAT and TRI build options
+#endif
+
 #ifndef DRV
 #define DRV
 #endif
@@ -43,6 +47,7 @@
 #define DRV_FPS_HISTORY 60
 #define DRV_FPS_DEFAULT TRUE
 #define DRV_ROTATE 10.0f
+#define GLOBE_DEFAULT_LONGITUDE 512
 
 #define EARTH
 #define EARTH_32

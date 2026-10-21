@@ -20,6 +20,13 @@
 #ifndef types_h
 #define types_h
 
+/* Microsoft C 7 huge pointers normalize arithmetic across 64 KiB segments. */
+#ifdef SEG86
+#define TG_HUGE _huge
+#else
+#define TG_HUGE
+#endif
+
 typedef struct Vertex
 {
     float x;

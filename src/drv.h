@@ -18,6 +18,13 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#ifndef drv_h
+#define drv_h
+
+#if defined(DRV_OGL) && defined(DRV_MTX)
+#error Select only one graphics driver
+#endif
+
 #ifdef DRV_MTX
 #include "drv_mtx.h"
 #endif
@@ -33,3 +40,5 @@
 #ifdef DRV_QD
 #include "drv_qd.h"
 #endif
+
+#endif /* drv_h */

@@ -1,233 +1,366 @@
 /*
- * testglobe - display 3d globe to test 3d hardware
- * drv_mtx.c - Matrox LibShell driver
- *
+ * testglobe - Matrox LibShell driver for 16-bit Microsoft C 7 /AH.
  * Copyright (C) 2026 trguhq
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
-
-#define DRV_MTX
-
-#include <stdlib.h>
 #include "testglob.h"
+#ifdef DRV_MTX
+#include <stdlib.h>
+#include <stdio.h>
+#include <math.h>
+#include <conio.h>
+#include <dos.h>
 #include "drv.h"
+#include "globe.h"
 #include "glob_ext.h"
 #include "drv_ext.h"
 
-#ifdef DRV_MTX
+/* /AH and the matching LSCL.LIB supply far code/data pointers. DEF.H must
+ * precede prototypes. The C binding converts float V3COORDs to 16.16. */
+#include "XGX1/HEADERS/DEF.H"
+#ifndef PROTO
+#define PROTO
+#endif
+#include "XGX1/HEADERS/LIBFN.H"
+#include "XGX1/HEADERS/IOLIB.H"
 
-/* map of PG card interface */
+/* Required communication object, as in the supplied LSINFO.C example. */
 struct pg_com pg;
+static int mtx_initialized;
+static int mtx_palette_saved;
+static int mtx_dirty = TRUE;
+static int mtx_mouse_present;
+static unsigned short mtx_previous_lut;
+static unsigned short mtx_background;
+static unsigned short mtx_foreground;
+static struct Lutval mtx_saved_palette[256];
+static struct Lutval mtx_palette[256];
+/* Only the visibility test uses this object-space orthographic eye vector.
+ * LibShell transforms, clips and rasterizes every retained polygon. */
+static float mtx_eye_x;
+static float mtx_eye_y;
+static float mtx_eye_z = 1.0f;
 
-#define LOBYTE(word_val) (word_val & 0xFF)
-#define HIBYTE(word_val) ((word_val >> 8) & 0xFF)
-
-/* previous mouse pointer location */
-static int mtx_old_x;
-static int mtx_old_y;
-
-/* initialize graphics subsystem */
-void drv_init(int *argc, char **argv)
+static void mtx_cleanup(void)
 {
-    lsinit(0, 1);
+    if (!mtx_initialized)
+        return;
+    if (mtx_palette_saved)
+    {
+        lslutmd(0, 0, 256, mtx_saved_palette);
+        lslutsl(mtx_previous_lut, 0);
+    }
     ioflush();
+    lslibsync();
+    lsemulen(1);
+    ioflush();
+    mtx_initialized = FALSE;
 }
 
-/* cleanly close window */
 void drv_close(void)
 {
-    ioflush();
-    lsemulen();
+    globe_free();
+    /* atexit also restores the board after shared allocation failures. */
     exit(0);
 }
 
-/* keyboard input */
-void mtx_keyboard(unsigned char key, int x, int y)
+static void mtx_init_mouse(void)
 {
-    switch(key)
+    union REGS regs;
+    mtx_mouse_present = FALSE;
+    /* Some DOS installations leave INT33h null; others point to IRET. */
+    if (_dos_getvect(0x33) == NULL)
+        return;
+    memset(&regs, 0, sizeof(regs));
+    regs.x.ax = 0;
+    int86(0x33, &regs, &regs);
+    if (regs.x.ax == 0xffff)
+    {
+        mtx_mouse_present = TRUE;
+        regs.x.ax = 0x0b;
+        int86(0x33, &regs, &regs); /* Discard motion accumulated at startup. */
+    }
+}
+
+void drv_init(int *argc, char **argv)
+{
+    short system_info[10];
+    (void)argc;
+    (void)argv;
+    lsinit(0, 1);
+    ioflush();
+    mtx_initialized = TRUE;
+    if (atexit(mtx_cleanup) != 0)
+    {
+        mtx_cleanup();
+        error("Cannot register Matrox cleanup");
+    }
+    lsinqsys();
+    ioflush();
+    iogetbuf(system_info, 10);
+    if ((unsigned short)system_info[0] < DRV_WIN_WIDTH ||
+        (unsigned short)system_info[1] < DRV_WIN_HEIGHT ||
+        (unsigned short)system_info[2] < 256)
+        error("Matrox LibShell needs a 640x480, 256-color display");
+    /* Preserve the table replaced and the currently displayed LUT label. */
+    lsinq(78);
+    ioflush();
+    mtx_previous_lut = (unsigned short)iogetw();
+    lslutrd(0, 0, 256);
+    ioflush();
+    iogetbuf((short *)mtx_saved_palette, 256 * 3);
+    mtx_palette_saved = TRUE;
+    mtx_init_mouse();
+}
+
+int drv_init_window(int in_x, int in_y, int in_width, int in_height)
+{
+    int i;
+    unsigned short brightness;
+    unsigned short darkest = 766;
+    unsigned short lightest = 0;
+    /* PG-641 display dimensions are fixed, not a desktop window. */
+    (void)in_x;
+    (void)in_y;
+    (void)in_width;
+    (void)in_height;
+    drv_win_x = 0;
+    drv_win_y = 0;
+    drv_win_width = DRV_WIN_WIDTH;
+    drv_win_height = DRV_WIN_HEIGHT;
+    for (i = 0; i < 256; ++i)
+    {
+        /* Eight-bit DACs use bits0..7; four-bit DACs use bits4..7.
+         * Both accept the original earth_cmap component values 0..255. */
+        mtx_palette[i].red = earth_cmap[i][0];
+        mtx_palette[i].green = earth_cmap[i][1];
+        mtx_palette[i].blue = earth_cmap[i][2];
+        brightness = mtx_palette[i].red + mtx_palette[i].green +
+                     mtx_palette[i].blue;
+        if (brightness < darkest)
+        {
+            darkest = brightness;
+            mtx_background = (unsigned short)i;
+        }
+        if (brightness > lightest)
+        {
+            lightest = brightness;
+            mtx_foreground = (unsigned short)i;
+        }
+    }
+    lslutmd(0, 0, 256, mtx_palette);
+    lslutsl(0, 0);
+    lslutpm(0, 0xff);
+    lssbm(-1);
+    lssclpl(-1);
+    scsorg(0, 0);
+    v2gpsvwp(0, DRV_WIN_WIDTH - 1, 0, DRV_WIN_HEIGHT - 1);
+    /* 4:3 aspect, 400-pixel globe diameter, room for the status display. */
+    v2gpswdw(-1600.0, 1600.0, -1200.0, 1200.0);
+    v3gpsproj(0);                /* Documented orthographic projection. */
+    v3gpsdist(3000.0);
+    v3gpshclip(0);
+    v3gpsyclip(0);
+    krhwsbop(0);                 /* REPLACE, not SET-all-ones. */
+    krhwsmsk(0xff);
+    krhwstdef(0);
+    lssafapat(-1);               /* Solid fill, no board-specific shading. */
+    krgcdi();
+    lssfont(-4);                 /* Documented 640x480, 8x16 raster font. */
+    sctxsalign(0, 0);
+    sctxsdmode(0);               /* Text must not enqueue read-FIFO replies. */
+    sctxssf(1.0, 1.0);
+    ioflush();
+    lslibsync();
+    mtx_dirty = TRUE;
+    return 1;
+}
+
+static short mtx_angle(float angle)
+{
+    while (angle < 0.0f) angle += 360.0f;
+    while (angle >= 360.0f) angle -= 360.0f;
+    return (short)angle;
+}
+
+static void mtx_set_transform(void)
+{
+    short yaw = mtx_angle(drv_rot_y);
+    short pitch = mtx_angle(90.0f + drv_rot_x);
+    double yaw_radians = (double)yaw * PI / 180.0;
+    double pitch_radians = (double)pitch * PI / 180.0;
+    double sin_pitch = sin(pitch_radians);
+    /* A single rotation in each stage avoids undocumented cumulative
+     * matrix ordering. Globe longitude runs around its Z axis. The view
+     * command moves the viewer about X around the reference point. */
+    v3mdid();
+    v3mdorg(0.0, 0.0, 0.0);
+    v3mdrotz(yaw);
+    v3vwid();
+    v3vwrpt(0.0, 0.0, 0.0);
+    v3vwrotx(pitch);
+    /* Inverse model yaw applied to the viewer's world-space direction.
+     * Use exactly the integer-degree angles sent to LibShell. */
+    mtx_eye_x = (float)(-sin(yaw_radians) * sin_pitch);
+    mtx_eye_y = (float)(-cos(yaw_radians) * sin_pitch);
+    mtx_eye_z = (float)cos(pitch_radians);
+}
+
+void drv_draw_quad_flat_rgb(Vertex TG_HUGE *xyz1,
+                            Vertex TG_HUGE *xyz2,
+                            Vertex TG_HUGE *xyz3,
+                            Vertex TG_HUGE *xyz4,
+                            Color TG_HUGE *color)
+{
+    struct V3coord vertices[4];
+    Vertex TG_HUGE *source[4];
+    unsigned short count = 0;
+    unsigned short i;
+    float ax, ay, az, bx, by, bz;
+    float nx, ny, nz;
+    source[0] = xyz1;
+    source[1] = xyz2;
+    source[2] = xyz3;
+    source[3] = xyz4;
+    /* Tiny contiguous far-data packet for the SDK: never pass huge mesh
+     * pointers directly to legacy bindings. Compact repeated pole
+     * vertices into three-vertex caps to avoid degenerate quad fills. */
+    for (i = 0; i < 4; ++i)
+    {
+        if (count != 0 && source[i]->x == vertices[count - 1].x &&
+            source[i]->y == vertices[count - 1].y &&
+            source[i]->z == vertices[count - 1].z)
+            continue;
+        vertices[count].x = source[i]->x;
+        vertices[count].y = source[i]->y;
+        vertices[count].z = source[i]->z;
+        ++count;
+    }
+    if (count > 1 && vertices[count - 1].x == vertices[0].x &&
+        vertices[count - 1].y == vertices[0].y &&
+        vertices[count - 1].z == vertices[0].z)
+        --count;
+    if (count < 3) return;
+    /* Base LIB Shell fills do not remove hidden surfaces. Rejecting
+     * back faces is sufficient for a convex globe: the retained facets
+     * overlap only at edges. LibShell performs all vertex transforms,
+     * projection, clipping and polygon filling. */
+    ax = vertices[1].x - vertices[0].x;
+    ay = vertices[1].y - vertices[0].y;
+    az = vertices[1].z - vertices[0].z;
+    bx = vertices[2].x - vertices[0].x;
+    by = vertices[2].y - vertices[0].y;
+    bz = vertices[2].z - vertices[0].z;
+    nx = ay * bz - az * by;
+    ny = az * bx - ax * bz;
+    nz = ax * by - ay * bx;
+    if (nx * mtx_eye_x + ny * mtx_eye_y + nz * mtx_eye_z <= 0.0f)
+        return;
+    krhwsfcol((unsigned short)color->color);
+    v3arwplygn(count, vertices);
+    ++globe_quads_num_vis;
+}
+
+void drv_draw_osd(void)
+{
+    char status[96];
+    krhwsfcol(mtx_foreground);
+    sctxbstring(8, DRV_WIN_HEIGHT - 20, drv_help);
+    sprintf(status, "%lu quads (%lu visible), %.2f frames per second",
+            globe_quads_num, globe_quads_num_vis, (double)drv_fps_average);
+    sctxbstring(8, 8, status);
+}
+
+void drv_render(void)
+{
+    drv_fps_start();
+    krhwcclr(mtx_background);
+    mtx_set_transform();
+    globe_quads_num_vis = 0;
+    globe_draw_quads();
+    if (drv_osd_enabled) drv_draw_osd();
+    ioflush();
+    lslibsync();                 /* FPS includes actual board execution. */
+    drv_fps_stop();
+    if (drv_auto_enabled) drv_globe_rotate();
+}
+
+static void mtx_keyboard(unsigned char key)
+{
+    switch (key)
     {
         case 27:
             drv_close();
+            break;
         case '1':
         case '2':
-        case '3':
-        case '4':
-        case '5':
-            /* in this case the routines in globe.c understand the same keys we have for OpenGL */
-            globe_toggle_res(key);
+            globe_toggle_res((char)key);
+            mtx_dirty = TRUE;
             break;
         case 'a':
         case 'A':
             drv_auto_enabled = !drv_auto_enabled;
+            mtx_dirty = TRUE;
             break;
-        case 'O':
         case 'o':
+        case 'O':
             drv_osd_enabled = !drv_osd_enabled;
+            mtx_dirty = TRUE;
             break;
         default:
             break;
     }
 }
 
-/* callback for mouse movement */
-void mtx_mouse_move(int x, int y)
+static void mtx_poll_mouse(void)
 {
-    int change_x;
-    int change_y;
-    
-    if (drv_lmouse_pressed)
+    union REGS regs;
+    short dx, dy;
+    if (!mtx_mouse_present) return;
+    memset(&regs, 0, sizeof(regs));
+    regs.x.ax = 3;
+    int86(0x33, &regs, &regs);
+    drv_lmouse_pressed = (regs.x.bx & 1) != 0;
+    drv_rmouse_pressed = (regs.x.bx & 2) != 0;
+    /* Relative mickeys avoid VGA/CGA coordinate ranges and clipping when
+     * the mouse controls an independent Matrox display. */
+    regs.x.ax = 0x0b;
+    int86(0x33, &regs, &regs);
+    dx = (short)regs.x.cx;
+    dy = (short)regs.x.dx;
+    if (drv_lmouse_pressed && (dx != 0 || dy != 0))
     {
-        change_x = x - mtx_old_x;
-        change_y = y - mtx_old_y;
-        drv_rot_y += (float) change_x * 100.0f / (float)drv_win_width;
-        if (drv_rot_y > 360.0f)
-        {
-            drv_rot_y -= 360.0f;
-        } else if (drv_rot_y < 0.0f)
-        {
-            drv_rot_y += 360.0f;
-        }
-        drv_rot_x += (float) change_y * 100.0f / (float)drv_win_height;
-        if (drv_rot_x > 360.0f)
-        {
-            drv_rot_x -= 360.0f;
-        } else if (drv_rot_x < 0.0f)
-        {
-            drv_rot_x += 360.0f;
-        }
-        mtx_old_x = x;
-        mtx_old_y = y;
+        drv_rot_y += (float)dx * 100.0f / (float)DRV_WIN_WIDTH;
+        drv_rot_x += (float)dy * 100.0f / (float)DRV_WIN_HEIGHT;
+        while (drv_rot_y < 0.0f) drv_rot_y += 360.0f;
+        while (drv_rot_y >= 360.0f) drv_rot_y -= 360.0f;
+        while (drv_rot_x < 0.0f) drv_rot_x += 360.0f;
+        while (drv_rot_x >= 360.0f) drv_rot_x -= 360.0f;
+        mtx_dirty = TRUE;
     }
 }
 
-/* callback for mouse click */
-void mtx_mouse(int button, int state, int x, int y)
-{
-
-}
-
-/* draw a string with bitmap text */
-void mtx_draw_string(char * str, int x, int y)
-{
-}
-
-/* render current scene */
-void drv_render(void)
-{
-    drv_fps_start();
- 
-    if (drv_osd_enabled)
-    {
-        drv_draw_osd();
-    }
-    
-    drv_fps_stop();
-    
-    if (drv_auto_enabled == TRUE)
-    {
-        drv_globe_rotate();
-    }
-}
-
-/* resize window */
-void drv_resize(int width, int height) {
-    drv_win_width = width;
-    drv_win_height = height;
-    
-}
-
-/* load texture */
-void drv_texture_load(void)
-{
-    drv_texture_loaded = TRUE;
-}
-
-/* set rendering pipeline to textures */
-void drv_texture_enable(void)
-{
-    if (!drv_texture_loaded) drv_texture_load();
-    drv_texture_enabled = TRUE;
-}
-
-/* turn off textures */
-void drv_texture_disable(void)
-{
-    drv_texture_enabled = FALSE;
-}
-
-/* initialize a window, all values < 1 for full screen/default */
-int drv_init_window(int in_x, int in_y, int in_width, int in_height)
-{
-    if (in_x > 0)
-        drv_win_x = in_x;
-    else
-        in_x = drv_win_x;
-    if (in_y > 0)
-        drv_win_y = in_y;
-    else
-        in_y = drv_win_y;
-    if (in_width > 0)
-        drv_win_width = in_width;
-    else
-        in_width = drv_win_width;
-    if (in_height > 0)
-        drv_win_height = in_height;
-    else
-        in_height = drv_win_height;
-
-    return 1;
-}
-
-/* main loop */
 void drv_loop(void)
 {
-} 
-
-/* draw flat shaded colored triangle */
-void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *color)
-{
-}
-
-/* draw flat shaded colored quad */
-void drv_draw_quad_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Vertex *xyz4, Color_RGB *color)
-{
-}
-
-/* draw flat shaded textured triangle */
-void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, Coord *uv2, Coord *uv3)
-{
-/* not available in this driver */
-}
-
-/* draw the OSD */
-void drv_draw_osd(void)
-{
-    char status_str[256];
-    
-    /* due to differences in implementation this has to be disabled for Mesa */
-    if (drv_texture_enabled)
+    int key;
+    for (;;)
     {
-    }
-    
-    mtx_draw_string(drv_help, 10, 10);
-    snprintf(status_str, 255, "%i triangles (%i visible), texture mapping %s, %.2f frames per second", globe_tris_num, globe_tris_num_vis, (drv_texture_enabled ? "on" : "off"), drv_fps_average);
-    mtx_draw_string(status_str, 10, drv_win_height - 18);
-    
-    if (drv_texture_enabled)
-    {
+        while (kbhit())
+        {
+            key = getch();
+            if (key == 0 || key == 0xe0)
+            {
+                (void)getch();
+                continue;
+            }
+            mtx_keyboard((unsigned char)key);
+        }
+        mtx_poll_mouse();
+        if (mtx_dirty || drv_auto_enabled)
+        {
+            drv_render();
+            mtx_dirty = FALSE;
+        }
     }
 }
-
-#endif
+#endif /* DRV_MTX */

@@ -20,6 +20,7 @@
 #include <stdio.h>
 
 #include "testglob.h"
+#include "drv.h"
 #include "globe.h"
 #include "drv_ext.h"
 #include "glob_ext.h"
@@ -31,11 +32,11 @@ int main(int argc, char **argv) {
 
     printf("%s %i.%i\n", TESTGLOBE_NAME, TESTGLOBE_VERSION_MAJOR, TESTGLOBE_VERSION_MINOR);
     printf("Driver: %s\n", drv_name);
-    printf("Resolution: %i x %i\n", drv_win_width, drv_win_height);
-    printf("Color depth: %u bpp (%u colors)\n", drv_bits_per_pixel, drv_colors);
+    printf("Resolution: %u x %u\n", drv_win_width, drv_win_height);
+    printf("Color depth: %u bpp (%lu colors)\n", drv_bits_per_pixel, drv_colors);
     printf("Color mapped: %s\n", (drv_colormapped == TRUE ? "yes" : "no"));
     if (drv_colormapped == TRUE) {
-        printf("Palette: %u (%u colors)\n", drv_colormap_bits, drv_colormap_colors);
+        printf("Palette: %u (%lu colors)\n", drv_colormap_bits, drv_colormap_colors);
     }
 #ifdef TEXTURE
     printf("Texture mapping: %s (%s)\n", (drv_texture_avail == TRUE ? "available" : "none"),
