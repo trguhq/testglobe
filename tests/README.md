@@ -158,9 +158,19 @@ alpha queries, exact indexed palette colors/restoration, missing depth buffers,
 unknown/absent texture capabilities, older headers, optional affine-texture
 subdivision, keyboard controls, tied mouse movement, focus, redraw sizing, queue
 overflow, Escape, and window quit.
+Deleted native geometry objects are checked in flat and textured modes: the driver
+draws the complete geometry directly and rebuilds the cache on the next frame.
 
 Software-texture profiles verify both the default raster release on disable and
 the optional `TEXTURE_CACHE_RASTER=1` retained cache.
+
+Texture status checks distinguish current-frame native submission or software presentation
+(`texture on`), manual disable (`texture off`), and detected failure while enabled
+(`texture fail`). Recoverable failures must draw complete flat geometry, invalidate
+incompatible cached geometry, preserve the user's request, and allow an off/on retry.
+The IRIX 4.0 native texture and pixel-transfer calls return no success value, so
+the tests check submitted calls and observable failures without claiming detection
+of silent errors inside the SGI library or hardware.
 
 At resolution 512 it verifies 1,278 native meshes and 263,676 submitted vertices,
 with 1,026-vertex interior bands and separate nondegenerate polar caps. Textured
@@ -206,6 +216,13 @@ Separate `drv_draw_tristrip_flat_rgb()` and `drv_draw_tristrip_flat_uv()` callba
 verify that flat facets retain their RGB values and textured strips retain their
 UVs. The textured native facet metadata is white because XGL's REPLACE operation
 uses the texture color directly.
+
+Texture failure checks cover the short `texture on`, `texture off`, and
+`texture fail` status labels, complete flat fallback while preserving the enabled
+request, partial-resource cleanup, and off/on retry. Status reflects use in the
+current frame rather than the toggle alone. Recovery is limited to errors XGL
+classifies as recoverable; nonrecoverable and unrelated rendering errors retain
+their fatal handling.
 
 `tests/xgl_record/xgl/xgl.h` is a small, manual-derived recording contract with
 test-local symbolic values. It is **not Sun's SDK header**, an ABI-compatible

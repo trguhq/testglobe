@@ -212,6 +212,37 @@ def main():
             for mode in ("double", "single"):
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode])
+            xgl_texture_failures = {
+                "stagefail": "Cannot generate XGL texture image",
+                "rasterfail": "Cannot allocate XGL texture raster",
+                "accessfail": "Cannot access XGL texture raster",
+                "mipmapfail": "Cannot create XGL mipmap",
+                "buildfail": "Cannot build XGL mipmap",
+                "mapfail": "Cannot create XGL texture map",
+                "configurefail": "Cannot configure XGL texture map",
+                "bindfail": "XGL texture is not active",
+                "inactive": "Cannot use XGL texture",
+                "drawfail": "Cannot use XGL texture",
+                "flushfail": "Cannot use XGL texture",
+                "unloaded": "XGL texture data is not loaded",
+                "stripallocfail": "Cannot allocate XGL texture strip packet",
+            }
+            xgl_native_error = "XGL error: test-123: injected texture failure (test operator)\n"
+            for mode, message in xgl_texture_failures.items():
+                native_error = mode in ("buildfail", "mapfail", "configurefail",
+                                        "bindfail", "drawfail", "flushfail")
+                run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
+                     str(output / "xgl"), mode],
+                    expected_stderr=(xgl_native_error if native_error else "") +
+                                    "Sun XGL texture: " + message + "\n",
+                    required_output="PASS XGL recoverable texture failure:")
+            for mode in ("fataltexture", "fataloverlay", "fatalcleanup", "fatalosd", "fatalmodel"):
+                run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
+                     str(output / "xgl"), mode], expected_returncode=1,
+                    expected_stderr=xgl_native_error +
+                                    "ERROR - Sun XGL operation failed; see the XGL diagnostic\n",
+                    required_output=("PASS XGL recorded cleanup:" if mode == "fataloverlay"
+                                     else "PASS XGL nonrecoverable error:"))
         if args.ogl_contract:
             ogl = ["-DFLAT", "-DDRV_OGL", "-I" + str(ROOT / "tests/ogl_record")]
             ogl_sources = [str(ROOT / "tests/ogl.c"),
@@ -291,6 +322,19 @@ def main():
             for mode in ("double", "single", "indexed", "indexed-single", "noz", "software", "unknown", "affine", "winquit", "winshut",
                          "rgba", "rgba-single", "rgb-single", "unknown-alpha"):
                 run([str(output / "igl"), mode])
+            igl_texture_failures = {
+                "stagefail": "Cannot generate IRIS GL texture image",
+                "imagefail": "Cannot allocate IRIS GL texture image",
+                "softmipfail": "Cannot allocate IRIS GL software texture mipmaps",
+                "softframefail": "Cannot prepare IRIS GL software texture framebuffer",
+                "softpixelsfail": "IRIS GL software texture pixels are unavailable",
+                "capabilitylost": "IRIS GL native texturing is unavailable",
+                "unloadedtexture": "IRIS GL texture data is not loaded",
+            }
+            for mode, message in igl_texture_failures.items():
+                run([str(output / "igl"), mode],
+                    expected_stderr="IRIS GL texture: " + message + "\n",
+                    required_output="PASS IRIS GL recoverable texture failure:")
             run(cc + common + igl + ["-DIGL_TEST_OLD_HEADERS",
                 str(ROOT / "tests/igl.c"), str(ROOT / "src/texsoft.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),

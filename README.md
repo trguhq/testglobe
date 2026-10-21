@@ -389,10 +389,22 @@ without it, each strip is expanded into its original alternating triangles for t
 shared `src/texsoft.c` rasterizer, which supplies perspective-correct texture
 interpolation, homogeneous clipping, depth testing, repeated UVs, and filtered mipmaps,
 then presents the resulting pixel raster through IRIS GL. Native transforms still
-provide the matrices, and ordinary flat drawing stays native. The OSD identifies whether
-enabled texturing is native or software. OpenGL links this floating-point fallback as
-`texsoft.o`, and IRIS GL as `i_soft.o`; the segmented GDI/QuickDraw integer module
-remains separate.
+provide the matrices, and ordinary flat drawing stays native. OpenGL links this
+floating-point fallback as `texsoft.o`, and IRIS GL as `i_soft.o`; the segmented
+GDI/QuickDraw integer module remains separate.
+
+The top OSD uses `texture on` for the current frame's native texture submission or
+completed software texture presentation, `texture off` when disabled, and
+`texture fail` for detected failures while texturing is enabled. Recoverable texture
+failures discard failed texture state and invalidate cached geometry before drawing
+the globe's flat Earth colors. Toggle `t` off and on to retry; the bottom help retains
+its texture-mapping key description.
+
+The IRIX 4.0 texture definition, binding, and pixel-transfer calls used here return
+no success value. Their native submission cannot independently confirm hardware
+success. The driver detects allocation failures, missing texture data, and lost
+texture capability; silent errors inside the native library still require validation
+on the SGI runtime.
 
 #### Validation
 
@@ -441,6 +453,13 @@ replacement is needed.
 `drv_draw_tristrip_flat_rgb()` and textured strips through the separate
 `drv_draw_tristrip_flat_uv()` callback. Both native entry points live together in
 `drv_xgl.c`; texturing uses XGL's REPLACE operation and preserves the original UVs.
+
+The top OSD uses the same `texture on`, `texture off`, and `texture fail` labels as
+OpenGL and IRIS GL. Enabled textures report `texture on` only after use in the current
+frame. Recoverable texture failures release partial resources and draw the globe with
+flat colors and `texture fail`; toggle `t` off and on to retry. XGL errors classified as
+nonrecoverable remain fatal, as do unrelated setup, flat-rendering, and OSD errors.
+The bottom help retains its texture-mapping key description.
 
 X11 supplies keyboard, button, drag, expose, resize, and window-close events. The driver
 starts at `EARTH_128` (key 3), matching IRIS GL; keys 1-5 still select `EARTH_32`,

@@ -38,6 +38,8 @@ static int igl_indexed;
 static int igl_has_zbuffer;
 static int igl_native_texture;
 static int igl_texture_perspective;
+static int igl_texture_failed;
+static int igl_texture_used;
 static int igl_palette_saved;
 static short igl_saved_palette[256][3];
 static unsigned int igl_background;
@@ -75,8 +77,38 @@ static void igl_bind_texture(int enabled)
 
 static void igl_invalidate_object(void)
 {
-    if (igl_object >= 0) delobj(igl_object);
+    if (igl_object >= 0 && isobj(igl_object)) delobj(igl_object);
     igl_object = -1;
+}
+
+/* Baseline IRIX 4.0 texture and pixel-transfer calls return void. Query
+ * documented capabilities and report every failure the API can expose;
+ * residency queries from later hardware are not definition-validity tests. */
+static int igl_texture_native_ready(void)
+{
+#ifdef GD_TEXTURE
+    if (!igl_native_texture || getgdesc(GD_TEXTURE) <= 0) return FALSE;
+#ifdef GD_TEXTURE_PERSP
+    if (igl_texture_perspective && getgdesc(GD_TEXTURE_PERSP) <= 0) return FALSE;
+#endif
+    return TRUE;
+#else
+    return FALSE;
+#endif
+}
+
+static void igl_texture_failure(const char *message)
+{
+    igl_texture_failed = TRUE;
+    igl_texture_used = FALSE;
+    drv_texture_loaded = FALSE;
+    igl_bind_texture(FALSE);
+    igl_invalidate_object();
+    texsoft_free();
+    texture_free();
+    /* Native texture definitions are retained by IRIS GL until redefined
+     * or the graphics connection closes; unbind them before flat fallback. */
+    fprintf(stderr, "IRIS GL texture: %s\n", message);
 }
 
 static void igl_cleanup(void)
@@ -99,6 +131,8 @@ static void igl_cleanup(void)
     texture_free();
     globe_free();
     drv_texture_loaded = FALSE;
+    drv_texture_enabled = FALSE;
+    igl_texture_failed = igl_texture_used = FALSE;
 }
 
 void drv_close(void)
@@ -294,25 +328,36 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     return 1;
 }
 
-static void igl_texture_load(void)
+static int igl_texture_load(void)
 {
     unsigned long *image, i, count;
 #ifdef GD_TEXTURE
     float texture_properties[7];
     float environment[2];
 #endif
-    texture_generate(TEXTURE_DEFAULT_SIZE);
+    if (!texture_try_generate(TEXTURE_DEFAULT_SIZE))
+    {
+        igl_texture_failure("Cannot generate IRIS GL texture image");
+        return FALSE;
+    }
     if (!igl_native_texture)
     {
         if (!texsoft_texture(texture_size, texture_size / 2U, texture_data))
-            error("Cannot allocate software texture mipmaps");
+        {
+            igl_texture_failure("Cannot allocate IRIS GL software texture mipmaps");
+            return FALSE;
+        }
     }
     else
     {
 #ifdef GD_TEXTURE
         count = (unsigned long)texture_size * (texture_size / 2U);
         image = (unsigned long *)malloc((size_t)count * sizeof(unsigned long));
-        if (image == NULL) error("Cannot allocate IRIS GL texture image");
+        if (image == NULL)
+        {
+            igl_texture_failure("Cannot allocate IRIS GL texture image");
+            return FALSE;
+        }
         for (i = 0; i < count; ++i)
             image[i] = 0xff000000UL | (unsigned long)texture_data[i * 3UL] |
                        ((unsigned long)texture_data[i * 3UL + 1UL] << 8) |
@@ -332,6 +377,11 @@ static void igl_texture_load(void)
         environment[0] = TV_DECAL;
         environment[1] = TV_NULL;
         tevdef(1, 2, environment);
+        if (!igl_texture_native_ready())
+        {
+            igl_texture_failure("IRIS GL native texturing is unavailable");
+            return FALSE;
+        }
 #else
         image = NULL; i = count = 0;
         (void)image; (void)i; (void)count;
@@ -339,21 +389,29 @@ static void igl_texture_load(void)
     }
     texture_free();
     drv_texture_loaded = TRUE;
+    return TRUE;
 }
 
 void drv_texture_enable(void)
 {
-    if (!drv_texture_loaded) igl_texture_load();
-    igl_bind_texture(TRUE);
+    igl_texture_failed = igl_texture_used = FALSE;
     drv_texture_enabled = TRUE;
     igl_invalidate_object();
     igl_dirty = TRUE;
+    if (igl_native_texture && !igl_texture_native_ready())
+    {
+        igl_texture_failure("IRIS GL native texturing is unavailable");
+        return;
+    }
+    if (!drv_texture_loaded && !igl_texture_load()) return;
+    igl_bind_texture(TRUE);
 }
 
 void drv_texture_disable(void)
 {
     igl_bind_texture(FALSE);
     drv_texture_enabled = FALSE;
+    igl_texture_failed = igl_texture_used = FALSE;
 #if !TEXTURE_CACHE_RASTER
     texsoft_release_raster();
 #endif
@@ -484,7 +542,7 @@ void drv_draw_osd(void)
     if (drv_win_width <= 16 || drv_win_height <= 16) return;
     mmode(MVIEWING); getmatrix(model);
     mmode(MPROJECTION); getmatrix(projection);
-    if (drv_texture_enabled) igl_bind_texture(FALSE);
+    if (igl_texture_used) igl_bind_texture(FALSE);
     if (igl_has_zbuffer) zbuffer(FALSE);
     backface(FALSE);
     mmode(MVIEWING); loadmatrix(igl_identity);
@@ -495,8 +553,8 @@ void drv_draw_osd(void)
     font(0);
     height = getheight(); if (height < 1) height = 14;
     drv_format_stats(status);
-    if (!drv_texture_enabled) strcat(status, ", texture mapping off");
-    else strcat(status, igl_native_texture ? ", native texture" : ", software texture");
+    strcat(status, !drv_texture_enabled ? ", texture off" :
+             (igl_texture_used ? ", texture on" : ", texture fail"));
     igl_osd_text(status, (long)drv_win_height - height - 4L,
                    (long)drv_win_width - 16L, TRUE);
     help_lines = igl_osd_text(drv_help, 0, (long)drv_win_width - 16L, FALSE);
@@ -506,13 +564,18 @@ void drv_draw_osd(void)
     mmode(MVIEWING); loadmatrix(model);
     backface(TRUE);
     if (igl_has_zbuffer) zbuffer(TRUE);
-    if (drv_texture_enabled) igl_bind_texture(TRUE);
+    if (igl_texture_used) igl_bind_texture(TRUE);
 }
 
 void drv_render(void)
 {
     Matrix model, projection;
+    unsigned long *pixels;
+    int requested, ready, drawn;
     if (igl_window <= 0 || globe_verts_num == 0) return;
+    igl_texture_used = FALSE;
+    requested = drv_texture_enabled;
+    drawn = FALSE;
     drv_fps_start();
     if (igl_indexed) color((Colorindex)igl_background);
     else cpack(0xff000000UL);
@@ -522,24 +585,47 @@ void drv_render(void)
     translate(0.0f, 0.0f, -3000.0f);
     rot(drv_rot_x, 'x'); rot(drv_rot_y, 'y');
     rot(-90.0f, 'x'); rot(-90.0f, 'z');
-    if (drv_texture_enabled && !igl_native_texture)
+    ready = requested && drv_texture_loaded && !igl_texture_failed;
+    if (requested && !igl_texture_failed && !drv_texture_loaded)
+        igl_texture_failure("IRIS GL texture data is not loaded");
+    if (ready && igl_native_texture && !igl_texture_native_ready())
+    {
+        igl_texture_failure("IRIS GL native texturing is unavailable");
+        ready = FALSE;
+    }
+    if (ready && !igl_native_texture)
     {
         getmatrix(model);
         mmode(MPROJECTION); getmatrix(projection);
         mmode(MVIEWING);
         if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
                               igl_indexed, &earth_cmap[0][0]))
-            error("Cannot allocate software texture framebuffer");
-        globe_draw_tristrips();
-        /* lrectwrite addresses window pixels directly, independently of
-         * object matrices, and preserves the packed native color/index. */
-        if (igl_has_zbuffer) zbuffer(FALSE);
-        lrectwrite(0, 0, (Screencoord)(drv_win_width - 1U),
-                    (Screencoord)(drv_win_height - 1U), texsoft_pixels());
-        if (igl_has_zbuffer) zbuffer(TRUE);
+            igl_texture_failure("Cannot prepare IRIS GL software texture framebuffer");
+        else
+        {
+            globe_draw_tristrips();
+            pixels = texsoft_pixels();
+            if (pixels == NULL)
+                igl_texture_failure("IRIS GL software texture pixels are unavailable");
+            else
+            {
+                /* IRIX 4.0 lrectwrite is void: it transfers window pixels
+                 * independently of the current object matrices. */
+                if (igl_has_zbuffer) zbuffer(FALSE);
+                lrectwrite(0, 0, (Screencoord)(drv_win_width - 1U),
+                            (Screencoord)(drv_win_height - 1U), pixels);
+                if (igl_has_zbuffer) zbuffer(TRUE);
+                drawn = igl_texture_used = TRUE;
+            }
+        }
+        if (!drawn) ready = FALSE;
     }
-    else
+    if (!drawn)
     {
+        /* Preserve the common flag as user intent; only the fallback
+         * traversal sees flat mode, so the next T still toggles off. */
+        drv_texture_enabled = ready;
+        if (!ready) igl_bind_texture(FALSE);
         if (igl_object < 0)
         {
             igl_object = genobj();
@@ -548,7 +634,16 @@ void drv_render(void)
             globe_draw_tristrips();
             closeobj();
         }
-        callobj(igl_object);
+        if (isobj(igl_object)) callobj(igl_object);
+        else
+        {
+            /* callobj silently ignores an undefined object. Submit this
+             * frame directly, then rebuild the optional cache next time. */
+            igl_object = -1;
+            globe_draw_tristrips();
+        }
+        igl_texture_used = ready;
+        drv_texture_enabled = requested;
     }
     if (drv_osd_enabled) drv_draw_osd();
     if (igl_double_buffer) swapbuffers();

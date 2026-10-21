@@ -7,7 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+static void *test_xgl_malloc(size_t size);
+static int test_texture_try_generate(int size);
+#define malloc test_xgl_malloc
+#define texture_try_generate test_texture_try_generate
 #include "../src/drv_xgl.c"
+#undef texture_try_generate
+#undef malloc
+extern int texture_try_generate(int size);
 
 extern Vertex *globe_verts;
 extern Coord *globe_coords;
@@ -15,7 +22,8 @@ extern int globe_longitude, globe_latitude;
 
 struct Test_xgl_object {
     int type, value[64];
-    Xgl_object device, model, view;
+    Xgl_object device, model, view, texture;
+    int pending_destroy;
     Xgl_error_notify error_notify;
     Xgl_texture_general_desc descriptor;
     Xgl_matrix_d3d matrix;
@@ -30,11 +38,46 @@ static unsigned int mipmap_creates, tmap_creates, mipmap_builds;
 static unsigned int resize_calls, posts, clear_calls, buffer_switches, text_calls;
 static unsigned long frame_bands, frame_facets;
 static int single_buffer, tests_complete;
+static const char *profile;
+static const char *fault;
+static Xgl_error_type injected_error_type;
+static unsigned long frame_texture_facets;
+static int frame_flush_ok;
+static int native_stopped, fail_cleanup;
+
+static int inject(const char *name)
+{
+    if (fault == NULL || strcmp(fault, name) != 0) return FALSE;
+    fault = NULL;
+    return TRUE;
+}
+
+static void native_error(int fatal)
+{
+    injected_error_type = fatal ? XGL_ERROR_NONRECOVERABLE : XGL_ERROR_RECOVERABLE;
+    assert(xgl_system->error_notify != NULL);
+    xgl_system->error_notify(xgl_system);
+    if (fatal) native_stopped = TRUE;
+}
+
+static void *test_xgl_malloc(size_t size)
+{
+    if (xgl_texture_scope && drv_texture_enabled && inject("stripallocfail"))
+        return NULL;
+    return malloc(size);
+}
+
+static int test_texture_try_generate(int size)
+{
+    if (inject("stagefail")) return FALSE;
+    return texture_try_generate(size);
+}
 
 static Xgl_object allocate_object(int type)
 {
     Xgl_object object;
     object = (Xgl_object)calloc(1, sizeof(*object));
+    assert(!native_stopped);
     assert(object != NULL);
     object->type = type;
     object->next = objects;
@@ -90,9 +133,24 @@ static void attributes(Xgl_object object, int attribute, va_list args)
         case XGL_3D_CTX_SURF_FRONT_TMAP:
             maps = va_arg(args, Xgl_object *);
             assert(maps[0]->type == XGL_TMAP);
+            object->texture = maps[0];
+            break;
+        case XGL_3D_CTX_SURF_FRONT_TMAP_NUM:
+            object->value[attribute] = va_arg(args, int);
+            if (object->value[attribute] == 0)
+                object->value[XGL_3D_CTX_SURF_FRONT_TMAP_SWITCHES] = FALSE;
+            if (object->value[attribute] == 0 && object->texture != NULL) {
+                Xgl_object old = object->texture;
+                object->texture = NULL;
+                xgl_object_destroy(old);
+            }
             break;
         case XGL_3D_CTX_SURF_FRONT_TMAP_SWITCHES:
             switches = va_arg(args, Xgl_boolean *);
+            if (switches[0] && object == xgl_context && inject("bindfail")) {
+                native_error(FALSE);
+                break;
+            }
             object->value[attribute] = switches[0];
             break;
         case XGL_TMAP_DESCRIPTOR:
@@ -112,6 +170,7 @@ static void attributes(Xgl_object object, int attribute, va_list args)
             assert(descriptor->comp_info.color_info.num_channels[0] == 3);
             assert(descriptor->comp_info.color_info.render_component_desc[0].comp == XGL_RENDER_COMP_DIFFUSE_COLOR);
             assert(descriptor->comp_info.color_info.render_component_desc[0].texture_op == XGL_TEXTURE_OP_REPLACE);
+            if (inject("configurefail")) native_error(FALSE);
             break;
         default:
             object->value[attribute] = va_arg(args, int);
@@ -141,6 +200,7 @@ Xgl_object xgl_object_create(Xgl_sys_state system, Xgl_obj_type type,
     Xgl_X_window *window;
     int first;
     va_list args;
+    assert(!native_stopped);
     assert(system == xgl_system && system->type == -1);
     if (type == XGL_WIN_RAS) {
         assert(descriptor != NULL && descriptor->win_ras.type == XGL_WIN_X);
@@ -149,6 +209,12 @@ Xgl_object xgl_object_create(Xgl_sys_state system, Xgl_obj_type type,
         assert(window->X_window == (Xgl_usgn32)xgl_window);
         assert(window->X_screen == DefaultScreen(xgl_display));
     } else assert(descriptor == NULL);
+    if ((type == XGL_MEM_RAS && inject("rasterfail")) ||
+        (type == XGL_MIPMAP_TEXTURE && inject("mipmapfail"))) return NULL;
+    if (type == XGL_TMAP && inject("mapfail")) {
+        native_error(FALSE);
+        return NULL;
+    }
     object = allocate_object(type);
     va_start(args, descriptor);
     first = va_arg(args, int);
@@ -161,6 +227,7 @@ void xgl_object_set(Xgl_object object, ...)
 {
     int first;
     va_list args;
+    assert(!native_stopped);
     assert(object != NULL);
     va_start(args, object);
     first = va_arg(args, int);
@@ -170,12 +237,14 @@ void xgl_object_set(Xgl_object object, ...)
 
 void xgl_object_get(Xgl_object object, Xgl_attribute attribute, void *value)
 {
+    assert(!native_stopped);
     assert(object != NULL && value != NULL);
     switch (attribute) {
     case XGL_WIN_RAS_BUFFERS_ALLOCATED:
         *(Xgl_usgn32 *)value = single_buffer ? 1U : 2U;
         break;
     case XGL_MEM_RAS_IMAGE_BUFFER_ADDR:
+        if (inject("accessfail")) { *(Xgl_usgn32 **)value = NULL; break; }
         assert(object->type == XGL_MEM_RAS);
         assert(object->value[XGL_RAS_DEPTH] == 32);
         assert(object->value[XGL_DEV_COLOR_TYPE] == XGL_COLOR_RGB);
@@ -185,8 +254,24 @@ void xgl_object_get(Xgl_object object, Xgl_attribute attribute, void *value)
         assert(object->image != NULL);
         *(Xgl_usgn32 **)value = (Xgl_usgn32 *)object->image;
         break;
-    case XGL_SYS_ST_ERROR_INFO:
-        memset(value, 0, sizeof(Xgl_error_info));
+    case XGL_SYS_ST_ERROR_INFO: {
+        Xgl_error_info *info = (Xgl_error_info *)value;
+        memset(info, 0, sizeof(*info));
+        info->type = injected_error_type;
+        info->id = "test-123";
+        info->msg = "injected texture failure";
+        info->cur_op = "test operator";
+        break;
+    }
+    case XGL_3D_CTX_SURF_FRONT_TMAP_NUM:
+        *(Xgl_usgn32 *)value = (Xgl_usgn32)object->value[attribute];
+        break;
+    case XGL_3D_CTX_SURF_FRONT_TMAP:
+        *(Xgl_object *)value = object->texture;
+        break;
+    case XGL_3D_CTX_SURF_FRONT_TMAP_SWITCHES:
+        *(Xgl_boolean *)value = object->value[attribute];
+        if (inject("inactive")) *(Xgl_boolean *)value = FALSE;
         break;
     default:
         assert(!"Unexpected XGL attribute query");
@@ -195,29 +280,52 @@ void xgl_object_get(Xgl_object object, Xgl_attribute attribute, void *value)
 
 void xgl_object_destroy(Xgl_object object)
 {
-    Xgl_object *link;
+    Xgl_object *link, current, mipmap;
+    assert(!native_stopped);
     assert(object != NULL && allocated_objects > 0);
+    if (fail_cleanup) {
+        fail_cleanup = FALSE;
+        native_error(TRUE);
+        return;
+    }
+    /* The manual permits destruction to wait until Context/map references
+     * are removed. Mirror that lifetime to catch cleanup use-after-free. */
+    for (current = objects; current != NULL; current = current->next)
+        if (current->texture == object ||
+            (current->type == XGL_TMAP &&
+             current->descriptor.texture_info.mipmap.texture_map == object)) {
+            object->pending_destroy = TRUE;
+            return;
+        }
     for (link = &objects; *link != object; link = &(*link)->next)
         assert(*link != NULL);
     *link = object->next;
-    if (object->type == XGL_MEM_RAS) {
-        assert(mipmap_builds == 1);
-        ++memory_destroys;
-    }
+    mipmap = object->type == XGL_TMAP ?
+             object->descriptor.texture_info.mipmap.texture_map : NULL;
+    if (object->type == XGL_MEM_RAS) ++memory_destroys;
     free(object->image);
     free(object);
     --allocated_objects;
+    if (mipmap != NULL && mipmap->pending_destroy) xgl_object_destroy(mipmap);
 }
 
 void xgl_close(Xgl_sys_state system)
 {
+    Xgl_object object;
+    assert(!native_stopped);
     assert(system == xgl_system);
     ++close_calls;
+    for (object = objects; object != NULL; object = object->next) {
+        object->texture = NULL;
+        if (object->type == XGL_TMAP)
+            object->descriptor.texture_info.mipmap.texture_map = NULL;
+    }
     while (objects != NULL) xgl_object_destroy(objects);
 }
 
 void xgl_window_raster_resize(Xgl_win_ras raster)
 {
+    assert(!native_stopped);
     assert(raster == xgl_raster);
     ++resize_calls;
 }
@@ -227,6 +335,7 @@ void xgl_transform_write_specific(Xgl_trans transform, void *matrix,
 {
     double (*m)[4];
     double cotangent, near_z, far_z;
+    assert(!native_stopped);
     assert(transform == xgl_view && membership == 0);
     assert(transform->value[XGL_TRANS_DATA_TYPE] == XGL_DATA_DBL);
     memcpy(transform->matrix, matrix, sizeof(Xgl_matrix_d3d));
@@ -245,7 +354,9 @@ void xgl_transform_rotate(Xgl_trans transform, double angle, Xgl_axis axis,
 {
     double expected;
     int expected_axis;
+    assert(!native_stopped);
     assert(transform == xgl_model);
+    if (inject("fatalmodel")) { native_error(TRUE); return; }
     if (update == XGL_TRANS_REPLACE) transform->rotations = 0;
     else assert(update == XGL_TRANS_POSTCONCAT);
     assert(transform->rotations < 4);
@@ -264,6 +375,7 @@ void xgl_transform_rotate(Xgl_trans transform, double angle, Xgl_axis axis,
 void xgl_transform_translate(Xgl_trans transform, Xgl_pt *point,
                               Xgl_trans_update update)
 {
+    assert(!native_stopped);
     assert(transform == xgl_model && transform->rotations == 4);
     assert(update == XGL_TRANS_POSTCONCAT && point->pt_type == XGL_PT_F3D);
     assert(point->pt.f3d->x == 0 && point->pt.f3d->y == 0 && point->pt.f3d->z == -3000);
@@ -275,6 +387,7 @@ void xgl_mipmap_texture_build(Xgl_object mipmap, Xgl_mem_ras memory,
     unsigned int x, y;
     Xgl_usgn32 *pixels, expected;
     unsigned char index;
+    assert(!native_stopped);
     assert(mipmap->type == XGL_MIPMAP_TEXTURE && memory->type == XGL_MEM_RAS);
     assert(mipmap->value[XGL_MIPMAP_TEXTURE_LEVELS] == 8);
     assert(u_boundary == XGL_TEXTURE_BOUNDARY_WRAP && v_boundary == XGL_TEXTURE_BOUNDARY_WRAP);
@@ -289,6 +402,8 @@ void xgl_mipmap_texture_build(Xgl_object mipmap, Xgl_mem_ras memory,
             assert(pixels[(unsigned long)(255U - y) * 512UL + x] == expected);
         }
     ++mipmap_builds;
+    if (inject("buildfail")) native_error(FALSE);
+    if (inject("fataltexture")) native_error(TRUE);
 }
 
 static unsigned char *earth_data(void)
@@ -313,7 +428,9 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     const Vertex *vertex;
     const float *packed;
     Xgl_pt_f3d *plain;
+    assert(!native_stopped);
     assert(context == xgl_context);
+    if (drv_texture_enabled && inject("drawfail")) { native_error(FALSE); return; }
     assert(context->value[XGL_CTX_SURF_FRONT_COLOR_SELECTOR] == XGL_SURF_COLOR_FACET);
     assert(context->value[XGL_CTX_SURF_FRONT_FILL_STYLE] == XGL_SURF_FILL_SOLID);
     assert(context->value[XGL_3D_CTX_SURF_FRONT_ILLUMINATION] == XGL_ILLUM_NONE);
@@ -381,6 +498,7 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     }
     ++frame_bands;
     frame_facets += facets->num_facets;
+    if (points->pt_type == XGL_PT_DATA_F3D) frame_texture_facets += facets->num_facets;
 }
 
 void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
@@ -388,28 +506,36 @@ void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
 {
     Xgl_pt_f2d *point;
     char expected[80];
+    assert(!native_stopped);
     assert(context == xgl_overlay && direction == NULL);
+    if (inject("fatalosd")) { native_error(TRUE); return; }
     point = (Xgl_pt_f2d *)position;
     assert(point->x >= 0 && point->x < drv_win_width);
     assert(point->y >= 0 && point->y < drv_win_height);
-    assert(strstr((char *)text, "texture mapping") != NULL);
     sprintf(expected, "%lu triangles", globe_tris_num);
     if (strstr((char *)text, expected) == (char *)text) {
         assert((strstr((char *)text, "frames per second") != NULL) ==
                (drv_fps_enabled != 0));
         assert(strstr((char *)text, "quads") == NULL);
         assert(strstr((char *)text, "visible") == NULL);
-    }
+        assert(strstr((char *)text, "texture mapping") == NULL);
+        assert(strstr((char *)text, !drv_texture_enabled ? ", texture off" :
+                      (frame_texture_facets != 0 && frame_flush_ok ?
+                       ", texture on" : ", texture fail")) != NULL);
+    } else assert(strstr((char *)text, "T = texture mapping") != NULL);
     ++text_calls;
 }
 
 void xgl_context_new_frame(Xgl_ctx context)
 {
     int action;
+    assert(!native_stopped);
     action = context->value[XGL_CTX_NEW_FRAME_ACTION];
     if (context == xgl_context) {
         assert(action == (XGL_CTX_NEW_FRAME_CLEAR | XGL_CTX_NEW_FRAME_HLHSR_ACTION));
         ++clear_calls;
+        frame_bands = frame_facets = frame_texture_facets = 0;
+        frame_flush_ok = FALSE;
     } else {
         assert(context == xgl_overlay && !single_buffer);
         assert(action == XGL_CTX_NEW_FRAME_SWITCH_BUFFER);
@@ -419,6 +545,7 @@ void xgl_context_new_frame(Xgl_ctx context)
 
 void xgl_context_post(Xgl_ctx context, Xgl_boolean wait)
 {
+    assert(!native_stopped);
     assert(context == xgl_context || context == xgl_overlay);
     assert(wait);
     ++posts;
@@ -426,8 +553,15 @@ void xgl_context_post(Xgl_ctx context, Xgl_boolean wait)
 
 void xgl_context_flush(Xgl_ctx context, int action)
 {
+    assert(!native_stopped);
     assert(action == XGL_FLUSH_SYNCHRONIZE);
+    if (context == xgl_context && drv_texture_enabled && xgl_texture_scope && inject("flushfail")) {
+        native_error(FALSE);
+        return;
+    }
+    if (context == xgl_overlay && inject("fataloverlay")) native_error(FALSE);
     xgl_context_post(context, TRUE);
+    if (context == xgl_context) frame_flush_ok = TRUE;
 }
 
 static void check_render(void)
@@ -439,7 +573,8 @@ static void check_render(void)
     assert(frame_bands == (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
     assert(frame_facets == globe_tris_num);
     assert(text_calls == before_text + (drv_osd_enabled ? 2U : 0U));
-    assert(clear_calls == before_clear + 1U);
+    assert(clear_calls >= before_clear + 1U && clear_calls <= before_clear + 2U);
+    assert(xgl_texture_used == (frame_texture_facets != 0 && frame_flush_ok));
     assert(buffer_switches == before_switches + (single_buffer ? 0U : 1U));
 }
 
@@ -490,10 +625,63 @@ static void send_mouse(int type, unsigned int button, int x, int y)
     drain_events();
 }
 
+static void check_texture_failure(void)
+{
+    unsigned int before_objects, before_mipmaps, before_maps;
+    int runtime;
+    before_objects = allocated_objects;
+    runtime = strcmp(profile, "inactive") == 0 || strcmp(profile, "unloaded") == 0 ||
+              strcmp(profile, "drawfail") == 0 || strcmp(profile, "flushfail") == 0 ||
+              strcmp(profile, "stripallocfail") == 0 || strcmp(profile, "fatalcleanup") == 0;
+    if (strcmp(profile, "fataloverlay") == 0 || strcmp(profile, "fatalosd") == 0 ||
+        strcmp(profile, "fatalmodel") == 0) {
+        fault = profile;
+        check_render();
+        assert(!"Nontexture library errors must remain fatal");
+    }
+    if (runtime) {
+        send_key(XK_t);
+        assert(drv_texture_loaded && drv_texture_enabled);
+        if (strcmp(profile, "unloaded") == 0) drv_texture_loaded = FALSE;
+        else if (strcmp(profile, "fatalcleanup") == 0) {
+            fault = "inactive";
+            fail_cleanup = TRUE;
+        } else fault = profile;
+    } else {
+        fault = profile;
+        send_key(XK_t);
+    }
+    check_render();
+    assert(drv_texture_enabled && xgl_texture_failed && !xgl_texture_used);
+    assert(!drv_texture_loaded && xgl_tmap == NULL && xgl_mipmap == NULL &&
+           xgl_texture_raster == NULL && texture_data == NULL);
+    assert(!xgl_texture_scope && !xgl_failed && allocated_objects == before_objects);
+    before_mipmaps = mipmap_creates; before_maps = tmap_creates;
+    check_render();
+    assert(mipmap_creates == before_mipmaps && tmap_creates == before_maps);
+    send_key(XK_t); assert(!drv_texture_enabled); check_render();
+    send_key(XK_t); assert(drv_texture_enabled && drv_texture_loaded); check_render();
+    assert(xgl_texture_used && !xgl_texture_failed);
+    send_key(XK_t); check_render();
+    puts("PASS XGL recoverable texture failure: scoped native/resource errors release partial objects, preserve flat geometry and show texture fail until off/on retry");
+    tests_complete = TRUE;
+    drv_close();
+}
+
 static void cleanup_checks(void)
 {
-    assert(tests_complete);
-    assert(close_calls == 1 && allocated_objects == 0);
+    assert(tests_complete || strncmp(profile, "fatal", 5) == 0);
+    if (xgl_nonrecoverable) {
+        Xgl_object object;
+        assert(native_stopped && close_calls == 0);
+        /* Model process reclamation without issuing any native operator. */
+        while (objects != NULL) {
+            object = objects; objects = object->next;
+            free(object->image); free(object); --allocated_objects;
+        }
+        puts("PASS XGL nonrecoverable error: no native operator or close is called after invalid native state");
+    } else assert(close_calls == 1);
+    assert(allocated_objects == 0);
     assert(xgl_system == NULL && xgl_display == NULL);
     assert(xgl_strip_points == NULL && xgl_strip_facets == NULL && xgl_strip_texture_points == NULL);
     assert(globe_verts == NULL && texture_data == NULL);
@@ -508,7 +696,8 @@ int main(int argc, char **argv)
     XWindowAttributes geometry;
     XEvent close;
     assert(atexit(cleanup_checks) == 0);
-    single_buffer = argc > 1 && strcmp(argv[1], "single") == 0;
+    profile = argc > 1 ? argv[1] : "double";
+    single_buffer = strcmp(profile, "single") == 0;
     drv_ext_init();
     assert(!drv_texture_enabled && drv_texture_avail);
     drv_init(&argc, argv);
@@ -529,6 +718,8 @@ int main(int argc, char **argv)
         assert(globe_longitude == sizes[i]);
         check_render();
     }
+    if (strcmp(profile, "double") != 0 && strcmp(profile, "single") != 0)
+        check_texture_failure();
     send_key(XK_t);
     assert(drv_texture_enabled && drv_texture_loaded);
     assert(mipmap_creates == 1 && tmap_creates == 1 && mipmap_builds == 1 && memory_destroys == 1);
