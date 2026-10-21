@@ -2,7 +2,7 @@
 * [testglobe website](https://testglobe.dev)
 * [testglobe repository](https://github.com/trguhq/testglobe/)
 
-testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, Sun XGL on Solaris, MS-DOS Matrox LibShell, native 16-bit Windows 3.1 GDI, and classic Macintosh QuickDraw. The Earth data uses 8-bit palette indices: OpenGL and XGL expand these to RGB, while LibShell, GDI, and QuickDraw retain the indices until drawing with the Earth palette.
+testglobe is a cross-platform demo program to display a 3d globe on different APIs and hardware. Its build targets are OpenGL/GLUT, Sun XGL on Solaris, MS-DOS Matrox LibShell, native 16-bit Windows 3.1 GDI, and classic Macintosh QuickDraw. The Earth data uses 8-bit palette indices: OpenGL and XGL expand these to RGB, while LibShell, GDI, and QuickDraw retain the indices until drawing with the Earth palette. This version contains a number of AI-generated driver templates for development - only the OpenGL driver is fully hand coded.
 
 This was originally conceived as a test for lower spec systems (late 80s and early 90s 3D hardware) and was initially implemented on more modern high spec systems for convenience, but it may envolve into a general 3D demo for medium-high spec.
 
