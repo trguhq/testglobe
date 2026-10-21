@@ -30,6 +30,8 @@ extern unsigned char* texture_data;
 extern unsigned int texture_size;
 
 extern void texture_generate(int size);
+/* Recoverable construction; failure leaves an existing staging image intact. */
+extern int texture_try_generate(int size);
 extern void texture_init(void);
 extern void texture_free(void);
 #endif

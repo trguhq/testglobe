@@ -187,8 +187,11 @@ Unix `-O`; override `CC`, `CPPFLAGS`, `CFLAGS`, and `LDFLAGS` for the installed 
 and GLUT libraries.
 
 The default `SYS_FLAGS` also includes `-DNO_GENMIPMAP`, which builds mipmaps with GLU
-for older OpenGL implementations. On newer systems, `SYS_FLAGS=-DGL_GLEXT_PROTOTYPES`
-enables the `glGenerateMipmap` path.
+for older OpenGL implementations. Omitting `NO_GENMIPMAP` allows an optional modern
+mipmap path when FreeGLUT 2.0 or later headers are available. The driver checks the
+current OpenGL version and resolves `glGenerateMipmap` at runtime; unavailable or
+unsuitable modern support falls back to GLU. No later OpenGL symbol is required at
+link time, and `GL_GLEXT_PROTOTYPES` is not needed for this path.
 
 #### Solaris (`solaris-opengl`)
 
@@ -292,6 +295,14 @@ The software texture path bypasses native display lists regardless of the toggle
 the OSD therefore shows `dlist fail` while lists are enabled, or `dlist off` when
 the toggle is disabled.
 
+The top OSD uses the shorter labels `texture on`, `texture off`, and `texture fail`.
+`texture on` means native or software texturing was successfully used for the
+current frame; `texture off` means the toggle is disabled. If enabled texturing
+cannot be created, validated, or used, the driver draws flat colors and reports
+`texture fail`. Failed resources and incompatible display-list caches are released.
+Turn texturing off and on with `t` to retry after a failure. The bottom help retains
+its `T = texture mapping` key description.
+
 GLUT's display-mode availability query is required. Where display-string requests are
 supported, the driver requests those component sizes explicitly; older GLUT
 implementations can expose fewer distinct choices. These probes do not enumerate every
@@ -302,10 +313,18 @@ Display-list validation and error checks use OpenGL 1.1-compatible calls, includ
 creation, compilation, validation, or execution fails, OpenGL discards the failed cache
 and draws the geometry immediately, reporting `dlist fail`. Only complete lists that
 execute without errors report `dlist on`; the driver never attempts to compile list zero.
-Native texture upload and mipmap errors are checked before a texture is marked loaded
-or enabled; failed resources are released through the controlled error path. The
-retained diagnostic logger reports OpenGL errors without requiring modern
-debug-callback extensions on legacy implementations.
+Texture upload, mipmap, binding, software-raster, and transfer failures recover to flat
+rendering rather than ending the application. The retained diagnostic logger reports
+OpenGL errors without requiring modern debug-callback extensions on legacy implementations.
+
+The driver's required OpenGL API is OpenGL 1.1; GLU and GLUT are separate build and
+runtime prerequisites, and rendering requires a legacy or compatibility context.
+All three OpenGL targets default to the GLU mipmap path. With the optional modern path
+compiled, only a context reporting OpenGL 3.0 or later and a resolved entry point can
+use `glGenerateMipmap`; the image must also fit the implementation's texture limit.
+OpenGL 1.1 contexts, older GLUT headers, missing entry points, or larger images use
+`gluBuild2DMipmaps` instead. The optional path therefore adds no required post-1.1
+OpenGL calls or link dependencies.
 
 #### Validation
 

@@ -31,7 +31,8 @@ unsigned char* texture_data;
 unsigned int texture_size;
 static size_t texture_data_size;
 
-void texture_generate(int size)
+/* Keep both public policies on one transactional image construction path. */
+static char *texture_build_image(int size)
 {
     const unsigned char *earth_data;
 #ifdef TEXTURE_RGB
@@ -68,8 +69,7 @@ void texture_generate(int size)
             break;
 #endif
         default:
-            error("Invalid texture size");
-            return;
+            return "Invalid texture size";
     }
     
 #ifdef TEXTURE_RGB
@@ -77,8 +77,7 @@ void texture_generate(int size)
     if ((unsigned int)size > TEXTURE_MAX_SIZE ||
         elements > (size_t)-1 / 3U)
     {
-        error("Texture image is too large");
-        return;
+        return "Texture image is too large";
     }
     bytes = (size_t)elements * 3U;
     /* Regeneration at the same dimensions can reuse its owned staging
@@ -88,8 +87,7 @@ void texture_generate(int size)
     if (new_data == NULL) new_data = (unsigned char *)malloc(bytes);
     if (new_data == NULL)
     {
-        error("Could not allocate memory for texture!");
-        return;
+        return "Could not allocate memory for texture!";
     }
     destination = new_data;
     for (i = 0; i < elements; ++i)
@@ -104,10 +102,23 @@ void texture_generate(int size)
     texture_data = new_data;
     texture_data_size = bytes;
     texture_size = (unsigned int)size;
+    return NULL;
 #else
     (void)earth_data;
-    error("Texture RGB format is required");
+    return "Texture RGB format is required";
 #endif
+}
+
+void texture_generate(int size)
+{
+    char *message;
+    message = texture_build_image(size);
+    if (message != NULL) error(message);
+}
+
+int texture_try_generate(int size)
+{
+    return texture_build_image(size) == NULL;
 }
 
 void texture_init(void)

@@ -27,6 +27,8 @@ typedef double GLclampd;
 #define GL_STACK_UNDERFLOW 0x0504
 #define GL_OUT_OF_MEMORY 0x0505
 #define GLU_OUT_OF_MEMORY 100902
+#define GL_VERSION 0x1F02
+#define GL_MAX_TEXTURE_SIZE 0x0D33
 #define GL_COLOR_BUFFER_BIT 0x00004000
 #define GL_DEPTH_BUFFER_BIT 0x00000100
 #define GL_MODELVIEW 0x1700
@@ -97,6 +99,10 @@ typedef double GLclampd;
 #define GLUT_DOWN 0x0000
 #define GLUT_UP 0x0001
 #define GLUT_WINDOW_DEPTH_SIZE 0x006A
+#ifdef TEST_OGL_FREEGLUT
+#define FREEGLUT 1
+#define FREEGLUT_VERSION_2_0 1
+#endif
 #define GL_INDEX_SHIFT 0x0D12
 #define GL_INDEX_OFFSET 0x0D13
 #define GL_MATRIX_MODE 0x0BA0
@@ -136,6 +142,7 @@ extern void glutMainLoop(void);
 extern void glutBitmapCharacter(void *font,int character);
 extern void glutSetColor(int index,GLfloat red,GLfloat green,GLfloat blue);
 extern GLenum glGetError(void);
+extern const GLubyte *glGetString(GLenum query);
 extern void glGetIntegerv(GLenum query,GLint *value);
 extern void glGetBooleanv(GLenum query,GLboolean *value);
 extern GLboolean glIsEnabled(GLenum capability);
@@ -183,9 +190,9 @@ extern void glDrawPixels(GLsizei width,GLsizei height,GLenum format,GLenum type,
 extern void glGenTextures(GLsizei count,GLuint *textures);
 extern void glDeleteTextures(GLsizei count,const GLuint *textures);
 extern void glBindTexture(GLenum target,GLuint texture);
+extern GLboolean glIsTexture(GLuint texture);
 extern void glTexParameteri(GLenum target,GLenum parameter,GLint value);
 extern void glTexImage2D(GLenum target,GLint level,GLint internal_format,GLsizei width,GLsizei height,GLint border,GLenum format,GLenum type,const GLvoid *pixels);
-extern void glGenerateMipmap(GLenum target);
 extern void glFlush(void);
 extern void glShadeModel(GLenum mode);
 extern void glDepthFunc(GLenum function);

@@ -35,6 +35,15 @@
 #include <GL/glut.h>
 #endif
 
+#if !defined(NO_GENMIPMAP) && defined(FREEGLUT) && defined(FREEGLUT_VERSION_2_0)
+#include <GL/freeglut_ext.h>
+#ifdef APIENTRY
+typedef void (APIENTRY *Ogl_generate_mipmap)(GLenum target);
+#else
+typedef void (*Ogl_generate_mipmap)(GLenum target);
+#endif
+#endif
+
 /* OpenGL font pointer */
 static void *ogl_font;
 
@@ -50,6 +59,8 @@ static int ogl_dlist_enabled = DRV_DLIST_DEFAULT;
 static int ogl_dlist_used;
 
 static GLuint texture_id;
+static int ogl_texture_failed;
+static int ogl_texture_used;
 static int ogl_window;
 static int ogl_indexed;
 static int ogl_double_buffer;
@@ -65,6 +76,15 @@ typedef struct Ogl_format
     int alpha_known;
 } Ogl_format;
 
+static void ogl_texture_failure(const char *message);
+
+static void ogl_invalidate_dlist(void)
+{
+    if (dlist != 0) glDeleteLists(dlist, 1);
+    dlist = 0;
+    ogl_dlist_used = FALSE;
+}
+
 static void ogl_cleanup(void)
 {
     if (ogl_window > 0 && glutGetWindow() != 0)
@@ -75,6 +95,8 @@ static void ogl_cleanup(void)
     }
     ogl_window = 0; dlist = 0; texture_id = 0;
     ogl_dlist_used = FALSE;
+    ogl_texture_failed = ogl_texture_used = FALSE;
+    drv_texture_loaded = drv_texture_enabled = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     free(ogl_index_pixels); ogl_index_pixels = NULL; ogl_index_capacity = 0;
     texsoft_free(); texture_free(); globe_free();
@@ -267,10 +289,7 @@ static void ogl_keyboard(unsigned char key, int x, int y)
     else if (!drv_handle_key(key)) return;
     if (((key >= '1' && key <= '5') || key == 't' || key == 'T' ||
          key == 'd' || key == 'D') && dlist)
-    {
-        glDeleteLists(dlist, 1);
-        dlist = 0;
-    }
+        ogl_invalidate_dlist();
     ogl_dlist_used = FALSE;
     glutPostRedisplay();
 }
@@ -376,21 +395,22 @@ void drv_init(int *argc, char **argv)
 /* A color-index OpenGL framebuffer cannot perform RGB texture mapping.
  * Keep its texture toggle functional using the shared perspective-correct
  * rasterizer, then transfer tightly packed palette bytes through OpenGL. */
-static void ogl_present_indexed_texture(void)
+static int ogl_present_indexed_texture(void)
 {
     unsigned long count, i;
     unsigned long *source;
     GLubyte *pixels;
     GLint matrix_mode;
     count = (unsigned long)drv_win_width * drv_win_height;
-    if (count > (size_t)-1) error("OpenGL texture framebuffer is too large");
+    if (count > (size_t)-1) return FALSE;
     if (count > ogl_index_capacity)
     {
         pixels = (GLubyte *)malloc((size_t)count);
-        if (pixels == NULL) error("Cannot allocate indexed OpenGL framebuffer");
+        if (pixels == NULL) return FALSE;
         free(ogl_index_pixels); ogl_index_pixels = pixels; ogl_index_capacity = count;
     }
     source = texsoft_pixels();
+    if (source == NULL) return FALSE;
     for (i = 0; i < count; ++i) ogl_index_pixels[i] = (GLubyte)source[i];
     glGetIntegerv(GL_MATRIX_MODE, &matrix_mode);
     glPushAttrib(GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT | GL_PIXEL_MODE_BIT | GL_CURRENT_BIT);
@@ -413,6 +433,7 @@ static void ogl_present_indexed_texture(void)
     glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix();
     glMatrixMode((GLenum)matrix_mode);
     glPopClientAttrib(); glPopAttrib();
+    return !ogl_checkerror();
 }
 
 /* Keep the pole triangles in one batch; each latitude band opens its own
@@ -490,11 +511,29 @@ static int ogl_draw_dlist(void)
     return !failed;
 }
 
+/* Texture object and enable/binding queries are available in OpenGL 1.1. */
+static int ogl_texture_native_ready(void)
+{
+    GLboolean valid, enabled;
+    GLint binding;
+    int failed;
+    if (texture_id == 0) return FALSE;
+    valid = glIsTexture(texture_id);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &binding);
+    enabled = glIsEnabled(GL_TEXTURE_2D);
+    failed = ogl_checkerror();
+    return !failed && valid && enabled && (GLuint)binding == texture_id;
+}
+
 /* render current scene */
 void drv_render(void)
 {
     float model[4][4], projection[4][4];
+    int requested, ready, drawn;
     ogl_dlist_used = FALSE;
+    ogl_texture_used = FALSE;
+    requested = drv_texture_enabled;
+    drawn = FALSE;
     drv_fps_start();
     glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
     glMatrixMode(GL_MODELVIEW);
@@ -505,26 +544,57 @@ void drv_render(void)
     glRotatef(-90, 1, 0, 0);
     glRotatef(-90, 0, 0, 1);
 
-    if (ogl_indexed && drv_texture_enabled)
+    ready = requested && drv_texture_loaded && !ogl_texture_failed;
+    if (requested && !ogl_texture_failed && !drv_texture_loaded)
+        ogl_texture_failure("OpenGL texture data is not loaded");
+    if (ready && !ogl_indexed && !ogl_texture_native_ready())
+    {
+        ogl_texture_failure("OpenGL texture is not active");
+        ready = FALSE;
+    }
+    if (ogl_indexed && ready)
     {
         /* Column-major OpenGL matrix memory is the equivalent row-vector
          * array consumed by texsoft; no further transpose is needed. */
         glGetFloatv(GL_MODELVIEW_MATRIX, &model[0][0]);
         glGetFloatv(GL_PROJECTION_MATRIX, &projection[0][0]);
-        if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
+        if (ogl_checkerror() ||
+            !texsoft_begin(drv_win_width, drv_win_height, model, projection,
                              TRUE, &earth_cmap[0][0]))
-            error("Cannot allocate indexed OpenGL texture raster");
-        ogl_draw_globe();
-        ogl_present_indexed_texture();
+            ogl_texture_failure("Cannot prepare indexed OpenGL texture raster");
+        else
+        {
+            ogl_draw_globe();
+            if (ogl_present_indexed_texture())
+                drawn = ogl_texture_used = TRUE;
+            else
+                ogl_texture_failure("Cannot present indexed OpenGL texture raster");
+        }
+        if (!drawn) ready = FALSE;
     }
-    else if (!ogl_dlist_enabled)
+    if (!drawn)
     {
-        ogl_draw_globe();
-    }
-    else
-    {
-        ogl_dlist_used = ogl_draw_dlist();
+        /* Keep the public flag as the user's request. Only the fallback
+         * traversal sees texturing disabled, so T still toggles normally. */
+        drv_texture_enabled = ready;
+        if (!ready) glDisable(GL_TEXTURE_2D);
+        if (requested && ogl_texture_failed)
+            glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
+        if (ogl_dlist_enabled)
+            ogl_dlist_used = ogl_draw_dlist();
         if (!ogl_dlist_used) ogl_draw_globe();
+        if (ready)
+        {
+            if (ogl_checkerror())
+            {
+                ogl_texture_failure("Cannot draw OpenGL texture");
+                drv_texture_enabled = FALSE;
+                glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
+                ogl_draw_globe();
+            }
+            else ogl_texture_used = TRUE;
+        }
+        drv_texture_enabled = requested;
     }
 
     if (drv_osd_enabled)
@@ -564,28 +634,85 @@ static void ogl_resize(int width, int height) {
     gluPerspective(45, (float)width/(float)height, 1.0, 10000);
 }
 
-static void ogl_texture_failed(char *message)
+/* GLU is the OpenGL 1.1 path. Newer mipmap generation remains optional:
+ * no later GL symbol is required by the headers or the linked GL library. */
+static int ogl_build_mipmaps(void)
 {
-    drv_texture_loaded = drv_texture_enabled = FALSE;
+    int result, failed;
+#if !defined(NO_GENMIPMAP) && defined(FREEGLUT) && defined(FREEGLUT_VERSION_2_0)
+    const GLubyte *version;
+    unsigned int major, minor;
+    GLint maximum;
+    Ogl_generate_mipmap generate;
+    maximum = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum);
+    if (ogl_checkerror()) return FALSE;
+    if (maximum > 0 && texture_size <= (unsigned int)maximum &&
+        texture_size / 2U <= (unsigned int)maximum)
+    {
+        version = glGetString(GL_VERSION);
+        failed = ogl_checkerror();
+        if (!failed && version != NULL &&
+            sscanf((const char *)version, "%u.%u", &major, &minor) == 2 &&
+            major >= 3U)
+        {
+            generate = (Ogl_generate_mipmap)glutGetProcAddress("glGenerateMipmap");
+            if (generate != NULL)
+            {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size,
+                              texture_size / 2U, 0, GL_RGB,
+                              GL_UNSIGNED_BYTE, texture_data);
+                if (ogl_checkerror()) return FALSE;
+                generate(GL_TEXTURE_2D);
+                return !ogl_checkerror();
+            }
+        }
+    }
+#endif
+    /* Let GLU scale to the implementation's limit before uploading. */
+    result = gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, texture_size,
+                                texture_size / 2U, GL_RGB,
+                                GL_UNSIGNED_BYTE, texture_data);
+    failed = ogl_checkerror();
+    return result == 0 && !failed;
+}
+
+static void ogl_texture_failure(const char *message)
+{
+    ogl_texture_failed = TRUE;
+    ogl_texture_used = FALSE;
+    drv_texture_loaded = FALSE;
+    ogl_invalidate_dlist();
     glDisable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (texture_id != 0) glDeleteTextures(1, &texture_id);
     texture_id = 0;
     texture_free();
-    error(message);
+    texsoft_free();
+    free(ogl_index_pixels);
+    ogl_index_pixels = NULL;
+    ogl_index_capacity = 0;
+    fprintf(stderr, "OpenGL texture: %s\n", message);
 }
 
 /* load texture */
-static void ogl_texture_load(void)
+static int ogl_texture_load(void)
 {
-    texture_generate(TEXTURE_DEFAULT_SIZE);
+    if (!texture_try_generate(TEXTURE_DEFAULT_SIZE))
+    {
+        ogl_texture_failure("Cannot generate OpenGL texture image");
+        return FALSE;
+    }
     if (ogl_indexed)
     {
         if (!texsoft_texture(texture_size, texture_size / 2U, texture_data))
-            error("Cannot allocate indexed OpenGL texture mipmaps");
+        {
+            ogl_texture_failure("Cannot allocate indexed OpenGL texture mipmaps");
+            return FALSE;
+        }
         texture_free();
         drv_texture_loaded = TRUE;
-        return;
+        return TRUE;
     }
     /* Report unrelated earlier errors before testing this upload. */
     ogl_checkerror();
@@ -594,56 +721,44 @@ static void ogl_texture_load(void)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-    if (ogl_checkerror())
+    if (ogl_checkerror() || texture_id == 0)
     {
-        ogl_texture_failed("Cannot allocate OpenGL texture");
-        return;
+        ogl_texture_failure("Cannot allocate OpenGL texture");
+        return FALSE;
     }
-#ifndef NO_GENMIPMAP
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size, texture_size/2, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
-    if (ogl_checkerror())
+    if (!ogl_build_mipmaps())
     {
-        ogl_texture_failed("Cannot upload OpenGL texture mipmaps");
-        return;
-    }
-    glGenerateMipmap(GL_TEXTURE_2D);
-#else
-    /* GLU uploads the base image and mipmaps, scaling to the implementation's
-     * maximum texture size. A prior raw upload can exceed that legacy limit. */
-    if (gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, texture_size, texture_size/2,
-                           GL_RGB, GL_UNSIGNED_BYTE, texture_data) != 0)
-    {
-        ogl_texture_failed("Cannot build OpenGL texture mipmaps");
-        return;
-    }
-#endif
-    if (ogl_checkerror())
-    {
-        ogl_texture_failed("Cannot upload OpenGL texture mipmaps");
-        return;
+        ogl_texture_failure("Cannot build OpenGL texture mipmaps");
+        return FALSE;
     }
     texture_free();
     drv_texture_loaded = TRUE;
+    return TRUE;
 }
 
 /* set rendering pipeline to textures */
 void drv_texture_enable(void)
 {
-    if (!drv_texture_loaded) ogl_texture_load();
-    if (!drv_texture_loaded) return;
+    ogl_texture_failed = ogl_texture_used = FALSE;
+    ogl_invalidate_dlist();
+    drv_texture_enabled = TRUE;
+    if (!drv_texture_loaded && !ogl_texture_load()) return;
     if (!ogl_indexed)
     {
         glBindTexture(GL_TEXTURE_2D, texture_id);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glEnable(GL_TEXTURE_2D);
+        if (ogl_checkerror())
+            ogl_texture_failure("Cannot enable OpenGL texture");
     }
-    drv_texture_enabled = TRUE;
 }
 
 /* turn off textures */
 void drv_texture_disable(void)
 {
+    ogl_invalidate_dlist();
+    ogl_texture_failed = ogl_texture_used = FALSE;
     if (!ogl_indexed)
     {
         glDisable(GL_TEXTURE_2D);
@@ -840,9 +955,8 @@ void drv_draw_osd(void)
     drv_format_stats(status_str);
     strcat(status_str, !ogl_dlist_enabled ? ", dlist off" :
              (ogl_dlist_used ? ", dlist on" : ", dlist fail"));
-    strcat(status_str, drv_texture_enabled ?
-             (ogl_indexed ? ", software texture mapping on" : ", texture mapping on") :
-             ", texture mapping off");
+    strcat(status_str, !drv_texture_enabled ? ", texture off" :
+             (ogl_texture_used ? ", texture on" : ", texture fail"));
     ogl_draw_string(status_str, 10, drv_win_height - 18);
     
     glPopAttrib();

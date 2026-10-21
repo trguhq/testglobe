@@ -230,11 +230,29 @@ def main():
                 run([str(output / "ogl"), mode],
                     expected_stderr="OpenGL error: Invalid operation!\n" * 30 if mode == "callfail" else "",
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
-            run([str(output / "ogl"), "gluerror"], expected_returncode=1,
-                expected_stderr="ERROR - Cannot build OpenGL texture mipmaps\n",
-                required_output="PASS OpenGL GLU failure: failed mipmaps are not marked loaded and resources are released")
-            run(cc + common + ogl + ogl_sources + ["-o", str(output / "ogl_modern")])
-            run([str(output / "ogl_modern"), "rgba"])
+            texture_failures = {
+                "gluerror": "Cannot build OpenGL texture mipmaps",
+                "stagefail": "Cannot generate OpenGL texture image",
+                "softmipfail": "Cannot allocate indexed OpenGL texture mipmaps",
+                "softframefail": "Cannot prepare indexed OpenGL texture raster",
+                "softtransferallocfail": "Cannot present indexed OpenGL texture raster",
+                "softtransfererror": "Cannot present indexed OpenGL texture raster",
+            }
+            for mode, message in texture_failures.items():
+                run([str(output / "ogl"), mode],
+                    expected_stderr=("OpenGL error: Invalid operation!\n" if mode == "softtransfererror" else "") +
+                                    "OpenGL texture: " + message + "\n",
+                    required_output="PASS OpenGL recoverable texture failure:")
+            for mode in ("losttexture", "bindinglost", "disabledtexture", "unloadedtexture"):
+                message = "OpenGL texture data is not loaded" if mode == "unloadedtexture" else "OpenGL texture is not active"
+                run([str(output / "ogl"), mode], expected_stderr="OpenGL texture: " + message + "\n",
+                    required_output="PASS OpenGL actual texture use:")
+            run(cc + common + ogl + ogl_sources + ["-o", str(output / "ogl_11")])
+            run([str(output / "ogl_11"), "rgba"])
+            modern_ogl = ogl + ["-DTEST_OGL_FREEGLUT"]
+            run(cc + common + modern_ogl + ogl_sources + ["-o", str(output / "ogl_modern")])
+            for mode in ("rgba", "legacy11", "missingproc", "nullversion", "badversion", "limited", "maxzero"):
+                run([str(output / "ogl_modern"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl_modern"), mode],
                     expected_stderr="OpenGL error: Out of memory!\n" * 30,
@@ -245,10 +263,17 @@ def main():
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
             for mode in ("texallocerror", "texuploaderror", "mipmaperror"):
                 message = ("Cannot allocate OpenGL texture" if mode == "texallocerror"
-                           else "Cannot upload OpenGL texture mipmaps")
-                run([str(output / "ogl_modern"), mode], expected_returncode=1,
-                    expected_stderr="OpenGL error: Out of memory!\nERROR - " + message + "\n",
-                    required_output="PASS OpenGL native texture failure: allocation/upload/mipmap errors never commit loaded state and release all resources")
+                           else "Cannot build OpenGL texture mipmaps")
+                run([str(output / "ogl_modern"), mode],
+                    expected_stderr="OpenGL error: Out of memory!\nOpenGL texture: " + message + "\n",
+                    required_output="PASS OpenGL recoverable texture failure:")
+            for label, options in (("legacy", ogl), ("optional", modern_ogl)):
+                obj = output / ("ogl_" + label + ".o")
+                run(cc + common + options + ["-c", str(ROOT / "src/drv_ogl.c"), "-o", str(obj)])
+                symbols = subprocess.run(["nm", "-u", str(obj)], text=True, capture_output=True, check=True).stdout
+                if "glGenerateMipmap" in symbols or (label == "legacy" and "glutGetProcAddress" in symbols):
+                    raise SystemExit("OpenGL 1.1 object unexpectedly links a later entry point")
+            print("PASS OpenGL 1.1 object linkage: legacy and optional builds compile with GL 1.1 declarations and never import glGenerateMipmap")
             run(cc + common + ogl + ["-DNO_GENMIPMAP", "-DTEXTURE_CACHE_RASTER=1"] +
                 ogl_sources + ["-o", str(output / "ogl_cached")])
             run([str(output / "ogl_cached"), "indexed"])

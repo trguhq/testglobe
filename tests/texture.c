@@ -71,6 +71,13 @@ int main(void)
     size_t saved_bytes;
     texture_init();
     assert(texture_data==NULL&&texture_size==0&&allocation_count==0);
+    calls=allocation_calls;
+    assert(!texture_try_generate(33)&&!texture_try_generate(-1));
+    assert(errors==0&&allocation_calls==calls&&texture_data==NULL&&texture_size==0);
+    fail_allocation=1;
+    assert(!texture_try_generate(32));
+    assert(errors==0&&texture_data==NULL&&texture_size==0&&allocation_count==0);
+    assert(texture_try_generate(32));check_image(32,earth_data_32);
     texture_generate(32);check_image(32,earth_data_32);
     texture_generate(64);check_image(64,earth_data_64);
     texture_generate(128);check_image(128,earth_data_128);
@@ -81,6 +88,15 @@ int main(void)
     calls=allocation_calls;
     texture_generate(32);check_image(32,earth_data_32);
     assert(texture_data==saved&&allocation_calls==calls);
+    assert(texture_try_generate(32));check_image(32,earth_data_32);
+    assert(texture_data==saved&&allocation_calls==calls);
+    fail_allocation=1;
+    assert(!texture_try_generate(64));
+    assert(errors==0&&texture_data==saved&&texture_data_size==saved_bytes);
+    calls=allocation_calls;
+    assert(!texture_try_generate(33)&&!texture_try_generate(-1));
+    assert(errors==0&&allocation_calls==calls&&texture_data==saved);
+    check_image(32,earth_data_32);
     expect_error=1;fail_allocation=1;
     texture_generate(64);
     assert(errors==1&&strcmp(last_error,"Could not allocate memory for texture!")==0);
@@ -96,10 +112,11 @@ int main(void)
     assert(texture_data==NULL&&texture_data_size==0&&allocation_count==0);
     /* XGL uploads release RGB staging before reading the last dimensions. */
     assert(texture_size==32);
-    texture_generate(64);check_image(64,earth_data_64);
+    assert(texture_try_generate(64));check_image(64,earth_data_64);
     texture_init();texture_init();
     assert(texture_data==NULL&&texture_size==0&&allocation_count==0);
     puts("PASS Earth texture RGB expansion: all five resolutions match every source palette index");
     puts("PASS Texture ownership: repeated generation, transactional allocation failure, invalid sizes and idempotent cleanup");
+    puts("PASS Recoverable texture generation: invalid sizes and allocation failure preserve owned bytes and dimensions without fatal errors");
     return 0;
 }

@@ -106,16 +106,24 @@ in the help text. Indexed software texturing continues to bypass native lists in
 either setting and reports `dlist fail` while they are enabled.
 
 The GLU mipmap path is checked with a 256-pixel texture-size limit and a larger
-source image, as well as a failed mipmap build. Native-rendering statistics must
-omit visibility counts that the graphics API does not report.
+source image, as well as a failed mipmap build. OpenGL 1.1 compatibility checks cover
+legacy declarations and runtime fallbacks when modern mipmap support is unavailable.
+Optional modern mipmaps require FreeGLUT lookup support, a suitable context version,
+an available entry point, and a source image within the texture limit; otherwise GLU
+must be used. Native-rendering statistics must omit visibility counts that the
+graphics API does not report.
 
 Failure injection checks zero display-list allocation, rejected list creation,
 partial compilation failure, invalid list validation, and execution errors, with
 failed-list deletion and complete immediate-mode fallback. Validation and error
-checks use OpenGL 1.1-compatible `glIsList` and `glGetError` calls. Native texture
-allocation, image upload, and mipmap errors must leave textures unloaded and disabled
-and release their resources. FPS toggling, right-button metadata, and both released
-and retained software-raster cache policies are recorded independently of geometry caching.
+checks use OpenGL 1.1-compatible `glIsList` and `glGetError` calls. Texture failures
+release invalid resources and recover to complete flat geometry while retaining the
+user's enabled request. Top-line status checks distinguish `texture on` only after
+successful native or software use, `texture off` when disabled, and `texture fail`
+when an enabled texture cannot be created, validated, or used. They also check
+off/on retry and retain the bottom-line texture-mapping key description. FPS
+toggling, right-button metadata, and both released and retained software-raster
+cache policies are recorded independently of geometry caching.
 
 Each window has its own display callback. Probe hiding and final-window
 resizing/showing dispatch an early initial redraw to check that callbacks exist
