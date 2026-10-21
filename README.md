@@ -202,7 +202,7 @@ No `.xcodeproj` is provided. The native macOS command-line build uses `make appl
 * Add IBM PGC and derivatives driver (start with Matrox)
   
 ### v0.2 (in development)
-* Compile for Amiga 68k OpenGL
+* Add AI-coded skeleton for Matrox LibShell, Windows GDI, QuickDraw, and IRIS GL drivers (complete)
 * Add FPS counter (complete)
 * Add auto-rotation feature (complete)
 * Change all comments to C style (complete)
