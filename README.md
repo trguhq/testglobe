@@ -295,13 +295,15 @@ The software texture path bypasses native display lists regardless of the toggle
 the OSD therefore shows `dlist fail` while lists are enabled, or `dlist off` when
 the toggle is disabled.
 
-The top OSD uses the shorter labels `texture on`, `texture off`, and `texture fail`.
-`texture on` means native or software texturing was successfully used for the
-current frame; `texture off` means the toggle is disabled. If enabled texturing
+The top OSD shows `texture on` when native texturing was successfully used for the
+current frame, or `texture soft` when the indexed-window software rasterizer was
+used successfully. `texture off` means the toggle is disabled. If enabled texturing
 cannot be created, validated, or used, the driver draws flat colors and reports
 `texture fail`. Failed resources and incompatible display-list caches are released.
 Turn texturing off and on with `t` to retry after a failure. The bottom help retains
 its `T = texture mapping` key description.
+`texture soft` identifies the application's software rasterizer; `texture on`
+does not guarantee hardware acceleration inside the installed OpenGL library.
 
 GLUT's display-mode availability query is required. Where display-string requests are
 supported, the driver requests those component sizes explicitly; older GLUT
@@ -393,12 +395,12 @@ provide the matrices, and ordinary flat drawing stays native. OpenGL links this
 floating-point fallback as `texsoft.o`, and IRIS GL as `i_soft.o`; the segmented
 GDI/QuickDraw integer module remains separate.
 
-The top OSD uses `texture on` for the current frame's native texture submission or
-completed software texture presentation, `texture off` when disabled, and
-`texture fail` for detected failures while texturing is enabled. Recoverable texture
-failures discard failed texture state and invalidate cached geometry before drawing
-the globe's flat Earth colors. Toggle `t` off and on to retry; the bottom help retains
-its texture-mapping key description.
+The top OSD uses `texture on` for the current frame's native texture submission,
+`texture soft` for completed software texture presentation, `texture off` when
+disabled, and `texture fail` for detected failures while texturing is enabled.
+Recoverable texture failures discard failed texture state and invalidate cached
+geometry before drawing the globe's flat Earth colors. Toggle `t` off and on to retry;
+the bottom help retains its texture-mapping key description.
 
 The IRIX 4.0 texture definition, binding, and pixel-transfer calls used here return
 no success value. Their native submission cannot independently confirm hardware
@@ -454,11 +456,15 @@ replacement is needed.
 `drv_draw_tristrip_flat_uv()` callback. Both native entry points live together in
 `drv_xgl.c`; texturing uses XGL's REPLACE operation and preserves the original UVs.
 
-The top OSD uses the same `texture on`, `texture off`, and `texture fail` labels as
-OpenGL and IRIS GL. Enabled textures report `texture on` only after use in the current
-frame. Recoverable texture failures release partial resources and draw the globe with
-flat colors and `texture fail`; toggle `t` off and on to retry. XGL errors classified as
-nonrecoverable remain fatal, as do unrelated setup, flat-rendering, and OSD errors.
+The top OSD uses `texture on`, `texture off`, and `texture fail`. Enabled textures
+report `texture on` only after XGL texturing is used in the current frame.
+XGL can mix hardware and software processing internally and provides no reliable
+per-frame texture-backend query; successful XGL texturing therefore remains
+`texture on`. The `texture soft` label identifies the application's explicit software
+rasterizer in OpenGL and IRIS GL. Recoverable texture failures release partial resources
+and draw the globe with flat colors and `texture fail`; toggle `t` off and on to retry.
+XGL errors classified as nonrecoverable remain fatal, as do unrelated setup,
+flat rendering, and OSD errors.
 The bottom help retains its texture-mapping key description.
 
 X11 supplies keyboard, button, drag, expose, resize, and window-close events. The driver

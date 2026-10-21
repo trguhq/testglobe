@@ -388,7 +388,8 @@ static void frame(void)
     assert(igl_texture_used==(raster_writes>old_writes||native_texture_draws>old_native));
     if(drv_osd_enabled){
         const char *expected_status=!drv_texture_enabled?", texture off":
-              (igl_texture_used?", texture on":", texture fail");
+              (raster_writes>old_writes?", texture soft":
+               (native_texture_draws>old_native?", texture on":", texture fail"));
         /* At the normal 640px window the status fits in one text line. */
         if(drv_win_width>=640U)assert(strstr(recorded_stats,expected_status)!=NULL);
         assert(strstr(recorded_stats,"texture mapping")==NULL);
@@ -429,7 +430,7 @@ static void check_texture_failure(const char *profile)
     fail_stage=fail_image=fail_mips=fail_frame=fail_pixels=fail_capability=0;
     igl_keyboard('T');frame();
     assert(drv_texture_enabled&&drv_texture_loaded&&!igl_texture_failed&&igl_texture_used);
-    assert(strstr(recorded_stats,", texture on")!=NULL);
+    assert(strstr(recorded_stats,software_texture_expected()?", texture soft":", texture on")!=NULL);
     igl_keyboard('t');frame();
     igl_cleanup();igl_cleanup();assert(!window_open&&globe_verts==NULL&&texture_data==NULL);
     puts("PASS IRIS GL recoverable texture failure: flat fallback, requested state, latched failure, short OSD status and off/on retry");
@@ -545,6 +546,6 @@ int main(int argc,char **argv)
     puts("PASS IRIS GL rendering: default 128 and five indexed LODs, native tmesh provoking colors/winding/UVs, transforms, depth/cull, texture packing and OSD state");
     puts("PASS IRIS GL input/capabilities: native queue, keys, tied mouse, resize, focus, buffering and texture fallbacks");
     puts("PASS IRIS GL cleanup: objects, resources, window and shared palette restored");
-    puts("PASS IRIS GL texture status: short on/off/fail reflects submitted native or software work without later residency APIs");
+    puts("PASS IRIS GL texture status: short on/soft/off/fail distinguishes submitted native or software work without later residency APIs");
     return 0;
 }

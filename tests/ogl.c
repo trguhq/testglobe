@@ -454,7 +454,8 @@ static void check_dlist_osd(void)
     assert(state);
     texture=state+strlen(expected_state);
     assert(strcmp(texture,!drv_texture_enabled?", texture off":
-           ((frame_geometry.textured_vertices||frame_texture_pixels)?", texture on":", texture fail"))==0);
+           (frame_texture_pixels?", texture soft":
+            (frame_geometry.textured_vertices?", texture on":", texture fail")))==0);
     assert(strstr(osd_lines[1],"texture mapping")==NULL);
     fps=strstr(osd_lines[1],"frames per second");
     if(drv_fps_enabled){
@@ -598,9 +599,9 @@ static void check_texture_failure(int indexed)
     keyboard_callback('t',0,0);assert(drv_texture_enabled);
     render_checked(indexed);
     assert(!ogl_texture_failed&&ogl_texture_used&&drv_texture_loaded);
-    assert(strstr(osd_lines[1],", texture on"));
+    assert(strstr(osd_lines[1],indexed?", texture soft":", texture on"));
     keyboard_callback('T',0,0);render_checked(indexed);
-    puts("PASS OpenGL recoverable texture failure: short fail/off/on status, complete flat fallback, released resources, latched failure and explicit retry");
+    puts("PASS OpenGL recoverable texture failure: short fail/off/soft/on status, complete flat fallback, released resources, latched failure and explicit retry");
 }
 
 static int inactive_texture_profile(void)
@@ -727,7 +728,7 @@ cleanup:
     if(strcmp(profile,"validationfail")==0||strcmp(profile,"callfail")==0)
         puts("PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail");
     puts("PASS OpenGL display-list OSD: on requires successful current-frame execution, disabled is off, failures and software texturing report fail using OpenGL 1.1 calls");
-    puts("PASS OpenGL texture OSD: short on/off/fail labels reflect actual native or software use, with recoverable failures and complete flat fallback");
+    puts("PASS OpenGL texture OSD: short on/soft/off/fail labels distinguish actual native or software use, with recoverable failures and complete flat fallback");
     puts("PASS OpenGL 1.1 compatibility: legacy GLU requires no later GL declarations, optional modern mipmaps require runtime version and resolved entry point");
 #ifdef TRI
     puts("PASS retained OpenGL TRI: native and indexed-texture traversal, five resolutions and display-list caching");

@@ -119,10 +119,11 @@ failed-list deletion and complete immediate-mode fallback. Validation and error
 checks use OpenGL 1.1-compatible `glIsList` and `glGetError` calls. Texture failures
 release invalid resources and recover to complete flat geometry while retaining the
 user's enabled request. Top-line status checks distinguish `texture on` only after
-successful native or software use, `texture off` when disabled, and `texture fail`
-when an enabled texture cannot be created, validated, or used. They also check
-off/on retry and retain the bottom-line texture-mapping key description. FPS
-toggling, right-button metadata, and both released and retained software-raster
+successful native use, `texture soft` after successful software presentation,
+`texture off` when disabled, and `texture fail` when an enabled texture cannot be
+created, validated, or used. They also check off/on retry and retain the bottom-line
+texture-mapping key description. FPS toggling, right-button metadata, and both released
+and retained software-raster
 cache policies are recorded independently of geometry caching.
 
 Each window has its own display callback. Probe hiding and final-window
@@ -164,10 +165,11 @@ draws the complete geometry directly and rebuilds the cache on the next frame.
 Software-texture profiles verify both the default raster release on disable and
 the optional `TEXTURE_CACHE_RASTER=1` retained cache.
 
-Texture status checks distinguish current-frame native submission or software presentation
-(`texture on`), manual disable (`texture off`), and detected failure while enabled
-(`texture fail`). Recoverable failures must draw complete flat geometry, invalidate
-incompatible cached geometry, preserve the user's request, and allow an off/on retry.
+Texture status checks distinguish current-frame native submission (`texture on`),
+software presentation (`texture soft`), manual disable (`texture off`), and detected
+failure while enabled (`texture fail`). Recoverable failures must draw complete flat
+geometry, invalidate incompatible cached geometry, preserve the user's request, and
+allow an off/on retry.
 The IRIX 4.0 native texture and pixel-transfer calls return no success value, so
 the tests check submitted calls and observable failures without claiming detection
 of silent errors inside the SGI library or hardware.
@@ -220,9 +222,11 @@ uses the texture color directly.
 Texture failure checks cover the short `texture on`, `texture off`, and
 `texture fail` status labels, complete flat fallback while preserving the enabled
 request, partial-resource cleanup, and off/on retry. Status reflects use in the
-current frame rather than the toggle alone. Recovery is limited to errors XGL
-classifies as recoverable; nonrecoverable and unrelated rendering errors retain
-their fatal handling.
+current frame rather than the toggle alone. XGL's internal hardware/software mix is
+not exposed through a reliable per-frame texture query, so its successful native API
+path remains `texture on`; `texture soft` covers the explicit OpenGL/IRIS GL rasterizer.
+Recovery is limited to errors XGL classifies as recoverable; nonrecoverable and
+unrelated rendering errors retain their fatal handling.
 
 `tests/xgl_record/xgl/xgl.h` is a small, manual-derived recording contract with
 test-local symbolic values. It is **not Sun's SDK header**, an ABI-compatible

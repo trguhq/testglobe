@@ -956,7 +956,8 @@ void drv_draw_osd(void)
     strcat(status_str, !ogl_dlist_enabled ? ", dlist off" :
              (ogl_dlist_used ? ", dlist on" : ", dlist fail"));
     strcat(status_str, !drv_texture_enabled ? ", texture off" :
-             (ogl_texture_used ? ", texture on" : ", texture fail"));
+             (ogl_texture_used ? (ogl_indexed ? ", texture soft" : ", texture on") :
+                                  ", texture fail"));
     ogl_draw_string(status_str, 10, drv_win_height - 18);
     
     glPopAttrib();

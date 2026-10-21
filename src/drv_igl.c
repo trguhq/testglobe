@@ -554,7 +554,8 @@ void drv_draw_osd(void)
     height = getheight(); if (height < 1) height = 14;
     drv_format_stats(status);
     strcat(status, !drv_texture_enabled ? ", texture off" :
-             (igl_texture_used ? ", texture on" : ", texture fail"));
+             (igl_texture_used ? (igl_native_texture ? ", texture on" : ", texture soft") :
+                                  ", texture fail"));
     igl_osd_text(status, (long)drv_win_height - height - 4L,
                    (long)drv_win_width - 16L, TRUE);
     help_lines = igl_osd_text(drv_help, 0, (long)drv_win_width - 16L, FALSE);
