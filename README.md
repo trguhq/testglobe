@@ -36,7 +36,8 @@ resolutions require more memory and rendering time on older systems.
 The Earth maps store 8-bit palette indices. OpenGL and IRIS GL retain those indices in
 the mesh and choose RGB(A) or color-index drawing for the selected window format. XGL
 expands the data to RGB. Matrox LibShell, Windows GDI, and QuickDraw draw using the
-Earth palette.
+Earth palette. Many of these drivers are partially tested AI-generated stubs. OpenGL was the
+template used for the rest.
 
 | Driver | Platform | Default globe | Texture toggle | Origin |
 | --- | --- | --- | --- | --- |
