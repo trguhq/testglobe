@@ -13,13 +13,12 @@ SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
 LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
 # drv_ogl.h selects latitude strips with separately batched pole triangles.
 OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
-OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o texsoft.o
+OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o texsoft.o e_data.o
 OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_ogl.h $(SRC)/err_ext.h \
     $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h \
     $(SRC)/texture.h $(SRC)/tex_ext.h $(SRC)/texsoft.h \
-    $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
-    $(SRC)/e_256.h $(SRC)/e_512.h
+    $(SRC)/e_cmap.h $(SRC)/earthres.h
 
 # Native Solaris OpenGL/GLUT with the installed OpenWindows headers/libraries.
 # s_ objects keep Solaris compiler and linker options separate from other builds.
@@ -31,7 +30,7 @@ SOLARIS_SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
 SOLARIS_DEFINES = $(OGL_DEFINES)
 SOLARIS_LDFLAGS = -L$(OPENWINHOME)/lib -R$(OPENWINHOME)/lib \
     -lglut -lGL -lGLU -lX11 -lXmu -lm
-SOLARIS_OBJECTS = s_drv.o s_ogl.o s_err.o s_globe.o s_main.o s_tex.o s_soft.o
+SOLARIS_OBJECTS = s_drv.o s_ogl.o s_err.o s_globe.o s_main.o s_tex.o s_soft.o s_data.o
 
 # Native macOS OpenGL/GLUT from the selected Xcode command line tools.
 # Apple objects stay separate from Unix GL/X11 objects. Apple's legacy
@@ -42,7 +41,7 @@ APPLE_CFLAGS = $(CFLAGS)
 APPLE_SYS_FLAGS = -DNO_GENMIPMAP -DGLUT_SILENCE_DEPRECATION
 APPLE_DEFINES = $(OGL_DEFINES)
 APPLE_LDFLAGS = -framework GLUT -framework OpenGL -framework Cocoa
-APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o
+APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o a_data.o
 
 # Sun XGL 3.x / 32-bit SPARC on Solaris 2.6. Select native SDK locations
 # on the make command line if they differ from the Sun installation defaults.
@@ -55,12 +54,11 @@ XGL_DEFINES = -DFLAT -DDRV_XGL -DDRV
 XGL_LDFLAGS = -L$(XGLHOME)/lib -L$(OPENWINHOME)/lib \
     -R$(XGLHOME)/lib:$(OPENWINHOME)/lib -Bdynamic \
     -lxgl -lX11 -ldga -ldl -lm
-XGL_OBJECTS = x_drv.o x_xgl.o x_err.o x_globe.o x_main.o x_tex.o
+XGL_OBJECTS = x_drv.o x_xgl.o x_err.o x_globe.o x_main.o x_tex.o x_data.o
 XGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_xgl.h $(SRC)/err_ext.h \
     $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
-    $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
-    $(SRC)/e_256.h $(SRC)/e_512.h
+    $(SRC)/e_cmap.h $(SRC)/earthres.h
 
 # Native IRIS GL on 32-bit MIPS IRIX 4.0. These shared-library names follow
 # the IRIS GL Programming Guide; override for the installed SGI toolchain.
@@ -71,12 +69,11 @@ IGL_CFLAGS = $(CFLAGS)
 IGL_SYS_FLAGS = -DNO_SINF
 IGL_DEFINES = -DFLAT -DDRV_IGL -DDRV
 IGL_LDFLAGS = -lc_s -lgl_s -lm
-IGL_OBJECTS = i_drv.o i_igl.o i_err.o i_globe.o i_main.o i_tex.o i_soft.o
+IGL_OBJECTS = i_drv.o i_igl.o i_err.o i_globe.o i_main.o i_tex.o i_soft.o i_data.o
 IGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_igl.h $(SRC)/texsoft.h $(SRC)/err_ext.h \
     $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h $(SRC)/texture.h $(SRC)/tex_ext.h \
-    $(SRC)/e_cmap.h $(SRC)/e_32.h $(SRC)/e_64.h $(SRC)/e_128.h \
-    $(SRC)/e_256.h $(SRC)/e_512.h
+    $(SRC)/e_cmap.h $(SRC)/earthres.h
 
 # Microsoft C 7, huge model, with native DOS paths and 8.3 file names.
 MTX_CC = cl
@@ -86,11 +83,11 @@ XGX_ROOT = ..
 MTX_CPPFLAGS = -I$(XGX_ROOT)
 MTX_LIB = $(XGX_ROOT)\libsv5\lscl.lib
 MTX_LDFLAGS = -link /STACK:16384
-MTX_OBJECTS = drv.obj drv_mtx.obj err.obj globe.obj main.obj
+MTX_OBJECTS = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\e_32.h $(SRC)\e_64.h \
+    $(SRC)\earthres.h \
     $(XGX_ROOT)\XGX1\HEADERS\DEF.H \
     $(XGX_ROOT)\XGX1\HEADERS\LIBFN.H \
     $(XGX_ROOT)\XGX1\HEADERS\IOLIB.H
@@ -130,11 +127,54 @@ QD_MAKEFILE = ../Makefile.mpw
 QD_SOURCE = :
 QD_DEFINES = -d SEG68 -d DRV_QD -d DRV -d NO_SINF
 
+# Binary maps are build inputs only. Keep the helper independent of any SDK.
+# A checked-in src/e_data.c is available for compilers used outside make.
+EARTH_CC = $(CC)
+EARTH_CFLAGS = $(CFLAGS)
+EARTH_DATA = $(SRC)/../data
+EARTH_INPUTS = $(EARTH_DATA)/e32.bin $(EARTH_DATA)/e64.bin \
+    $(EARTH_DATA)/e128.bin $(EARTH_DATA)/e256_0.bin $(EARTH_DATA)/e256_1.bin \
+    $(EARTH_DATA)/e512_0.bin $(EARTH_DATA)/e512_1.bin $(EARTH_DATA)/e512_2.bin \
+    $(EARTH_DATA)/e512_3.bin $(EARTH_DATA)/e512_4.bin $(EARTH_DATA)/e512_5.bin \
+    $(EARTH_DATA)/e512_6.bin $(EARTH_DATA)/e512_7.bin
+MTX_DATA = $(SRC)\..\data
+MTX_INPUTS = $(MTX_DATA)\e32.bin $(MTX_DATA)\e64.bin \
+    $(MTX_DATA)\e128.bin $(MTX_DATA)\e256_0.bin $(MTX_DATA)\e256_1.bin \
+    $(MTX_DATA)\e512_0.bin $(MTX_DATA)\e512_1.bin $(MTX_DATA)\e512_2.bin \
+    $(MTX_DATA)\e512_3.bin $(MTX_DATA)\e512_4.bin $(MTX_DATA)\e512_5.bin \
+    $(MTX_DATA)\e512_6.bin $(MTX_DATA)\e512_7.bin
+
 # Unix default; with DOS NMAKE use: nmake clean RM=del
 RM = rm -f
 
 # The first ordinary target is the portable way to choose the default.
 opengl: testglobe-opengl
+
+# Regenerate automatically when a binary map or converter changes. The DOS
+# source uses a different name so native compiler commands need no make dialect.
+e_data.c: $(SRC)/e_bin.c $(EARTH_INPUTS)
+	$(EARTH_CC) $(EARTH_CFLAGS) -o e_bin $(SRC)/e_bin.c
+	./e_bin $(EARTH_DATA) e_data.c
+
+m_data.c: $(SRC)\e_bin.c $(MTX_INPUTS)
+	@echo -O -W3 -Fee_bin.exe > e_bin.rsp
+	@echo $(SRC)\e_bin.c >> e_bin.rsp
+	$(MTX_CC) @e_bin.rsp
+	e_bin $(MTX_DATA) m_data.c
+
+# Explicitly refresh the checked-in generated source after editing the maps.
+earth-data: FORCE
+	$(EARTH_CC) $(EARTH_CFLAGS) -o e_bin $(SRC)/e_bin.c
+	./e_bin $(EARTH_DATA) $(SRC)/e_data.c
+
+earth-data-dos: FORCE
+	@echo -O -W3 -Fee_bin.exe > e_bin.rsp
+	@echo $(SRC)\e_bin.c >> e_bin.rsp
+	$(MTX_CC) @e_bin.rsp
+	e_bin $(MTX_DATA) $(SRC)\e_data.c
+
+e_data.o: e_data.c $(OGL_HEADERS)
+	$(CC) $(CPPFLAGS) -I$(SRC) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c e_data.c
 
 testglobe-opengl: $(OGL_OBJECTS) FORCE
 	$(CC) -o testglobe-opengl $(OGL_OBJECTS) $(LDFLAGS)
@@ -165,6 +205,9 @@ texsoft.o: $(SRC)/texsoft.c $(OGL_HEADERS)
 solaris-opengl: $(SOLARIS_OBJECTS) FORCE
 	$(SOLARIS_CC) -o testglobe-opengl $(SOLARIS_OBJECTS) $(SOLARIS_LDFLAGS)
 
+s_data.o: e_data.c $(OGL_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) -I$(SRC) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c e_data.c -o s_data.o
+
 s_drv.o: $(SRC)/drv.c $(OGL_HEADERS)
 	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/drv.c -o s_drv.o
 
@@ -190,6 +233,9 @@ s_soft.o: $(SRC)/texsoft.c $(OGL_HEADERS)
 # FORCE relinks it when switching between opengl and apple-opengl.
 apple-opengl: $(APPLE_OBJECTS) FORCE
 	$(APPLE_CC) -o testglobe-opengl $(APPLE_OBJECTS) $(APPLE_LDFLAGS)
+
+a_data.o: e_data.c $(OGL_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) -I$(SRC) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c e_data.c -o a_data.o
 
 a_drv.o: $(SRC)/drv.c $(OGL_HEADERS)
 	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/drv.c -o a_drv.o
@@ -221,6 +267,9 @@ xgl: testglobe-xgl
 testglobe-xgl: $(XGL_OBJECTS) FORCE
 	$(CC) -o testglobe-xgl $(XGL_OBJECTS) $(XGL_LDFLAGS)
 
+x_data.o: e_data.c $(XGL_HEADERS)
+	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) -I$(SRC) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c e_data.c -o x_data.o
+
 x_drv.o: $(SRC)/drv.c $(XGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(XGL_CPPFLAGS) $(XGL_DEFINES) $(XGL_SYS_FLAGS) $(XGL_CFLAGS) -c $(SRC)/drv.c -o x_drv.o
 
@@ -243,6 +292,9 @@ irisgl: testglobe-irisgl
 
 testglobe-irisgl: $(IGL_OBJECTS) FORCE
 	$(IGL_CC) -o testglobe-irisgl $(IGL_OBJECTS) $(IGL_LDFLAGS)
+
+i_data.o: e_data.c $(IGL_HEADERS)
+	$(IGL_CC) $(CPPFLAGS) $(IGL_CPPFLAGS) -I$(SRC) $(IGL_DEFINES) $(IGL_SYS_FLAGS) $(IGL_CFLAGS) -c e_data.c -o i_data.o
 
 i_drv.o: $(SRC)/drv.c $(IGL_HEADERS)
 	$(IGL_CC) $(CPPFLAGS) $(IGL_CPPFLAGS) $(IGL_DEFINES) $(IGL_SYS_FLAGS) $(IGL_CFLAGS) -c $(SRC)/drv.c -o i_drv.o
@@ -274,6 +326,12 @@ testglob.exe: $(MTX_OBJECTS) $(MTX_LIB) FORCE
 	@echo $(MTX_OBJECTS) >> link.rsp
 	@echo $(MTX_LIB) $(MTX_LDFLAGS) >> link.rsp
 	$(MTX_CC) @link.rsp
+
+e_data.obj: m_data.c $(MTX_HEADERS)
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > e_data.rsp
+	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> e_data.rsp
+	@echo -Foe_data.obj m_data.c >> e_data.rsp
+	$(MTX_CC) @e_data.rsp
 
 drv.obj: $(SRC)\drv.c $(MTX_HEADERS)
 	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > drv.rsp
@@ -374,10 +432,11 @@ clean-quickdraw:
 # Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw
+clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw clean-earth-data
 	-$(RM) testglobe
 
 clean-opengl:
+	-$(RM) e_data.o
 	-$(RM) drv.o
 	-$(RM) drv_ogl.o
 	-$(RM) err.o
@@ -388,6 +447,7 @@ clean-opengl:
 	-$(RM) testglobe-opengl
 
 clean-solaris-opengl:
+	-$(RM) s_data.o
 	-$(RM) s_drv.o
 	-$(RM) s_ogl.o
 	-$(RM) s_err.o
@@ -398,6 +458,7 @@ clean-solaris-opengl:
 	-$(RM) testglobe-opengl
 
 clean-apple-opengl:
+	-$(RM) a_data.o
 	-$(RM) a_drv.o
 	-$(RM) a_ogl.o
 	-$(RM) a_err.o
@@ -408,6 +469,7 @@ clean-apple-opengl:
 	-$(RM) testglobe-opengl
 
 clean-xgl:
+	-$(RM) x_data.o
 	-$(RM) x_drv.o
 	-$(RM) x_xgl.o
 	-$(RM) x_err.o
@@ -417,6 +479,7 @@ clean-xgl:
 	-$(RM) testglobe-xgl
 
 clean-irisgl:
+	-$(RM) i_data.o
 	-$(RM) i_drv.o
 	-$(RM) i_igl.o
 	-$(RM) i_err.o
@@ -427,6 +490,9 @@ clean-irisgl:
 	-$(RM) testglobe-irisgl
 
 clean-matrox:
+	-$(RM) e_data.obj
+	-$(RM) e_data.rsp
+	-$(RM) m_data.c
 	-$(RM) drv.obj
 	-$(RM) drv_mtx.obj
 	-$(RM) err.obj
@@ -456,3 +522,12 @@ clean-gdi:
 	-$(RM) g_link.rsp
 	-$(RM) g_earth.res
 	-$(RM) testglob.exe
+
+# Preserve generated sources: e_data.c may be the tracked copy in src.
+clean-earth-data:
+	-$(RM) e_bin
+	-$(RM) e_bin.exe
+	-$(RM) e_bin.obj
+	-$(RM) e_bin.rsp
+	-$(RM) e_data.tmp
+	-$(RM) m_data.tmp

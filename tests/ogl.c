@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "earth_reference.h"
 static int test_texture_try_generate(int size);
 static int test_texsoft_texture(unsigned int width,unsigned int height,const unsigned char *rgb);
 static int test_texsoft_begin(unsigned int width,unsigned int height,float model[4][4],float projection[4][4],int indexed,const unsigned char *colormap);
@@ -114,9 +115,9 @@ static void geometry_add(struct Test_geometry *to,const struct Test_geometry *fr
 static unsigned char *earth_bytes(void)
 {
     switch(globe_longitude){
-    case 32:return earth_data_32;case 64:return earth_data_64;
-    case 128:return earth_data_128;case 256:return earth_data_256;
-    case 512:return earth_data_512;
+    case 32:return test_earth_data(32);case 64:return test_earth_data(64);
+    case 128:return test_earth_data(128);case 256:return test_earth_data(256);
+    case 512:return test_earth_data(512);
     }
     assert(!"Unknown globe resolution");return NULL;
 }
@@ -422,7 +423,7 @@ static void texture_upload(GLsizei w,GLsizei h,const GLvoid *data)
 {
     const GLubyte *rgb=data;unsigned long i;
     assert(w==512&&h==256&&rgb);
-    for(i=0;i<512UL*256;++i){unsigned int v=earth_data_512[i];assert(rgb[i*3]==earth_cmap[v][0]&&rgb[i*3+1]==earth_cmap[v][1]&&rgb[i*3+2]==earth_cmap[v][2]);}
+    for(i=0;i<512UL*256;++i){unsigned int v=test_earth_data(512)[i];assert(rgb[i*3]==earth_cmap[v][0]&&rgb[i*3+1]==earth_cmap[v][1]&&rgb[i*3+2]==earth_cmap[v][2]);}
     ++texture_uploads;
 }
 void glTexImage2D(GLenum t,GLint l,GLint internal,GLsizei w,GLsizei h,GLint border,GLenum f,GLenum type,const GLvoid *p)

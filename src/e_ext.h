@@ -22,26 +22,20 @@
 
 #include "testglob.h"
 #include "drv.h"
+#include "types.h"
 
 /* One declaration source for both embedded and resource-backed Earth data. */
 #ifdef EARTH
 extern unsigned char earth_cmap[][3];
 #ifndef DRV_EARTH_RESOURCES
-#ifdef EARTH_32
-extern unsigned char earth_data_32[];
-#endif
-#ifdef EARTH_64
-extern unsigned char earth_data_64[];
-#endif
-#ifdef EARTH_128
-extern unsigned char earth_data_128[];
-#endif
-#ifdef EARTH_256
-extern unsigned char earth_data_256[];
-#endif
-#ifdef EARTH_512
-extern unsigned char earth_data_512[];
-#endif
+/* Generated from the binary maps in data/. Each object is at most 16 KiB. */
+extern unsigned long earth_data_size(int longitude);
+/* Copy a bounded range without exposing chunk or segment boundaries.
+ * Return zero for an unsupported level, invalid range, or NULL destination
+ * with a nonzero count. A zero-byte read may use NULL at any valid offset. */
+extern int earth_read_data(int longitude, unsigned long offset,
+                            unsigned int count,
+                            unsigned char TG_HUGE *destination);
 #endif
 #endif
 

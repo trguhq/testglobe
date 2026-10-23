@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "earth_reference.h"
 #include "testglob.h"
 #include "drv.h"
 #include "types.h"
@@ -417,7 +418,7 @@ static void check_indexed_triangle(void)
     a = globe_verts + top;
     b = a + globe_longitude + 1;
     c = a + 1;
-    color = earth_data_32[((unsigned long)globe_latitude / 2UL - 1UL) *
+    color = test_earth_data(32)[((unsigned long)globe_latitude / 2UL - 1UL) *
                          globe_longitude + (unsigned long)globe_longitude / 4UL];
     submitted_vertices[0] = a; submitted_vertices[1] = b;
     submitted_vertices[2] = c; submitted_vertices[3] = c;
@@ -479,20 +480,20 @@ int main(void)
     }
     globe_init();
     assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
-    render_and_check(512, earth_data_32);
+    render_and_check(512, test_earth_data(32));
     check_indexed_triangle();
-    check_noncardinal_poses(512, earth_data_32);
+    check_noncardinal_poses(512, test_earth_data(32));
     assert(osd_calls > 0);
     mtx_keyboard('2');
     assert(globe_longitude == 64 && globe_faces_num == 2048UL);
-    render_and_check(2048, earth_data_64);
-    check_noncardinal_poses(2048, earth_data_64);
+    render_and_check(2048, test_earth_data(64));
+    check_noncardinal_poses(2048, test_earth_data(64));
     for (i = '3'; i <= '5'; ++i) mtx_keyboard((unsigned char)i);
     mtx_keyboard('t');
     assert(globe_longitude == 64 && !drv_texture_enabled);
     mtx_keyboard('1');
     assert(globe_longitude == 32 && globe_faces_num == 512UL);
-    render_and_check(512, earth_data_32);
+    render_and_check(512, test_earth_data(32));
     mtx_keyboard('a'); assert(drv_auto_enabled);
     mtx_keyboard('a'); assert(!drv_auto_enabled);
     mtx_keyboard('o'); assert(!drv_osd_enabled);

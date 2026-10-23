@@ -28,6 +28,7 @@
 #include "globe.h"
 #include "drv_ext.h"
 #include "types.h"
+#include "e_ext.h"
 #ifdef GDI
 #include <windows.h>
 #endif
@@ -35,26 +36,9 @@
 #include <Memory.h>
 #endif
 
-/* Only the selected driver's embedded Earth resolutions enter its image. */
+/* The small palette is shared by every Earth rendering path. */
 #ifdef EARTH
 #include "e_cmap.h"
-#ifndef DRV_EARTH_RESOURCES
-#ifdef EARTH_32
-#include "e_32.h"
-#endif
-#ifdef EARTH_64
-#include "e_64.h"
-#endif
-#ifdef EARTH_128
-#include "e_128.h"
-#endif
-#ifdef EARTH_256
-#include "e_256.h"
-#endif
-#ifdef EARTH_512
-#include "e_512.h"
-#endif
-#endif
 #endif
 
 Vertex TG_HUGE *globe_verts;
@@ -89,7 +73,9 @@ unsigned long globe_quads_num;
 unsigned long globe_quads_num_vis;
 int globe_longitude;
 int globe_latitude;
+#ifdef DRV_EARTH_RESOURCES
 static unsigned char TG_HUGE *globe_data;
+#endif
 
 #ifdef GDI
 /* Win16's global heap supplies tiled selectors for objects over 64 KiB.
@@ -198,7 +184,9 @@ void globe_init(void)
     globe_quads_num_vis = 0UL;
     globe_longitude = 0;
     globe_latitude = 0;
+#ifdef DRV_EARTH_RESOURCES
     globe_data = NULL;
+#endif
 }
 
 void globe_free(void)
@@ -282,35 +270,33 @@ static void globe_alloc(void)
 #endif
 }
 
-static unsigned char TG_HUGE *globe_select_data(int longitude)
+static void globe_validate_data(int longitude)
 {
 #ifdef DRV_EARTH_RESOURCES
     /* Validate the selected level here; load its bytes into the heap below. */
-#define GLOBE_DATA_POINTER(name) NULL
-#else
-#define GLOBE_DATA_POINTER(name) name
-#endif
     switch (longitude)
     {
 #ifdef EARTH_32
-        case 32: return GLOBE_DATA_POINTER(earth_data_32);
+        case 32: return;
 #endif
 #ifdef EARTH_64
-        case 64: return GLOBE_DATA_POINTER(earth_data_64);
+        case 64: return;
 #endif
 #ifdef EARTH_128
-        case 128: return GLOBE_DATA_POINTER(earth_data_128);
+        case 128: return;
 #endif
 #ifdef EARTH_256
-        case 256: return GLOBE_DATA_POINTER(earth_data_256);
+        case 256: return;
 #endif
 #ifdef EARTH_512
-        case 512: return GLOBE_DATA_POINTER(earth_data_512);
+        case 512: return;
 #endif
         default: error("Unsupported globe resolution");
     }
-    return NULL;
-#undef GLOBE_DATA_POINTER
+#else
+    if (earth_data_size(longitude) == 0UL)
+        error("Unsupported globe resolution");
+#endif
 }
 
 static void globe_calc_colors(void)
@@ -320,6 +306,10 @@ static void globe_calc_colors(void)
     unsigned char value;
     Color TG_HUGE *color_ptr;
     const unsigned char TG_HUGE *data_ptr;
+#ifndef DRV_EARTH_RESOURCES
+    /* At most one source row, including on a 16-bit DOS stack. */
+    unsigned char data_row[512];
+#endif
 
     color_ptr = globe_colors;
     for (row = 0UL; row < (unsigned long)globe_latitude; ++row)
@@ -329,7 +319,14 @@ static void globe_calc_colors(void)
         source_row = ((2UL * row + 1UL) *
                        ((unsigned long)globe_longitude / 2UL)) /
                       (2UL * globe_latitude);
+#ifdef DRV_EARTH_RESOURCES
         data_ptr = globe_data + source_row * globe_longitude;
+#else
+        if (!earth_read_data(globe_longitude, source_row * globe_longitude,
+                             (unsigned int)globe_longitude, data_row))
+            error("Couldn't read embedded Earth data!");
+        data_ptr = data_row;
+#endif
         for (column = 0; column < globe_longitude; ++column)
         {
             value = *data_ptr++;
@@ -356,16 +353,13 @@ int globe_init_verts(int longitude, int latitude, float radius)
 #ifdef TEXTURE
     Coord TG_HUGE *coord_ptr;
 #endif
-    unsigned char TG_HUGE *data;
-
-    data = globe_select_data(longitude);
+    globe_validate_data(longitude);
     if (latitude < 1)
         latitude = longitude / 2;
     if (latitude < 2 || latitude > longitude / 2 ||
         !(radius > 0.0f && radius <= FLT_MAX))
         error("Invalid globe dimensions");
     globe_free();
-    globe_data = data;
 #ifdef DRV_EARTH_RESOURCES
     globe_data = (unsigned char TG_HUGE *)globe_alloc_items(
         (unsigned long)longitude * (longitude / 2UL), sizeof(unsigned char));

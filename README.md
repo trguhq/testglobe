@@ -113,7 +113,7 @@ portable `quickdraw` target requires a configured bridge to the MPW tools.
 
 Run the appropriate clean target after changing the compiler or build flags; traditional
 make does not track command-line changes. Use `make clean` to remove all generated
-targets, or `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`,
+objects and application/helper binaries, or `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`,
 `clean-irisgl`, `clean-xgl`,
 `clean-matrox`, `clean-gdi`, or `clean-quickdraw` to clean one backend. Under DOS, use
 `nmake clean RM=del` or the corresponding individual target with `RM=del`.
@@ -139,12 +139,54 @@ memory. Regenerating a staging image at the same size reuses its allocation; cha
 sizes replaces it only after the new image is complete. Clean the affected objects
 when changing these defines.
 
+### Earth map data
+
+The files in `data` are the source of the globe's 8-bit palette indices. Preserve their
+binary contents when transferring the project between platforms:
+
+| Map width | Binary inputs | Total bytes |
+| --- | --- | --- |
+| 32 | `e32.bin` | 512 |
+| 64 | `e64.bin` | 2,048 |
+| 128 | `e128.bin` | 8,192 |
+| 256 | `e256_0.bin`, `e256_1.bin` | 32,768 |
+| 512 | `e512_0.bin` through `e512_7.bin` | 131,072 |
+
+OpenGL, IRIS GL, Sun XGL, and Matrox embed these bytes through generated C source.
+Its arrays are split into objects of at most 16 KiB, and the driver's
+`EARTH_32` through `EARTH_512` defines select which maps enter the executable. Matrox
+therefore embeds only the 32- and 64-wide maps. The portable ANSI C89 converter
+`src/e_bin.c` generates this source from the binary inputs. The Makefiles build the
+converter and regenerate a local `e_data.c` (`m_data.c` for DOS) when its inputs change.
+`EARTH_DATA` selects the input directory for Unix builds; `MTX_DATA` does so for DOS.
+Both default to the `data` directory beside `SRC`, including out-of-tree builds.
+
+A generated copy, `src/e_data.c`, is also supplied for manual historical-toolchain
+builds. Refresh that copy after changing the binary inputs with `make earth-data` on
+Unix or `nmake earth-data-dos` on DOS. `EARTH_CC` and `EARTH_CFLAGS` select the Unix
+converter compiler and options; the DOS converter uses the Matrox compiler settings.
+The clean targets preserve `e_data.c`, including the supplied source copy. If a
+conversion is interrupted while replacing an existing output, retain any `.bak` file
+until the output is verified or restored. Edit the `.bin` files rather than generated
+arrays. The palette remains in the small `src/e_cmap.h`; the five former map-data
+headers are no longer needed.
+
+`src/e_ext.h` declares the shared map-size and bounded-read functions. Globe color
+sampling and RGB texture generation use the same embedded byte reader, including
+reads across chunk and 64 KiB boundaries. GDI continues to embed the binary chunks as
+Windows `RCDATA`, and QuickDraw as Macintosh `EART` resources, using the existing
+`src/earthres.h` IDs.
+
+The binary inputs and converter are build tools only. Each application contains its
+selected Earth maps and needs no external data files when run. For QuickDraw, retain
+the application's resource fork when copying the finished application.
+
 <!--
 Objects and binaries are placed in the directory where make is run. OpenGL uses ordinary `.o` names, Solaris OpenGL uses separate `s_*.o` names, Apple OpenGL uses separate `a_*.o` names, IRIS GL uses `i_*.o`, XGL uses `x_*.o`, DOS uses ordinary `.obj` names, Windows uses `g_*.obj`, and QuickDraw uses `q_*.o` with a separate `TestglobeQD` application. The three Unix binaries coexist; the generic, Solaris, and Apple OpenGL targets share `testglobe-opengl` and relink for the selected build. Each executable target relinks so command-line linker options take effect with traditional make; Matrox and GDI still share an output name and relink for the selected backend. The OSD reports quad patches for Matrox LibShell, GDI, and QuickDraw, and triangles for the triangle and triangle-strip paths; pole patches remain quad entries even when drawn as triangles.
 
 The Makefile selects `FLAT` with `DRV_OGL`, `DRV_IGL`, or `DRV_XGL`, `SEG86` with `DRV_MTX` or `DRV_GDI` and Microsoft C's `-AH`, or `SEG68` with `DRV_QD` for MPW. Driver headers select their drawing primitive: `drv_ogl.h`, `drv_igl.h`, and `drv_xgl.h` define `TRISTRIP`; `drv_mtx.h`, `drv_gdi.h`, and `drv_qd.h` define `QUAD`. The GDI and QuickDraw headers also define the optional `DRV_QUAD_BATCH` capability and `DRV_QUAD_BATCH_MAX` of 64. Batching is a capability of `QUAD`, not a separate primitive mode. OpenGL additionally defines `DRV_TRI_CAPS` to draw its pole triangles separately. Triangle callback capabilities are declared independently: `DRV_TRI_COLOR` is available in OpenGL, IRIS GL, and Matrox; `DRV_TRI_RGB` in OpenGL; and `DRV_TRI_UV` in OpenGL and IRIS GL. These capabilities expose only implemented driver functions in the common declarations. The shared `TRI` path remains available as a reference implementation, although no driver selects it. Do not supply primitive or callback-capability defines on the compiler command line; they belong in driver headers. The OpenGL, IRIS GL, Matrox, GDI, and QuickDraw headers define `DRV_COLORMAP`; indexed-color drawing takes palette bytes, while RGB functions retain RGB color parameters. The GDI header additionally defines `GDI` for its Windows-specific integration; neither `WIN32` nor `SEG86WIN` is needed. On Unix, `make clean` removes all targets' generated files and the obsolete shared `testglobe` binary; under DOS use `nmake clean RM=del`. `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw` clean individual backends using the same `RM` setting. Each removal command names one file for compatibility with older DOS versions.
 
-`DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows. `e_ext.h` is the authoritative Earth-data declaration header; it exposes embedded maps only for drivers that use them, and `glob_ext.h` includes it for globe consumers.
+`DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` reports the window's runtime color mode. OpenGL and IRIS GL therefore retain indexed mesh data in both RGB(A) and color-index windows. `e_ext.h` declares the Earth palette and the shared embedded-map reader; map arrays remain private to generated C source. `glob_ext.h` includes the declarations for globe consumers.
 
 -->
 
@@ -752,6 +794,7 @@ systems, and hardware.
 
 - Added AI-generated driver code for Matrox LibShell, Windows GDI, QuickDraw, Sun XGL, and IRIS GL.
 - Added native macOS framework build rules for OpenGL.
+- Made the binary Earth maps the shared build inputs, with bounded generated C arrays or native resources embedded in each application.
 - Switched all three OpenGL targets to latitude triangle strips with batched pole triangles; retained the shared independent-triangle mode.
 - Switched GDI and QuickDraw to shared-vertex quad batches, with `QUAD` as the primitive and `DRV_QUAD_BATCH` as an optional driver capability.
 - Standardized plural globe traversal names and driver callback declarations, separated XGL RGB/UV entry points, and shared portable driver utilities in `drv.c`.

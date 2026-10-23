@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "earth_reference.h"
 static void *test_xgl_malloc(size_t size);
 static int test_texture_try_generate(int size);
 #define malloc test_xgl_malloc
@@ -395,7 +396,7 @@ void xgl_mipmap_texture_build(Xgl_object mipmap, Xgl_mem_ras memory,
     assert(pixels != NULL);
     for (y = 0; y < 256; ++y)
         for (x = 0; x < 512; ++x) {
-            index = earth_data_512[(unsigned long)y * 512UL + x];
+            index = test_earth_data(512)[(unsigned long)y * 512UL + x];
             expected = (Xgl_usgn32)earth_cmap[index][0] |
                        ((Xgl_usgn32)earth_cmap[index][1] << 8) |
                        ((Xgl_usgn32)earth_cmap[index][2] << 16);
@@ -409,11 +410,11 @@ void xgl_mipmap_texture_build(Xgl_object mipmap, Xgl_mem_ras memory,
 static unsigned char *earth_data(void)
 {
     switch (globe_longitude) {
-    case 32: return earth_data_32;
-    case 64: return earth_data_64;
-    case 128: return earth_data_128;
-    case 256: return earth_data_256;
-    case 512: return earth_data_512;
+    case 32: return test_earth_data(32);
+    case 64: return test_earth_data(64);
+    case 128: return test_earth_data(128);
+    case 256: return test_earth_data(256);
+    case 512: return test_earth_data(512);
     default: assert(!"Unsupported test resolution"); return NULL;
     }
 }

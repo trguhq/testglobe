@@ -34,43 +34,15 @@ static size_t texture_data_size;
 /* Keep both public policies on one transactional image construction path. */
 static char *texture_build_image(int size)
 {
-    const unsigned char *earth_data;
 #ifdef TEXTURE_RGB
     unsigned long i, elements;
+    unsigned int count, j;
+    unsigned char data_row[512];
     size_t bytes;
     unsigned char *new_data, *destination;
 #endif
     
-    switch (size)
-    {
-#ifdef EARTH_32
-        case 32:
-            earth_data = earth_data_32;
-            break;
-#endif
-#ifdef EARTH_64
-        case 64:
-            earth_data = earth_data_64;
-            break;
-#endif
-#ifdef EARTH_128
-        case 128:
-            earth_data = earth_data_128;
-            break;
-#endif
-#ifdef EARTH_256
-        case 256:
-            earth_data = earth_data_256;
-            break;
-#endif
-#ifdef EARTH_512
-        case 512:
-            earth_data = earth_data_512;
-            break;
-#endif
-        default:
-            return "Invalid texture size";
-    }
+    if (earth_data_size(size) == 0UL) return "Invalid texture size";
     
 #ifdef TEXTURE_RGB
     elements = (unsigned long)size * ((unsigned int)size / 2U);
@@ -90,11 +62,22 @@ static char *texture_build_image(int size)
         return "Could not allocate memory for texture!";
     }
     destination = new_data;
-    for (i = 0; i < elements; ++i)
+    for (i = 0; i < elements; i += count)
     {
-        *destination++ = earth_cmap[earth_data[i]][0];
-        *destination++ = earth_cmap[earth_data[i]][1];
-        *destination++ = earth_cmap[earth_data[i]][2];
+        count = (unsigned int)size;
+        /* The validated dimensions and generated chunk sizes guarantee each
+         * row is readable. No second full indexed image is allocated. */
+        if (!earth_read_data(size, i, count, data_row))
+        {
+            if (new_data != texture_data) free(new_data);
+            return "Could not read embedded Earth data";
+        }
+        for (j = 0; j < count; ++j)
+        {
+            *destination++ = earth_cmap[data_row[j]][0];
+            *destination++ = earth_cmap[data_row[j]][1];
+            *destination++ = earth_cmap[data_row[j]][2];
+        }
     }
     /* Commit only after the replacement is complete. Failed generation
      * leaves the previously owned image intact for error-path cleanup. */
@@ -104,7 +87,6 @@ static char *texture_build_image(int size)
     texture_size = (unsigned int)size;
     return NULL;
 #else
-    (void)earth_data;
     return "Texture RGB format is required";
 #endif
 }

@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "earth_reference.h"
 #include "testglob.h"
 #include "drv.h"
 #include "types.h"
@@ -183,13 +184,13 @@ int main(void)
     unsigned char *datasets[5];
     sizes[0] = 32; sizes[1] = 64; sizes[2] = 128;
     sizes[3] = 256; sizes[4] = 512;
-    datasets[0] = earth_data_32; datasets[1] = earth_data_64;
-    datasets[2] = earth_data_128; datasets[3] = earth_data_256;
-    datasets[4] = earth_data_512;
+    datasets[0] = test_earth_data(32); datasets[1] = test_earth_data(64);
+    datasets[2] = test_earth_data(128); datasets[3] = test_earth_data(256);
+    datasets[4] = test_earth_data(512);
     drv_ext_init();
     globe_init();
     assert(GLOBE_DEFAULT_LONGITUDE == 128);
-    expected_data = earth_data_128;
+    expected_data = test_earth_data(128);
     assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
     assert(globe_longitude == 128);
     check_drawing();

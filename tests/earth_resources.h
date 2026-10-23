@@ -1,4 +1,4 @@
-/* Load the shipped native resources and compare them with original Earth data.
+/* Load the shipped native resources and compare them with canonical Earth data.
  * This is a host fixture, not a replacement for either native resource manager. */
 #ifndef TEST_EARTH_RESOURCES_H
 #define TEST_EARTH_RESOURCES_H

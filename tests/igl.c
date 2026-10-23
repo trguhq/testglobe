@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "earth_reference.h"
 #include "testglob.h"
 #include "drv.h"
 #include "types.h"
@@ -86,11 +87,11 @@ static int sampled_buttons_pressed;
 static unsigned char *earth_bytes(void)
 {
     switch(globe_longitude) {
-    case 32:return earth_data_32;
-    case 64:return earth_data_64;
-    case 128:return earth_data_128;
-    case 256:return earth_data_256;
-    case 512:return earth_data_512;
+    case 32:return test_earth_data(32);
+    case 64:return test_earth_data(64);
+    case 128:return test_earth_data(128);
+    case 256:return test_earth_data(256);
+    case 512:return test_earth_data(512);
     }
     assert(!"Unknown globe resolution"); return NULL;
 }
@@ -300,7 +301,7 @@ void texdef2d(long id,long components,long width,long height,unsigned long *imag
     assert(!software_texture_expected()&&id>0&&components==4&&width==512&&height==256);
     assert(image!=NULL&&np>0&&props[np-1]==TX_NULL);
     for(i=0;i<(unsigned long)width*height;++i){
-        index=earth_data_512[i];pixel=(unsigned long)earth_cmap[index][0]|((unsigned long)earth_cmap[index][1]<<8)|((unsigned long)earth_cmap[index][2]<<16)|0xff000000UL;
+        index=test_earth_data(512)[i];pixel=(unsigned long)earth_cmap[index][0]|((unsigned long)earth_cmap[index][1]<<8)|((unsigned long)earth_cmap[index][2]<<16)|0xff000000UL;
         assert(image[i]==pixel);
     }
     ++texture_definitions;texture_pixels+=(unsigned long)width*height;

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "earth_reference.h"
 #include "testglob.h"
 #include "drv.h"
 #include "types.h"
@@ -116,9 +117,9 @@ int main(int argc, char **argv)
     unsigned int latitude, column, source_row;
     sizes[0] = 32; sizes[1] = 64; sizes[2] = 128;
     sizes[3] = 256; sizes[4] = 512;
-    datasets[0] = earth_data_32; datasets[1] = earth_data_64;
-    datasets[2] = earth_data_128; datasets[3] = earth_data_256;
-    datasets[4] = earth_data_512;
+    datasets[0] = test_earth_data(32); datasets[1] = test_earth_data(64);
+    datasets[2] = test_earth_data(128); datasets[3] = test_earth_data(256);
+    datasets[4] = test_earth_data(512);
     drv_ext_init();
     globe_init();
     if (argc > 1) {
@@ -175,7 +176,7 @@ int main(int argc, char **argv)
         source_row = (2U * latitude + 1U) * 16U / 6U;
         for (column = 0; column < 32U; ++column)
             coarse_colors[latitude * 32U + column] =
-                earth_data_32[source_row * 32U + column];
+                test_earth_data(32)[source_row * 32U + column];
     }
     expected_data = coarse_colors;
     assert(globe_init_verts(32, 3, GLOBE_RADIUS));

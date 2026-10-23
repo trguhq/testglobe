@@ -1,32 +1,47 @@
-/* Original palette bytes, used only by host regressions and resource records. */
+/* Canonical binary map bytes, read only by host regression fixtures.
+ * Production applications embed these bytes and never open these paths. */
 #ifndef TEST_EARTH_REFERENCE_H
 #define TEST_EARTH_REFERENCE_H
-#define earth_data_32 test_earth_data_32
-#define earth_data_64 test_earth_data_64
-#define earth_data_128 test_earth_data_128
-#define earth_data_256 test_earth_data_256
-#define earth_data_512 test_earth_data_512
-#include "e_32.h"
-#include "e_64.h"
-#include "e_128.h"
-#include "e_256.h"
-#include "e_512.h"
-#undef earth_data_32
-#undef earth_data_64
-#undef earth_data_128
-#undef earth_data_256
-#undef earth_data_512
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 static unsigned char *test_earth_data(int longitude)
 {
-    switch (longitude)
+    static unsigned char *maps[5];
+    unsigned char *bytes;
+    unsigned long total, offset, length;
+    int slot, width, chunk;
+    char path[64];
+    FILE *stream;
+    slot = 0;
+    for (width = 32; width < longitude && width < 512; width *= 2)
+        ++slot;
+    assert(width == longitude && slot < 5);
+    if (maps[slot] != NULL) return maps[slot];
+    total = (unsigned long)longitude * (unsigned long)longitude / 2UL;
+    bytes = (unsigned char *)malloc((size_t)total);
+    assert(bytes != NULL);
+    offset = 0;
+    chunk = 0;
+    while (offset < total)
     {
-        case 32: return test_earth_data_32;
-        case 64: return test_earth_data_64;
-        case 128: return test_earth_data_128;
-        case 256: return test_earth_data_256;
-        case 512: return test_earth_data_512;
+        length = total - offset;
+        if (length > 16384UL) length = 16384UL;
+        if (longitude < 256)
+            sprintf(path, "data/e%i.bin", longitude);
+        else
+            sprintf(path, "data/e%i_%i.bin", longitude, chunk);
+        stream = fopen(path, "rb");
+        assert(stream != NULL);
+        assert(fread(bytes + offset, 1, (size_t)length, stream) ==
+               (size_t)length);
+        assert(fgetc(stream) == EOF && !ferror(stream));
+        assert(fclose(stream) == 0);
+        offset += length;
+        ++chunk;
     }
-    return NULL;
+    maps[slot] = bytes;
+    return bytes;
 }
 #endif

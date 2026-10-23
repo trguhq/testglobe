@@ -21,6 +21,16 @@ development headers and libraries.
 python3 tests/run.py
 ```
 
+The baseline also builds the ANSI C89 `src/e_bin.c` converter and verifies that
+regenerating `src/e_data.c` from `data/*.bin` is deterministic. Missing, truncated,
+and oversized input chunks must fail without replacing an existing output file.
+`tests/earth_data.c` compares every embedded byte with the canonical binary maps,
+checks invalid reads, 16 KiB chunk seams, and 64 KiB boundaries, and runs from an
+empty directory to verify that no runtime map files are needed. Unsanitized object
+symbols verify the 16 KiB per-array limit and the Matrox build's inclusion of only
+`EARTH_32` and `EARTH_64`. The shared `tests/earth_reference.h` fixture reads binary
+inputs for expected colors; production applications do not contain this file I/O.
+
 The baseline checks cover OpenGL indexed strips with separate pole triangles, XGL
 RGB strips, IRIS GL indexed strips, and GDI/QuickDraw indexed quad batches. They
 verify all five globe resolutions, exact primitive tuples and palette bytes,
