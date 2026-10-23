@@ -1,6 +1,7 @@
 /* Execute the Classic Macintosh driver against Toolbox call records.
  * This is NOT an MPW SDK, ABI validation, or QuickDraw renderer. */
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,8 @@ static GDevice *second_device_ptr = &second_device;
 static int multiple_devices;
 static GWorldPtr world_live;
 static GDHandle world_device;
+static GDevice offscreen_device;
+static GDevice *offscreen_device_ptr = &offscreen_device;
 static PixMap world_pixmap;
 static PixMap *world_pixmap_ptr = &world_pixmap;
 static int world_locked;
@@ -72,7 +75,8 @@ static void *handle_blocks[64];
 static Size handle_sizes[64];
 static unsigned int handle_locks[64];
 static PaletteHandle window_palette;
-static RGBColor foreground, background;
+typedef struct { RGBColor foreground, background; } Test_port_colors;
+static Test_port_colors desktop_colors, window_colors, world_colors;
 static Point pen;
 static PolyHandle recording_poly;
 static Point pending_points[16];
@@ -100,6 +104,24 @@ typedef struct {
 static RecordedPolygon recorded[5000];
 
 static void color_api(void) { assert(has_color); ++color_calls; }
+static Test_port_colors *test_current_colors(void)
+{
+    if (current_port == &desktop_port) return &desktop_colors;
+    if (current_port == (GrafPtr)&window_port) return &window_colors;
+    assert(world_live != NULL && current_port == (GrafPtr)world_live);
+    return &world_colors;
+}
+static void test_init_colors(Test_port_colors *colors)
+{
+    memset(colors, 0, sizeof(*colors));
+    colors->background.red = colors->background.green = colors->background.blue = 65535U;
+}
+static void test_drawing_device(void)
+{
+    if (world_live != NULL && current_port == (GrafPtr)world_live)
+        assert(current_device == world_device);
+    else assert(current_device == qd_device);
+}
 static unsigned long rgb_value(const RGBColor *c)
 {
     return ((unsigned long)(c->red >> 8) << 16) |
@@ -209,6 +231,7 @@ OSErr MemError(void) { return noErr; }
 unsigned long TickCount(void) { ticks = (ticks + 1UL) & 0xffffffffUL; return ticks; }
 void InitGraf(GrafPtr *port)
 {
+    test_init_colors(&desktop_colors);
     memset(&desktop_port, 0, sizeof(desktop_port));
     desktop_port.portRect.right = screen_width; desktop_port.portRect.bottom = screen_height;
     desktop_port.portBits.bounds = desktop_port.portRect;
@@ -257,6 +280,7 @@ static WindowPtr create_window(const Rect *bounds, ConstStr255Param title,
     assert(window_live == NULL && bounds != NULL && title != NULL && title[0] != 0);
     assert(visible && close_box);
     memset(&window_port, 0, sizeof(window_port));
+    test_init_colors(&window_colors);
     window_port.portRect.right = bounds->right - bounds->left;
     window_port.portRect.bottom = bounds->bottom - bounds->top;
     window_port.portBits.bounds = window_port.portRect;
@@ -308,12 +332,11 @@ QDErr NewGWorld(GWorldPtr *world, short depth, const Rect *bounds,
     color_api(); ++world_calls;
     assert(qd_version >= gestalt32BitQD && world_live == NULL);
     assert(world != NULL && bounds != NULL && (depth == 0 || depth == display_depth));
-    (void)table; (void)flags;
-    assert(device == (multiple_devices && second_pixmap.pixelSize > screen_pixmap.pixelSize ?
-                        &second_device_ptr : &screen_device_ptr));
+    (void)table;
     if (fail_gworld) { *world = NULL; return memFullErr; }
     world_live = (GWorldPtr)calloc(1, sizeof(CGrafPort));
     assert(world_live != NULL);
+    test_init_colors(&world_colors);
     world_live->portRect = *bounds;
     world_live->portBits.bounds = *bounds;
     world_pixmap.bounds = *bounds; world_pixmap.pixelSize = display_depth;
@@ -322,7 +345,20 @@ QDErr NewGWorld(GWorldPtr *world, short depth, const Rect *bounds,
                                       (bounds->bottom - bounds->top), 1);
     assert(world_pixmap.baseAddr != NULL);
     world_live->portPixMap = &world_pixmap_ptr;
-    *world = world_live; world_device = device; ++world_count;
+    *world = world_live;
+    if (flags & noNewDevice) {
+        assert(device != NULL);
+        world_device = device;
+    } else {
+        /* Native QuickDraw ignores the supplied device and owns a new
+         * offscreen GDevice when noNewDevice is clear. */
+        memset(&offscreen_device, 0, sizeof(offscreen_device));
+        offscreen_device.gdPMap = &world_pixmap_ptr;
+        offscreen_device.gdRect = *bounds;
+        world_device = &offscreen_device_ptr;
+        assert(world_device != qd_device);
+    }
+    ++world_count;
     return noErr;
 }
 PixMapHandle GetGWorldPixMap(GWorldPtr world) { color_api(); assert(world == world_live); return &world_pixmap_ptr; }
@@ -371,7 +407,7 @@ void LineTo(short h, short v)
         assert(pending_count < 12); pending_points[pending_count++] = pen;
     }
 }
-static void record_polygon(PolyHandle poly, unsigned int black)
+static void record_polygon(PolyHandle poly, unsigned int black, const RGBColor *color)
 {
     RecordedPolygon *entry;
     int i, count;
@@ -398,15 +434,15 @@ static void record_polygon(PolyHandle poly, unsigned int black)
     }
     assert(recorded_count < 5000);
     entry = recorded + recorded_count++;
-    entry->count = count; entry->color = rgb_value(&foreground); entry->pattern_black = black;
+    entry->count = count; entry->color = rgb_value(color); entry->pattern_black = black;
     for (i = 0; i < count; ++i) {
         entry->points[i] = pending_points[i];
         assert(entry->points[i].h >= 0 && entry->points[i].h <= (int)drv_win_width);
         assert(entry->points[i].v >= 0 && entry->points[i].v <= (int)drv_win_height);
     }
 }
-void PaintPoly(PolyHandle p) { assert(has_color); record_polygon(p, 64U); }
-void FillPoly(PolyHandle p, const Pattern *pattern) { assert(pattern != NULL); record_polygon(p, pattern_bits(pattern->pat)); }
+void PaintPoly(PolyHandle p) { assert(has_color); record_polygon(p, 64U, &test_current_colors()->foreground); }
+void FillPoly(PolyHandle p, const Pattern *pattern) { assert(pattern != NULL); record_polygon(p, pattern_bits(pattern->pat), &test_current_colors()->foreground); }
 void PenSize(short h, short v) { assert(h >= 0 && v >= 0); }
 void PenNormal(void) {}
 void HidePen(void) { assert(!pen_hidden); pen_hidden = TRUE; }
@@ -419,20 +455,26 @@ PixPatHandle NewPixPat(void)
     return (PixPatHandle)NewHandle((Size)sizeof(PixPat));
 }
 void DisposePixPat(PixPatHandle p) { color_api(); assert(pixpat_count > 0); DisposeHandle((Handle)p); --pixpat_count; }
-void MakeRGBPat(PixPatHandle p, const RGBColor *c) { color_api(); assert(p != NULL && c != NULL && current_device == qd_device); (*p)->color = *c; }
-void FillCPoly(PolyHandle p, PixPatHandle pattern) { color_api(); assert(pattern != NULL); foreground = (*pattern)->color; record_polygon(p, 64U); }
+void MakeRGBPat(PixPatHandle p, const RGBColor *c) { color_api(); assert(p != NULL && c != NULL); test_drawing_device(); (*p)->color = *c; }
+void FillCPoly(PolyHandle p, PixPatHandle pattern) { color_api(); assert(pattern != NULL); record_polygon(p, 64U, &(*pattern)->color); }
 void ForeColor(long color)
 {
+    RGBColor *foreground;
     assert(color == blackColor || color == whiteColor);
-    foreground.red = foreground.green = foreground.blue = color == blackColor ? 0 : 65535U;
+    foreground = &test_current_colors()->foreground;
+    foreground->red = foreground->green = foreground->blue = color == blackColor ? 0 : 65535U;
 }
 void BackColor(long color)
 {
+    RGBColor *background;
     assert(color == blackColor || color == whiteColor);
-    background.red = background.green = background.blue = color == blackColor ? 0 : 65535U;
+    background = &test_current_colors()->background;
+    background->red = background->green = background->blue = color == blackColor ? 0 : 65535U;
 }
-void RGBForeColor(const RGBColor *color) { color_api(); assert(color != NULL && current_device == qd_device); foreground = *color; }
-void RGBBackColor(const RGBColor *color) { color_api(); assert(color != NULL && current_device == qd_device); background = *color; }
+void RGBForeColor(const RGBColor *color) { color_api(); assert(color != NULL); test_drawing_device(); test_current_colors()->foreground = *color; }
+void RGBBackColor(const RGBColor *color) { color_api(); assert(color != NULL); test_drawing_device(); test_current_colors()->background = *color; }
+void GetForeColor(RGBColor *color) { color_api(); assert(color != NULL); *color = test_current_colors()->foreground; }
+void GetBackColor(RGBColor *color) { color_api(); assert(color != NULL); *color = test_current_colors()->background; }
 void TextFont(short font) { (void)font; }
 void TextSize(short size) { assert(size > 0); }
 void TextMode(short mode) { (void)mode; }
@@ -455,6 +497,9 @@ void CopyBits(const BitMap *source, const BitMap *destination, const Rect *a,
     assert(has_color && source != NULL && destination != NULL && a != NULL && b != NULL);
     assert(mode == srcCopy || mode == (srcCopy | ditherCopy)); (void)mask;
     assert(source->bounds.right == a->right && source->bounds.bottom == a->bottom);
+    assert(current_port == (GrafPtr)&window_port);
+    assert(rgb_value(&window_colors.foreground) == 0);
+    assert(rgb_value(&window_colors.background) == 0xffffffUL);
     ++copy_calls;
 }
 long GetCTSeed(void) { color_api(); return 1; }
@@ -818,7 +863,7 @@ static void camera_triangle(double z0, double z1, double z2)
     source[1].x = (float)(z1 + 3000.0); source[1].y = 100.0f; source[1].z = -100.0f;
     source[2].x = (float)(z2 + 3000.0); source[2].y = 0.0f; source[2].z = 100.0f;
     if (qd_has_fpu) {
-        qd_fpu_prepare(&zero, &zero);
+        assert(qd_fpu_prepare(&zero, &zero));
         qd_fpu_transform(3, source);
     } else {
         qd_fixed_points[0].x = -1600L; qd_fixed_points[0].y = -1600L;
@@ -842,7 +887,7 @@ static void camera_quad(double z0, double z1, double z2, double z3)
         source[i].z = i < 2 ? -1000.0f : 1000.0f;
     }
     if (qd_has_fpu) {
-        qd_fpu_prepare(&zero, &zero);
+        assert(qd_fpu_prepare(&zero, &zero));
         qd_fpu_transform(4U, source);
     } else {
         for (i = 0; i < 4; ++i) {
@@ -859,26 +904,26 @@ static void check_clipping(void)
     unsigned int indices[4];
     indices[0] = 0; indices[1] = 1; indices[2] = 2; indices[3] = 3;
     camera_triangle(-9000.0, -9000.0, -11000.0);
-    assert(qd_prepare_polygon(indices, 3U, polygon) == 4);
+    assert(qd_prepare_polygon(indices, 3U, 3U, polygon) == 4);
     camera_triangle(-11000.0, -11000.0, -11000.0);
-    assert(qd_prepare_polygon(indices, 3U, polygon) == 0);
+    assert(qd_prepare_polygon(indices, 3U, 3U, polygon) == 0);
     camera_triangle(0.0, 0.0, 0.0);
-    assert(qd_prepare_polygon(indices, 3U, polygon) == 0);
+    assert(qd_prepare_polygon(indices, 3U, 3U, polygon) == 0);
     camera_triangle(-2.0, -2.0, -0.5);
-    count = qd_prepare_polygon(indices, 3U, polygon);
+    count = qd_prepare_polygon(indices, 3U, 3U, polygon);
     assert(count >= 3 && count <= 10);
     for (i = 0; i < count; ++i) {
         assert(polygon[i].h >= 0 && polygon[i].h <= (int)drv_win_width);
         assert(polygon[i].v >= 0 && polygon[i].v <= (int)drv_win_height);
     }
     camera_quad(-9000.0, -9000.0, -11000.0, -9000.0);
-    assert(qd_prepare_polygon(indices, 4U, polygon) == 5);
+    assert(qd_prepare_polygon(indices, 4U, 4U, polygon) == 5);
     camera_quad(-11000.0, -11000.0, -11000.0, -11000.0);
-    assert(qd_prepare_polygon(indices, 4U, polygon) == 0);
+    assert(qd_prepare_polygon(indices, 4U, 4U, polygon) == 0);
     camera_quad(0.0, 0.0, 0.0, 0.0);
-    assert(qd_prepare_polygon(indices, 4U, polygon) == 0);
+    assert(qd_prepare_polygon(indices, 4U, 4U, polygon) == 0);
     camera_quad(-2.0, -2.0, -0.5, -2.0);
-    count = qd_prepare_polygon(indices, 4U, polygon);
+    count = qd_prepare_polygon(indices, 4U, 4U, polygon);
     assert(count >= 3 && count <= 10);
     for (i = 0; i < count; ++i) {
         assert(polygon[i].h >= 0 && polygon[i].h <= (int)drv_win_width);
@@ -886,6 +931,76 @@ static void check_clipping(void)
     }
     test_soft3d_shared_pipeline();
 }
+
+static void check_fpu_angles(void)
+{
+    Vertex vertices[3];
+    Qd_screen_point projected[QD_FPU_MAX_POLY];
+    float zero, last, bad[7];
+    unsigned int i;
+    if (!qd_has_fpu) return;
+    zero = 0.0f; last = 359.999f;
+    for (i = 0; i < 3U; ++i) vertices[i].x = 0;
+    vertices[0].y = -100; vertices[0].z = -100;
+    vertices[1].y = 100; vertices[1].z = -100;
+    vertices[2].y = 0; vertices[2].z = 100;
+    bad[0] = -1.0f; bad[1] = 360.0f;
+    bad[2] = FLT_MAX; bad[3] = -FLT_MAX;
+    /* These host-only tests explicitly exercise IEEE nonfinite inputs. */
+    bad[4] = (float)strtod("inf", NULL);
+    bad[5] = -bad[4]; bad[6] = (float)strtod("nan", NULL);
+    assert(bad[4] > FLT_MAX && bad[6] != bad[6]);
+    for (i = 0; i < 7U; ++i) {
+        assert(qd_fpu_prepare(&zero, &zero));
+        qd_fpu_transform(3U, vertices);
+        assert(qd_fpu_project(0U, 1U, 2U, 640U, 480U, projected) == 3);
+        assert(!qd_fpu_prepare(bad + i, &zero));
+        qd_fpu_transform(3U, vertices);
+        assert(qd_fpu_project(0U, 1U, 2U, 640U, 480U, projected) == 0);
+        assert(!qd_fpu_prepare(&zero, bad + i));
+    }
+    assert(!qd_fpu_prepare(NULL, &zero));
+    assert(!qd_fpu_prepare(&zero, NULL));
+    assert(qd_fpu_prepare(&last, &last));
+    qd_fpu_transform(3U, vertices);
+    assert(qd_fpu_project(0U, 1U, 2U, 640U, 480U, projected) == 3);
+    puts("PASS QuickDraw FPU angles: normalized endpoints accepted, huge/nonfinite/null inputs rejected without loops or reuse of a stale transform");
+}
+
+static void check_buffer_recovery(void)
+{
+    Test_port_colors saved_colors;
+    GrafPtr saved_port;
+    GDHandle saved_device;
+    unsigned int previous_copies;
+    int saved_osd;
+    if (!qd_world_available || fail_gworld || fail_lock) return;
+    saved_port = current_port; saved_device = current_device;
+    saved_osd = drv_osd_enabled;
+    fail_gworld = TRUE;
+    qd_resize((int)drv_win_width, (int)drv_win_height);
+    assert(qd_world == NULL);
+    drv_osd_enabled = TRUE;
+    recorded_count = 0; osd_text[0] = 0;
+    drv_render();
+    saved_colors = window_colors;
+    if (qd_depth > 1) {
+        assert(rgb_value(&saved_colors.foreground) == 0xffffffUL);
+        assert(rgb_value(&saved_colors.background) == 0);
+    }
+    fail_gworld = FALSE;
+    qd_resize((int)drv_win_width, (int)drv_win_height);
+    assert(qd_world != NULL && world_device != qd_device);
+    previous_copies = copy_calls;
+    recorded_count = 0; osd_text[0] = 0;
+    drv_render();
+    assert(copy_calls == previous_copies + 1U);
+    assert(memcmp(&window_colors, &saved_colors, sizeof(saved_colors)) == 0);
+    assert(current_port == saved_port && current_device == saved_device && !world_locked);
+    drv_osd_enabled = saved_osd;
+    puts("PASS QuickDraw GWorld recovery: direct rendering followed by buffering copies with black/white destination colors, restores port colors and uses its own offscreen device");
+}
+
 static void event_key(unsigned char key, short modifiers)
 {
     EventRecord event;
@@ -1104,6 +1219,7 @@ static int run_contract(void)
     assert(drv_win_width == expected_width && drv_win_height == expected_height);
     assert(strstr(drv_help, "1-5") != NULL);
     assert(qd_world != NULL || !has_color || fail_gworld || qd_version < gestalt32BitQD);
+    check_fpu_angles();
     drv_osd_enabled = FALSE;
     saved = current_port;
     for (resolution = 0; resolution < 2; ++resolution) {
@@ -1138,6 +1254,7 @@ static int run_contract(void)
     event_key('2', 0);
     drv_rot_x = 19.0f; drv_rot_y = 37.0f;
     check_clipping();
+    check_buffer_recovery();
     puts("PASS QuickDraw rendering: five quad resolutions, independent perspective/color/dither references, compact pole triangles, FPU/fixed paths, clipping and native fills");
     old_x = drv_rot_x; old_y = drv_rot_y;
     memset(&event, 0, sizeof(event)); event.what = mouseDown;
@@ -1187,7 +1304,7 @@ static int run_contract(void)
         Point tiny[10];
         unsigned int indices[3];
         indices[0] = 0; indices[1] = 1; indices[2] = 2;
-        assert(qd_prepare_polygon(indices, 3U, tiny) >= 3);
+        assert(qd_prepare_polygon(indices, 3U, 3U, tiny) >= 3);
     }
     SizeWindow(qd_window, 800, 600, TRUE); qd_resize(800, 600);
     ticks = 0xfffffff0UL;

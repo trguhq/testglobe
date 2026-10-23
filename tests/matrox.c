@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "earth_reference.h"
 #include "testglob.h"
 #include "drv.h"
@@ -15,9 +16,12 @@
 
 /* Count every globe patch before the real driver's visibility rejection. */
 static void recorded_mtx_error(char *message);
+static clock_t recorded_mtx_clock(void);
 #define drv_draw_quad_flat_color recorded_driver_quad
 #define error recorded_mtx_error
+#define clock recorded_mtx_clock
 #include "../src/drv_mtx.c"
+#undef clock
 #undef error
 #undef drv_draw_quad_flat_color
 
@@ -46,6 +50,15 @@ static unsigned int model_calls, view_calls, viewport_calls, projection_calls;
 static unsigned int osd_calls, inquiry;
 static unsigned int inquiry_header, inquiry_remaining, inquiry_words = 1;
 static unsigned int inquiry_reads;
+static unsigned int fixed_reply_offset;
+static short error_reporting = 1;
+static short initial_error_reporting = 1;
+static unsigned short board_errors[8];
+static unsigned int error_read, error_count, error_polls, delayed_reads;
+static int expected_board_error, clock_timeout;
+static unsigned long clock_step;
+static char board_message[128];
+static jmp_buf board_error;
 static int expected_inquiry_error;
 static jmp_buf inquiry_error;
 static unsigned short mouse_buttons;
@@ -57,12 +70,26 @@ static unsigned short submitted_color;
 
 static void recorded_mtx_error(char *message)
 {
+    if (expected_board_error)
+    {
+        assert(strlen(message) < sizeof(board_message));
+        strcpy(board_message, message);
+        longjmp(board_error, 1);
+    }
     if (expected_inquiry_error)
     {
         assert(strcmp(message, "Invalid Matrox LUT inquiry reply length") == 0);
         longjmp(inquiry_error, 1);
     }
     error(message);
+}
+
+static clock_t recorded_mtx_clock(void)
+{
+    static unsigned long ticks;
+    if (!clock_timeout && clock_step == 0) return clock();
+    ticks += clock_timeout ? MTX_WAIT_TICKS : clock_step;
+    return (clock_t)ticks;
 }
 
 void *_halloc(long count, size_t size)
@@ -129,68 +156,92 @@ void lsinit(short handle, short address)
     ++init_calls;
 }
 void ioflush(void) {}
-void lslibsync(void) { assert(inquiry == 0); ++sync_calls; }
+void lslibsync(void) { assert(!"Blocking synchronization must not hide board errors"); }
 void lsemulen(short restore)
 {
     assert(restore == 1);
     ++close_calls;
 }
-void lserror(short enabled) { assert(enabled == 0); }
-void lsinqsys(void) { assert(inquiry == 0); inquiry = 1; }
+void lserror(short enabled) { assert(enabled == 0 || enabled == 1); error_reporting = enabled; }
+short iogeterror(void)
+{
+    ++error_polls;
+    if (error_read < error_count) return (short)board_errors[error_read++];
+    return 0;
+}
+short rdfifocnt(void)
+{
+    if (error_read < error_count || clock_timeout)
+    {
+        ++delayed_reads;
+        return 0;
+    }
+    return inquiry != 0;
+}
+void lsinqsys(void)
+{
+    assert(inquiry == 0);
+    inquiry = 1;
+    inquiry_remaining = 10;
+    fixed_reply_offset = 0;
+}
 void lsinq(unsigned short code)
 {
-    assert(code == 78 && inquiry == 0);
-    inquiry = 2;
+    assert((code == 77 || code == 78) && inquiry == 0);
+    inquiry = code == 78 ? 2U : 4U;
+    if (code == 77) ++sync_calls;
     inquiry_header = 1;
-    inquiry_remaining = inquiry_words;
+    inquiry_remaining = code == 78 ? inquiry_words : 1U;
 }
 short iogetw(void)
 {
-    assert(inquiry == 2);
+    unsigned int type, offset;
+    static short system_info[10] = {640,480,256,0x0104,640,480,80,0x0108,0,0};
+    assert(inquiry != 0 && rdfifocnt() > 0);
     ++inquiry_reads;
+    type = inquiry;
     if (inquiry_header)
     {
         inquiry_header = 0;
         if (inquiry_remaining == 0) inquiry = 0;
-        return (short)inquiry_words;
+        return (short)(type == 2 ? inquiry_words : 1U);
     }
     assert(inquiry_remaining != 0);
     --inquiry_remaining;
     if (inquiry_remaining == 0) inquiry = 0;
+    if (type == 1) return system_info[fixed_reply_offset++];
+    if (type == 3)
+    {
+        offset = fixed_reply_offset++;
+        return (short)original_palette[offset / 3U][offset % 3U];
+    }
+    if (type == 4) return error_reporting;
     return 3;
 }
 void lslutrd(unsigned short logical, unsigned short first, unsigned short count)
 {
     assert(logical == 0 && first == 0 && count == 256 && inquiry == 0);
     inquiry = 3;
+    inquiry_remaining = 768;
+    fixed_reply_offset = 0;
 }
 void iogetbuf(short *buffer, unsigned short size)
 {
-    unsigned int i;
-    if (inquiry == 1) {
-        assert(size == 10);
-        for (i = 0; i < 10; ++i) buffer[i] = 0;
-        buffer[0] = 640; buffer[1] = 480; buffer[2] = 256;
-        buffer[3] = 0x0104;
-        buffer[4] = 640; buffer[5] = 480; buffer[6] = 80;
-        buffer[7] = 0x0108;
-    } else {
-        assert(inquiry == 3 && size == 768);
-        memcpy(buffer, original_palette, sizeof(original_palette));
-    }
-    inquiry = 0;
+    (void)buffer; (void)size;
+    assert(!"Blocking buffer reads must not hide board errors");
 }
 void lslutmd(unsigned short logical, unsigned short first,
              unsigned short count, struct Lutval *colors)
 {
     unsigned int i;
-    assert(logical == 0 && first == 0 && count == 256);
-    for (i = 0; i < 256; ++i) {
-        supplied_palette[i][0] = colors[i].red;
-        supplied_palette[i][1] = colors[i].green;
-        supplied_palette[i][2] = colors[i].blue;
+    assert(logical == 0 && count == 16 && first + count <= 256);
+    assert(inquiry == 0 && error_read == error_count);
+    for (i = 0; i < count; ++i) {
+        supplied_palette[first + i][0] = colors[i].red;
+        supplied_palette[first + i][1] = colors[i].green;
+        supplied_palette[first + i][2] = colors[i].blue;
     }
-    ++palette_uploads;
+    if (first + count == 256) ++palette_uploads;
 }
 void lslutsl(unsigned short logical, unsigned short physical)
 {
@@ -386,8 +437,88 @@ static void cleanup_checks(void)
     assert(palette_uploads == 2);
     assert(memcmp(supplied_palette, original_palette, sizeof(original_palette)) == 0);
     assert(current_lut == 3);
+    assert(error_reporting == initial_error_reporting);
     assert(allocated_blocks == 0);
     puts("PASS Matrox cleanup: Escape, board emulation, palette selection/content, huge allocations");
+}
+
+static void check_board_errors(void)
+{
+    static unsigned short codes[4] = { 1, 2, 4, 8 };
+    static const char *reasons[4] = {
+        "undefined opcode", "unsupported parameter",
+        "board memory exhausted", "arithmetic overflow"
+    };
+    unsigned int i, polls, syncs, uploads, closes;
+    assert(error_reporting == 1);
+    for (i = 0; i < 4U; ++i)
+    {
+        board_errors[0] = codes[i]; error_read = 0; error_count = 1;
+        expected_board_error = 1;
+        if (setjmp(board_error) == 0)
+        {
+            (void)mtx_checkpoint("command test");
+            assert(!"Board errors must be reported");
+        }
+        expected_board_error = 0;
+        assert(strstr(board_message, reasons[i]) != NULL);
+        assert(inquiry == 0 && error_read == error_count && !mtx_io_failed);
+    }
+    /* Model firmware that cannot produce its completion reply until every
+     * pending error has been acknowledged. A blocking sync would hang. */
+    board_errors[0] = 1; board_errors[1] = 2;
+    board_errors[2] = 4; board_errors[3] = 8;
+    error_read = 0; error_count = 4;
+    polls = error_polls;
+    expected_board_error = 1;
+    if (setjmp(board_error) == 0)
+    {
+        (void)mtx_checkpoint("multiple errors");
+        assert(!"Multiple board errors must be drained and reported");
+    }
+    expected_board_error = 0;
+    assert(strstr(board_message, "0x0F") != NULL);
+    assert(error_polls - polls >= 4U && delayed_reads >= 3U && inquiry == 0);
+    error_read = error_count = 0;
+    puts("PASS Matrox errors: opcode, parameter, memory and overflow diagnostics; multiple errors drained while awaiting completion");
+
+    expected_board_error = clock_timeout = 1;
+    if (setjmp(board_error) == 0)
+    {
+        (void)mtx_checkpoint("timeout test");
+        assert(!"Missing completion reply must time out");
+    }
+    expected_board_error = clock_timeout = 0;
+    assert(strstr(board_message, "communication timeout") != NULL && mtx_io_failed);
+    syncs = sync_calls; uploads = palette_uploads; closes = close_calls;
+    mtx_cleanup();
+    assert(!mtx_initialized && sync_calls == syncs &&
+           palette_uploads == uploads && close_calls == closes);
+    /* Re-establish the fixture after testing the fatal communication path;
+     * the real application exits and never resumes a timed-out connection. */
+    mtx_initialized = TRUE; mtx_io_failed = FALSE;
+    inquiry = inquiry_header = inquiry_remaining = 0;
+    puts("PASS Matrox timeout: bounded FIFO wait and cleanup avoids further commands after lost communication");
+
+    /* A deadline applies to the entire reply even when each individual
+     * word is ready immediately; restarting it for each word is unsafe. */
+    expected_board_error = 1;
+    clock_step = MTX_WAIT_TICKS / 2UL;
+    inquiry_words = 2;
+    polls = inquiry_reads;
+    if (setjmp(board_error) == 0)
+    {
+        (void)mtx_inquire_lut();
+        assert(!"Continuous ready data must still respect the reply deadline");
+    }
+    expected_board_error = 0;
+    clock_step = 0;
+    assert(strstr(board_message, "communication timeout") != NULL && mtx_io_failed);
+    assert(inquiry_reads - polls == 1U && inquiry_remaining == 2U);
+    mtx_io_failed = FALSE;
+    inquiry = inquiry_header = inquiry_remaining = 0;
+    inquiry_words = 1;
+    puts("PASS Matrox reply bounds: total deadline includes immediately available words");
 }
 
 static void check_invalid_inquiry(unsigned int words)
@@ -402,8 +533,18 @@ static void check_invalid_inquiry(unsigned int words)
         assert(!"Invalid inquiry reply must be rejected");
     }
     expected_inquiry_error = 0;
-    assert(inquiry_reads - reads == words + 1U);
-    assert(inquiry == 0 && inquiry_header == 0 && inquiry_remaining == 0);
+    if (words > 16U)
+    {
+        assert(inquiry_reads - reads == 1U && mtx_io_failed);
+        /* A real connection is abandoned; reset only this recorder. */
+        mtx_io_failed = FALSE;
+        inquiry = inquiry_header = inquiry_remaining = 0;
+    }
+    else
+    {
+        assert(inquiry_reads - reads == words + 1U);
+        assert(inquiry == 0 && inquiry_header == 0 && inquiry_remaining == 0);
+    }
 }
 
 static void check_indexed_triangle(void)
@@ -444,12 +585,17 @@ static void check_indexed_triangle(void)
     puts("PASS indexed drawing: distinct triangle and quad APIs receive original color bytes");
 }
 
-int main(void)
+int main(int process_argc, char **process_argv)
 {
     unsigned int i;
     int argc;
     char *argv[2];
     float x, y;
+    if (process_argc > 1)
+    {
+        assert(process_argc == 2 && strcmp(process_argv[1], "reporting-off") == 0);
+        error_reporting = initial_error_reporting = 0;
+    }
     for (i = 0; i < 256; ++i) {
         original_palette[i][0] = (unsigned short)((i + 11) & 255);
         original_palette[i][1] = (unsigned short)((i + 23) & 255);
@@ -464,11 +610,13 @@ int main(void)
     assert(strstr(drv_help, "texture") == NULL && strstr(drv_help, "1-2") != NULL);
     check_invalid_inquiry(0);
     check_invalid_inquiry(2);
+    check_invalid_inquiry(65535U);
     inquiry_words = 1;
     drv_init(&argc, argv);
     assert(init_calls == 1 && mouse_resets > 0);
     assert(mtx_previous_lut == 3 && inquiry == 0);
-    puts("PASS Matrox inquiry: counted LUT reply, malformed lengths drained and rejected, palette FIFO remains synchronized");
+    assert(error_reporting == 1 && mtx_previous_error_reporting == initial_error_reporting);
+    puts("PASS Matrox inquiry: short malformed replies drained, oversized counts rejected, palette FIFO remains synchronized");
     assert(drv_init_window(0, 0, 0, 0));
     assert(drv_win_width == 640 && drv_win_height == 480);
     assert(viewport_calls > 0 && projection_calls > 0);
@@ -478,6 +626,7 @@ int main(void)
         assert(supplied_palette[i][1] == earth_cmap[i][1]);
         assert(supplied_palette[i][2] == earth_cmap[i][2]);
     }
+    check_board_errors();
     globe_init();
     assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
     render_and_check(512, test_earth_data(32));

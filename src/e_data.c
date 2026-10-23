@@ -5,6 +5,10 @@
 #include "e_ext.h"
 #include "earthres.h"
 
+#if TG_EARTH_CHUNK_SIZE != 16384UL
+#error Regenerate Earth data after changing the chunk format
+#endif
+
 #if defined(EARTH) && !defined(DRV_EARTH_RESOURCES)
 
 #ifdef EARTH_32

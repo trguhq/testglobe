@@ -284,9 +284,9 @@ static void qd_make_buffer(void)
     if (!qd_world_available) return;
     SetRect(&bounds, 0, 0, (short)drv_win_width, (short)drv_win_height);
     /* This is ordinary offscreen pixel storage, not a special RAM feature.
-     * NewGWorld lets the installed QuickDraw implementation choose storage. */
+     * Without noNewDevice, NewGWorld creates its own offscreen GDevice. */
     if (NewGWorld(&qd_world, (short)qd_depth, &bounds,
-                  qd_depth == 8 ? qd_colors : NULL, qd_device, 0) != noErr)
+                  qd_depth == 8 ? qd_colors : NULL, NULL, 0) != noErr)
         qd_world = NULL; /* Low-memory systems still draw in the window. */
 }
 
@@ -371,12 +371,16 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 static void qd_set_transform(void)
 {
     if (qd_has_fpu)
-        qd_fpu_prepare(&drv_rot_x, &drv_rot_y);
+    {
+        if (!qd_fpu_prepare(&drv_rot_x, &drv_rot_y))
+            qd_error("QuickDraw rotation is out of range");
+    }
     else if (!soft3d_fixed_prepare(qd_fixed_matrix, &drv_rot_x, &drv_rot_y))
         qd_error("QuickDraw coordinate is out of range");
 }
 
 static int qd_prepare_polygon(const unsigned int *indices, unsigned int count,
+                               unsigned int vertex_count,
                                Point *destination)
 {
     Qd_screen_point screen[QD_MAX_POLY];
@@ -385,7 +389,8 @@ static int qd_prepare_polygon(const unsigned int *indices, unsigned int count,
         projected_count = qd_fpu_project_polygon(indices, count,
                                drv_win_width, drv_win_height, screen);
     else
-        projected_count = soft3d_fixed_project_polygon(qd_fixed_points, indices, count,
+        projected_count = soft3d_fixed_project_polygon(qd_fixed_points, vertex_count,
+                                     indices, count,
                                      drv_win_width, drv_win_height, screen);
     projected_count = soft3d_finish_polygon(screen, projected_count,
                                             drv_win_width, drv_win_height);
@@ -486,7 +491,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     for (i = 0; i < quad_count; ++i)
     {
         for (j = 0; j < 4U; ++j) corners[j] = indices[i * 4U + j];
-        total = qd_prepare_polygon(corners, 4U, projected);
+        total = qd_prepare_polygon(corners, 4U, vertex_count, projected);
         if (total == 0) continue;
         polygon = OpenPoly();
         if (polygon == NULL) qd_error("Cannot allocate QuickDraw polygon");
@@ -561,12 +566,23 @@ void drv_draw_osd(void)
 static void qd_present(void)
 {
     Rect bounds;
+    RGBColor saved_foreground, saved_background, black, white;
     if (qd_world == NULL) return;
     SetPort((GrafPtr)qd_window);
+    /* srcCopy colorizes through the destination port's colors. Direct
+     * rendering during a GWorld allocation failure can change those colors. */
+    GetForeColor(&saved_foreground);
+    GetBackColor(&saved_background);
+    black.red = black.green = black.blue = 0;
+    white.red = white.green = white.blue = 65535U;
+    RGBForeColor(&black);
+    RGBBackColor(&white);
     SetRect(&bounds, 0, 0, (short)drv_win_width, (short)drv_win_height);
     /* Color QuickDraw's copy mode performs final device-depth conversion. */
     CopyBits((const BitMap *)*qd_world->portPixMap, &qd_window->portBits,
               &bounds, &bounds, srcCopy | ditherCopy, NULL);
+    RGBForeColor(&saved_foreground);
+    RGBBackColor(&saved_background);
 }
 
 void drv_render(void)

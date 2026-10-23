@@ -416,7 +416,8 @@ static int gdi_clip_float_z(const Gdi_float_point *in, int count,
     return total;
 }
 
-static int gdi_prepare_polygon(const unsigned int *indices,
+static int gdi_prepare_polygon(unsigned int point_count,
+                               const unsigned int *indices,
                                unsigned int index_count, POINT *destination)
 {
     Gdi_float_point float_a[GDI_MAX_POLY], float_b[GDI_MAX_POLY];
@@ -424,9 +425,10 @@ static int gdi_prepare_polygon(const unsigned int *indices,
     float focal, projected_x, projected_y;
     int i, count;
     if (indices == NULL || destination == NULL ||
+        point_count == 0U || point_count > GDI_MAX_VERTICES ||
         (index_count != 3U && index_count != 4U)) return 0;
     for (i = 0; i < (int)index_count; ++i)
-        if (indices[i] >= GDI_MAX_VERTICES) return 0;
+        if (indices[i] >= point_count) return 0;
     if (gdi_has_fpu)
     {
         for (i = 0; i < (int)index_count; ++i)
@@ -452,7 +454,8 @@ static int gdi_prepare_polygon(const unsigned int *indices,
         }
     }
     else
-        count = soft3d_fixed_project_polygon(gdi_fixed_points, indices, index_count,
+        count = soft3d_fixed_project_polygon(gdi_fixed_points, point_count,
+                                             indices, index_count,
                                              drv_win_width, drv_win_height, screen);
     count = soft3d_finish_polygon(screen, count, drv_win_width, drv_win_height);
     for (i = 0; i < count; ++i)
@@ -510,7 +513,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     {
         for (corner = 0; corner < 4U; ++corner)
             quad_indices[corner] = indices[4U * i + corner];
-        gdi_polygon_counts[i] = gdi_prepare_polygon(quad_indices, 4U,
+        gdi_polygon_counts[i] = gdi_prepare_polygon(vertex_count, quad_indices, 4U,
                                                    gdi_polygons[i]);
         if (gdi_polygon_counts[i] == 0) continue;
         color = colors[i];

@@ -16,7 +16,9 @@ typedef Soft3d_screen_point Qd_screen_point;
 /* Compile qd_fpu.c separately for the 68881. The baseline 68000 driver
  * must check both CPU and FPU Gestalt results before calling any of these
  * routines. Only pointers and integers cross the SANE/68881 ABI boundary. */
-extern void qd_fpu_prepare(const float *rotation_x, const float *rotation_y);
+/* Angles must be finite and normalized to [0,360). Failure invalidates the
+ * previous transform; subsequent projection returns no polygon. */
+extern int qd_fpu_prepare(const float *rotation_x, const float *rotation_y);
 extern void qd_fpu_transform(unsigned int count, const Vertex *vertices);
 /* Returns a near/far-clipped polygon in downward-Y screen coordinates.
  * The caller then clips to its window and rejects back-facing polygons. */

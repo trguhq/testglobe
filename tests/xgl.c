@@ -167,6 +167,14 @@ static void attributes(Xgl_object object, int attribute, va_list args)
             assert(descriptor->texture_info.mipmap.interp_info.filter2 == XGL_TEXTURE_INTERP_BILINEAR);
             assert(descriptor->texture_info.mipmap.orientation_matrix[0][0] == 1.0f);
             assert(descriptor->texture_info.mipmap.orientation_matrix[1][1] == 1.0f);
+            /* Native Xgl_matrix_f2d is three rows by two columns; the
+             * last row holds UV translation, not a third column. */
+            assert(sizeof(descriptor->texture_info.mipmap.orientation_matrix[0]) ==
+                   2U * sizeof(float));
+            assert(descriptor->texture_info.mipmap.orientation_matrix[0][1] == 0.0f);
+            assert(descriptor->texture_info.mipmap.orientation_matrix[1][0] == 0.0f);
+            assert(descriptor->texture_info.mipmap.orientation_matrix[2][0] == 0.0f);
+            assert(descriptor->texture_info.mipmap.orientation_matrix[2][1] == 0.0f);
             assert(descriptor->comp_info.color_info.num_render_comp_desc == 1);
             assert(descriptor->comp_info.color_info.num_channels[0] == 3);
             assert(descriptor->comp_info.color_info.render_component_desc[0].comp == XGL_RENDER_COMP_DIFFUSE_COLOR);

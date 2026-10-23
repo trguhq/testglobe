@@ -1,4 +1,6 @@
-/* Resource IDs shared by C, Win16 RC, and Macintosh Rez. */
+/* Earth chunk format and resource IDs shared by C, Win16 RC, and Mac Rez.
+ * Changing the chunk size also requires resplitting the binary maps and
+ * updating the generator/resource chunk tables. Generated C checks its format. */
 #ifndef earthres_h
 #define earthres_h
 #define TG_EARTH_CHUNK_SIZE 16384UL

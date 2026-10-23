@@ -19,25 +19,25 @@ static void test_soft3d_quad_projection(void)
         camera[i].y = (i == 0 || i == 3 ? 1600L : -1600L);
         camera[i].z = -16000L;
     }
-    count = soft3d_fixed_project_polygon(camera, indices, 4U, 640, 480, points);
+    count = soft3d_fixed_project_polygon(camera, 4U, indices, 4U, 640, 480, points);
     assert(count == 4);
     assert(soft3d_finish_polygon(points, count, 640, 480) == 4);
     assert(points[0].x == 263 && points[0].y == 183);
     assert(points[1].x == 263 && points[1].y == 297);
     assert(points[2].x == 377 && points[2].y == 297);
     assert(points[3].x == 377 && points[3].y == 183);
-    assert(soft3d_fixed_project(camera, 0U, 1U, 2U, 640, 480, triangle) == 3);
-    assert(soft3d_fixed_project_polygon(camera, indices, 3U, 640, 480, points) == 3);
+    assert(soft3d_fixed_project(camera, 4U, 0U, 1U, 2U, 640, 480, triangle) == 3);
+    assert(soft3d_fixed_project_polygon(camera, 4U, indices, 3U, 640, 480, points) == 3);
     for (i = 0; i < 3; ++i)
         assert(points[i].x == triangle[i].x && points[i].y == triangle[i].y);
 
     /* Both pole arrangements must become actual three-corner polygons. */
     camera[3] = camera[0];
-    count = soft3d_fixed_project_polygon(camera, indices, 4U, 640, 480, points);
+    count = soft3d_fixed_project_polygon(camera, 4U, indices, 4U, 640, 480, points);
     assert(soft3d_finish_polygon(points, count, 640, 480) == 3);
     camera[3].x = 1600L; camera[3].y = 1600L;
     camera[2] = camera[1];
-    count = soft3d_fixed_project_polygon(camera, indices, 4U, 640, 480, points);
+    count = soft3d_fixed_project_polygon(camera, 4U, indices, 4U, 640, 480, points);
     assert(soft3d_finish_polygon(points, count, 640, 480) == 3);
 
     /* Near-plane clipping preserves a quad instead of introducing a
@@ -48,17 +48,62 @@ static void test_soft3d_quad_projection(void)
         camera[i].y = (i == 0 || i == 3 ? 8L : -8L);
         camera[i].z = (i == 0 || i == 3 ? -8L : -32L);
     }
-    count = soft3d_fixed_project_polygon(camera, indices, 4U, 640, 480, points);
+    count = soft3d_fixed_project_polygon(camera, 4U, indices, 4U, 640, 480, points);
     assert(count == 4 && soft3d_finish_polygon(points, count, 640, 480) == 4);
     for (i = 0; i < 4; ++i) camera[i].z = -15L;
-    assert(soft3d_fixed_project_polygon(camera, indices, 4U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project_polygon(camera, 4U, indices, 4U, 640, 480, points) == 0);
     for (i = 0; i < 4; ++i) camera[i].z = -160016L;
-    assert(soft3d_fixed_project_polygon(camera, indices, 4U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project_polygon(camera, 4U, indices, 4U, 640, 480, points) == 0);
     indices[3] = SOFT3D_MAX_VERTICES;
-    assert(soft3d_fixed_project_polygon(camera, indices, 4U, 640, 480, points) == 0);
-    assert(soft3d_fixed_project_polygon(camera, indices, 2U, 640, 480, points) == 0);
-    assert(soft3d_fixed_project_polygon(camera, indices, 5U, 640, 480, points) == 0);
-    assert(soft3d_fixed_project_polygon(camera, NULL, 4U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project_polygon(camera, 4U, indices, 4U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project_polygon(camera, 4U, indices, 2U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project_polygon(camera, 4U, indices, 5U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project_polygon(camera, 4U, NULL, 4U, 640, 480, points) == 0);
+}
+
+static void test_soft3d_packet_bounds(void)
+{
+    Soft3d_fixed_point camera[4], maximum[SOFT3D_MAX_VERTICES];
+    Soft3d_screen_point points[SOFT3D_MAX_POLY];
+    unsigned int indices[4];
+    int i;
+    for (i = 0; i < 4; ++i)
+    {
+        indices[i] = (unsigned int)i;
+        camera[i].x = (i < 2 ? -1600L : 1600L);
+        camera[i].y = (i == 0 || i == 3 ? 1600L : -1600L);
+        camera[i].z = -16000L;
+    }
+    for (i = 0; i < SOFT3D_MAX_POLY; ++i)
+    {
+        points[i].x = 123456L;
+        points[i].y = -654321L;
+    }
+    /* This index fits the global capacity but is one past this packet.
+     * Reject it before touching the point or changing any output element. */
+    indices[3] = 4U;
+    assert(soft3d_fixed_project_polygon(camera, 4U, indices, 4U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project(camera, 4U, 0U, 1U, 4U, 640, 480, points) == 0);
+    indices[3] = 3U;
+    assert(soft3d_fixed_project_polygon(camera, 3U, indices, 4U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project_polygon(camera, 0U, indices, 4U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project_polygon(camera, SOFT3D_MAX_VERTICES + 1U,
+                                        indices, 4U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project(camera, 0U, 0U, 1U, 2U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project(NULL, 4U, 0U, 1U, 2U, 640, 480, points) == 0);
+    assert(soft3d_fixed_project(camera, 4U, 0U, 1U, 2U, 640, 480, NULL) == 0);
+    for (i = 0; i < SOFT3D_MAX_POLY; ++i)
+        assert(points[i].x == 123456L && points[i].y == -654321L);
+    /* Both the last point in a short packet and the last supported packet
+     * element remain valid; capacity checks must not reject their indices. */
+    assert(soft3d_fixed_project_polygon(camera, 4U, indices, 4U, 640, 480, points) == 4);
+    for (i = 0; i < SOFT3D_MAX_VERTICES; ++i) maximum[i] = camera[0];
+    maximum[1] = camera[1];
+    maximum[2] = camera[2];
+    maximum[SOFT3D_MAX_VERTICES - 1U] = camera[3];
+    indices[3] = SOFT3D_MAX_VERTICES - 1U;
+    assert(soft3d_fixed_project_polygon(maximum, SOFT3D_MAX_VERTICES,
+                                        indices, 4U, 640, 480, points) == 4);
 }
 
 static void test_soft3d_shared_pipeline(void)
@@ -112,5 +157,6 @@ static void test_soft3d_shared_pipeline(void)
     points[3].x = 32767; points[3].y = 0;
     assert(soft3d_finish_polygon(points, 4, 32767, 32767) == 4);
     test_soft3d_quad_projection();
+    test_soft3d_packet_bounds();
 }
 #endif

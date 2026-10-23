@@ -141,10 +141,11 @@ static int ogl_select_window(Ogl_format *selected, int x, int y, int width, int 
 {
     static const char *requests[] = {
         "rgba red>=8 green>=8 blue>=8 alpha>=8",
-        "rgba red>=8 green>=8 blue>=8",
-        "rgba red>=5 green>=6 blue>=5",
-        "rgba red>=5 green>=5 blue>=5",
-        "rgba", "index buffer>=8"
+        /* Classic GLUT's bare "rgba" also requires an alpha channel. */
+        "rgb red>=8 green>=8 blue>=8",
+        "rgb red>=5 green>=6 blue>=5",
+        "rgb red>=5 green>=5 blue>=5",
+        "rgb", "index buffer>=8"
     };
     Ogl_format current;
     char request[160], best_request[160];

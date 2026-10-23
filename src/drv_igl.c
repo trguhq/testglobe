@@ -680,31 +680,56 @@ static void igl_mouse_move(long x, long y)
     igl_old_x = x; igl_old_y = y;
 }
 
+static void igl_sync_mouse(void)
+{
+    drv_lmouse_pressed = getbutton(LEFTMOUSE) != 0;
+    drv_rmouse_pressed = getbutton(RIGHTMOUSE) != 0;
+    igl_old_x = getvaluator(MOUSEX);
+    igl_old_y = getvaluator(MOUSEY);
+    igl_dirty = TRUE;
+}
+
+/* A missing tied button/valuator sample must not block event dispatch. Peek
+ * before each read and leave unrelated events for the dispatcher, especially
+ * keyboard and window-close events. Discard at most the malformed pair's
+ * remaining valuators before resampling the current mouse state. */
+static int igl_read_mouse_pair(short *x, short *y)
+{
+    long device;
+    short ignored;
+    int i;
+    if (qtest() == MOUSEX)
+    {
+        (void)qread(x);
+        if (qtest() == MOUSEY)
+        {
+            (void)qread(y);
+            return TRUE;
+        }
+    }
+    for (i = 0; i < 2; ++i)
+    {
+        device = qtest();
+        if (device != MOUSEX && device != MOUSEY) break;
+        (void)qread(&ignored);
+    }
+    igl_sync_mouse();
+    return FALSE;
+}
+
 static void igl_event(long device, short value)
 {
     long width, height;
-    long x_device, y_device;
     short x, y;
     switch (device)
     {
         case KEYBD: igl_keyboard((unsigned char)value); break;
         case LEFTMOUSE:
-            /* tie() guarantees that these two samples follow both edges. */
-            x_device = qread(&x);
-            y_device = qread(&y);
-            if (x_device == MOUSEX && y_device == MOUSEY)
+            if (igl_read_mouse_pair(&x, &y))
             {
                 if (drv_lmouse_pressed) igl_mouse_move(x, y);
                 else { igl_old_x = x; igl_old_y = y; }
                 drv_lmouse_pressed = value != 0;
-            }
-            else
-            {
-                qreset();
-                drv_lmouse_pressed = getbutton(LEFTMOUSE) != 0;
-                drv_rmouse_pressed = getbutton(RIGHTMOUSE) != 0;
-                igl_old_x = getvaluator(MOUSEX);
-                igl_old_y = getvaluator(MOUSEY);
             }
             break;
         case MOUSEX: igl_mouse_move(value, igl_old_y); break;
@@ -733,11 +758,8 @@ static void igl_event(long device, short value)
             break;
 #ifdef QFULL
         case QFULL:
-            qreset();
-            drv_lmouse_pressed = getbutton(LEFTMOUSE) != 0;
-            drv_rmouse_pressed = getbutton(RIGHTMOUSE) != 0;
-            igl_old_x = getvaluator(MOUSEX); igl_old_y = getvaluator(MOUSEY);
-            igl_dirty = TRUE;
+            /* Preserve events queued after the overflow marker. */
+            igl_sync_mouse();
             break;
 #endif
         default: break;

@@ -8,12 +8,42 @@
  * Every input is checked before an existing output is replaced. The .tmp
  * and .bak siblings are reserved during generation; their names stay 8.3.
  */
+#if !defined(_MSC_VER) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 1
+#endif
+#if !defined(_MSC_VER) && !defined(_XOPEN_SOURCE)
+#define _XOPEN_SOURCE 500
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include "earthres.h"
+
+#ifdef _MSC_VER
+#include <io.h>
+#define Earth_stat struct _stat
+#define earth_stat _stat
+#define earth_lstat _stat
+#define earth_regular(mode) (((mode) & _S_IFMT) == _S_IFREG)
+#define earth_open(path) _open(path, _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE)
+#define earth_fdopen _fdopen
+#define earth_close _close
+#else
+#include <unistd.h>
+#define Earth_stat struct stat
+#define earth_stat stat
+#define earth_lstat lstat
+#define earth_regular(mode) S_ISREG(mode)
+#define earth_open(path) open(path, O_CREAT | O_EXCL | O_WRONLY, 0666)
+#define earth_fdopen fdopen
+#define earth_close close
+#endif
 
 #define EARTH_PATH_MAX 1024
-#define EARTH_CHUNK_SIZE 16384UL
 
 struct Earth_chunk {
     const char *file;
@@ -26,23 +56,24 @@ static const struct Earth_chunk earth_chunks[] = {
     { "e32.bin", "earth_data_32", 32, 512UL },
     { "e64.bin", "earth_data_64", 64, 2048UL },
     { "e128.bin", "earth_data_128", 128, 8192UL },
-    { "e256_0.bin", "earth_data_256_0", 256, EARTH_CHUNK_SIZE },
-    { "e256_1.bin", "earth_data_256_1", 256, EARTH_CHUNK_SIZE },
-    { "e512_0.bin", "earth_data_512_0", 512, EARTH_CHUNK_SIZE },
-    { "e512_1.bin", "earth_data_512_1", 512, EARTH_CHUNK_SIZE },
-    { "e512_2.bin", "earth_data_512_2", 512, EARTH_CHUNK_SIZE },
-    { "e512_3.bin", "earth_data_512_3", 512, EARTH_CHUNK_SIZE },
-    { "e512_4.bin", "earth_data_512_4", 512, EARTH_CHUNK_SIZE },
-    { "e512_5.bin", "earth_data_512_5", 512, EARTH_CHUNK_SIZE },
-    { "e512_6.bin", "earth_data_512_6", 512, EARTH_CHUNK_SIZE },
-    { "e512_7.bin", "earth_data_512_7", 512, EARTH_CHUNK_SIZE }
+    { "e256_0.bin", "earth_data_256_0", 256, TG_EARTH_CHUNK_SIZE },
+    { "e256_1.bin", "earth_data_256_1", 256, TG_EARTH_CHUNK_SIZE },
+    { "e512_0.bin", "earth_data_512_0", 512, TG_EARTH_CHUNK_SIZE },
+    { "e512_1.bin", "earth_data_512_1", 512, TG_EARTH_CHUNK_SIZE },
+    { "e512_2.bin", "earth_data_512_2", 512, TG_EARTH_CHUNK_SIZE },
+    { "e512_3.bin", "earth_data_512_3", 512, TG_EARTH_CHUNK_SIZE },
+    { "e512_4.bin", "earth_data_512_4", 512, TG_EARTH_CHUNK_SIZE },
+    { "e512_5.bin", "earth_data_512_5", 512, TG_EARTH_CHUNK_SIZE },
+    { "e512_6.bin", "earth_data_512_6", 512, TG_EARTH_CHUNK_SIZE },
+    { "e512_7.bin", "earth_data_512_7", 512, TG_EARTH_CHUNK_SIZE }
 };
 
 static int earth_path(char *path, const char *directory, const char *name)
 {
     size_t length;
     length = strlen(directory);
-    if (length + strlen(name) + 2U > EARTH_PATH_MAX) return 0;
+    if (length >= EARTH_PATH_MAX ||
+        strlen(name) + 2U > EARTH_PATH_MAX - length) return 0;
     strcpy(path, directory);
     if (length != 0 && directory[length - 1U] != '/' &&
         directory[length - 1U] != '\\' && directory[length - 1U] != ':')
@@ -62,26 +93,148 @@ static int earth_sibling(char *path, const char *output, const char *extension)
         else if (*cursor == '.') dot = cursor;
     }
     length = dot == NULL ? strlen(output) : (size_t)(dot - output);
-    if (length + strlen(extension) + 1U > EARTH_PATH_MAX) return 0;
+    if (length >= EARTH_PATH_MAX ||
+        strlen(extension) + 1U > EARTH_PATH_MAX - length) return 0;
     memcpy(path, output, length);
     strcpy(path + length, extension);
+#ifdef _MSC_VER
+    return _stricmp(path, output) != 0;
+#else
     return strcmp(path, output) != 0;
+#endif
 }
 
-static int earth_exists(const char *path)
+/* Do not open paths merely to test existence: FIFOs can block, and a dangling
+ * symlink must not be mistaken for an unused temporary or backup name. */
+static int earth_entry(const char *path, Earth_stat *info)
 {
-    FILE *input;
-    input = fopen(path, "rb");
-    if (input == NULL) return 0;
-    fclose(input);
+    if (earth_lstat(path, info) == 0) return 1;
+    return errno == ENOENT ? 0 : -1;
+}
+
+static int earth_same_file(const char *first, const Earth_stat *first_info,
+                           const char *second, const Earth_stat *second_info)
+{
+#ifdef _MSC_VER
+    static char first_path[EARTH_PATH_MAX], second_path[EARTH_PATH_MAX];
+    (void)first_info;
+    (void)second_info;
+    /* DOS stat inode fields are not useful identifiers. _fullpath resolves
+     * drive-relative paths and dot components; DOS filenames ignore case. */
+    if (_fullpath(first_path, first, sizeof(first_path)) == NULL ||
+        _fullpath(second_path, second, sizeof(second_path)) == NULL) return -1;
+    return _stricmp(first_path, second_path) == 0;
+#else
+    (void)first;
+    (void)second;
+    return first_info->st_dev == second_info->st_dev &&
+           first_info->st_ino == second_info->st_ino;
+#endif
+}
+
+static int earth_output(const char *directory, const char *path,
+                         Earth_stat *info)
+{
+    static char input[EARTH_PATH_MAX];
+    Earth_stat input_info;
+    unsigned int i;
+    int exists;
+    exists = earth_entry(path, info);
+    if (exists < 0 || (exists && !earth_regular(info->st_mode))) {
+        fprintf(stderr, "e_bin: output must be a regular file: %s\n", path);
+        return -1;
+    }
+    if (!exists) return 0;
+    for (i = 0; i < sizeof earth_chunks / sizeof earth_chunks[0]; ++i) {
+        if (!earth_path(input, directory, earth_chunks[i].file)) {
+            fputs("e_bin: input path is too long\n", stderr);
+            return -1;
+        }
+        if (earth_stat(input, &input_info) != 0) {
+            fprintf(stderr, "e_bin: cannot examine input map: %s\n", input);
+            return -1;
+        }
+        exists = earth_same_file(path, info, input, &input_info);
+        if (exists < 0) {
+            fputs("e_bin: cannot resolve input/output paths\n", stderr);
+            return -1;
+        }
+        if (exists) {
+            fprintf(stderr, "e_bin: output must not replace an input map: %s\n", path);
+            return -1;
+        }
+    }
     return 1;
+}
+
+/* Reserve a new name without following links or truncating an existing file. */
+static FILE *earth_create(const char *path)
+{
+    int descriptor;
+    FILE *stream;
+    descriptor = earth_open(path);
+    if (descriptor < 0) return NULL;
+    stream = earth_fdopen(descriptor, "wb");
+    if (stream == NULL) {
+        earth_close(descriptor);
+        remove(path);
+    }
+    return stream;
+}
+
+/* DOS rename already refuses an existing destination. POSIX rename replaces
+ * one, so publish a hard link first: neither an installation nor its rollback
+ * may overwrite a file that appeared after the path checks. Both names are
+ * siblings, which keeps the link on the same filesystem. */
+static int earth_move_new(const char *source, const char *destination)
+{
+#ifdef _MSC_VER
+    return rename(source, destination) == 0;
+#else
+    if (link(source, destination) != 0) return 0;
+    if (remove(source) != 0) {
+        remove(destination);
+        return 0;
+    }
+    return 1;
+#endif
+}
+
+/* Chunk size describes the on-disk resource format. Changing it also requires
+ * resplitting the maps and updating their chunk tables/resource definitions. */
+static int earth_layout(void)
+{
+    unsigned int i;
+    int longitude;
+    unsigned long remaining;
+    longitude = 0;
+    remaining = 0;
+    for (i = 0; i < sizeof earth_chunks / sizeof earth_chunks[0]; ++i) {
+        if (earth_chunks[i].longitude != longitude) {
+            if (remaining != 0) return 0;
+            longitude = earth_chunks[i].longitude;
+            remaining = (unsigned long)longitude * (longitude / 2U);
+        }
+        if (earth_chunks[i].size == 0 ||
+            earth_chunks[i].size > TG_EARTH_CHUNK_SIZE ||
+            earth_chunks[i].size > remaining) return 0;
+        remaining -= earth_chunks[i].size;
+        if (remaining != 0 && earth_chunks[i].size != TG_EARTH_CHUNK_SIZE)
+            return 0;
+    }
+    return remaining == 0;
 }
 
 static int earth_check(const char *path, unsigned long size)
 {
     FILE *input;
+    Earth_stat info;
     unsigned long i;
     int value, valid;
+    if (earth_stat(path, &info) != 0 || !earth_regular(info.st_mode)) {
+        fprintf(stderr, "e_bin: input must be a regular file: %s\n", path);
+        return 0;
+    }
     input = fopen(path, "rb");
     if (input == NULL) {
         fprintf(stderr, "e_bin: cannot read %s\n", path);
@@ -202,18 +355,26 @@ int main(int argc, char **argv)
     static char path[EARTH_PATH_MAX], temporary[EARTH_PATH_MAX];
     static char backup[EARTH_PATH_MAX];
     FILE *output;
+    Earth_stat initial, current, sibling;
     unsigned int i, count;
-    int valid, had_output;
+    int valid, had_output, has_output;
     if (argc != 3) {
         fputs("Usage: e_bin data_directory output_file\n", stderr);
         return EXIT_FAILURE;
     }
     if (!earth_sibling(temporary, argv[2], ".tmp") ||
         !earth_sibling(backup, argv[2], ".bak") ||
-        earth_exists(temporary) || earth_exists(backup)) {
+        earth_entry(temporary, &sibling) != 0 ||
+        earth_entry(backup, &sibling) != 0) {
         fputs("e_bin: output requires unused .tmp and .bak sibling names\n", stderr);
         return EXIT_FAILURE;
     }
+    if (!earth_layout()) {
+        fputs("e_bin: chunk size disagrees with the Earth map layout\n", stderr);
+        return EXIT_FAILURE;
+    }
+    had_output = earth_output(argv[1], argv[2], &initial);
+    if (had_output < 0) return EXIT_FAILURE;
     count = (unsigned int)(sizeof earth_chunks / sizeof earth_chunks[0]);
     for (i = 0; i < count; ++i) {
         if (!earth_path(path, argv[1], earth_chunks[i].file)) {
@@ -222,7 +383,7 @@ int main(int argc, char **argv)
         }
         if (!earth_check(path, earth_chunks[i].size)) return EXIT_FAILURE;
     }
-    output = fopen(temporary, "wb");
+    output = earth_create(temporary);
     if (output == NULL) {
         fprintf(stderr, "e_bin: cannot write %s\n", temporary);
         return EXIT_FAILURE;
@@ -231,8 +392,11 @@ int main(int argc, char **argv)
           " * Copyright (C) 2026 trguhq\n"
           " * SPDX-License-Identifier: GPL-3.0-or-later\n"
           " * Each private array fits within one 16 KiB data chunk. */\n"
-          "#include \"e_ext.h\"\n#include \"earthres.h\"\n\n"
-          "#if defined(EARTH) && !defined(DRV_EARTH_RESOURCES)\n\n", output);
+          "#include \"e_ext.h\"\n#include \"earthres.h\"\n\n", output);
+    fprintf(output, "#if TG_EARTH_CHUNK_SIZE != %luUL\n"
+                    "#error Regenerate Earth data after changing the chunk format\n"
+                    "#endif\n\n", (unsigned long)TG_EARTH_CHUNK_SIZE);
+    fputs("#if defined(EARTH) && !defined(DRV_EARTH_RESOURCES)\n\n", output);
     valid = 1;
     for (i = 0; i < count && valid; ++i)
         valid = earth_emit_chunk(output, argv[1], &earth_chunks[i]);
@@ -244,14 +408,23 @@ int main(int argc, char **argv)
         fputs("e_bin: generation failed; previous output preserved\n", stderr);
         return EXIT_FAILURE;
     }
-    had_output = earth_exists(argv[2]);
-    if (had_output && rename(argv[2], backup) != 0) {
+    has_output = earth_output(argv[1], argv[2], &current);
+    if (has_output < 0 || has_output != had_output ||
+        (had_output &&
+         (earth_same_file(argv[2], &initial, argv[2], &current) != 1 ||
+          initial.st_size != current.st_size ||
+          initial.st_mtime != current.st_mtime))) {
+        remove(temporary);
+        fputs("e_bin: output changed during generation; not replaced\n", stderr);
+        return EXIT_FAILURE;
+    }
+    if (had_output && !earth_move_new(argv[2], backup)) {
         remove(temporary);
         fprintf(stderr, "e_bin: cannot preserve %s\n", argv[2]);
         return EXIT_FAILURE;
     }
-    if (rename(temporary, argv[2]) != 0) {
-        if (had_output && rename(backup, argv[2]) != 0)
+    if (!earth_move_new(temporary, argv[2])) {
+        if (had_output && !earth_move_new(backup, argv[2]))
             fprintf(stderr, "e_bin: previous output remains in %s\n", backup);
         remove(temporary);
         fprintf(stderr, "e_bin: cannot install %s\n", argv[2]);

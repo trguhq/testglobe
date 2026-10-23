@@ -155,11 +155,13 @@ binary contents when transferring the project between platforms:
 OpenGL, IRIS GL, Sun XGL, and Matrox embed these bytes through generated C source.
 Its arrays are split into objects of at most 16 KiB, and the driver's
 `EARTH_32` through `EARTH_512` defines select which maps enter the executable. Matrox
-therefore embeds only the 32- and 64-wide maps. The portable ANSI C89 converter
+therefore embeds only the 32- and 64-wide maps. The C89 converter
 `src/e_bin.c` generates this source from the binary inputs. The Makefiles build the
 converter and regenerate a local `e_data.c` (`m_data.c` for DOS) when its inputs change.
 `EARTH_DATA` selects the input directory for Unix builds; `MTX_DATA` does so for DOS.
 Both default to the `data` directory beside `SRC`, including out-of-tree builds.
+The converter uses POSIX file operations on Unix and Microsoft C runtime operations
+on DOS to reserve temporary files without overwriting existing files.
 
 A generated copy, `src/e_data.c`, is also supplied for manual historical-toolchain
 builds. Refresh that copy after changing the binary inputs with `make earth-data` on
@@ -170,6 +172,12 @@ conversion is interrupted while replacing an existing output, retain any `.bak` 
 until the output is verified or restored. Edit the `.bin` files rather than generated
 arrays. The palette remains in the small `src/e_cmap.h`; the five former map-data
 headers are no longer needed.
+
+The converter rejects output paths that alias an input map, nonregular output files,
+and occupied temporary or backup paths. On Unix, symbolic-link outputs are also
+rejected. `src/earthres.h` defines the shared chunk size; changing that format requires
+resplitting the binary maps and updating the chunk and resource tables. Generated
+source checks the chunk size at compile time to catch a stale reader.
 
 `src/e_ext.h` declares the shared map-size and bounded-read functions. Globe color
 sampling and RGB texture generation use the same embedded byte reader, including
@@ -350,7 +358,8 @@ does not guarantee hardware acceleration inside the installed OpenGL library.
 GLUT's display-mode availability query is required. Where display-string requests are
 supported, the driver requests those component sizes explicitly; older GLUT
 implementations can expose fewer distinct choices. These probes do not enumerate every
-native visual.
+native visual. The preferred RGBA request requires alpha; fallback requests use `rgb`
+so classic GLUT can select RGB24 or RGB16 visuals without an alpha channel.
 
 Display-list validation and error checks use OpenGL 1.1-compatible calls, including
 `glIsList` and `glGetError`; no newer context-profile queries are required. If allocation,
@@ -408,6 +417,8 @@ clipping, filled triangle meshes, back-face rejection, and bitmap-font OSD. Geom
 cached in a native GL object and rebuilt when the resolution or texture mode changes.
 IRIS GL's event queue supplies keyboard, mouse drag, resize, focus, and close events;
 `a` toggles automatic rotation, `o` the OSD, and Escape exits.
+Interrupted mouse sample pairs and queue overflow resample the current mouse state
+without blocking on a missing sample or discarding queued keyboard and close events.
 
 Each interior latitude band is submitted with `bgntmesh`/`endtmesh`, reusing vertices
 between adjoining triangles in the graphics engine. A band contains 258 vertices and 256
@@ -567,6 +578,13 @@ uses normalized huge pointers, `_halloc`/`_hfree`, long mesh counts, and DOS-com
 timing rather than POSIX calls. The SDK and Microsoft tools are external dependencies
 and are not redistributed here.
 
+The driver enables LibShell error reporting and services the error register while
+waiting for bounded inquiry replies. Small command packets keep pending errors from
+being hidden behind a bulk synchronization wait. Board errors report the operation
+and error bits; reply waits have a ten-second deadline. Cleanup restores the saved
+palette and error policy when communication remains usable, and stops issuing board
+commands after a timeout or an oversized reply.
+
 #### Validation
 
 Host regression checks are available with `python3 tests/run.py`. To also check the
@@ -575,6 +593,11 @@ Matrox driver against the original SDK declarations, run
 tests record DOS/LibShell calls and use sanitizers; they do not emulate segmented code
 generation or the board. Native validation requires building with Microsoft C 7 and
 running on the Matrox hardware.
+In particular, polling assumes a nonblocking error-register read through
+`iogeterror()` and that a positive SDK `rdfifocnt()` result permits `iogetw()` to read
+a complete word without blocking. The supplied headers declare these functions but
+do not establish FIFO count units or atomic word availability; these assumptions
+must be checked against the installed library and board.
 
 ### Windows GDI
 
@@ -748,6 +771,8 @@ QuickDraw chooses available display acceleration; the program does not access
 undocumented video memory. If an offscreen world cannot be allocated or its pixels
 cannot be locked, drawing falls back to the window. The OSD appends `GWorld on` or
 `GWorld off` after its other statistics, reflecting the actual rendering path.
+Presentation saves the window's drawing colors, uses black and white for `CopyBits`,
+then restores those colors, including when buffering resumes after direct drawing.
 
 Activation, resume, and completed window drags recheck the selected display's device,
 depth, and bounds. Changed display properties rebuild the palette and offscreen
@@ -799,6 +824,7 @@ systems, and hardware.
 - Switched GDI and QuickDraw to shared-vertex quad batches, with `QUAD` as the primitive and `DRV_QUAD_BATCH` as an optional driver capability.
 - Standardized plural globe traversal names and driver callback declarations, separated XGL RGB/UV entry points, and shared portable driver utilities in `drv.c`.
 - Hardened allocation/error paths and native coordinate limits, enabled the FPS setting and diagnostics, and reduced retained mesh and software-raster memory.
+- Hardened Earth source generation, geometry packet bounds, legacy color-format selection, input recovery, and QuickDraw buffering and FPU angle validation.
 - Added an FPS counter and automatic rotation.
 - Changed comments to C style.
 - Fixed the Mesa bitmap-text issue by disabling texture mapping while drawing the OpenGL OSD.

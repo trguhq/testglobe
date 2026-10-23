@@ -17,6 +17,12 @@ Legacy graphics API declarations come from test fixtures, except for the origina
 Matrox SDK headers described below. XGL contracts also require real X11
 development headers and libraries.
 
+The runner selects `NO_SINF` to exercise the C89 math path; it does not replay
+every Makefile target's compiler options. Host `int`, `long`, pointers, and calling
+conventions also retain their host widths even in the segmented-driver fixtures.
+Passing these checks therefore supplements, rather than replaces, builds with the
+actual target flags and historical compilers.
+
 ```sh
 python3 tests/run.py
 ```
@@ -24,6 +30,13 @@ python3 tests/run.py
 The baseline also builds the ANSI C89 `src/e_bin.c` converter and verifies that
 regenerating `src/e_data.c` from `data/*.bin` is deterministic. Missing, truncated,
 and oversized input chunks must fail without replacing an existing output file.
+Output paths that alias an input map (including relative paths and hard links),
+symbolic links, directories, and FIFOs must fail promptly without modifying any
+files. Existing temporary and backup paths receive the same protection. FIFO
+inputs are rejected before a blocking read.
+Changing the shared chunk-size definition without updating the binary layout must
+reject generation; stale generated readers must also fail compilation.
+
 `tests/earth_data.c` compares every embedded byte with the canonical binary maps,
 checks invalid reads, 16 KiB chunk seams, and 64 KiB boundaries, and runs from an
 empty directory to verify that no runtime map files are needed. Unsanitized object
@@ -100,6 +113,11 @@ destruction of every probe context, a fresh final window at its requested size,
 initial redisplay, absent depth buffers, exact Earth palette installation,
 index-byte facets, and native RGB textures.
 
+The default recorder follows classic GLUT's display-string rules: bare `rgba`
+requires alpha, while `rgb` permits RGB visuals without it. A separate FreeGLUT
+configuration exercises its interpretation as well; both must select RGB24 and
+RGB16 fallbacks correctly.
+
 The native geometry checks cover full interior latitude strips, a single
 `GL_TRIANGLES` batch for both polar caps, original winding and provoking-vertex
 colors, per-vertex UV seams, and display-list caching and invalidation. Strip and
@@ -169,6 +187,9 @@ alpha queries, exact indexed palette colors/restoration, missing depth buffers,
 unknown/absent texture capabilities, older headers, optional affine-texture
 subdivision, keyboard controls, tied mouse movement, focus, redraw sizing, queue
 overflow, Escape, and window quit.
+Missing or interrupted tied mouse samples must not block reads or consume later
+keyboard/window events; reversed samples and overflow markers also resynchronize
+the mouse state.
 Deleted native geometry objects are checked in flat and textured modes: the driver
 draws the complete geometry directly and rebuilds the cache on the next frame.
 
@@ -239,7 +260,9 @@ Recovery is limited to errors XGL classifies as recoverable; nonrecoverable and
 unrelated rendering errors retain their fatal handling.
 
 `tests/xgl_record/xgl/xgl.h` is a small, manual-derived recording contract with
-test-local symbolic values. It is **not Sun's SDK header**, an ABI-compatible
+test-local symbolic values. Texture orientation uses Sun's native three-row,
+two-column shape; descriptor checks verify identity rotation and zero translation.
+It is **not Sun's SDK header**, an ABI-compatible
 replacement, or a renderer. Native XGL rendering requires Sun's SDK/runtime on
 Solaris; passing this check does not establish that a Solaris XGL implementation
 rendered an image.
@@ -269,9 +292,17 @@ multiple noncardinal poses in both Matrox resolutions.
 Inquiry records include the generic `LSINQ` reply's leading word count and
 verify that its payload is consumed before subsequent LUT reads. Empty and
 unexpected-length replies must fail without leaving unread payload words.
+Both initially enabled and disabled hardware error-reporting policies are tested
+and must be restored on exit. Opcode, parameter, board-memory, and overflow faults
+must be diagnosed, including multiple errors encountered while awaiting command
+completion. Stalled FIFO cases exercise a bounded wait and verify that cleanup
+does not send more commands after communication is lost.
 
 These checks do not validate segmented pointer code generation, DOS timing,
-LibShell's binary ABI, or graphics output on a physical PG-641. Native Matrox
+LibShell's binary ABI, or graphics output on a physical PG-641. The FIFO recorder
+models positive `rdfifocnt()` as permitting a complete word read; the original
+SDK and board must validate that availability rule and asynchronous timing.
+Native Matrox
 validation requires Microsoft C 7, `LSCL.LIB`, and the board.
 
 ## Windows GDI
@@ -343,6 +374,13 @@ every Color QuickDraw, Palette Manager, and GWorld call. Tests model
 `OpenPoly`/`ClosePoly`'s automatic pen hiding so outlines cannot accidentally be
 drawn while recording filled polygons.
 
+GWorld recovery checks force a direct-rendered frame, restore allocation, and
+verify that `CopyBits` uses black foreground and white background on the
+destination while restoring that port's prior colors afterward. The recorder
+models a GWorld's own offscreen device when `noNewDevice` is absent. FPU preparation
+rejects invalid, nonfinite, and out-of-range angles without leaving a stale
+transformation usable.
+
 Readiness checks cover early drawing and late events during teardown. OSD calculations
 exercise the supported 32,767-coordinate boundary with widened arithmetic. Activation,
 resume, and completed drags re-sample display properties, including depth changes that
@@ -382,3 +420,6 @@ collapsed poles, and the retained triangle projection entry point. Polygon culli
 uses the whole signed area: a rounded silhouette whose first fan triangle has the
 opposite orientation must still be classified correctly. A full 32,767-pixel
 viewport checks the area calculation at the supported integer coordinate limit.
+Projection also checks indices against the supplied packet's actual point count.
+Short-array cases include an index equal to that count and verify rejection before
+reading the array or modifying output points.

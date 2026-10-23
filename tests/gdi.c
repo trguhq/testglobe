@@ -929,41 +929,51 @@ static void check_clipping(void)
     static const unsigned int reversed[4] = { 3, 2, 1, 0 };
     int count, i;
     camera_triangle(-9000.0, -9000.0, -11000.0);
-    count = gdi_prepare_polygon(indices, 3U, polygon);
+    count = gdi_prepare_polygon(3U, indices, 3U, polygon);
     assert(count == 4);
     camera_triangle(-11000.0, -11000.0, -11000.0);
-    assert(gdi_prepare_polygon(indices, 3U, polygon) == 0);
+    assert(gdi_prepare_polygon(3U, indices, 3U, polygon) == 0);
     camera_triangle(0.0, 0.0, 0.0);
-    assert(gdi_prepare_polygon(indices, 3U, polygon) == 0);
+    assert(gdi_prepare_polygon(3U, indices, 3U, polygon) == 0);
     camera_triangle(-2.0, -2.0, -0.5);
-    count = gdi_prepare_polygon(indices, 3U, polygon);
+    count = gdi_prepare_polygon(3U, indices, 3U, polygon);
     assert(count >= 3 && count <= 10);
     for (i = 0; i < count; ++i) {
         assert(polygon[i].x >= 0 && polygon[i].x <= (int)drv_win_width);
         assert(polygon[i].y >= 0 && polygon[i].y <= (int)drv_win_height);
     }
     camera_quad(-9000.0, -9000.0, -11000.0, -11000.0);
-    assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 4);
+    assert(gdi_prepare_polygon(4U, quad_indices, 4U, polygon) == 4);
     camera_quad(-11000.0, -11000.0, -11000.0, -11000.0);
-    assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 0);
+    assert(gdi_prepare_polygon(4U, quad_indices, 4U, polygon) == 0);
     camera_quad(0.0, 0.0, 0.0, 0.0);
-    assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 0);
+    assert(gdi_prepare_polygon(4U, quad_indices, 4U, polygon) == 0);
     camera_quad(-2.0, -2.0, -0.5, -0.5);
-    count = gdi_prepare_polygon(quad_indices, 4U, polygon);
+    count = gdi_prepare_polygon(4U, quad_indices, 4U, polygon);
     assert(count >= 3 && count <= 10);
     for (i = 0; i < count; ++i) {
         assert(polygon[i].x >= 0 && polygon[i].x <= (int)drv_win_width);
         assert(polygon[i].y >= 0 && polygon[i].y <= (int)drv_win_height);
     }
     camera_quad(-3000.0, -3000.0, -3000.0, -3000.0);
-    assert(gdi_prepare_polygon(reversed, 4U, polygon) == 0);
+    assert(gdi_prepare_polygon(4U, reversed, 4U, polygon) == 0);
+    for (i = 0; i < 10; ++i) {
+        polygon[i].x = 1234;
+        polygon[i].y = -1234;
+    }
+    assert(gdi_prepare_polygon(3U, quad_indices, 4U, polygon) == 0);
+    assert(gdi_prepare_polygon(0U, quad_indices, 4U, polygon) == 0);
+    assert(gdi_prepare_polygon(GDI_MAX_VERTICES + 1U,
+                               quad_indices, 4U, polygon) == 0);
+    for (i = 0; i < 10; ++i)
+        assert(polygon[i].x == 1234 && polygon[i].y == -1234);
     /* Repeated pole vertices become one nondegenerate native triangle. */
     gdi_float_points[3] = gdi_float_points[0];
     gdi_fixed_points[3] = gdi_fixed_points[0];
-    assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 3);
+    assert(gdi_prepare_polygon(4U, quad_indices, 4U, polygon) == 3);
     if (gdi_has_fpu) {
         gdi_float_points[0].x = FLT_MAX;
-        assert(gdi_prepare_polygon(quad_indices, 4U, polygon) == 0);
+        assert(gdi_prepare_polygon(4U, quad_indices, 4U, polygon) == 0);
     }
     test_soft3d_shared_pipeline();
 }
@@ -1173,7 +1183,7 @@ static int run_contract(void)
     {
         POINT tiny[10];
         static const unsigned int indices[3] = { 0, 1, 2 };
-        assert(gdi_prepare_polygon(indices, 3U, tiny) >= 3);
+        assert(gdi_prepare_polygon(3U, indices, 3U, tiny) >= 3);
     }
     gdi_resize(800, 600);
     assert(drv_win_width == 800 && drv_win_height == 600);

@@ -198,6 +198,7 @@ static int soft3d_clip_fixed_z(const Soft3d_fixed_point *in, int count,
 }
 
 int soft3d_fixed_project(const Soft3d_fixed_point *points,
+                          unsigned int point_count,
                           unsigned int first, unsigned int second,
                           unsigned int third, unsigned int width,
                           unsigned int height, Soft3d_screen_point *out)
@@ -206,10 +207,12 @@ int soft3d_fixed_project(const Soft3d_fixed_point *points,
     indices[0] = first;
     indices[1] = second;
     indices[2] = third;
-    return soft3d_fixed_project_polygon(points, indices, 3U, width, height, out);
+    return soft3d_fixed_project_polygon(points, point_count, indices, 3U,
+                                         width, height, out);
 }
 
 int soft3d_fixed_project_polygon(const Soft3d_fixed_point *points,
+                                  unsigned int point_count,
                                   const unsigned int TG_HUGE *indices,
                                   unsigned int corners, unsigned int width,
                                   unsigned int height, Soft3d_screen_point *out)
@@ -218,12 +221,13 @@ int soft3d_fixed_project_polygon(const Soft3d_fixed_point *points,
     long focal;
     int i, count;
     if (points == NULL || indices == NULL || out == NULL ||
+        point_count == 0U || point_count > SOFT3D_MAX_VERTICES ||
         corners < 3U || corners > 4U ||
         width == 0 || height == 0 || width > 32767U || height > 32767U)
         return 0;
     for (i = 0; i < (int)corners; ++i)
     {
-        if (indices[i] >= SOFT3D_MAX_VERTICES) return 0;
+        if (indices[i] >= point_count) return 0;
         a[i] = points[indices[i]];
     }
     count = soft3d_clip_fixed_z(a, (int)corners, b,

@@ -152,22 +152,22 @@ opengl: testglobe-opengl
 
 # Regenerate automatically when a binary map or converter changes. The DOS
 # source uses a different name so native compiler commands need no make dialect.
-e_data.c: $(SRC)/e_bin.c $(EARTH_INPUTS)
+e_data.c: $(SRC)/e_bin.c $(SRC)/earthres.h $(EARTH_INPUTS)
 	$(EARTH_CC) $(EARTH_CFLAGS) -o e_bin $(SRC)/e_bin.c
 	./e_bin $(EARTH_DATA) e_data.c
 
-m_data.c: $(SRC)\e_bin.c $(MTX_INPUTS)
+m_data.c: $(SRC)\e_bin.c $(SRC)\earthres.h $(MTX_INPUTS)
 	@echo -O -W3 -Fee_bin.exe > e_bin.rsp
 	@echo $(SRC)\e_bin.c >> e_bin.rsp
 	$(MTX_CC) @e_bin.rsp
 	e_bin $(MTX_DATA) m_data.c
 
 # Explicitly refresh the checked-in generated source after editing the maps.
-earth-data: FORCE
+earth-data: $(SRC)/e_bin.c $(SRC)/earthres.h $(EARTH_INPUTS) FORCE
 	$(EARTH_CC) $(EARTH_CFLAGS) -o e_bin $(SRC)/e_bin.c
 	./e_bin $(EARTH_DATA) $(SRC)/e_data.c
 
-earth-data-dos: FORCE
+earth-data-dos: $(SRC)\e_bin.c $(SRC)\earthres.h $(MTX_INPUTS) FORCE
 	@echo -O -W3 -Fee_bin.exe > e_bin.rsp
 	@echo $(SRC)\e_bin.c >> e_bin.rsp
 	$(MTX_CC) @e_bin.rsp

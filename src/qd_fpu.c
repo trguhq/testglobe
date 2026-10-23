@@ -25,6 +25,7 @@ typedef struct Qd_fpu_point
 static float qd_fpu_matrix[3][3];
 static Qd_fpu_point qd_fpu_points[QD_FPU_MAX_VERTICES];
 static unsigned int qd_fpu_count;
+static int qd_fpu_ready;
 
 /* The application's rotation angles are normalized to [0,360). Reduce
  * into [-pi/2,pi/2] so this degree-13 sine polynomial has absolute error
@@ -33,8 +34,9 @@ static unsigned int qd_fpu_count;
 static double qd_fpu_sine(double angle)
 {
     double radians, square;
-    while (angle > 180.0) angle -= 360.0;
-    while (angle < -180.0) angle += 360.0;
+    /* prepare() bounds this input to [0,450), including cosine's quarter
+     * turn. A single subtraction also avoids non-progress on huge values. */
+    if (angle > 180.0) angle -= 360.0;
     if (angle > 90.0) angle = 180.0 - angle;
     if (angle < -90.0) angle = -180.0 - angle;
     radians = angle * 0.017453292519943295769;
@@ -45,11 +47,14 @@ static double qd_fpu_sine(double angle)
            square * (1.0 / 6227020800.0)))))));
 }
 
-void qd_fpu_prepare(const float *rotation_x, const float *rotation_y)
+int qd_fpu_prepare(const float *rotation_x, const float *rotation_y)
 {
     double sx, cx, sy, cy;
     qd_fpu_count = 0;
-    if (rotation_x == NULL || rotation_y == NULL) return;
+    qd_fpu_ready = FALSE;
+    if (rotation_x == NULL || rotation_y == NULL) return FALSE;
+    if (!(*rotation_x >= 0.0f && *rotation_x < 360.0f &&
+          *rotation_y >= 0.0f && *rotation_y < 360.0f)) return FALSE;
     sx = qd_fpu_sine((double)*rotation_x);
     cx = qd_fpu_sine((double)*rotation_x + 90.0);
     sy = qd_fpu_sine((double)*rotation_y);
@@ -64,6 +69,8 @@ void qd_fpu_prepare(const float *rotation_x, const float *rotation_y)
     qd_fpu_matrix[2][0] = (float)(cx * cy);
     qd_fpu_matrix[2][1] = (float)(-cx * sy);
     qd_fpu_matrix[2][2] = (float)sx;
+    qd_fpu_ready = TRUE;
+    return TRUE;
 }
 
 void qd_fpu_transform(unsigned int count, const Vertex *vertices)
@@ -71,7 +78,7 @@ void qd_fpu_transform(unsigned int count, const Vertex *vertices)
     unsigned int i;
     float x, y, z;
     qd_fpu_count = 0;
-    if (vertices == NULL || count > QD_FPU_MAX_VERTICES) return;
+    if (!qd_fpu_ready || vertices == NULL || count > QD_FPU_MAX_VERTICES) return;
     for (i = 0; i < count; ++i)
     {
         x = vertices[i].x;

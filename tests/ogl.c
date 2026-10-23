@@ -183,6 +183,11 @@ void glutInitDisplayString(const char *s)
     if(strstr(s,"index"))requested_mode|=GLUT_INDEX;
     if(strstr(s,"double"))requested_mode|=GLUT_DOUBLE;
     if(strstr(s,"alpha"))requested_mode|=GLUT_ALPHA;
+#ifndef TEST_OGL_FREEGLUT
+    /* Original GLUT gives bare rgba an alpha>=1 requirement. FreeGLUT
+     * instead treats it like the GLUT_RGBA mode without requesting alpha. */
+    if(strstr(s,"rgba"))requested_mode|=GLUT_ALPHA;
+#endif
 }
 int glutGet(GLenum query)
 {
@@ -633,6 +638,14 @@ int main(int argc,char **argv)
     Vertex a,b,c;unsigned int i,level;int indexed;
     char stats[128];
     profile=argc>1?argv[1]:"rgba";
+    glutInitDisplayString("rgba");
+#ifdef TEST_OGL_FREEGLUT
+    assert((requested_mode&GLUT_ALPHA)==0);
+#else
+    assert((requested_mode&GLUT_ALPHA)!=0);
+#endif
+    glutInitDisplayString("rgb");assert((requested_mode&GLUT_ALPHA)==0);
+    glutInitDisplayString("rgb alpha>=8");assert((requested_mode&GLUT_ALPHA)!=0);
     if(strcmp(profile,"limited")==0)maximum_texture_size=256;
     matrix_identity(matrices[0][0]);matrix_identity(matrices[1][0]);
     drv_ext_init();drv_init(&argc,argv);assert(!drv_texture_enabled);

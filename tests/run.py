@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 
@@ -83,6 +84,86 @@ def check_configurations(cc, common):
     print("PASS build configuration: platform defaults infer matching memory models, explicit drivers win, unsupported legacy selections and conflicting architectures fail clearly")
 
 
+def check_earth_destinations(converter, output):
+    work = output / "unsafe_destinations"
+    maps = work / "maps"
+    shutil.copytree(ROOT / "data", maps)
+
+    def snapshot():
+        entries = {}
+        for path in work.rglob("*"):
+            mode = path.lstat().st_mode
+            name = str(path.relative_to(work))
+            if stat.S_ISLNK(mode):
+                entries[name] = ("link", os.readlink(path))
+            elif stat.S_ISREG(mode):
+                entries[name] = ("file", path.read_bytes())
+            elif stat.S_ISDIR(mode):
+                entries[name] = ("directory",)
+            else:
+                entries[name] = ("special", stat.S_IFMT(mode))
+        return entries
+
+    def rejected(destination, label):
+        before = snapshot()
+        try:
+            result = subprocess.run([str(converter), "maps", str(destination)],
+                                    cwd=work, text=True, capture_output=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("Earth converter blocked on " + label)
+        if result.returncode == 0 or snapshot() != before:
+            print(result.stdout, end="")
+            print(result.stderr, end="")
+            raise SystemExit("Earth converter modified an unsafe destination: " + label)
+
+    rejected(maps / "e32.bin", "canonical input")
+    rejected("maps/../maps/e32.bin", "relative input alias")
+    output_alias = work / "alias.c"
+    os.link(maps / "e32.bin", output_alias)
+    rejected(output_alias, "hard-linked input alias")
+    output_alias.unlink()
+    output_alias.symlink_to("maps/e32.bin")
+    rejected(output_alias, "symbolic input alias")
+    output_alias.unlink()
+    output_alias.symlink_to("missing-file")
+    rejected(output_alias, "dangling symbolic output")
+    output_alias.unlink()
+    output_alias.mkdir()
+    (output_alias / "keep.txt").write_text("preserve this directory\n")
+    rejected(output_alias, "nonempty output directory")
+    shutil.rmtree(output_alias)
+    os.mkfifo(output_alias)
+    rejected(output_alias, "FIFO output")
+    output_alias.unlink()
+    output_alias.write_text("preserve previous generated source\n")
+    for extension in (".tmp", ".bak"):
+        reserved = output_alias.with_suffix(extension)
+        reserved.write_text("preserve reserved file\n")
+        rejected(output_alias, "reserved " + extension + " file")
+        reserved.unlink()
+        reserved.symlink_to("maps/e32.bin")
+        rejected(output_alias, "reserved " + extension + " symbolic input alias")
+        reserved.unlink()
+        reserved.symlink_to("missing-file")
+        rejected(output_alias, "reserved " + extension + " dangling symbolic link")
+        reserved.unlink()
+        reserved.mkdir()
+        (reserved / "keep.txt").write_text("preserve reserved directory\n")
+        rejected(output_alias, "reserved " + extension + " directory")
+        shutil.rmtree(reserved)
+        os.mkfifo(reserved)
+        rejected(output_alias, "reserved " + extension + " FIFO")
+        reserved.unlink()
+    source = maps / "e32.bin"
+    original = source.read_bytes()
+    source.unlink()
+    os.mkfifo(source)
+    rejected(output_alias, "FIFO input")
+    source.unlink()
+    source.write_bytes(original)
+    print("PASS Earth converter destinations: input aliases, directories, symlinks, FIFOs and reserved paths fail promptly without changing any files")
+
+
 def check_earth_data(cc, common, output):
     converter = output / "e_bin"
     generated = output / "e_data.c"
@@ -94,6 +175,30 @@ def check_earth_data(cc, common, output):
     run([str(converter), str(ROOT / "data"), str(generated)])
     if generated.read_bytes() != expected:
         raise SystemExit("Earth data generation is not deterministic")
+    check_earth_destinations(converter, output)
+    mismatch = output / "chunk_mismatch"
+    mismatch.mkdir()
+    header = (ROOT / "src/earthres.h").read_text()
+    changed_header = header.replace("#define TG_EARTH_CHUNK_SIZE 16384UL",
+                                    "#define TG_EARTH_CHUNK_SIZE 8192UL")
+    if header == changed_header:
+        raise SystemExit("Update the chunk-format regression for the new map layout")
+    (mismatch / "earthres.h").write_text(changed_header)
+    shutil.copyfile(generated, mismatch / "e_data.c")
+    result = subprocess.run(cc + common + ["-DFLAT", "-DDRV_OGL", "-c",
+        str(mismatch / "e_data.c"), "-o", str(mismatch / "e_data.o")],
+        cwd=ROOT, text=True, capture_output=True, timeout=60)
+    if result.returncode == 0 or "Regenerate Earth data" not in result.stderr:
+        raise SystemExit("Stale generated data accepted a changed chunk format")
+    shutil.copyfile(ROOT / "src/e_bin.c", mismatch / "e_bin.c")
+    run(cc + common + [str(mismatch / "e_bin.c"), "-o", str(mismatch / "e_bin")])
+    rejected = mismatch / "output.c"
+    rejected.write_text("preserve previous generated source\n")
+    result = subprocess.run([str(mismatch / "e_bin"), str(ROOT / "data"), str(rejected)],
+                            cwd=ROOT, text=True, capture_output=True, timeout=60)
+    if result.returncode == 0 or rejected.read_text() != "preserve previous generated source\n":
+        raise SystemExit("Incompatible chunk table replaced generated source")
+    print("PASS Earth chunk format: stale generated readers and incompatible converter tables reject changed chunk boundaries")
     damaged = output / "damaged_maps"
     shutil.copytree(ROOT / "data", damaged)
     for filename in ("e32.bin", "e512_7.bin"):
@@ -344,7 +449,7 @@ def main():
             run([str(output / "ogl_11"), "rgba"])
             modern_ogl = ogl + ["-DTEST_OGL_FREEGLUT"]
             run(cc + common + modern_ogl + ogl_sources + ["-o", str(output / "ogl_modern")])
-            for mode in ("rgba", "legacy11", "missingproc", "nullversion", "badversion", "limited", "maxzero"):
+            for mode in ("rgba", "rgb24", "rgb16", "legacy11", "missingproc", "nullversion", "badversion", "limited", "maxzero"):
                 run([str(output / "ogl_modern"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl_modern"), mode],
@@ -447,6 +552,8 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "matrox")])
         run([str(output / "matrox")])
+        run([str(output / "matrox"), "reporting-off"],
+            required_output="PASS Matrox errors: opcode, parameter, memory and overflow diagnostics; multiple errors drained while awaiting completion")
         print("PASS host compatibility: strict C89 and supplied SDK prototypes")
 
 

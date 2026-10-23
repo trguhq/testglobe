@@ -346,6 +346,44 @@ void delobj(long id){assert(id>0&&id<32&&object_exists[id]);object_exists[id]=0;
 Boolean isobj(long id){return id>0&&id<32&&object_exists[id];}
 
 static void enqueue(long device,short value){assert(event_count<64);events[event_count].device=device;events[event_count++].value=value;}
+
+static void check_mouse_recovery(void)
+{
+    float old_x,old_y;
+    int old_osd;
+    long device;
+    short value;
+    old_x=drv_rot_x;old_y=drv_rot_y;old_osd=drv_osd_enabled;
+    assert(event_index==event_count);
+    sampled_buttons_pressed=1;
+
+    /* qread asserts on an empty queue: neither missing sample may block. */
+    igl_event(LEFTMOUSE,1);
+    assert(event_index==event_count&&drv_lmouse_pressed&&drv_rmouse_pressed);
+    enqueue(MOUSEX,170);igl_event(LEFTMOUSE,1);
+    assert(event_index==event_count&&igl_old_x==pointer_x&&igl_old_y==pointer_y);
+
+    /* A key immediately after the first tied sample belongs to the normal
+     * dispatcher, and an overflow marker must preserve later events too. */
+    enqueue(MOUSEX,170);enqueue(KEYBD,'o');igl_event(LEFTMOUSE,1);
+    assert(qtest()==KEYBD);
+    device=qread(&value);igl_event(device,value);
+    assert(drv_osd_enabled!=old_osd);igl_keyboard('o');
+    enqueue(QFULL,0);enqueue(KEYBD,'o');igl_event(LEFTMOUSE,1);
+    assert(qtest()==QFULL);
+    device=qread(&value);igl_event(device,value);assert(qtest()==KEYBD);
+    device=qread(&value);igl_event(device,value);
+    assert(drv_osd_enabled!=old_osd);igl_keyboard('o');
+
+    /* A malformed pair must also leave unrelated window events queued. */
+    enqueue(MOUSEX,170);enqueue(WINQUIT,2);igl_event(LEFTMOUSE,1);
+    assert(qtest()==WINQUIT);
+    device=qread(&value);igl_event(device,value);assert(igl_running);
+    assert(event_index==event_count&&drv_rot_x==old_x&&drv_rot_y==old_y);
+    sampled_buttons_pressed=0;
+    drv_lmouse_pressed=drv_rmouse_pressed=FALSE;
+}
+
 static void frame(void)
 {
     unsigned long before,old_writes,old_vertices,old_meshes,expected_meshes,expected_vertices;
@@ -504,6 +542,7 @@ int main(int argc,char **argv)
     sampled_buttons_pressed=0;
     enqueue(MOUSEX,170);enqueue(MOUSEY,175);igl_event(LEFTMOUSE,0);
     igl_event(RIGHTMOUSE,0);assert(!drv_lmouse_pressed&&!drv_rmouse_pressed);
+    check_mouse_recovery();
     igl_keyboard('f');assert(!drv_fps_enabled);frame();assert(strstr(recorded_stats,"frames per second")==NULL);
     igl_keyboard('F');assert(drv_fps_enabled);frame();assert(strstr(recorded_stats,"frames per second")!=NULL);
     before=text_calls;igl_keyboard('o');frame();assert(text_calls==before);igl_keyboard('O');frame();
@@ -531,6 +570,11 @@ int main(int argc,char **argv)
     igl_event(INPUTCHANGE,0);assert(!drv_lmouse_pressed&&!drv_rmouse_pressed&&!igl_active);igl_event(INPUTCHANGE,1);assert(igl_active);
     igl_event(QFULL,0);assert(event_index==event_count);
     before=drawn;enqueue(KEYBD,'2');enqueue(REDRAW,1);enqueue(WINQUIT,2);
+    /* Exercise recovery through the actual event loop: the subsequent quit
+     * key/window message must survive an interrupted tie and QFULL marker. */
+    enqueue(LEFTMOUSE,1);
+    if(!(argc>1&&strcmp(argv[1],"winquit")==0))enqueue(MOUSEX,170);
+    enqueue(QFULL,0);
     if(argc>1&&strcmp(argv[1],"winquit")==0)enqueue(WINQUIT,1);
     else if(argc>1&&strcmp(argv[1],"winshut")==0)enqueue(WINSHUT,1);
     else enqueue(KEYBD,27);
@@ -546,6 +590,7 @@ int main(int argc,char **argv)
     assert(globe_verts==NULL);
     puts("PASS IRIS GL rendering: default 128 and five indexed LODs, native tmesh provoking colors/winding/UVs, transforms, depth/cull, texture packing and OSD state");
     puts("PASS IRIS GL input/capabilities: native queue, keys, tied mouse, resize, focus, buffering and texture fallbacks");
+    puts("PASS IRIS GL interrupted mouse ties: missing/reversed samples never block or rotate spuriously; overflow preserves keyboard and close events");
     puts("PASS IRIS GL cleanup: objects, resources, window and shared palette restored");
     puts("PASS IRIS GL texture status: short on/soft/off/fail distinguishes submitted native or software work without later residency APIs");
     return 0;
