@@ -128,7 +128,7 @@ QD_SOURCE = :
 QD_DEFINES = -d SEG68 -d DRV_QD -d DRV -d NO_SINF
 
 # Binary maps are build inputs only. Keep the helper independent of any SDK.
-# A checked-in src/e_data.c is available for compilers used outside make.
+# A checked-in src/e_saved.c is available for compilers used outside make.
 EARTH_CC = $(CC)
 EARTH_CFLAGS = $(CFLAGS)
 EARTH_DATA = $(SRC)/../data
@@ -165,13 +165,13 @@ m_data.c: $(SRC)\e_bin.c $(SRC)\earthres.h $(MTX_INPUTS)
 # Explicitly refresh the checked-in generated source after editing the maps.
 earth-data: $(SRC)/e_bin.c $(SRC)/earthres.h $(EARTH_INPUTS) FORCE
 	$(EARTH_CC) $(EARTH_CFLAGS) -o e_bin $(SRC)/e_bin.c
-	./e_bin $(EARTH_DATA) $(SRC)/e_data.c
+	./e_bin $(EARTH_DATA) $(SRC)/e_saved.c
 
 earth-data-dos: $(SRC)\e_bin.c $(SRC)\earthres.h $(MTX_INPUTS) FORCE
 	@echo -O -W3 -Fee_bin.exe > e_bin.rsp
 	@echo $(SRC)\e_bin.c >> e_bin.rsp
 	$(MTX_CC) @e_bin.rsp
-	e_bin $(MTX_DATA) $(SRC)\e_data.c
+	e_bin $(MTX_DATA) $(SRC)\e_saved.c
 
 e_data.o: e_data.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) -I$(SRC) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c e_data.c
@@ -523,11 +523,14 @@ clean-gdi:
 	-$(RM) g_earth.res
 	-$(RM) testglob.exe
 
-# Preserve generated sources: e_data.c may be the tracked copy in src.
+# Build copies are disposable; preserve the checked-in e_saved.c and backups.
 clean-earth-data:
+	-$(RM) e_data.c
+	-$(RM) m_data.c
 	-$(RM) e_bin
 	-$(RM) e_bin.exe
 	-$(RM) e_bin.obj
 	-$(RM) e_bin.rsp
 	-$(RM) e_data.tmp
 	-$(RM) m_data.tmp
+	-$(RM) e_saved.tmp

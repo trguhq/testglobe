@@ -28,8 +28,8 @@ python3 tests/run.py
 ```
 
 The baseline also builds the ANSI C89 `src/e_bin.c` converter and verifies that
-regenerating `src/e_data.c` from `data/*.bin` is deterministic. Missing, truncated,
-and oversized input chunks must fail without replacing an existing output file.
+regenerating the supplied `src/e_saved.c` from `data/*.bin` is deterministic. Missing,
+truncated, and oversized input chunks must fail without replacing an existing output file.
 Output paths that alias an input map (including relative paths and hard links),
 symbolic links, directories, and FIFOs must fail promptly without modifying any
 files. Existing temporary and backup paths receive the same protection. FIFO

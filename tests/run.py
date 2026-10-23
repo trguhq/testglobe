@@ -169,9 +169,9 @@ def check_earth_data(cc, common, output):
     generated = output / "e_data.c"
     run(cc + common + [str(ROOT / "src/e_bin.c"), "-o", str(converter)])
     run([str(converter), str(ROOT / "data"), str(generated)])
-    expected = (ROOT / "src/e_data.c").read_bytes()
+    expected = (ROOT / "src/e_saved.c").read_bytes()
     if generated.read_bytes() != expected:
-        raise SystemExit("Checked-in e_data.c does not match canonical binary maps")
+        raise SystemExit("Checked-in e_saved.c does not match canonical binary maps")
     run([str(converter), str(ROOT / "data"), str(generated)])
     if generated.read_bytes() != expected:
         raise SystemExit("Earth data generation is not deterministic")
@@ -295,7 +295,7 @@ def main():
         run(cc + common + flat + ["-DDEBUG=1", str(ROOT / "tests/driver_helpers.c"),
             str(ROOT / "src/drv.c"), "-lm", "-o", str(output / "debug_helpers")])
         run([str(output / "debug_helpers")])
-        run(cc + common + flat + tri_mode + [str(ROOT / "tests/geometry.c"), str(ROOT / "src/e_data.c"),
+        run(cc + common + flat + tri_mode + [str(ROOT / "tests/geometry.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "geometry")])
         run([str(output / "geometry")])
@@ -303,12 +303,12 @@ def main():
             run([str(output / "geometry"), mode], expected_returncode=1,
                 expected_stderr="ERROR - Invalid globe dimensions\n",
                 required_output="PASS invalid globe radius: nonfinite input fails before replacing the existing mesh")
-        run(cc + common + flat + [str(ROOT / "tests/ogl_strips.c"), str(ROOT / "src/e_data.c"),
+        run(cc + common + flat + [str(ROOT / "tests/ogl_strips.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "ogl_strips")])
         run([str(output / "ogl_strips")])
         strips = ["-DFLAT", "-DDRV_XGL"]
-        run(cc + common + strips + [str(ROOT / "tests/strips.c"), str(ROOT / "src/e_data.c"),
+        run(cc + common + strips + [str(ROOT / "tests/strips.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "strips")])
         run([str(output / "strips")])
@@ -326,7 +326,7 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "qd_quads")])
         run([str(output / "qd_quads")])
-        run(cc + common + ["-DFLAT", "-DDRV_IGL", str(ROOT / "tests/igl_strips.c"), str(ROOT / "src/e_data.c"),
+        run(cc + common + ["-DFLAT", "-DDRV_IGL", str(ROOT / "tests/igl_strips.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl_strips")])
         run([str(output / "igl_strips")])
@@ -372,7 +372,7 @@ def main():
             xgl_ldflags = shlex.split(os.environ.get("XGL_TEST_LDFLAGS", ""))
             run(cc + common + strips + xgl_cppflags +
                 ["-I" + str(ROOT / "tests/xgl_record"),
-                 str(ROOT / "tests/xgl.c"), str(ROOT / "src/e_data.c"), str(ROOT / "src/globe.c"),
+                 str(ROOT / "tests/xgl.c"), str(ROOT / "src/e_saved.c"), str(ROOT / "src/globe.c"),
                  str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                  str(ROOT / "src/err.c")] + xgl_ldflags +
                 ["-lm", "-lX11", "-o", str(output / "xgl")])
@@ -412,7 +412,7 @@ def main():
                                      else "PASS XGL nonrecoverable error:"))
         if args.ogl_contract:
             ogl = ["-DFLAT", "-DDRV_OGL", "-I" + str(ROOT / "tests/ogl_record")]
-            ogl_sources = [str(ROOT / "tests/ogl.c"), str(ROOT / "src/e_data.c"),
+            ogl_sources = [str(ROOT / "tests/ogl.c"), str(ROOT / "src/e_saved.c"),
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm"]
@@ -482,7 +482,7 @@ def main():
         if args.igl_contract:
             igl = ["-DFLAT", "-DDRV_IGL", "-I" + str(ROOT / "tests/igl_record")]
             run(cc + common + igl + ["-fsyntax-only", str(ROOT / "src/main.c")])
-            run(cc + common + igl + [str(ROOT / "tests/igl.c"), str(ROOT / "src/e_data.c"),
+            run(cc + common + igl + [str(ROOT / "tests/igl.c"), str(ROOT / "src/e_saved.c"),
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl")])
@@ -503,19 +503,19 @@ def main():
                     expected_stderr="IRIS GL texture: " + message + "\n",
                     required_output="PASS IRIS GL recoverable texture failure:")
             run(cc + common + igl + ["-DIGL_TEST_OLD_HEADERS",
-                str(ROOT / "tests/igl.c"), str(ROOT / "src/e_data.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "tests/igl.c"), str(ROOT / "src/e_saved.c"), str(ROOT / "src/texsoft.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "igl_oldheaders")])
             run([str(output / "igl_oldheaders"), "oldheaders"])
             run(cc + common + igl + ["-DIGL_TEST_OLD_HEADERS", "-DIGL_TEST_SUBDIVIDE",
-                str(ROOT / "tests/igl.c"), str(ROOT / "src/e_data.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "tests/igl.c"), str(ROOT / "src/e_saved.c"), str(ROOT / "src/texsoft.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "igl_affine")])
             run([str(output / "igl_affine"), "affine"])
             run(cc + common + igl + ["-DTEXTURE_CACHE_RASTER=1",
-                str(ROOT / "tests/igl.c"), str(ROOT / "src/e_data.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "tests/igl.c"), str(ROOT / "src/e_saved.c"), str(ROOT / "src/texsoft.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "igl_cached")])
@@ -526,7 +526,7 @@ def main():
                 "-lm", "-o", str(output / "texsoft")])
             run([str(output / "texsoft")])
             run(cc + common + ["-DFLAT", "-DDRV_OGL",
-                str(ROOT / "tests/texture.c"), str(ROOT / "src/e_data.c"), "-o", str(output / "texture")])
+                str(ROOT / "tests/texture.c"), str(ROOT / "src/e_saved.c"), "-o", str(output / "texture")])
             run([str(output / "texture")])
         if not args.sdk:
             print("SKIP Matrox SDK contract checks: supply --sdk or MATROX_SDK")
@@ -548,7 +548,7 @@ def main():
                      "-I" + str(ROOT / "tests/dos_shim"),
                      "-I" + str(output / "sdk")]
         run(cc + common + segmented + ["-fsyntax-only", str(ROOT / "src/main.c")])
-        run(cc + common + segmented + [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_data.c"),
+        run(cc + common + segmented + [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "matrox")])
         run([str(output / "matrox")])

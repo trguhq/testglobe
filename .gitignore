@@ -29,6 +29,7 @@
 /m_data.c
 /src/e_bin
 /src/e_bin.exe
+/src/e_data.c
 /src/m_data.c
 /e_data.tmp
 /e_data.bak
@@ -38,3 +39,7 @@
 /src/e_data.bak
 /src/m_data.tmp
 /src/m_data.bak
+/e_saved.tmp
+/e_saved.bak
+/src/e_saved.tmp
+/src/e_saved.bak

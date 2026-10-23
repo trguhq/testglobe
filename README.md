@@ -163,15 +163,22 @@ Both default to the `data` directory beside `SRC`, including out-of-tree builds.
 The converter uses POSIX file operations on Unix and Microsoft C runtime operations
 on DOS to reserve temporary files without overwriting existing files.
 
-A generated copy, `src/e_data.c`, is also supplied for manual historical-toolchain
+A generated fallback, `src/e_saved.c`, is also supplied for manual historical-toolchain
 builds. Refresh that copy after changing the binary inputs with `make earth-data` on
 Unix or `nmake earth-data-dos` on DOS. `EARTH_CC` and `EARTH_CFLAGS` select the Unix
 converter compiler and options; the DOS converter uses the Matrox compiler settings.
-The clean targets preserve `e_data.c`, including the supplied source copy. If a
-conversion is interrupted while replacing an existing output, retain any `.bak` file
+Normal builds generate their own `e_data.c` or `m_data.c` from the binary inputs.
+`make clean` and `make clean-earth-data` remove those build copies and the converter,
+while preserving `src/e_saved.c`, including when building inside `src`. The next
+build regenerates the removed source before compiling it. If a conversion is
+interrupted while replacing an existing output, retain any `.bak` file
 until the output is verified or restored. Edit the `.bin` files rather than generated
 arrays. The palette remains in the small `src/e_cmap.h`; the five former map-data
 headers are no longer needed.
+
+The fallback was formerly named `src/e_data.c`. Manual compile commands that use
+the supplied copy should now name `src/e_saved.c`; make-based builds keep using
+their generated `e_data.c`. Do not compile both copies into the same executable.
 
 The converter rejects output paths that alias an input map, nonregular output files,
 and occupied temporary or backup paths. On Unix, symbolic-link outputs are also
