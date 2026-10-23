@@ -1,91 +1,28 @@
 # Host regression checks
 
 These checks compile production code on a host system and verify geometry,
-software-rendered pixels, native API call arguments, input handling, and resource
-cleanup. They supplement native builds and runtime checks; the call recorders do
-not emulate the original graphics implementations or prove their binary ABIs.
-
-For native build instructions, see the [project README](../README.md#build-instructions).
+software-rendered pixels, graphics API arguments, input, and resource cleanup.
+For application build instructions, see the [project README](../README.md#build-instructions).
 
 ## Requirements and quick start
 
-Run commands from the repository root. The baseline checks require Python 3 and
-a C compiler with AddressSanitizer and UndefinedBehaviorSanitizer support. The
-runner uses `cc` by default; set `CC` to select another compiler. Compilation uses
-strict C89, warnings, ASan, and UBSan, with undefined behavior treated as fatal.
-Legacy graphics API declarations come from test fixtures, except for the original
-Matrox SDK headers described below. XGL contracts also require real X11
-development headers and libraries.
+Run commands from the repository root. The runner requires:
 
-The runner selects `NO_SINF` to exercise the C89 math path; it does not replay
-every Makefile target's compiler options. Host `int`, `long`, pointers, and calling
-conventions also retain their host widths even in the segmented-driver fixtures.
-Passing these checks therefore supplements, rather than replaces, builds with the
-actual target flags and historical compilers.
+- Python 3.8 or later.
+- A C compiler accepting GCC/Clang-style options, with AddressSanitizer and
+  UndefinedBehaviorSanitizer support. `CC` selects the compiler; the default is `cc`.
+- A POSIX host and filesystem supporting FIFOs, symbolic links, and hard links.
+- `nm` with `-S` output containing GNU-style address, size, type, and symbol fields.
+  Other `nm` formats, including platform-specific variants, are not interchangeable.
+
+These are host-test requirements; the runner is not intended for the historical
+DOS, Windows, Macintosh, or Unix toolchains used to build the application.
 
 ```sh
 python3 tests/run.py
 ```
 
-The baseline also builds the ANSI C89 `src/e_bin.c` converter and verifies that
-regenerating the supplied `src/e_saved.c` from `data/*.bin` is deterministic. Missing,
-truncated, and oversized input chunks must fail without replacing an existing output file.
-Output paths that alias an input map (including relative paths and hard links),
-symbolic links, directories, and FIFOs must fail promptly without modifying any
-files. Existing temporary and backup paths receive the same protection. FIFO
-inputs are rejected before a blocking read.
-Changing the shared chunk-size definition without updating the binary layout must
-reject generation; stale generated readers must also fail compilation.
-
-`tests/earth_data.c` compares every embedded byte with the canonical binary maps,
-checks invalid reads, 16 KiB chunk seams, and 64 KiB boundaries, and runs from an
-empty directory to verify that no runtime map files are needed. Unsanitized object
-symbols verify the 16 KiB per-array limit and the Matrox build's inclusion of only
-`EARTH_32` and `EARTH_64`. The shared `tests/earth_reference.h` fixture reads binary
-inputs for expected colors; production applications do not contain this file I/O.
-
-The baseline checks cover OpenGL indexed strips with separate pole triangles, XGL
-RGB strips, IRIS GL indexed strips, and GDI/QuickDraw indexed quad batches. They
-verify all five globe resolutions, exact primitive tuples and palette bytes,
-outward winding, pole geometry, packet seams and shared vertices, UV seams, and
-texture-toggle dispatch where supported. The shared `tests/quad_batches.c` fixture
-is built separately for GDI and QuickDraw; at key 5 it checks 2,048 packets and
-131,072 quad patches, with no packet larger than 130 vertices. OpenGL defaults to
-`EARTH_512` (key 5); XGL and IRIS GL default to `EARTH_128` (key 3). The retained
-independent-triangle path has a separate reference check using the test-only
-forced-include header `tests/tri_mode.h`. Normal builds select primitive modes in
-driver headers; do not pass `TRI`, `TRISTRIP`, or `QUAD` on the compiler command
-line.
-
-Traversal checks use `globe_draw_tris()`, `globe_draw_tristrips()`,
-`globe_draw_quads()`, and `globe_draw_quadbatches()` as separate entry points.
-Driver callbacks retain singular primitive names; their color/RGB/UV declarations
-are grouped and selected by the driver headers' implemented capabilities.
-
-`tests/driver_api.c` checks declarations for all six drivers and the retained TRI
-configuration, rejects unsupported callbacks, and checks the separate three-argument
-XGL RGB/UV signatures. `tests/driver_helpers.c` exercises the shared `drv.c` utilities
-in flat OpenGL and segmented GDI configurations: 1,026-vertex strip splitting with
-even overlap, odd limits and tails, exact UV triangle parity, invalid-input guards,
-standard and unsupported keys, FPS enable/disable behavior, debug metadata,
-bounded multi-turn and zero-window drag handling, very large elapsed-time rotation,
-indexed quad validation, and individual-quad packing. The quad geometry fixture verifies
-individual and batched globe traversal separately at all five resolutions.
-
-Core geometry checks also cover custom latitude counts by sampling the complete
-source map at each band's center, and reject nonfinite radii while preserving a valid
-existing mesh. Resource-backed builds must release the temporary Earth byte buffer
-after constructing indexed colors.
-Configuration checks exercise repaired platform/architecture defaults and explicit
-errors for unsupported legacy driver selections.
-
-With `--ogl-contract` or `--igl-contract`, `tests/texture.c` compares every expanded
-RGB texel with its Earth palette source at all five resolutions. It checks repeated
-generation with same-size allocation reuse, changed-size replacement-allocation
-failure, invalid sizes, idempotent cleanup, and the retained dimensions needed by
-XGL after releasing the staging image.
-
-Additional options may be combined in one invocation:
+Additional options may be combined:
 
 | Option | Additional checks | Extra requirements |
 | --- | --- | --- |
@@ -96,330 +33,332 @@ Additional options may be combined in one invocation:
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
 
-Without `--sdk` or `MATROX_SDK`, the Matrox SDK contract checks are explicitly
-reported as skipped. The baseline geometry checks require no XGL SDK.
+With all prerequisites installed, run every group with:
+
+```sh
+python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
+  --gdi-contract --qd-contract --sdk /path/to/sdk
+```
+
+Exit status zero means all requested checks passed. `PASS` lines identify completed
+checks; `SKIP` identifies an optional group that did not run. Without `--sdk` or
+`MATROX_SDK`, the Matrox SDK group is reported as skipped. The baseline needs no
+vendor graphics SDK. An intentionally injected application failure can be a passing
+test when the runner verifies its expected exit status and diagnostics.
+
+## What the host checks establish
+
+Compilation uses strict C89, warnings, ASan, and UBSan, with undefined behavior
+handled as fatal. `NO_SINF` selects the C89 math path; the runner does not replay
+every Makefile target's compiler options.
+
+Most legacy API declarations come from test fixtures; Matrox uses the supplied SDK
+headers. Call recorders check submitted arguments and simulated outcomes. They do
+not implement the original graphics libraries, establish native binary ABIs, or
+verify hardware rendering. Host integer and pointer widths, byte order, and calling
+conventions remain those of the host, even when segmented-driver keywords are
+removed for compilation. Platform-specific validation requirements appear below.
+
+OSD meanings are defined under [Controls and status](../README.md#controls-and-status).
+The tests check those states against actual submission, fallback, and failure paths,
+rather than only checking the user's toggle settings.
+
+## Baseline coverage
+
+### Earth data
+
+The runner builds `src/e_bin.c` and checks deterministic regeneration against the
+supplied `src/e_saved.c`. Missing, truncated, and oversized chunks must preserve an
+existing output. Input aliases, symbolic links, directories, FIFOs, and occupied
+temporary or backup paths must fail promptly without changing files. Changing the
+shared chunk size without updating the binary layout must reject generation; stale
+generated readers must also fail compilation.
+
+`tests/earth_data.c` compares every embedded byte with the binary maps and checks
+invalid reads, 16 KiB chunk seams, and 64 KiB boundaries. It also runs from an empty
+directory to verify that runtime map files are unnecessary. Object symbols verify
+the 16 KiB per-array limit and Matrox's inclusion of only `EARTH_32` and `EARTH_64`.
+`tests/earth_reference.h` reads the binaries for expected colors; the application
+does not use that test-only file I/O.
+
+### Geometry and shared interfaces
+
+- OpenGL indexed strips and separate pole triangles, XGL RGB strips, IRIS GL indexed
+  strips, and GDI/QuickDraw quad batches are checked at all five resolutions. Checks
+  compare primitive tuples, palette bytes, outward winding, pole geometry, shared
+  vertices, packet and UV seams, and texture dispatch where supported.
+- `tests/quad_batches.c` checks individual and batched traversal for GDI and QuickDraw.
+  At key 5 it verifies 2,048 packets and 131,072 quad patches, with at most 130 vertices
+  per packet. Driver defaults are checked alongside resolution changes.
+- The independent-triangle reference uses `tests/tri_mode.h`. Normal builds select
+  `TRI`, `TRISTRIP`, or `QUAD` in driver headers, not through command-line defines.
+- `tests/driver_api.c` checks supported declarations, rejects unsupported callbacks,
+  and checks XGL's distinct RGB/UV signatures. Plural `globe_draw_*` traversal names
+  and singular `drv_draw_*` callbacks are checked as separate interfaces.
+- Custom latitude counts sample the full source map. Nonfinite radii must preserve
+  an existing valid mesh; resource-backed builds release temporary map bytes after
+  constructing indexed colors.
+
+### Shared utilities and configuration
+
+`tests/driver_helpers.c` exercises flat OpenGL and segmented GDI configurations:
+strip splitting with even overlap and odd limits, UV triangle parity, quad packet
+bounds and packing, invalid inputs, key handling, FPS toggling, debug metadata,
+bounded dragging, zero-sized windows, and large elapsed-time rotations. Configuration
+checks cover platform and architecture defaults, conflicting settings, and explicit
+errors for unsupported legacy drivers.
 
 ## OpenGL
 
-Record OpenGL/GLUT format selection and the indexed rendering path:
+### Command
 
 ```sh
 python3 tests/run.py --ogl-contract
 ```
 
-The records check RGBA32, a 32-bit single-buffer visual competing with 24-bit
-double buffering, RGB24/RGB16 and color-index8 fallbacks, unknown alpha queries,
-destruction of every probe context, a fresh final window at its requested size,
-initial redisplay, absent depth buffers, exact Earth palette installation,
-index-byte facets, and native RGB textures.
+### Coverage
 
-The default recorder follows classic GLUT's display-string rules: bare `rgba`
-requires alpha, while `rgb` permits RGB visuals without it. A separate FreeGLUT
-configuration exercises its interpretation as well; both must select RGB24 and
-RGB16 fallbacks correctly.
+- **Formats and palette:** RGBA32, RGB24/RGB16, and color-index8; precision before
+  buffering; unknown alpha queries; missing depth buffers; exact palette installation
+  and index-byte facets. Classic GLUT's `rgba` alpha requirement and FreeGLUT's
+  interpretation are modeled separately so both select RGB fallbacks correctly.
+- **Geometry and caching:** latitude strips and one polar-cap triangle batch are
+  compared with the TRI reference at all resolutions, including provoking colors and
+  UVs. Display-list checks cover the enabled default, `d`/`D`, redraws, deletion,
+  immediate drawing while disabled, lazy rebuilding, and resolution/texture changes.
+- **Compatibility and failures:** OpenGL 1.1 declarations and object imports are
+  checked. GLU handles legacy or unsuitable modern-mipmap cases. Allocation,
+  compilation, validation, and execution failures must delete bad lists and draw
+  complete immediate geometry. Texture creation, binding, mipmap, and transfer
+  failures must release failed state, draw flat colors, and allow off/on retry.
+- **Window lifecycle and controls:** early probe and window redraws verify a safe
+  display callback before rendering is ready, including Apple's GLUT ordering.
+  Checks also cover probe cleanup, final size, FPS toggling, right-button metadata,
+  OSD status/help order, and omission of unavailable visibility counts.
+- **Software texturing:** transferred bytes match every framebuffer index, including
+  with host 64-bit `unsigned long`. Nondefault unpack/transfer state must be restored.
+  Software texturing bypasses display lists, and both raster-cache policies are
+  exercised. Numerical pixel checks are described under [Shared software pipelines](#shared-software-pipelines).
 
-The native geometry checks cover full interior latitude strips, a single
-`GL_TRIANGLES` batch for both polar caps, original winding and provoking-vertex
-colors, per-vertex UV seams, and display-list caching and invalidation. Strip and
-cap topology is checked against the retained independent-triangle reference at
-all five Earth resolutions.
+### Native validation
 
-Display-list controls check the enabled default, both `d` and `D`, redraw requests,
-cache deletion on disable, complete uncached geometry without list calls, and lazy
-rebuilding after re-enabling. Resolution and texture changes are checked while lists
-are disabled. OSD checks verify `dlist on` only after successful list execution,
-`dlist off` when disabled, and `dlist fail` when enabled lists fail or are bypassed.
-The status follows FPS and precedes texture status, with the display-list key last
-in the help text. Indexed software texturing continues to bypass native lists in
-either setting and reports `dlist fail` while they are enabled.
-
-The GLU mipmap path is checked with a 256-pixel texture-size limit and a larger
-source image, as well as a failed mipmap build. OpenGL 1.1 compatibility checks cover
-legacy declarations and runtime fallbacks when modern mipmap support is unavailable.
-Optional modern mipmaps require FreeGLUT lookup support, a suitable context version,
-an available entry point, and a source image within the texture limit; otherwise GLU
-must be used. Native-rendering statistics must omit visibility counts that the
-graphics API does not report.
-
-Failure injection checks zero display-list allocation, rejected list creation,
-partial compilation failure, invalid list validation, and execution errors, with
-failed-list deletion and complete immediate-mode fallback. Validation and error
-checks use OpenGL 1.1-compatible `glIsList` and `glGetError` calls. Texture failures
-release invalid resources and recover to complete flat geometry while retaining the
-user's enabled request. Top-line status checks distinguish `texture on` only after
-successful native use, `texture soft` after successful software presentation,
-`texture off` when disabled, and `texture fail` when an enabled texture cannot be
-created, validated, or used. They also check off/on retry and retain the bottom-line
-texture-mapping key description. FPS toggling, right-button metadata, and both released
-and retained software-raster
-cache policies are recorded independently of geometry caching.
-
-Each window has its own display callback. Probe hiding and final-window
-resizing/showing dispatch an early initial redraw to check that callbacks exist
-before native window operations and safely do no rendering before globe
-initialization. The final window keeps its temporary callback until globe data
-is initialized; entering the driver loop must register the globe renderer and
-request a fresh redraw before the GLUT loop. This checks the callback ordering
-required by Apple's GLUT without modeling its Cocoa event loop.
-
-The indexed texture path uses the real shared software renderer. Its transferred
-bytes are compared with every numeric framebuffer index, including on hosts with
-64-bit `unsigned long`. Pixel-transfer and unpack state is deliberately
-nondefault to verify restoration. These records supplement actual OpenGL GUI
-smoke tests; they do not emulate a GL implementation or prove availability of
-indexed visuals on a particular system.
+Actual OpenGL rendering and availability of color-index visuals require GUI checks
+with the installed GL implementation. Apple SDK compilation and Cocoa/GLUT event-loop
+behavior require macOS; the host recorder checks callback ordering without implementing
+that event loop.
 
 ## IRIS GL
 
-Record the production IRIS GL driver against manual-derived native call
-declarations, and check the real software texture fallback's pixels:
+### Command
 
 ```sh
 python3 tests/run.py --igl-contract
 ```
 
-The native recorder checks all five Earth levels and the default 128 level,
-native triangle-mesh winding and provoking-vertex colors independently located
-by spherical centroids, per-vertex UVs, matrix composition and OSD restoration,
-native object caching/invalidation, every packed texture word,
-RGBA32/RGB24/color-index8 format selection, precision before buffering, unknown
-alpha queries, exact indexed palette colors/restoration, missing depth buffers,
-unknown/absent texture capabilities, older headers, optional affine-texture
-subdivision, keyboard controls, tied mouse movement, focus, redraw sizing, queue
-overflow, Escape, and window quit.
-Missing or interrupted tied mouse samples must not block reads or consume later
-keyboard/window events; reversed samples and overflow markers also resynchronize
-the mouse state.
-Deleted native geometry objects are checked in flat and textured modes: the driver
-draws the complete geometry directly and rebuilds the cache on the next frame.
+### Coverage
 
-Software-texture profiles verify both the default raster release on disable and
-the optional `TEXTURE_CACHE_RASTER=1` retained cache.
+- **Geometry and transforms:** all resolutions and the key-3 default; triangle-mesh
+  winding, centroid-derived provoking colors, UVs, matrix composition, and OSD state
+  restoration. Key 5 submits 1,278 meshes and 263,676 vertices, with 1,026-vertex interior
+  bands and separate pole triangles. The recorder models IRIS GL's implicit projection
+  matrix behavior.
+- **Formats and textures:** RGBA32/RGB24/color-index8, precision before buffering,
+  unknown alpha, palette installation/restoration, absent depth buffers, packed
+  texture words, missing capabilities, older headers, and affine-texture subdivision.
+  API and software-texture profiles cover all five resolutions and both raster-cache
+  policies.
+- **Input:** keyboard, tied mouse samples, focus, resize, overflow, Escape, and window
+  quit. Missing or reversed mouse samples must neither block nor consume later
+  keyboard/window events.
+- **Recovery and status:** deleted geometry objects fall back to complete direct
+  drawing and rebuild on the next frame. Recoverable texture failures invalidate
+  incompatible caches, draw flat colors, preserve the requested toggle, and allow a
+  retry. Status checks distinguish API submission from application software rendering.
 
-Texture status checks distinguish current-frame native submission (`texture on`),
-software presentation (`texture soft`), manual disable (`texture off`), and detected
-failure while enabled (`texture fail`). Recoverable failures must draw complete flat
-geometry, invalidate incompatible cached geometry, preserve the user's request, and
-allow an off/on retry.
-The IRIX 4.0 native texture and pixel-transfer calls return no success value, so
-the tests check submitted calls and observable failures without claiming detection
-of silent errors inside the SGI library or hardware.
+### Native validation
 
-At resolution 512 it verifies 1,278 native meshes and 263,676 submitted vertices,
-with 1,026-vertex interior bands and separate nondegenerate polar caps. Textured
-rendering runs at all five resolutions in both native and software capability
-profiles. A separate indexed strip geometry fixture checks exact TRI-equivalent
-tuples, original color bytes, UVs, and seams without native graphics calls. The
-recorder models IRIS GL's implicit projection-matrix behavior rather than
-OpenGL's matrix calls.
-
-The standalone software cases use analytically predicted pixels for row-vector
-transforms, six clipping planes, depth/culling, perspective interpolation,
-wrapping, bilinear/trilinear filtering, mipmap minification, indexed conversion,
-and cleanup. Raster-release checks retain mipmaps and the indexed-color lookup
-table for re-enabling at a resized viewport. Invalid matrices, vertices, and UVs
-must be rejected before integer conversion; very large finite repeating UVs
-remain valid.
-
-The recorder headers are **not an SGI SDK or ABI**, and their optional subdivision
-constants are explicit fixture tags. Prototypes are checked against the supplied
-SGI guides and 1990 reference; host `unsigned long` image words are compared
-numerically. Native IRIX 4.0 compilation, 32-bit ABI, graphics hardware, fonts,
-window-manager behavior, and pixel transfer require SGI tools and runtime
-validation.
+The recorder's declarations are checked against the SGI guides and 1990 reference;
+optional subdivision constants are test-local tags. Native IRIX 4.0 builds must
+validate the 32-bit ABI, packed pixel transfer, fonts, window manager, and graphics
+hardware. IRIS GL texture and pixel-transfer calls return no success value, so checks
+of submission and observable failures cannot detect silent library or hardware errors.
 
 ## Sun XGL
 
-Exercise the actual Sun XGL driver with real X11 windows and events under Xvfb,
-using a recording replacement for XGL calls:
+### Command
 
 ```sh
 python3 tests/run.py --xgl-contract
 ```
 
-This option requires X11 development headers/libraries and `xvfb-run`. Set
-`XGL_TEST_CPPFLAGS` and `XGL_TEST_LDFLAGS` if X11 is installed outside the
-compiler's default paths. The checks cover the `EARTH_128` default, all five
-resolution keys, native-call arguments, flat facet/strip packets, packed texture
-pixels and mipmap settings, clipping and model/view setup, single/double
-buffering, X11 input/resize events, and both Escape and window-manager close
-cleanup.
+### Additional requirements
 
-Separate `drv_draw_tristrip_flat_rgb()` and `drv_draw_tristrip_flat_uv()` callbacks
-verify that flat facets retain their RGB values and textured strips retain their
-UVs. The textured native facet metadata is white because XGL's REPLACE operation
-uses the texture color directly.
+Install X11 development headers/libraries, Xvfb, and `xvfb-run`. Set
+`XGL_TEST_CPPFLAGS` and `XGL_TEST_LDFLAGS` for nonstandard X11 locations. The driver
+uses real X11 windows and events under Xvfb; XGL calls use a host recorder.
 
-Texture failure checks cover the short `texture on`, `texture off`, and
-`texture fail` status labels, complete flat fallback while preserving the enabled
-request, partial-resource cleanup, and off/on retry. Status reflects use in the
-current frame rather than the toggle alone. XGL's internal hardware/software mix is
-not exposed through a reliable per-frame texture query, so its successful native API
-path remains `texture on`; `texture soft` covers the explicit OpenGL/IRIS GL rasterizer.
-Recovery is limited to errors XGL classifies as recoverable; nonrecoverable and
-unrelated rendering errors retain their fatal handling.
+### Coverage
 
-`tests/xgl_record/xgl/xgl.h` is a small, manual-derived recording contract with
-test-local symbolic values. Texture orientation uses Sun's native three-row,
-two-column shape; descriptor checks verify identity rotation and zero translation.
-It is **not Sun's SDK header**, an ABI-compatible
-replacement, or a renderer. Native XGL rendering requires Sun's SDK/runtime on
-Solaris; passing this check does not establish that a Solaris XGL implementation
-rendered an image.
+- **Geometry and formats:** the key-3 default, all resolutions, RGB facet/strip
+  packets, model/view transforms, clipping, and single/double buffering. Separate
+  RGB and UV callbacks preserve flat colors and texture coordinates; textured facet
+  metadata is white for XGL's REPLACE operation.
+- **Textures:** packed pixels, mipmap settings, and the native three-row/two-column
+  orientation matrix, including identity rotation and zero translation. Recoverable
+  failures must release partial resources, draw flat colors, preserve the enabled
+  request, and allow retry. Nonrecoverable and unrelated errors remain fatal.
+- **Input and cleanup:** X11 keyboard, mouse, resize, Escape, and window-manager close.
+  Status checks track current-frame use; XGL's internal software rendering is not
+  reported as application software texturing.
+
+### Native validation
+
+`tests/xgl_record/xgl/xgl.h` uses manual-derived declarations and test-local symbolic
+values. The Sun SDK/runtime on Solaris is required to validate the real ABI, pipeline,
+and graphics output; the real X11 activity in these tests does not exercise XGL itself.
 
 ## Matrox LibShell
 
-Provide the original LibShell headers outside the repository, under
-`XGX1/HEADERS`, to include the DOS/Matrox contract checks:
+### Command
 
 ```sh
 python3 tests/run.py --sdk /path/to/sdk
 # Or set MATROX_SDK=/path/to/sdk.
 ```
 
-The tests compile the production geometry, shared driver state, and Matrox
-driver against the supplied SDK's actual function prototypes. DOS and board
-calls are recorded by test-only stubs; the tests erase the compiler's pointer
-keywords on the host. Vendor headers are copied into a temporary directory with
-the trailing DOS EOF byte removed, and are not committed here.
+### Additional requirements
 
-The checks cover geometry, palette/index behavior, command arguments, input, and
-cleanup, including primitive-correct triangle and quad OSD statistics. Visibility
-checks independently transform outward normals through the recorded model and
-inverse-view rotations, and compare every expected fill and cap count at
-multiple noncardinal poses in both Matrox resolutions.
+Provide the original LibShell headers under `XGX1/HEADERS` outside the repository.
+The runner uses their function prototypes, copying headers into a temporary directory
+and removing trailing DOS EOF bytes. DOS and board calls are recorded, and compiler
+pointer keywords are removed for host compilation. Vendor headers are not committed.
 
-Inquiry records include the generic `LSINQ` reply's leading word count and
-verify that its payload is consumed before subsequent LUT reads. Empty and
-unexpected-length replies must fail without leaving unread payload words.
-Both initially enabled and disabled hardware error-reporting policies are tested
-and must be restored on exit. Opcode, parameter, board-memory, and overflow faults
-must be diagnosed, including multiple errors encountered while awaiting command
-completion. Stalled FIFO cases exercise a bounded wait and verify that cleanup
-does not send more commands after communication is lost.
+### Coverage
 
-These checks do not validate segmented pointer code generation, DOS timing,
-LibShell's binary ABI, or graphics output on a physical PG-641. The FIFO recorder
-models positive `rdfifocnt()` as permitting a complete word read; the original
-SDK and board must validate that availability rule and asynchronous timing.
-Native Matrox
-validation requires Microsoft C 7, `LSCL.LIB`, and the board.
+- **Geometry and palette:** both resolutions, indexed colors, command arguments,
+  triangle/quad statistics, and cleanup. Independent normal transforms check every
+  expected fill and cap count at several noncardinal poses.
+- **Replies and errors:** `LSINQ` word counts and payload ordering; short malformed
+  replies are drained before failure, while replies longer than 16 words abandon the
+  connection. Whole-reply deadlines apply even when words remain ready. Timeouts and
+  oversized replies must prevent further board commands during cleanup.
+- **Error policy and recovery:** initially enabled and disabled reporting policies;
+  opcode, parameter, board-memory, and overflow diagnostics; multiple errors while
+  awaiting completion; palette and policy restoration while communication is usable.
+- **Input:** keyboard restrictions and toggles, INT 33h polling, relative motion,
+  left-button dragging, and right-button redraws.
+
+### Native validation
+
+Microsoft C 7, `LSCL.LIB`, and a PG-641-compatible board are needed to validate huge
+pointers, DOS timing, the LibShell ABI, and graphics output. The recorder assumes
+nonblocking error-register reads and that positive `rdfifocnt()` permits a complete
+word read. The supplied SDK documentation does not establish FIFO count units or
+atomic availability; the installed library and board must validate those assumptions
+and asynchronous timing.
 
 ## Windows GDI
 
-Exercise the native Win16 driver's actual `WinMain`, common startup, message
-loop, and rendering calls against a host call recorder:
+### Command
 
 ```sh
 python3 tests/run.py --gdi-contract
 ```
 
-The checks cover all five Earth resolutions, resource chunks compared with the
-original data, large global-heap buffers, exact palette bytes and indexed quad
-topology, independent double-precision projection references at rotated poses, 80387
-selection and the integer fallback (including a 286/287 machine), near/far and
-screen clipping, bounded `PolyPolygon` packets, foreground/background palette
-handling, buffering, mouse/keyboard/resize messages, timer rollover,
-Escape/window-close cleanup, and global-heap/object ownership.
+### Coverage
 
-Small-screen defaults, explicit size overrides, and wrapped quad/FPS/math
-statistics are recorded. Synthetic indexed quad batches verify shared-vertex
-projection, exact colors, winding, clipping, pole compaction, and packet boundaries,
-with every native `PolyPolygon` call bounded to 64 polygons. Resource mocks check
-native lock/unlock/release ownership. The Win16 `MakeProcInstance` callback casts
-suppress only GCC's `-Wcast-function-type` diagnostic.
+- **Geometry and resources:** all resolutions, binary resource contents, large global
+  heaps, exact palette bytes, quad topology, independent double-precision projection
+  references, clipping, and shared-vertex packets. `PolyPolygon` calls are bounded to
+  64 polygons; lock/unlock/release ownership is checked.
+- **CPU and display:** 80387 selection and fixed-point fallback, including a 286/287
+  profile; small-screen defaults, explicit dimensions, foreground/background palettes,
+  buffering, and wrapped OSD statistics.
+- **Input and lifecycle:** `WinMain`, common startup, keyboard/mouse/resize messages,
+  timer rollover, Escape/window close, and heap/GDI-object ownership.
+- **Failures:** drawing and allocation failures and oversized windows must disable
+  rendering before a modal error dialog can dispatch paint, timer, or input messages.
+  Partial mesh state must remain untouched, and cleanup must release all owned objects.
 
-Fatal-error profiles inject polygon drawing failure, vertex-allocation failure during
-a resolution change, and an oversized initial window. The modal error dialog dispatches
-paint, timer, and input messages: rendering must already be disabled, partial mesh state
-must stay untouched, and cleanup must release the timer, window, heap, and GDI objects.
+### Native validation
 
-`tests/win16_shim/windows.h` contains manual-derived call declarations,
-cross-checked against public Win16 API declarations. It is **not Microsoft's
-SDK**, an ABI-compatible replacement, or a GDI renderer. Its `POINT` coordinates
-are 16-bit, but the host's C `int`, `long`, calling conventions, and pointers do
-not reproduce Microsoft C 7 code generation. Passing the checks does not verify
-the executable's Windows loader format, segmented pointer arithmetic,
-floating-point emulator dispatch, physical display palette mapping, or rendered
-pixels. Those require Microsoft C 7, the Windows 3.1 SDK, and Windows itself.
+The Win16 fixture models 16-bit `POINT` fields but does not reproduce Microsoft C 7
+segmented pointers or callback code generation. Its `MakeProcInstance` casts suppress
+only GCC's corresponding function-cast warning. Microsoft C 7, the Windows 3.1 SDK,
+and Windows must validate loader format, segmentation, FPU-emulator dispatch, palette
+mapping, and rendered pixels.
 
 ## QuickDraw
 
-Exercise the System 7 driver's actual common startup and event loop, and its
-separate FPU helper, against host Toolbox call records:
+### Command
 
 ```sh
 python3 tests/run.py --qd-contract
 ```
 
-The checks cover all five Earth resolutions, the default low-resolution globe,
-resource chunks compared byte-for-byte with the original source data, buffers
-larger than 64 KiB, exact palette uploads and indexed quad topology, independent
-double-precision projections at rotated poses, fixed-point and FPU paths,
-CPU/FPU dispatch guards, near/far/window clipping, native polygon/text calls,
-1-bit luminance dithering, 4/8/16/32-bit color paths, maximum-depth device
-selection on a mixed-depth desktop, old Color QuickDraw without GWorld calls,
-GWorld allocation/locking failure fallback, port/device restoration across
-mixed-depth drawing, short drag-poll sleeps, input/activation/suspend events,
-resize and 1×1 viewports, `TickCount` rollover, animation,
-window-close/Command-Q exits, and heap/Toolbox ownership.
+### Coverage
 
-The small-screen checks cover 640×480 and 512×342 desktops, larger screens, and
-explicit per-dimension overrides. OSD checks verify wrapped text, quad/FPS
-statistics, and the actual GWorld on/off state after allocation or lock failure.
-Synthetic indexed quad packets independently check shared vertices, colors, winding,
-clipping, pole compaction, and packet boundaries; large globe checks use linear
-traversal rather than quadratic polygon matching. The monochrome-68000 case rejects
-every Color QuickDraw, Palette Manager, and GWorld call. Tests model
-`OpenPoly`/`ClosePoly`'s automatic pen hiding so outlines cannot accidentally be
-drawn while recording filled polygons.
+- **Geometry and resources:** all resolutions and the key-1 default, binary resources,
+  buffers larger than 64 KiB, palette bytes, quad topology, independent projection
+  references, clipping, native polygon/text call arguments, and shared-vertex bounds.
+  The monochrome-68000 profile rejects Color QuickDraw, Palette Manager, and GWorld
+  calls; polygon recording models automatic pen hiding.
+- **CPU and display:** fixed-point/FPU paths and dispatch guards; 1-bit dithering;
+  4/8/16/32-bit color; selection among currently configured display depths; old Color
+  QuickDraw; small-screen and explicit-size cases; 1×1 viewports and the 32,767-coordinate
+  limit. Invalid FPU angles must not leave a stale transformation usable.
+- **Buffering and state:** GWorld allocation/locking failures, direct-rendering fallback,
+  and recovery. `CopyBits` must use black/white destination colors and restore the
+  previous colors. The recorder gives a GWorld its own device when `noNewDevice` is
+  absent. Display changes rebuild palettes, patterns, and buffers; OSD state follows
+  actual GWorld use.
+- **Input and lifecycle:** startup, short drag-poll waits, activation/suspend/resume,
+  resize, `TickCount` rollover, animation, window close, Command-Q, and ownership.
+  Early drawing and late teardown events must respect readiness guards.
+- **Failures:** polygon and color-pattern allocation failures must release pending
+  polygons, unlock pixels, and restore the caller's port/device before a modal alert.
+  Reentrant drawing is blocked and repeated cleanup must be safe.
 
-GWorld recovery checks force a direct-rendered frame, restore allocation, and
-verify that `CopyBits` uses black foreground and white background on the
-destination while restoring that port's prior colors afterward. The recorder
-models a GWorld's own offscreen device when `noNewDevice` is absent. FPU preparation
-rejects invalid, nonfinite, and out-of-range angles without leaving a stale
-transformation usable.
+### Native validation
 
-Readiness checks cover early drawing and late events during teardown. OSD calculations
-exercise the supported 32,767-coordinate boundary with widened arithmetic. Activation,
-resume, and completed drags re-sample display properties, including depth changes that
-require palette, pattern, and GWorld reconstruction.
+The Toolbox fixture models 16-bit `Point`/`Rect` fields. MPW, the stated Apple
+interfaces/libraries, and System 7 hardware or an appropriate emulator must validate
+code resources, A5 globals, executable format, and SANE/68881 dispatch. The FPU helper
+is compiled as ordinary host C for numerical checks; only MPW can verify its instruction
+selection and separate code segment. Physical palette mapping and QuickDraw hardware
+acceleration require the target runtime and display.
 
-Polygon and color-pattern allocation failures check that pending polygons are released,
-GWorld pixels unlocked, and the caller's port/device restored before a modal alert.
-Reentrant drawing during the alert is blocked, and repeated teardown must be safe.
+## Shared software pipelines
 
-`tests/qd_shim/` contains manual-derived call declarations checked against public
-classic interface declarations. It is **not Apple's SDK**, an ABI replacement,
-or a renderer. Native 16-bit `Point`/`Rect` fields are modeled, while the host's
-long and pointer widths, byte order, executable format, code segments, A5 world,
-SANE/68881 dispatch, and Toolbox implementations differ. The actual FPU helper
-is compiled as ordinary host C for numerical checks; only an MPW build can
-verify its instruction selection and separate `CODE` segment. Native validation
-requires MPW, the stated Apple interfaces/libraries, and System 7 hardware or an
-appropriate emulator. Host sanitizer checks do not verify physical pixel colors
-or QuickDraw hardware acceleration.
+### OpenGL and IRIS GL textures
 
-## Shared GDI and QuickDraw pipeline
+Either `--ogl-contract` or `--igl-contract` runs the real shared `texsoft.c` renderer
+against analytically predicted pixels. Cases cover row-vector transforms, six clipping
+planes, depth and culling, perspective interpolation, wrapping, bilinear/trilinear
+filtering, mipmap minification, indexed conversion, and cleanup. Invalid matrices,
+vertices, and UVs must be rejected before integer conversion; very large finite
+repeating UVs remain valid. Raster release retains mipmaps and the indexed lookup
+table for re-enabling at a resized viewport.
 
-Both driver contracts link the actual shared `soft3d.c` module and exercise quad
-batching in `globe_draw_quadbatches()` and Earth-resource traversal in `drv.c`.
-The quad packets contain at most 64 quads and 130 shared vertices, with four indices
-and one palette byte per quad. The `DRV_QUAD_BATCH` capability retains `QUAD` as
-the primitive; `globe_draw_quads()` retains individual submission, including Matrox.
-In addition to the independent projection references, a shared public-pipeline case clips a
-triangle spanning 268 million coordinate units to exact viewport corners, then
-reverses its winding to check rejection. This exercises clipping products that
-would overflow a 32-bit intermediate without depending on private helpers.
-Large positive and negative accepted rotation angles must produce the same
-fixed matrix as their equivalent angles modulo 360 degrees.
+The same options run `tests/texture.c`, comparing every expanded RGB texel with the
+Earth palette source at all five resolutions. Checks cover same-size allocation reuse,
+transactional allocation failure, invalid sizes, idempotent cleanup, and dimensions
+needed by XGL after the staging image is released.
 
-Quad projection cases check exact screen coordinates, near/far rejection, both
-collapsed poles, and the retained triangle projection entry point. Polygon culling
-uses the whole signed area: a rounded silhouette whose first fan triangle has the
-opposite orientation must still be classified correctly. A full 32,767-pixel
-viewport checks the area calculation at the supported integer coordinate limit.
-Projection also checks indices against the supplied packet's actual point count.
-Short-array cases include an index equal to that count and verify rejection before
-reading the array or modifying output points.
+### GDI and QuickDraw geometry
+
+Both driver contracts link the real integer `soft3d.c` module and exercise quad
+batching and Earth-resource traversal. Packets contain at most 64 quads and 130 shared
+vertices, with four indices and one palette byte per quad. `DRV_QUAD_BATCH` remains
+a capability of `QUAD`; individual quad submission is also checked.
+
+Independent projection cases cover exact coordinates, near/far rejection, collapsed
+poles, triangle projection, and whole-polygon signed-area culling. A polygon whose
+first rounded fan triangle has the opposite orientation must still be classified
+correctly. Large accepted fixed-point rotation angles must match their equivalents
+modulo 360 degrees.
+
+Boundary cases clip a triangle spanning 268 million coordinate units to exact
+viewport corners, reject reversed winding, and check full 32,767-pixel viewports.
+Indices are checked against the packet's actual point count; short-array rejection
+must occur before any out-of-bounds read or output modification.
