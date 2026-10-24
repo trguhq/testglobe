@@ -1,0 +1,85 @@
+name: Publish GitHub Pages
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Prepare README homepage and Jekyll configuration
+        shell: bash
+        run: |
+          cat > index.md <<'MARKDOWN'
+          ---
+          layout: default
+          title: testglobe
+          permalink: /
+          ---
+          MARKDOWN
+
+          cat README.md >> index.md
+
+          cat > _config.yml <<'YAML'
+          title: testglobe
+          description: A globe rendered through different graphics APIs
+          theme: jekyll-theme-primer
+          url: "https://testglobe.dev"
+          baseurl: ""
+          plugins:
+            - jekyll-optional-front-matter
+            - jekyll-relative-links
+          YAML
+
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./
+          destination: ./_site
+
+      - name: Verify homepage and demo assets
+        shell: bash
+        run: |
+          test -s _site/index.html
+          test -s _site/testglobe.png
+
+          for file in web/index.html web/*.js web/*.css data/*.bin; do
+            cmp "$file" "_site/$file"
+          done
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
