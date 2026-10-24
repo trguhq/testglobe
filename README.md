@@ -1,6 +1,6 @@
 # testglobe
 
-[Website](https://testglobe.dev) | [Repository](https://github.com/trguhq/testglobe/)
+[Website](https://testglobe.dev) | [Repository](https://github.com/trguhq/testglobe/) | [Live WebGL](https://testglobe.dev/web/)
 
 testglobe displays a 3D globe through different graphics APIs and hardware, with an
 emphasis on systems from the late 1980s and early 1990s. It compares detail from
