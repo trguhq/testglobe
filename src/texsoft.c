@@ -58,29 +58,40 @@ void texsoft_free(void)
     free(texsoft_lut); texsoft_lut = NULL;
 }
 
-int texsoft_texture(unsigned int width, unsigned int height,
-                      const unsigned char *rgb)
+static int texsoft_dimensions(unsigned int width, unsigned int height)
+{
+    return width != 0 && height != 0 &&
+           width <= TEXTURE_MAX_SIZE && height <= TEXTURE_MAX_SIZE &&
+           (width & (width - 1U)) == 0 && (height & (height - 1U)) == 0 &&
+           (unsigned long)width * height <= (size_t)-1 / 3U;
+}
+
+Drv_result texsoft_texture_take(unsigned int width, unsigned int height,
+                                  unsigned char *rgb)
 {
     unsigned int level, w, h, x, y, channel, px, py;
     unsigned int sum, dx, dy;
     unsigned long offset;
-    if (rgb == NULL || width == 0 || height == 0 ||
-        width > TEXTURE_MAX_SIZE || height > TEXTURE_MAX_SIZE ||
-        (width & (width - 1U)) != 0 || (height & (height - 1U)) != 0)
-        return 0;
+    if (rgb == NULL || !texsoft_dimensions(width, height))
+    {
+        free(rgb);
+        return DRV_BAD_INPUT;
+    }
     texsoft_free_mips();
     w = width; h = height;
     for (level = 0; level < TEXSOFT_LEVELS; ++level)
     {
         texsoft_mip_w[level] = w; texsoft_mip_h[level] = h;
-        texsoft_mips[level] = (unsigned char *)malloc((size_t)w * h * 3U);
+        /* The base belongs to this function immediately; all later failures
+         * release it with the partially built pyramid, exactly once. */
+        texsoft_mips[level] = level == 0 ? rgb :
+                         (unsigned char *)malloc((size_t)w * h * 3U);
         if (texsoft_mips[level] == NULL)
         {
             texsoft_free_mips();
-            return 0;
+            return DRV_NO_MEMORY;
         }
-        if (level == 0) memcpy(texsoft_mips[0], rgb, (size_t)w * h * 3U);
-        else
+        if (level != 0)
             for (y = 0; y < h; ++y)
                 for (x = 0; x < w; ++x)
                     for (channel = 0; channel < 3; ++channel)
@@ -98,12 +109,25 @@ int texsoft_texture(unsigned int width, unsigned int height,
                             (unsigned char)((sum + 2U) / 4U);
                     }
         ++texsoft_levels;
-        if (w == 1 && h == 1) return 1;
+        if (w == 1 && h == 1) return DRV_OK;
         if (w > 1) w /= 2U;
         if (h > 1) h /= 2U;
     }
     texsoft_free_mips();
-    return 0;
+    return DRV_UNAVAILABLE;
+}
+
+int texsoft_texture(unsigned int width, unsigned int height,
+                      const unsigned char *rgb)
+{
+    unsigned char *copy;
+    size_t bytes;
+    if (rgb == NULL || !texsoft_dimensions(width, height)) return 0;
+    bytes = (size_t)width * height * 3U;
+    copy = (unsigned char *)malloc(bytes);
+    if (copy == NULL) return 0;
+    memcpy(copy, rgb, bytes);
+    return texsoft_texture_take(width, height, copy) == DRV_OK;
 }
 
 static int texsoft_make_lut(const unsigned char *palette)

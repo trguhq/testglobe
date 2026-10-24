@@ -8,6 +8,8 @@
 
 #include "types.h"
 
+/* Q4 input and Q14 rotation intermediates are proven for this radius. */
+#define SOFT3D_MAX_RADIUS 1000L
 #define SOFT3D_MAX_VERTICES 130
 #define SOFT3D_MAX_POLY 10
 
@@ -34,18 +36,21 @@ extern int soft3d_fixed_prepare(long matrix[3][3],
 extern int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
                                   const Vertex TG_HUGE *vertices,
                                   Soft3d_fixed_point *out);
-/* Select a triangle from the transformed packet, clip near/far planes,
- * and project into downward-Y screen coordinates. The caller supplies
+/* Select a triangle from the point_count initialized packet elements,
+ * clip near/far planes, and project into downward-Y screen coordinates.
+ * point_count must be between 1 and SOFT3D_MAX_VERTICES. The caller supplies
  * SOFT3D_MAX_POLY output points and then finishes viewport clipping below. */
 extern int soft3d_fixed_project(const Soft3d_fixed_point *points,
+                                unsigned int point_count,
                                 unsigned int first, unsigned int second,
                                 unsigned int third, unsigned int width,
                                 unsigned int height, Soft3d_screen_point *out);
 /* The indexed polygon form accepts three or four ordered packet corners.
  * Quads are clipped and projected as polygons, without an internal diagonal. */
 extern int soft3d_fixed_project_polygon(const Soft3d_fixed_point *points,
+                                        unsigned int point_count,
                                         const unsigned int TG_HUGE *indices,
-                                        unsigned int count, unsigned int width,
+                                        unsigned int corners, unsigned int width,
                                         unsigned int height,
                                         Soft3d_screen_point *out);
 /* Clip a convex projected polygon to its viewport and reject back faces.

@@ -16,19 +16,17 @@
 unsigned long globe_tris_num, globe_tris_num_vis;
 unsigned long globe_quads_num, globe_quads_num_vis;
 
-static unsigned int resolution_calls, texture_calls, error_calls;
+static unsigned int resolution_calls, texture_calls;
 static unsigned char resolution_key;
-static int expected_error;
+static int helper_scene_ready = TRUE;
+
+int globe_ready(void) { return helper_scene_ready; }
 
 void error(char *message)
 {
     assert(message != NULL);
-    if (!expected_error)
-    {
-        fprintf(stderr, "Unexpected shared-driver error: %s\n", message);
-        abort();
-    }
-    ++error_calls;
+    fprintf(stderr, "Unexpected shared-driver error: %s\n", message);
+    abort();
 }
 
 void globe_toggle_res(char key)
@@ -46,21 +44,94 @@ void globe_toggle_tex(void)
 #endif
 
 #ifdef DRV_EARTH_RESOURCES
-void drv_load_earth_chunk(unsigned int resource, unsigned long length,
+Drv_result drv_load_earth_chunk(unsigned int resource, unsigned long length,
                            unsigned char TG_HUGE *destination)
 {
     (void)resource; (void)length; (void)destination;
     assert(!"Utility tests must not load native Earth resources");
+    return DRV_BAD_INPUT;
 }
 #endif
 
 #ifdef GDI
 static DWORD helper_ticks;
+static void *helper_memory[64];
+static unsigned int helper_locks[64];
+
+HGLOBAL GlobalAlloc(UINT flags, DWORD bytes)
+{
+    unsigned int i;
+    assert(flags == (GMEM_MOVEABLE | GMEM_ZEROINIT));
+    for (i = 1; i < 64U; ++i)
+        if (helper_memory[i] == NULL)
+        {
+            helper_memory[i] = calloc(1, (size_t)bytes);
+            return helper_memory[i] == NULL ? 0 : (HGLOBAL)i;
+        }
+    return 0;
+}
+
+LPVOID GlobalLock(HGLOBAL handle)
+{
+    assert(handle > 0 && handle < 64 && helper_memory[handle] != NULL);
+    ++helper_locks[handle];
+    return helper_memory[handle];
+}
+
+BOOL GlobalUnlock(HGLOBAL handle)
+{
+    assert(handle > 0 && handle < 64 && helper_locks[handle] != 0);
+    --helper_locks[handle];
+    return FALSE;
+}
+
+HGLOBAL GlobalFree(HGLOBAL handle)
+{
+    assert(handle > 0 && handle < 64 && helper_memory[handle] != NULL);
+    assert(helper_locks[handle] == 0);
+    free(helper_memory[handle]);
+    helper_memory[handle] = NULL;
+    return 0;
+}
+
 DWORD GetTickCount(void)
 {
     return helper_ticks;
 }
 #endif
+
+static void test_services(void)
+{
+    unsigned char TG_HUGE *memory;
+    unsigned char guarded[10];
+    char status[128];
+    assert(drv_alloc_items(0UL, 1U) == NULL);
+    assert(drv_alloc_items(1UL, 0U) == NULL);
+    assert(drv_alloc_items(ULONG_MAX, 2U) == NULL);
+    memory = (unsigned char TG_HUGE *)drv_alloc_items(70000UL, 1U);
+    assert(memory != NULL);
+    memory[0] = 17;
+    memory[65535UL] = 23;
+    memory[69999UL] = 31;
+    assert(memory[0] == 17 && memory[65535UL] == 23 && memory[69999UL] == 31);
+    drv_free_items(memory);
+    drv_free_items(NULL);
+    memset(guarded, 0xa5, sizeof(guarded));
+    strcpy((char *)guarded + 1, "abc");
+    drv_append_status((char *)guarded + 1, 8U, "defghijkl");
+    assert(strcmp((char *)guarded + 1, "abcdefg") == 0);
+    assert(guarded[0] == 0xa5 && guarded[9] == 0xa5);
+    drv_notice("testing resource recovery");
+    helper_scene_ready = FALSE;
+    drv_format_stats(status);
+    assert(strstr(status, "No globe") != NULL);
+    assert(strstr(status, "testing resource recovery") != NULL);
+    helper_scene_ready = TRUE;
+    drv_notice(NULL);
+    assert(drv_get_notice()[0] == 0);
+    assert(strcmp(drv_result_text(DRV_NO_MEMORY), drv_result_text(DRV_BAD_DATA)) != 0);
+    puts("PASS shared services: bounded allocation, native handle release, status capacity and recoverable empty-scene notices");
+}
 
 static void near_float(float actual, float expected)
 {
@@ -209,10 +280,38 @@ static void test_stats(void)
     puts("PASS shared FPS and metadata: configurable OSD, reset on toggle, debug-only storage/button diagnostics and animation timing preserved");
 }
 
+#ifdef GDI
+static void test_presentation_timing(void)
+{
+    unsigned int i;
+    drv_fps_enabled = TRUE;
+    drv_reset_timing();
+    drv_fps_start();
+    helper_ticks += 32;
+    drv_fps_stop();
+    for (i = 1; i < DRV_FPS_HISTORY; ++i)
+    {
+        helper_ticks += 24; /* Time waiting for the next native event counts. */
+        drv_fps_start();
+        helper_ticks += 8;
+        drv_fps_stop();
+    }
+    near_float(drv_fps_average, 31.25f);
+    drv_fps_start();
+    drv_abort_frame("retry frame");
+    drv_fps_stop();
+    assert(drv_fps_average == 0.0f);
+    drv_frame_failed = FALSE;
+    drv_notice(NULL);
+    puts("PASS presentation timing: idle intervals count, failed frames reset the sample");
+}
+#endif
+
 #ifdef TRISTRIP
 static Vertex strip_vertices[1026];
 static unsigned char strip_colors[1024];
 static unsigned int next_facet, split_calls, facet_limit;
+static int abort_split;
 
 static void prepare_strip(void)
 {
@@ -251,6 +350,7 @@ static void record_split(unsigned int count, const Vertex TG_HUGE *vertices,
     }
     next_facet += count - 2U;
     ++split_calls;
+    if (abort_split) drv_abort_frame("stop split submission");
 }
 
 static void split_case(unsigned int count, unsigned int requested_limit,
@@ -265,7 +365,6 @@ static void split_case(unsigned int count, unsigned int requested_limit,
 
 static void test_splitter(void)
 {
-    unsigned int previous_errors;
     prepare_strip();
     split_case(1026U, 128U, 128U, 8U);
     split_case(1026U, 127U, 126U, 9U);
@@ -278,18 +377,27 @@ static void test_splitter(void)
     drv_split_tristrip_batches(3U, strip_vertices, NULL, 128U, record_split);
     drv_split_tristrip_batches(3U, strip_vertices, strip_colors, 128U, NULL);
     assert(next_facet == 0U && split_calls == 0U);
-    previous_errors = error_calls;
-    expected_error = TRUE;
     drv_split_tristrip_batches(3U, strip_vertices, strip_colors, 1U, record_split);
     drv_split_tristrip_batches(3U, strip_vertices, strip_colors, 0U, record_split);
-    expected_error = FALSE;
-    assert(error_calls == previous_errors + 2U && split_calls == 0U);
+    assert(split_calls == 0U && drv_frame_failed);
+    drv_frame_failed = FALSE;
+    next_facet = split_calls = 0U;
+    facet_limit = 128U;
+    abort_split = TRUE;
+    drv_split_tristrip_batches(1026U, strip_vertices, strip_colors, 128U, record_split);
+    assert(drv_frame_failed && split_calls == 1U && next_facet == 128U);
+    drv_split_tristrip_batches(1026U, strip_vertices, strip_colors, 128U, record_split);
+    assert(split_calls == 1U);
+    abort_split = FALSE;
+    drv_frame_failed = FALSE;
+    drv_notice(NULL);
     puts("PASS retained strip splitter: 1,026 vertices, even packet seams, odd limits and tails, exact winding/colors, bounded calls and argument guards");
 }
 
 #ifdef TEXTURE
 static Coord strip_coords[1026];
 static unsigned int uv_triangles;
+static int abort_uv;
 
 static void record_uv_triangle(const Vertex TG_HUGE *a,
                                 const Vertex TG_HUGE *b,
@@ -307,6 +415,7 @@ static void record_uv_triangle(const Vertex TG_HUGE *a,
     assert(uc == strip_coords + uv_triangles + 2U);
     front_triangle(a, b, c);
     ++uv_triangles;
+    if (abort_uv) drv_abort_frame("stop UV submission");
 }
 
 static void test_uv_expansion(void)
@@ -333,6 +442,14 @@ static void test_uv_expansion(void)
     drv_expand_tristrip_uv(3U, strip_vertices, NULL, record_uv_triangle);
     drv_expand_tristrip_uv(3U, strip_vertices, strip_coords, NULL);
     assert(uv_triangles == 0U);
+    abort_uv = TRUE;
+    drv_expand_tristrip_uv(1026U, strip_vertices, strip_coords, record_uv_triangle);
+    assert(drv_frame_failed && uv_triangles == 1U);
+    drv_expand_tristrip_uv(1026U, strip_vertices, strip_coords, record_uv_triangle);
+    assert(uv_triangles == 1U);
+    abort_uv = FALSE;
+    drv_frame_failed = FALSE;
+    drv_notice(NULL);
     puts("PASS shared textured strip expansion: exact alternating triangle and UV tuples, outward winding, complete seam coverage and argument guards");
 }
 #endif
@@ -407,7 +524,11 @@ static void test_quad_helpers(void)
 int main(void)
 {
     test_input();
+    test_services();
     test_stats();
+#ifdef GDI
+    test_presentation_timing();
+#endif
 #ifdef TRISTRIP
     test_splitter();
 #ifdef TEXTURE

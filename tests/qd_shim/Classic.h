@@ -89,6 +89,7 @@ extern QDGlobals qd;
 #define ditherCopy 64
 #define patCopy 8
 #define useTempMem 4UL
+#define noNewDevice 2UL
 #define keepLocal 8UL
 #define pmTolerant 0x0002
 #define pmExplicit 0x0008
@@ -136,6 +137,7 @@ void HUnlock(Handle);
 Size GetHandleSize(Handle);
 Handle Get1Resource(OSType, short);
 void ReleaseResource(Handle);
+OSErr ResError(void);
 OSErr MemError(void);
 unsigned long TickCount(void);
 void InitGraf(GrafPtr *);
@@ -197,6 +199,8 @@ void ForeColor(long);
 void BackColor(long);
 void RGBForeColor(const RGBColor *);
 void RGBBackColor(const RGBColor *);
+void GetForeColor(RGBColor *);
+void GetBackColor(RGBColor *);
 void TextFont(short);
 void TextSize(short);
 void TextMode(short);

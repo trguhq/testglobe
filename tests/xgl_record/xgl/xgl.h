@@ -65,7 +65,7 @@ typedef struct {
     float max_u_freq, max_v_freq;
     int u_boundary, v_boundary;
     struct { int filter1, filter2; } interp_info;
-    float orientation_matrix[2][3];
+    float orientation_matrix[3][2];
 } Test_xgl_mipmap_desc;
 typedef struct {
     int texture_type;

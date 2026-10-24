@@ -30,8 +30,12 @@ extern unsigned char* texture_data;
 extern unsigned int texture_size;
 
 extern void texture_generate(int size);
-/* Recoverable construction; failure leaves an existing staging image intact. */
+/* Allocation/validation failure preserves existing staging. A failed read
+ * while reusing staging invalidates and releases its partial contents. */
+extern Drv_result texture_build(int size);
 extern int texture_try_generate(int size);
+/* Transfer ownership to the caller; dimensions remain available. */
+extern unsigned char *texture_take_data(void);
 extern void texture_init(void);
 extern void texture_free(void);
 #endif

@@ -6,22 +6,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-static int test_texture_try_generate(int size);
-static int test_texsoft_texture(unsigned int width,unsigned int height,const unsigned char *rgb);
+#include "earth_reference.h"
+#include "testglob.h"
+#include "types.h"
+#include "tex_ext.h"
+#include "texsoft.h"
+static Drv_result test_texture_build(int size);
+static Drv_result test_texsoft_texture_take(unsigned int width,unsigned int height,unsigned char *rgb);
 static int test_texsoft_begin(unsigned int width,unsigned int height,float model[4][4],float projection[4][4],int indexed,const unsigned char *colormap);
 static void *test_transfer_malloc(size_t size);
-#define texture_try_generate test_texture_try_generate
-#define texsoft_texture test_texsoft_texture
+#define texture_build test_texture_build
+#define texsoft_texture_take test_texsoft_texture_take
 #define texsoft_begin test_texsoft_begin
 #define malloc test_transfer_malloc
 #include "../src/drv_ogl.c"
 #undef malloc
 #undef texsoft_begin
-#undef texsoft_texture
-#undef texture_try_generate
+#undef texsoft_texture_take
+#undef texture_build
 #include "texsoft.h"
-extern int texture_try_generate(int size);
-extern int texsoft_texture(unsigned int width,unsigned int height,const unsigned char *rgb);
+extern Drv_result texture_build(int size);
+extern Drv_result texsoft_texture_take(unsigned int width,unsigned int height,unsigned char *rgb);
 extern int texsoft_begin(unsigned int width,unsigned int height,float model[4][4],float projection[4][4],int indexed,const unsigned char *colormap);
 
 #define TEST_PI 3.14159265358979323846
@@ -31,6 +36,8 @@ extern int globe_longitude,globe_latitude;
 
 static const char *profile;
 static unsigned int requested_mode;
+static unsigned int display_mode_calls,display_string_calls,mode_queries;
+static int initial_x,initial_y;
 static int active_window, next_window=1, window_count, destroy_count;
 static unsigned int probe_windows,probe_destroys,final_windows;
 static unsigned int probe_callbacks,probe_redraws,initial_window_redraws;
@@ -82,10 +89,10 @@ static int texture_profile(const char *name)
 {return texture_injection&&strcmp(profile,name)==0;}
 static int software_profile(void)
 {return strcmp(profile,"indexed")==0||strncmp(profile,"soft",4)==0;}
-static int test_texture_try_generate(int size)
-{++staging_attempts;return texture_profile("stagefail")?FALSE:texture_try_generate(size);}
-static int test_texsoft_texture(unsigned int w,unsigned int h,const unsigned char *rgb)
-{++soft_mip_attempts;return texture_profile("softmipfail")?FALSE:texsoft_texture(w,h,rgb);}
+static Drv_result test_texture_build(int size)
+{++staging_attempts;if(texture_profile("stagefail")||((strcmp(profile,"reduced")==0||strcmp(profile,"softreduced")==0)&&size>128))return DRV_NO_MEMORY;return texture_build(size);}
+static Drv_result test_texsoft_texture_take(unsigned int w,unsigned int h,unsigned char *rgb)
+{++soft_mip_attempts;if(texture_profile("softmipfail")){free(rgb);return DRV_NO_MEMORY;}return texsoft_texture_take(w,h,rgb);}
 static int test_texsoft_begin(unsigned int w,unsigned int h,float m[4][4],float p[4][4],int indexed,const unsigned char *c)
 {++soft_frame_attempts;return texture_profile("softframefail")?FALSE:texsoft_begin(w,h,m,p,indexed,c);}
 static void *test_transfer_malloc(size_t size)
@@ -114,9 +121,9 @@ static void geometry_add(struct Test_geometry *to,const struct Test_geometry *fr
 static unsigned char *earth_bytes(void)
 {
     switch(globe_longitude){
-    case 32:return earth_data_32;case 64:return earth_data_64;
-    case 128:return earth_data_128;case 256:return earth_data_256;
-    case 512:return earth_data_512;
+    case 32:return test_earth_data(32);case 64:return test_earth_data(64);
+    case 128:return test_earth_data(128);case 256:return test_earth_data(256);
+    case 512:return test_earth_data(512);
     }
     assert(!"Unknown globe resolution");return NULL;
 }
@@ -174,19 +181,29 @@ static void initial_redraw(void)
 }
 
 void glutInit(int *argc,char **argv){assert(argc&&argv);}
-void glutInitDisplayMode(unsigned int mode){requested_mode=mode;}
+void glutInitDisplayMode(unsigned int mode){requested_mode=mode;++display_mode_calls;}
+#if GLUT_API_VERSION >= 4
 void glutInitDisplayString(const char *s)
 {
+    ++display_string_calls;
     requested_mode=0;
     if(strstr(s,"depth"))requested_mode|=GLUT_DEPTH;
     if(strstr(s,"index"))requested_mode|=GLUT_INDEX;
     if(strstr(s,"double"))requested_mode|=GLUT_DOUBLE;
     if(strstr(s,"alpha"))requested_mode|=GLUT_ALPHA;
+#ifndef TEST_OGL_FREEGLUT
+    /* Original GLUT gives bare rgba an alpha>=1 requirement. FreeGLUT
+     * instead treats it like the GLUT_RGBA mode without requesting alpha. */
+    if(strstr(s,"rgba"))requested_mode|=GLUT_ALPHA;
+#endif
 }
+#endif
 int glutGet(GLenum query)
 {
     struct Test_window *w=&windows[active_window];
-    if(query==GLUT_DISPLAY_MODE_POSSIBLE)return available(requested_mode);
+#ifdef GLUT_DISPLAY_MODE_POSSIBLE
+    if(query==GLUT_DISPLAY_MODE_POSSIBLE){++mode_queries;return available(requested_mode);}
+#endif
     assert(active_window>0&&w->live);
     switch(query){
     case GLUT_WINDOW_RGBA:return !w->indexed;
@@ -202,7 +219,7 @@ int glutGet(GLenum query)
     }
 }
 void glutInitWindowSize(int w,int h){output_width=w;output_height=h;}
-void glutInitWindowPosition(int x,int y){assert(x>=-32768&&y>=-32768);}
+void glutInitWindowPosition(int x,int y){assert(x>=-32768&&y>=-32768);initial_x=x;initial_y=y;}
 int glutCreateWindow(const char *title)
 {
     struct Test_window *w;
@@ -215,9 +232,16 @@ int glutCreateWindow(const char *title)
     }
     else {
         assert(strcmp(title,TESTGLOBE_NAME)==0&&final_windows==0);
+#ifdef GLUT_DISPLAY_MODE_POSSIBLE
         assert(probe_windows>0&&probe_destroys==probe_windows);
+#else
+        assert(probe_windows==0&&probe_destroys==0);
+        assert(requested_mode==(GLUT_RGB|GLUT_DOUBLE));
+        assert(display_mode_calls==1&&display_string_calls==0&&mode_queries==0);
+#endif
         assert(window_count==destroy_count&&active_window==0);
         assert(output_width==64&&output_height==48);
+        assert(initial_x==(int)drv_win_x&&initial_y==(int)drv_win_y);
         ++final_windows;
     }
     active_window=next_window++;w=&windows[active_window];memset(w,0,sizeof(*w));
@@ -421,8 +445,8 @@ void glTexParameteri(GLenum target,GLenum p,GLint value){assert(target==GL_TEXTU
 static void texture_upload(GLsizei w,GLsizei h,const GLvoid *data)
 {
     const GLubyte *rgb=data;unsigned long i;
-    assert(w==512&&h==256&&rgb);
-    for(i=0;i<512UL*256;++i){unsigned int v=earth_data_512[i];assert(rgb[i*3]==earth_cmap[v][0]&&rgb[i*3+1]==earth_cmap[v][1]&&rgb[i*3+2]==earth_cmap[v][2]);}
+    assert(w>=32&&w<=512&&h==w/2&&rgb);
+    for(i=0;i<(unsigned long)w*h;++i){unsigned int v=test_earth_data(w)[i];assert(rgb[i*3]==earth_cmap[v][0]&&rgb[i*3+1]==earth_cmap[v][1]&&rgb[i*3+2]==earth_cmap[v][2]);}
     ++texture_uploads;
 }
 void glTexImage2D(GLenum t,GLint l,GLint internal,GLsizei w,GLsizei h,GLint border,GLenum f,GLenum type,const GLvoid *p)
@@ -440,11 +464,12 @@ void gluPerspective(GLdouble fov,GLdouble aspect,GLdouble near_plane,GLdouble fa
 void gluOrtho2D(GLdouble l,GLdouble r,GLdouble b,GLdouble t)
 {GLfloat m[16];matrix_identity(m);m[0]=(GLfloat)(2/(r-l));m[5]=(GLfloat)(2/(t-b));m[10]=-1;m[12]=(GLfloat)(-(r+l)/(r-l));m[13]=(GLfloat)(-(t+b)/(t-b));postmultiply(m);}
 GLint gluBuild2DMipmaps(GLenum t,GLint c,GLsizei w,GLsizei h,GLenum f,GLenum type,const GLvoid *p)
-{assert(t==GL_TEXTURE_2D&&c==GL_RGB&&f==GL_RGB&&type==GL_UNSIGNED_BYTE);++glu_mipmap_calls;if(texture_profile("gluerror"))return GLU_OUT_OF_MEMORY;texture_upload(w,h,p);return 0;}
+{assert(t==GL_TEXTURE_2D&&c==GL_RGB&&f==GL_RGB&&type==GL_UNSIGNED_BYTE);++glu_mipmap_calls;if(texture_profile("gluerror")||(strcmp(profile,"glureduced")==0&&w>128))return GLU_OUT_OF_MEMORY;texture_upload(w,h,p);return 0;}
 
 static void check_dlist_osd(void)
 {
     const char *option,*state,*fps,*texture,*expected_state;
+    char expected_texture[64],dimensions[24];
     option=strstr(osd_lines[0],"T = texture mapping, D = display list");
     assert(option&&strcmp(option,"T = texture mapping, D = display list")==0);
     assert(strcmp(osd_lines[0],drv_help)==0);
@@ -453,9 +478,13 @@ static void check_dlist_osd(void)
     state=strstr(osd_lines[1],expected_state);
     assert(state);
     texture=state+strlen(expected_state);
-    assert(strcmp(texture,!drv_texture_enabled?", texture off":
+    strcpy(expected_texture,!drv_texture_enabled?", texture off":
            (frame_texture_pixels?", texture soft":
-            (frame_geometry.textured_vertices?", texture on":", texture fail")))==0);
+            (frame_geometry.textured_vertices?", texture on":", texture fail")));
+    if(ogl_texture_used&&texture_size!=TEXTURE_DEFAULT_SIZE){
+        sprintf(dimensions," (%u)",texture_size);strcat(expected_texture,dimensions);
+    }
+    assert(strcmp(texture,expected_texture)==0);
     assert(strstr(osd_lines[1],"texture mapping")==NULL);
     fps=strstr(osd_lines[1],"frames per second");
     if(drv_fps_enabled){
@@ -517,11 +546,9 @@ static void check_cached_frame(int indexed)
     }else if(strcmp(profile,"listfail")==0&&!(indexed&&drv_texture_enabled)){
         assert(emitted_vertices==previous_vertices+frame_geometry.vertices);
         assert(native_lists==0&&dlist==0&&list_attempts>0);
-    }else if(strcmp(profile,"newlistfail")==0||strcmp(profile,"listcompilefail")==0||
-             strcmp(profile,"validationfail")==0||strcmp(profile,"callfail")==0){
-        assert(emitted_vertices==previous_vertices+frame_geometry.vertices*
-               (strcmp(profile,"newlistfail")==0?1U:2U));
-        assert(native_lists==previous_lists+1U&&dlist==0&&list_deletions==native_lists);
+    }else if(ogl_dlist_blocked){
+        assert(emitted_vertices==previous_vertices+frame_geometry.vertices);
+        assert(native_lists==previous_lists&&dlist==0&&list_deletions==native_lists);
     }else assert(emitted_vertices==previous_vertices&&native_lists==previous_lists);
 }
 
@@ -538,6 +565,9 @@ static void check_display_list_toggle(int indexed)
     render_checked(indexed);
     assert(!ogl_dlist_used&&dlist==0&&list_attempts==previous_attempts&&
            list_calls==previous_calls&&list_deletions==previous_deletions+1U);
+    render_checked(indexed);
+    assert(!ogl_dlist_used&&dlist==0&&list_attempts==previous_attempts);
+    keyboard_callback('d',0,0);keyboard_callback('D',0,0);
     render_checked(indexed);
     assert(ogl_dlist_used&&dlist!=0&&list_attempts==previous_attempts+1U);
     for(level=0;level<5;++level){
@@ -576,7 +606,7 @@ static int creation_failure_profile(void)
 {
     return strcmp(profile,"gluerror")==0||strcmp(profile,"texallocerror")==0||
            strcmp(profile,"texuploaderror")==0||strcmp(profile,"mipmaperror")==0||
-           strcmp(profile,"stagefail")==0||strncmp(profile,"soft",4)==0;
+           strcmp(profile,"stagefail")==0||(strncmp(profile,"soft",4)==0&&strcmp(profile,"softreduced")!=0);
 }
 
 static void check_texture_failure(int indexed)
@@ -632,6 +662,17 @@ int main(int argc,char **argv)
     Vertex a,b,c;unsigned int i,level;int indexed;
     char stats[128];
     profile=argc>1?argv[1]:"rgba";
+#if GLUT_API_VERSION >= 4
+    glutInitDisplayString("rgba");
+#ifdef TEST_OGL_FREEGLUT
+    assert((requested_mode&GLUT_ALPHA)==0);
+#else
+    assert((requested_mode&GLUT_ALPHA)!=0);
+#endif
+    glutInitDisplayString("rgb");assert((requested_mode&GLUT_ALPHA)==0);
+    glutInitDisplayString("rgb alpha>=8");assert((requested_mode&GLUT_ALPHA)!=0);
+#endif
+    display_string_calls=0;
     if(strcmp(profile,"limited")==0)maximum_texture_size=256;
     matrix_identity(matrices[0][0]);matrix_identity(matrices[1][0]);
     drv_ext_init();drv_init(&argc,argv);assert(!drv_texture_enabled);
@@ -641,8 +682,15 @@ int main(int argc,char **argv)
     indexed=software_profile();
     if(indexed)assert(drv_bits_per_pixel==8&&drv_colormapped);
     else if(strcmp(profile,"rgb16")==0)assert(drv_bits_per_pixel==16&&!drv_colormapped);
+#ifndef GLUT_DISPLAY_MODE_POSSIBLE
+    else assert(drv_bits_per_pixel==24&&!drv_colormapped);
+    assert(window_count==1&&destroy_count==0&&probe_windows==0);
+    assert(drv_bytes_per_pixel==(strcmp(profile,"rgb16")==0?2U:3U));
+    assert(ogl_has_depth==FALSE&&ogl_double_buffer==TRUE);
+#else
     else if(strcmp(profile,"rgb24")==0||strcmp(profile,"unknownalpha")==0)assert(drv_bits_per_pixel==24&&!drv_colormapped);
     else assert(drv_bits_per_pixel==32&&!drv_colormapped);
+#endif
     if(strcmp(profile,"rgba-single")==0)assert(!windows[active_window].doubled);
     else assert(windows[active_window].doubled);
     assert(window_count-destroy_count==1&&final_windows==1);
@@ -664,6 +712,17 @@ int main(int argc,char **argv)
     keyboard_callback('f',0,0);assert(!drv_fps_enabled);
     drv_format_stats(stats);assert(strstr(stats,"frames per second")==NULL);
     keyboard_callback('F',0,0);assert(drv_fps_enabled);
+    if(strstr(profile,"reduced")!=NULL){
+        keyboard_callback('t',0,0);assert(texture_size==128&&drv_texture_loaded);
+        render_checked(indexed);assert(ogl_texture_used&&texture_data==NULL&&staging_attempts<=6U);
+        assert(strstr(drv_get_notice(),"128")!=NULL);
+        if(strcmp(profile,"glureduced")==0)assert(glu_mipmap_calls==4&&texture_allocations==4&&texture_deletions==3);
+        drv_notice(NULL);render_checked(indexed);assert(strstr(osd_lines[1],"(128)")!=NULL);
+        globe_free();drv_render();assert(!ogl_texture_used&&!ogl_texture_failed&&drv_texture_loaded&&frame_geometry.vertices==0);
+        globe_init_verts(32,-1,GLOBE_RADIUS);render_checked(indexed);assert(ogl_texture_used);
+        puts("PASS OpenGL reduced texture: bounded allocation downgrade, adopted software mip base and empty-scene retry");
+        goto cleanup;
+    }
     if(creation_failure_profile()){
         check_texture_failure(indexed);
         goto cleanup;
@@ -698,14 +757,16 @@ int main(int argc,char **argv)
         render_checked(indexed);check_cached_frame(indexed);
     }
     if(indexed)assert(draw_pixels_calls==10);
-    if(strcmp(profile,"rgba")==0||indexed)check_display_list_toggle(indexed);
+    if(strcmp(profile,"rgba")==0||strcmp(profile,"legacy-glut")==0||indexed)check_display_list_toggle(indexed);
     if(!indexed){
 #if !defined(NO_GENMIPMAP) && defined(TEST_OGL_FREEGLUT)
         if(strcmp(profile,"legacy11")==0||strcmp(profile,"badversion")==0||strcmp(profile,"nullversion")==0)
             assert(glu_mipmap_calls==1&&proc_lookups==0&&direct_texture_uploads==0&&version_queries==1);
         if(strcmp(profile,"missingproc")==0)
             assert(glu_mipmap_calls==1&&proc_lookups==1&&direct_texture_uploads==0);
-        if(strcmp(profile,"limited")==0||strcmp(profile,"maxzero")==0)
+        if(strcmp(profile,"limited")==0)
+            assert(texture_size==256&&direct_texture_uploads==1&&version_queries==1);
+        if(strcmp(profile,"maxzero")==0)
             assert(glu_mipmap_calls==1&&version_queries==0&&proc_lookups==0&&direct_texture_uploads==0);
 #else
         assert(glu_mipmap_calls==1&&version_queries==0&&proc_lookups==0&&direct_texture_uploads==0);
@@ -714,12 +775,16 @@ int main(int argc,char **argv)
 cleanup:
     assert(stack_depth[0]==0&&stack_depth[1]==0&&attrib_depth==0&&client_depth==0&&cull_enabled);
     if(windows[active_window].doubled)assert(swaps>0);else assert(flushes>0&&swaps==0);
-    ogl_cleanup();ogl_cleanup();
+    ogl_cleanup();ogl_cleanup();texture_free();globe_free();
     assert(window_count==destroy_count&&active_window==0);
     assert(list_deletions==native_lists);
     assert(globe_verts==NULL&&texture_data==NULL);
     puts("PASS OpenGL window lifecycle: safe per-window callbacks through early probe/setup/show redraws, renderer and redisplay activated after globe initialization");
+#ifdef GLUT_DISPLAY_MODE_POSSIBLE
     puts("PASS OpenGL format selection: highest verified RGBA/RGB/index precision, buffering/depth fallbacks and unknown alpha handling");
+#else
+    puts("PASS legacy GLUT window: one RGB/double request at final size and position, no probes or display strings, actual pixel/depth/buffer attributes validated");
+#endif
     puts("PASS OpenGL indexed/native rendering: palette bytes, indexed facets, packed CI software pixels and native RGB textures");
     puts("PASS OpenGL retained diagnostics and controls: private error logger, right-button metadata, FPS toggle and software raster cache policy");
     if(strcmp(profile,"listfail")==0)puts("PASS OpenGL display-list allocation failure: complete uncached geometry at every resolution without invalid list calls");

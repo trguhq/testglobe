@@ -31,53 +31,25 @@ unsigned char* texture_data;
 unsigned int texture_size;
 static size_t texture_data_size;
 
-/* Keep both public policies on one transactional image construction path. */
-static char *texture_build_image(int size)
+/* Return the cause of failure so callers retry only resource/capacity errors. */
+Drv_result texture_build(int size)
 {
-    const unsigned char *earth_data;
 #ifdef TEXTURE_RGB
     unsigned long i, elements;
+    unsigned int count, j;
+    unsigned char data_row[512];
     size_t bytes;
     unsigned char *new_data, *destination;
 #endif
     
-    switch (size)
-    {
-#ifdef EARTH_32
-        case 32:
-            earth_data = earth_data_32;
-            break;
-#endif
-#ifdef EARTH_64
-        case 64:
-            earth_data = earth_data_64;
-            break;
-#endif
-#ifdef EARTH_128
-        case 128:
-            earth_data = earth_data_128;
-            break;
-#endif
-#ifdef EARTH_256
-        case 256:
-            earth_data = earth_data_256;
-            break;
-#endif
-#ifdef EARTH_512
-        case 512:
-            earth_data = earth_data_512;
-            break;
-#endif
-        default:
-            return "Invalid texture size";
-    }
+    if (earth_data_size(size) == 0UL) return DRV_BAD_INPUT;
     
 #ifdef TEXTURE_RGB
     elements = (unsigned long)size * ((unsigned int)size / 2U);
     if ((unsigned int)size > TEXTURE_MAX_SIZE ||
         elements > (size_t)-1 / 3U)
     {
-        return "Texture image is too large";
+        return DRV_UNAVAILABLE;
     }
     bytes = (size_t)elements * 3U;
     /* Regeneration at the same dimensions can reuse its owned staging
@@ -87,38 +59,65 @@ static char *texture_build_image(int size)
     if (new_data == NULL) new_data = (unsigned char *)malloc(bytes);
     if (new_data == NULL)
     {
-        return "Could not allocate memory for texture!";
+        return DRV_NO_MEMORY;
     }
     destination = new_data;
-    for (i = 0; i < elements; ++i)
+    for (i = 0; i < elements; i += count)
     {
-        *destination++ = earth_cmap[earth_data[i]][0];
-        *destination++ = earth_cmap[earth_data[i]][1];
-        *destination++ = earth_cmap[earth_data[i]][2];
+        count = (unsigned int)size;
+        /* The validated dimensions and generated chunk sizes guarantee each
+         * row is readable. No second full indexed image is allocated. */
+        if (!earth_read_data(size, i, count, data_row))
+        {
+            if (new_data != texture_data) free(new_data);
+            else texture_free();
+            return DRV_BAD_DATA;
+        }
+        for (j = 0; j < count; ++j)
+        {
+            *destination++ = earth_cmap[data_row[j]][0];
+            *destination++ = earth_cmap[data_row[j]][1];
+            *destination++ = earth_cmap[data_row[j]][2];
+        }
     }
-    /* Commit only after the replacement is complete. Failed generation
-     * leaves the previously owned image intact for error-path cleanup. */
+    /* Allocation failure preserves an existing image. A read failure while
+     * reusing that image releases its now-partial bytes before returning. */
     if (texture_data != new_data) free(texture_data);
     texture_data = new_data;
     texture_data_size = bytes;
     texture_size = (unsigned int)size;
-    return NULL;
+    return DRV_OK;
 #else
-    (void)earth_data;
-    return "Texture RGB format is required";
+    return DRV_UNAVAILABLE;
 #endif
 }
 
 void texture_generate(int size)
 {
-    char *message;
-    message = texture_build_image(size);
-    if (message != NULL) error(message);
+    Drv_result result;
+    result = texture_build(size);
+    switch (result)
+    {
+        case DRV_OK: break;
+        case DRV_NO_MEMORY: error("Could not allocate memory for texture!"); break;
+        case DRV_BAD_DATA: error("Could not read embedded Earth data"); break;
+        case DRV_BAD_INPUT: error("Invalid texture size"); break;
+        default: error("Texture image is too large or RGB format is unavailable"); break;
+    }
 }
 
 int texture_try_generate(int size)
 {
-    return texture_build_image(size) == NULL;
+    return texture_build(size) == DRV_OK;
+}
+
+unsigned char *texture_take_data(void)
+{
+    unsigned char *data;
+    data = texture_data;
+    texture_data = NULL;
+    texture_data_size = 0;
+    return data;
 }
 
 void texture_init(void)

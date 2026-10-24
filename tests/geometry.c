@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "earth_reference.h"
 #include "testglob.h"
 #include "drv.h"
 #include "types.h"
@@ -12,20 +13,15 @@
 #include "globe.h"
 
 extern Vertex *globe_verts;
-extern Color *globe_colors;
-extern Coord *globe_coords;
 extern int globe_longitude, globe_latitude;
 
 static unsigned long flat_calls, texture_calls;
 static unsigned char *expected_data;
 static Vertex *saved_verts;
-static Color *saved_colors;
-static Coord *saved_coords;
 
 static void invalid_radius_cleanup(void)
 {
-    assert(globe_verts == saved_verts && globe_colors == saved_colors &&
-           globe_coords == saved_coords);
+    assert(globe_verts == saved_verts);
     assert(globe_longitude == 32 && globe_latitude == 16);
     assert(globe_verts_num == 561UL && globe_faces_num == 512UL);
     assert(globe_verts[0].z == GLOBE_RADIUS);
@@ -75,20 +71,25 @@ void drv_draw_tri_flat_uv(Vertex *a, Vertex *b, Vertex *c,
                           Coord *u, Coord *v, Coord *w)
 {
     Coord *coords[3];
+    Vertex *vertices[3];
+    unsigned long index;
     int i;
     check_triangle(a, b, c);
     coords[0] = u; coords[1] = v; coords[2] = w;
+    vertices[0] = a; vertices[1] = b; vertices[2] = c;
     for (i = 0; i < 3; ++i) {
-        assert(coords[i] >= globe_coords &&
-               coords[i] < globe_coords + globe_verts_num);
+        index = (unsigned long)(vertices[i] - globe_verts);
+        assert(coords[i]->u == (float)(index % (globe_longitude + 1UL)) / globe_longitude);
+        assert(coords[i]->v == (float)(index / (globe_longitude + 1UL)) / globe_latitude);
         assert(coords[i]->u >= 0 && coords[i]->u <= 1);
         assert(coords[i]->v >= 0 && coords[i]->v <= 1);
     }
     ++texture_calls;
 }
 
-void drv_texture_enable(void) { drv_texture_enabled = TRUE; }
-void drv_texture_disable(void) { drv_texture_enabled = FALSE; }
+void drv_texture_enable(void) { drv_texture_enabled = drv_texture_active = TRUE; }
+void drv_texture_disable(void) { drv_texture_enabled = drv_texture_active = FALSE; }
+void drv_release_optional(void) {}
 
 static float special_radius(unsigned long pattern)
 {
@@ -111,25 +112,26 @@ int main(int argc, char **argv)
     unsigned char *datasets[5];
     unsigned long expected_tris, row;
     int n;
+    unsigned long vertex;
     char stats[128], counts[80];
     unsigned char coarse_colors[96];
     unsigned int latitude, column, source_row;
     sizes[0] = 32; sizes[1] = 64; sizes[2] = 128;
     sizes[3] = 256; sizes[4] = 512;
-    datasets[0] = earth_data_32; datasets[1] = earth_data_64;
-    datasets[2] = earth_data_128; datasets[3] = earth_data_256;
-    datasets[4] = earth_data_512;
+    datasets[0] = test_earth_data(32); datasets[1] = test_earth_data(64);
+    datasets[2] = test_earth_data(128); datasets[3] = test_earth_data(256);
+    datasets[4] = test_earth_data(512);
     drv_ext_init();
     globe_init();
     if (argc > 1) {
         assert(strcmp(argv[1], "nan") == 0 || strcmp(argv[1], "infinity") == 0);
         assert(globe_init_verts(32, -1, GLOBE_RADIUS));
-        saved_verts = globe_verts; saved_colors = globe_colors;
-        saved_coords = globe_coords;
-        assert(atexit(invalid_radius_cleanup) == 0);
-        globe_init_verts(32, -1, special_radius(strcmp(argv[1], "nan") == 0 ?
-                                               0x7fc00000UL : 0x7f800000UL));
-        assert(!"Nonfinite globe radius must be rejected");
+        saved_verts = globe_verts;
+        assert(!globe_init_verts(32, -1, special_radius(strcmp(argv[1], "nan") == 0 ?
+                                               0x7fc00000UL : 0x7f800000UL)));
+        assert(globe_last_result == DRV_BAD_INPUT);
+        invalid_radius_cleanup();
+        return 0;
     }
     assert(GLOBE_DEFAULT_LONGITUDE == 512);
     for (n = 0; n < 5; ++n) {
@@ -148,7 +150,7 @@ int main(int argc, char **argv)
         assert(globe_verts[0].z == GLOBE_RADIUS);
         assert(globe_verts[row].z == -GLOBE_RADIUS);
         flat_calls = texture_calls = 0;
-        drv_texture_enabled = FALSE;
+        drv_texture_enabled = drv_texture_active = FALSE;
         globe_draw_tris();
         assert(flat_calls == expected_tris && texture_calls == 0);
         globe_toggle_tex();
@@ -175,7 +177,7 @@ int main(int argc, char **argv)
         source_row = (2U * latitude + 1U) * 16U / 6U;
         for (column = 0; column < 32U; ++column)
             coarse_colors[latitude * 32U + column] =
-                earth_data_32[source_row * 32U + column];
+                test_earth_data(32)[source_row * 32U + column];
     }
     expected_data = coarse_colors;
     assert(globe_init_verts(32, 3, GLOBE_RADIUS));
@@ -188,7 +190,23 @@ int main(int argc, char **argv)
     globe_draw_tris();
     assert(texture_calls == 128UL);
     globe_toggle_tex();
+    /* Unbounded native-float geometry must not inherit a software-driver
+     * radius limit. This exercises construction only, not camera visibility. */
+    assert(globe_init_verts(32, -1, 1500.0f));
+    assert(globe_verts[0].z == 1500.0f);
+    assert(globe_init_verts(32, -1, 2000.0f));
+    assert(globe_verts[0].z == 2000.0f);
+    for (vertex = 0UL; vertex < globe_verts_num; ++vertex) {
+        assert(globe_verts[vertex].x >= -2000.0f && globe_verts[vertex].x <= 2000.0f);
+        assert(globe_verts[vertex].y >= -2000.0f && globe_verts[vertex].y <= 2000.0f);
+        assert(globe_verts[vertex].z >= -2000.0f && globe_verts[vertex].z <= 2000.0f);
+    }
+    saved_verts = globe_verts;
+    assert(!globe_init_verts(32, -1, 0.0f));
+    assert(!globe_init_verts(32, -1, -1.0f));
+    assert(globe_last_result == DRV_BAD_INPUT && globe_verts == saved_verts);
     globe_free();
+    puts("PASS native float radii: larger finite geometry accepted, nonpositive requests preserve existing mesh");
     puts("PASS geometry: five resolutions, outward triangles, original palette indices, texture UVs, large buffers");
     puts("PASS custom globe latitudes: full-map center sampling, outward pole triangles and unchanged UV range");
     return 0;

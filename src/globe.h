@@ -27,6 +27,14 @@
 #endif
 
 #define GLOBE_RADIUS 1000
+/* Shared camera; individual drivers may impose a smaller radius domain. */
+#define GLOBE_VIEW_DISTANCE 3000L
+#define GLOBE_NEAR_DISTANCE 1L
+#define GLOBE_FAR_DISTANCE 10000L
+#define GLOBE_FIELD_OF_VIEW 45L
+/* Half the vertical field cotangent, scaled for the integer pipelines. */
+#define GLOBE_FOCAL_Q14 19777L
+#define GLOBE_FOCAL_SCALE 1.2071067811865475
 
 /* default rotation */
 #define GLOBE_DEFAULT_ROTATION_X 0

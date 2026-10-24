@@ -46,6 +46,16 @@ static HDC gdi_buffer;
 static HBITMAP gdi_bitmap;
 static HBITMAP gdi_previous_bitmap;
 static HPALETTE gdi_previous_palette;
+/* A paint DC is borrowed only for one render; gdi_buffer remains owned. */
+static HDC gdi_target;
+static HBRUSH gdi_selected_brush;
+static int gdi_rendering;
+static int gdi_release_pending;
+static int gdi_batch_enabled = TRUE;
+static int gdi_restart_frame;
+static int gdi_frame_failed;
+static int gdi_draw_paused;
+static int gdi_brush_reduced;
 static unsigned char gdi_background;
 static unsigned char gdi_foreground;
 static int gdi_palette_foreground;
@@ -57,6 +67,7 @@ static int gdi_dirty = TRUE;
 static int gdi_last_x;
 static int gdi_last_y;
 static DWORD gdi_auto_tick;
+static unsigned long gdi_scene_revision;
 static float gdi_float_matrix[3][3];
 static long gdi_fixed_matrix[3][3];
 static Gdi_float_point gdi_float_points[GDI_MAX_VERTICES];
@@ -67,6 +78,24 @@ static int gdi_color_head[256];
 static int gdi_color_next[GDI_MAX_FACETS];
 static POINT gdi_batch_points[GDI_MAX_FACETS * GDI_MAX_POLY];
 static int gdi_batch_counts[GDI_MAX_FACETS];
+static void gdi_present(HDC dc);
+
+static HDC gdi_draw_dc(void)
+{
+    return gdi_target != 0 ? gdi_target : gdi_buffer;
+}
+
+static void gdi_release_brushes(void)
+{
+    unsigned int i;
+    for (i = 0; i < 256U; ++i)
+    {
+        if (gdi_brushes[i] == 0 || gdi_brushes[i] == gdi_selected_brush)
+            continue;
+        DeleteObject(gdi_brushes[i]);
+        gdi_brushes[i] = 0;
+    }
+}
 
 extern int testglobe_main(int argc, char **argv);
 LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
@@ -87,6 +116,19 @@ static void gdi_delete_buffer(void)
     gdi_bitmap = 0;
     gdi_previous_bitmap = 0;
     gdi_previous_palette = 0;
+}
+
+void drv_release_optional(void)
+{
+    if (gdi_rendering)
+    {
+        gdi_release_pending = TRUE;
+        return;
+    }
+    gdi_delete_buffer();
+    gdi_release_brushes();
+    gdi_dirty = TRUE;
+    drv_notice("direct drawing");
 }
 
 /* A modal dialog can dispatch paint and timer messages. Quiesce the driver
@@ -123,7 +165,6 @@ static void gdi_cleanup(void)
     if (gdi_callback != NULL) FreeProcInstance(gdi_callback);
     gdi_callback = NULL;
     gdi_ready = FALSE;
-    globe_free();
 }
 
 void gdi_error(char *message)
@@ -181,7 +222,7 @@ void drv_init(int *argc, char **argv)
         gdi_error("Cannot register Windows GDI cleanup");
 }
 
-void drv_load_earth_chunk(unsigned int id, unsigned long length,
+Drv_result drv_load_earth_chunk(unsigned int id, unsigned long length,
                            unsigned char TG_HUGE *destination)
 {
     HRSRC resource;
@@ -189,18 +230,18 @@ void drv_load_earth_chunk(unsigned int id, unsigned long length,
     const unsigned char FAR *source;
     unsigned int i;
     if (destination == NULL || length == 0 || length > TG_EARTH_CHUNK_SIZE)
-        gdi_error("Invalid Earth resource chunk");
+        return DRV_BAD_INPUT;
     resource = FindResource(gdi_instance, MAKEINTRESOURCE(id), RT_RCDATA);
-    if (resource == 0) gdi_error("Cannot find Earth resource");
+    if (resource == 0) return DRV_BAD_DATA;
     if (SizeofResource(gdi_instance, resource) != length)
-        gdi_error("Earth resource has an invalid size");
+        return DRV_BAD_DATA;
     loaded = LoadResource(gdi_instance, resource);
-    if (loaded == 0) gdi_error("Cannot load Earth resource");
+    if (loaded == 0) return DRV_NO_MEMORY;
     source = (const unsigned char FAR *)LockResource(loaded);
     if (source == NULL)
     {
         FreeResource(loaded);
-        gdi_error("Cannot lock Earth resource");
+        return DRV_NO_MEMORY;
     }
     /* Only the huge destination crosses selectors; each far source fits
      * within one resource segment. The shared loader advances chunks. */
@@ -208,14 +249,33 @@ void drv_load_earth_chunk(unsigned int id, unsigned long length,
         *destination++ = source[i];
     UnlockResource(loaded);
     FreeResource(loaded);
+    return DRV_OK;
 }
 
 static HBRUSH gdi_brush(unsigned int color)
 {
-    if (gdi_brushes[color] == 0)
+    unsigned long luminance;
+    if (!gdi_brush_reduced && gdi_brushes[color] == 0)
     {
         gdi_brushes[color] = CreateSolidBrush(PALETTEINDEX(color));
-        if (gdi_brushes[color] == 0) gdi_error("Cannot allocate GDI brush");
+        if (gdi_brushes[color] == 0)
+        {
+            gdi_release_brushes();
+            gdi_brushes[color] = CreateSolidBrush(PALETTEINDEX(color));
+            if (gdi_brushes[color] == 0)
+            {
+                gdi_brush_reduced = TRUE;
+                drv_notice("reduced colors");
+            }
+        }
+    }
+    if (gdi_brush_reduced)
+    {
+        luminance = (unsigned long)earth_cmap[color][0] * 77UL +
+                    (unsigned long)earth_cmap[color][1] * 150UL +
+                    (unsigned long)earth_cmap[color][2] * 29UL;
+        /* Stock brushes are borrowed and never enter the owned cache. */
+        return (HBRUSH)GetStockObject(luminance < 32768UL ? BLACK_BRUSH : WHITE_BRUSH);
     }
     return gdi_brushes[color];
 }
@@ -241,16 +301,28 @@ static void gdi_make_buffer(void)
     gdi_delete_buffer();
     if (gdi_window == 0 || drv_win_width == 0 || drv_win_height == 0) return;
     dc = GetDC(gdi_window);
-    if (dc == 0) gdi_error("Cannot access Windows GDI window");
+    if (dc == 0)
+    {
+        drv_notice("direct drawing");
+        return;
+    }
     gdi_buffer = CreateCompatibleDC(dc);
     gdi_bitmap = CreateCompatibleBitmap(dc, (int)drv_win_width,
                                         (int)drv_win_height);
     ReleaseDC(gdi_window, dc);
     if (gdi_buffer == 0 || gdi_bitmap == 0)
-        gdi_error("Cannot allocate Windows GDI back buffer");
+    {
+        gdi_delete_buffer();
+        drv_notice("direct drawing");
+        return;
+    }
     gdi_previous_bitmap = (HBITMAP)SelectObject(gdi_buffer, gdi_bitmap);
     if (gdi_previous_bitmap == 0)
-        gdi_error("Cannot select Windows GDI back buffer");
+    {
+        gdi_delete_buffer();
+        drv_notice("direct drawing");
+        return;
+    }
     gdi_previous_palette = SelectPalette(gdi_buffer, gdi_palette, TRUE);
     /* Realize only on a window DC. Windows 3.1 has a documented foreground
      * palette bug when RealizePalette is applied to a compatible memory DC. */
@@ -265,6 +337,8 @@ static void gdi_resize(int width, int height)
         gdi_error("Windows GDI client dimensions exceed signed 16-bit coordinates");
     drv_win_width = (unsigned int)width;
     drv_win_height = (unsigned int)height;
+    gdi_auto_tick = GetTickCount();
+    drv_reset_timing();
     if (gdi_palette != 0) gdi_make_buffer();
     gdi_dirty = TRUE;
 }
@@ -280,6 +354,9 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     int screen_width, screen_height;
     long outer_width, outer_height;
     if (gdi_failed) return 0;
+    gdi_batch_enabled = TRUE;
+    gdi_restart_frame = gdi_frame_failed = gdi_draw_paused = FALSE;
+    gdi_brush_reduced = FALSE;
     if (in_x > 0) drv_win_x = (unsigned int)in_x;
     if (in_y > 0) drv_win_y = (unsigned int)in_y;
     dc = GetDC(0);
@@ -351,9 +428,13 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     if (gdi_window == 0) gdi_error("Cannot create Windows GDI window");
     gdi_realize_palette(gdi_palette_foreground);
     gdi_make_buffer();
-    if (SetTimer(gdi_window, GDI_TIMER, 30, NULL) == 0)
-        gdi_error("Cannot create Windows animation timer");
-    gdi_timer_active = TRUE;
+    gdi_timer_active = SetTimer(gdi_window, GDI_TIMER, 30, NULL) != 0;
+    drv_auto_available = gdi_timer_active;
+    if (!gdi_timer_active)
+    {
+        drv_auto_enabled = FALSE;
+        drv_notice("animation unavailable");
+    }
     ShowWindow(gdi_window, gdi_show);
     UpdateWindow(gdi_window);
     return 1;
@@ -380,7 +461,10 @@ static void gdi_set_transform(void)
         gdi_float_matrix[2][2] = fsx;
     }
     else if (!soft3d_fixed_prepare(gdi_fixed_matrix, &drv_rot_x, &drv_rot_y))
-        gdi_error("Windows GDI coordinate is out of range");
+    {
+        gdi_frame_failed = TRUE;
+        drv_abort_frame("coordinate is out of range");
+    }
 }
 
 static int gdi_clip_float_z(const Gdi_float_point *in, int count,
@@ -416,7 +500,8 @@ static int gdi_clip_float_z(const Gdi_float_point *in, int count,
     return total;
 }
 
-static int gdi_prepare_polygon(const unsigned int *indices,
+static int gdi_prepare_polygon(unsigned int point_count,
+                               const unsigned int *indices,
                                unsigned int index_count, POINT *destination)
 {
     Gdi_float_point float_a[GDI_MAX_POLY], float_b[GDI_MAX_POLY];
@@ -424,18 +509,21 @@ static int gdi_prepare_polygon(const unsigned int *indices,
     float focal, projected_x, projected_y;
     int i, count;
     if (indices == NULL || destination == NULL ||
+        point_count == 0U || point_count > GDI_MAX_VERTICES ||
         (index_count != 3U && index_count != 4U)) return 0;
     for (i = 0; i < (int)index_count; ++i)
-        if (indices[i] >= GDI_MAX_VERTICES) return 0;
+        if (indices[i] >= point_count) return 0;
     if (gdi_has_fpu)
     {
         for (i = 0; i < (int)index_count; ++i)
             float_a[i] = gdi_float_points[indices[i]];
-        count = gdi_clip_float_z(float_a, (int)index_count, float_b, -1.0f, FALSE);
+        count = gdi_clip_float_z(float_a, (int)index_count, float_b,
+                                 -(float)GLOBE_NEAR_DISTANCE, FALSE);
         if (count < 3) return 0;
-        count = gdi_clip_float_z(float_b, count, float_a, -10000.0f, TRUE);
+        count = gdi_clip_float_z(float_b, count, float_a,
+                                 -(float)GLOBE_FAR_DISTANCE, TRUE);
         if (count < 3) return 0;
-        focal = (float)drv_win_height * 1.2071067811865475f;
+        focal = (float)drv_win_height * (float)GLOBE_FOCAL_SCALE;
         for (i = 0; i < count; ++i)
         {
             projected_x = (float)drv_win_width / 2.0f +
@@ -452,7 +540,8 @@ static int gdi_prepare_polygon(const unsigned int *indices,
         }
     }
     else
-        count = soft3d_fixed_project_polygon(gdi_fixed_points, indices, index_count,
+        count = soft3d_fixed_project_polygon(gdi_fixed_points, point_count,
+                                             indices, index_count,
                                              drv_win_width, drv_win_height, screen);
     count = soft3d_finish_polygon(screen, count, drv_win_width, drv_win_height);
     for (i = 0; i < count; ++i)
@@ -479,11 +568,18 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     unsigned int i, color, corner, quad_indices[4];
     int row, facet, total, points, j;
     float source[3];
-    HBRUSH previous;
-    if (gdi_failed || gdi_buffer == 0 || vertex_count == 0 || quad_count == 0 ||
+    HBRUSH previous, brush;
+    HDC dc;
+    dc = gdi_draw_dc();
+    if (gdi_failed || dc == 0 || gdi_restart_frame || gdi_frame_failed ||
+        vertex_count == 0 || quad_count == 0 ||
         vertices == NULL || indices == NULL || colors == NULL) return;
     if (!drv_validate_quadbatch(vertex_count, quad_count, indices))
-        gdi_error("GDI quad batch or vertex index is out of range");
+    {
+        gdi_frame_failed = TRUE;
+        drv_abort_frame("quad batch or index is out of range");
+        return;
+    }
     if (gdi_has_fpu)
     {
         for (i = 0; i < vertex_count; ++i)
@@ -498,19 +594,23 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                     gdi_float_matrix[row][2] * source[2];
                 if (row == 0) gdi_float_points[i].x = transformed;
                 if (row == 1) gdi_float_points[i].y = transformed;
-                if (row == 2) gdi_float_points[i].z = transformed - 3000.0f;
+                if (row == 2) gdi_float_points[i].z = transformed - (float)GLOBE_VIEW_DISTANCE;
             }
         }
     }
     else if (!soft3d_fixed_transform(gdi_fixed_matrix, vertex_count, vertices,
                                       gdi_fixed_points))
-        gdi_error("GDI fixed-point path supports globe radius up to 1000");
+    {
+        gdi_frame_failed = TRUE;
+        drv_abort_frame("fixed-point coordinate is out of range");
+        return;
+    }
     for (color = 0; color < 256; ++color) gdi_color_head[color] = -1;
     for (i = 0; i < quad_count; ++i)
     {
         for (corner = 0; corner < 4U; ++corner)
             quad_indices[corner] = indices[4U * i + corner];
-        gdi_polygon_counts[i] = gdi_prepare_polygon(quad_indices, 4U,
+        gdi_polygon_counts[i] = gdi_prepare_polygon(vertex_count, quad_indices, 4U,
                                                    gdi_polygons[i]);
         if (gdi_polygon_counts[i] == 0) continue;
         color = colors[i];
@@ -528,29 +628,73 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                 gdi_batch_points[points++] = gdi_polygons[facet][j];
         }
         if (total == 0) continue;
-        previous = (HBRUSH)SelectObject(gdi_buffer, gdi_brush(color));
-        if (!PolyPolygon(gdi_buffer, gdi_batch_points, gdi_batch_counts, total))
-            gdi_error("GDI PolyPolygon failed");
-        SelectObject(gdi_buffer, previous);
+        brush = gdi_brush(color);
+        previous = (HBRUSH)SelectObject(dc, brush);
+        if (previous == 0)
+        {
+            gdi_frame_failed = TRUE;
+            drv_abort_frame("cannot select drawing brush");
+            return;
+        }
+        gdi_selected_brush = brush;
+        if (gdi_batch_enabled)
+        {
+            if (!PolyPolygon(dc, gdi_batch_points, gdi_batch_counts, total))
+            {
+                gdi_batch_enabled = FALSE;
+                gdi_restart_frame = TRUE;
+                drv_abort_frame("individual polygons");
+            }
+        }
+        else
+        {
+            points = 0;
+            for (j = 0; j < total; ++j)
+            {
+                /* The public quad leaf delegates back to this batch entry.
+                 * Retry only the native call, without recursive submission. */
+                if (!Polygon(dc, gdi_batch_points + points, gdi_batch_counts[j]))
+                {
+                    gdi_frame_failed = TRUE;
+                    drv_abort_frame("individual polygon failed");
+                    break;
+                }
+                points += gdi_batch_counts[j];
+            }
+        }
+        SelectObject(dc, previous);
+        gdi_selected_brush = 0;
+        if (gdi_restart_frame || gdi_frame_failed) return;
     }
 }
 
 void drv_draw_osd(void)
 {
-    char status[160];
+    char status[256];
     RECT status_bounds, help_bounds;
     int help_height;
     UINT flags;
-    if (gdi_failed || drv_win_width <= 16 || drv_win_height <= 16) return;
+    HDC dc;
+    dc = gdi_draw_dc();
+    if (gdi_failed || dc == 0 || drv_win_width <= 16 || drv_win_height <= 16) return;
     drv_format_stats(status);
-    strcat(status, gdi_has_fpu ? ", 80387 math" : ", fixed-point math");
-    SetBkMode(gdi_buffer, TRANSPARENT);
-    SetTextColor(gdi_buffer, PALETTEINDEX(gdi_foreground));
+    drv_append_status(status, sizeof(status),
+                       gdi_has_fpu ? ", 80387 math" : ", fixed-point math");
+    if (gdi_buffer == 0)
+        drv_append_status(status, sizeof(status), ", direct drawing");
+    if (!gdi_batch_enabled)
+        drv_append_status(status, sizeof(status), ", individual polygons");
+    if (gdi_brush_reduced)
+        drv_append_status(status, sizeof(status), ", reduced colors");
+    if (!drv_auto_available)
+        drv_append_status(status, sizeof(status), ", manual rotation");
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, PALETTEINDEX(gdi_foreground));
     flags = DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX;
     help_bounds.left = 8;
     help_bounds.right = (int)drv_win_width - 8;
     help_bounds.top = help_bounds.bottom = 0;
-    DrawText(gdi_buffer, drv_help, -1, &help_bounds, flags | DT_CALCRECT);
+    DrawText(dc, drv_help, -1, &help_bounds, flags | DT_CALCRECT);
     help_height = help_bounds.bottom - help_bounds.top;
     help_bounds.right = (int)drv_win_width - 8;
     help_bounds.bottom = (int)drv_win_height - 8;
@@ -561,41 +705,104 @@ void drv_draw_osd(void)
     status_bounds.top = 8;
     status_bounds.bottom = help_bounds.top - 4;
     if (status_bounds.bottom > status_bounds.top)
-        DrawText(gdi_buffer, status, -1, &status_bounds, flags);
+        DrawText(dc, status, -1, &status_bounds, flags);
     if (help_bounds.bottom > help_bounds.top)
-        DrawText(gdi_buffer, drv_help, -1, &help_bounds, flags);
+        DrawText(dc, drv_help, -1, &help_bounds, flags);
 }
 
-void drv_render(void)
+static void gdi_render_to(HDC dc)
 {
     RECT bounds;
     HPEN previous;
-    if (gdi_failed || !gdi_ready || gdi_buffer == 0 || globe_verts_num == 0) return;
+    HPALETTE previous_palette;
+    int pass;
+    if (gdi_failed || !gdi_ready || gdi_rendering || dc == 0) return;
+    gdi_rendering = TRUE;
+    gdi_target = dc;
+    previous_palette = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
+    if (dc != gdi_buffer) RealizePalette(dc);
     drv_fps_start();
     bounds.left = bounds.top = 0;
     bounds.right = (int)drv_win_width;
     bounds.bottom = (int)drv_win_height;
-    FillRect(gdi_buffer, &bounds, gdi_brush(gdi_background));
-    previous = (HPEN)SelectObject(gdi_buffer, GetStockObject(NULL_PEN));
-    SetPolyFillMode(gdi_buffer, WINDING);
-    gdi_set_transform();
-    globe_quads_num_vis = 0;
-    globe_draw_quadbatches();
-    SelectObject(gdi_buffer, previous);
-    if (drv_osd_enabled) drv_draw_osd();
-    drv_fps_stop();
+    gdi_frame_failed = FALSE;
+    for (pass = 0; pass < 2; ++pass)
+    {
+        drv_frame_failed = FALSE;
+        gdi_restart_frame = FALSE;
+        FillRect(dc, &bounds, gdi_brush(gdi_background));
+        previous = (HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
+        SetPolyFillMode(dc, WINDING);
+        globe_quads_num_vis = 0;
+        if (globe_ready() && !gdi_draw_paused)
+        {
+            gdi_set_transform();
+            if (!gdi_frame_failed) globe_draw_quadbatches();
+        }
+        SelectObject(dc, previous);
+        if (drv_frame_failed && !gdi_restart_frame) gdi_frame_failed = TRUE;
+        if (!gdi_restart_frame) break;
+    }
+    if (gdi_frame_failed)
+    {
+        /* Keep a usable native window and the valid mesh; retry only after
+         * another input action, never from a partially submitted primitive. */
+        gdi_draw_paused = TRUE;
+        drv_auto_enabled = FALSE;
+        globe_quads_num_vis = 0;
+        drv_notice("drawing unavailable; retry a resolution");
+        FillRect(dc, &bounds, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    }
+    if (gdi_draw_paused)
+        drv_abort_frame("drawing unavailable; retry a resolution");
+    if (drv_osd_enabled || !globe_ready() || gdi_draw_paused) drv_draw_osd();
+    if (previous_palette != 0) SelectPalette(dc, previous_palette, TRUE);
+    gdi_target = 0;
+    gdi_rendering = FALSE;
     gdi_dirty = FALSE;
+    if (gdi_release_pending)
+    {
+        gdi_release_pending = FALSE;
+        drv_release_optional();
+    }
+}
+
+void drv_render(void)
+{
+    HDC dc;
+    if (gdi_window != 0 && !gdi_rendering)
+    {
+        dc = GetDC(gdi_window);
+        if (dc != 0)
+        {
+            if (gdi_buffer != 0)
+            {
+                gdi_render_to(gdi_buffer);
+                if (gdi_buffer != 0) gdi_present(dc);
+                else gdi_render_to(dc);
+            }
+            else gdi_render_to(dc);
+            drv_fps_stop();
+            ReleaseDC(gdi_window, dc);
+        }
+    }
 }
 
 static void gdi_present(HDC dc)
 {
     HPALETTE previous;
+    int copied;
     if (gdi_failed || gdi_buffer == 0) return;
     previous = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
     RealizePalette(dc);
-    BitBlt(dc, 0, 0, (int)drv_win_width, (int)drv_win_height,
-            gdi_buffer, 0, 0, SRCCOPY);
+    copied = BitBlt(dc, 0, 0, (int)drv_win_width, (int)drv_win_height,
+                    gdi_buffer, 0, 0, SRCCOPY);
     SelectPalette(dc, previous, TRUE);
+    if (!copied)
+    {
+        drv_release_optional();
+        gdi_render_to(dc);
+    }
 }
 
 static void gdi_keyboard(unsigned char key)
@@ -603,6 +810,12 @@ static void gdi_keyboard(unsigned char key)
     if (gdi_failed) return;
     if (key == 27) { drv_close(); return; }
     if (!drv_handle_key(key)) return;
+    if (gdi_scene_revision != globe_revision)
+    {
+        gdi_scene_revision = globe_revision;
+        gdi_auto_tick = GetTickCount();
+    }
+    gdi_draw_paused = FALSE;
     if (key == 'a' || key == 'A') gdi_auto_tick = GetTickCount();
     gdi_dirty = TRUE;
     InvalidateRect(gdi_window, NULL, FALSE);
@@ -637,6 +850,28 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
     PAINTSTRUCT paint;
     HDC dc;
     DWORD tick, elapsed;
+    if (gdi_rendering && !gdi_failed)
+    {
+        /* Native callbacks can dispatch messages while a packet borrows the
+         * mesh or a paint DC. Requeue mutations until those borrows end. */
+        switch (message)
+        {
+            case WM_CHAR: case WM_SIZE: case WM_CLOSE: case WM_TIMER:
+            case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+            case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+                if (!PostMessage(window, message, wparam, lparam))
+                    drv_notice("window busy; retry the control");
+                return 0;
+            default: break;
+        }
+    }
+    if (gdi_rendering && !gdi_failed && message == WM_PAINT)
+    {
+        dc = BeginPaint(window, &paint);
+        (void)dc;
+        EndPaint(window, &paint);
+        return 0;
+    }
     if (gdi_failed && message != WM_DESTROY)
     {
         if (message == WM_PAINT)
@@ -651,8 +886,17 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
     {
         case WM_PAINT:
             dc = BeginPaint(window, &paint);
-            if (gdi_ready && gdi_dirty) drv_render();
-            if (gdi_ready) gdi_present(dc);
+            if (gdi_ready)
+            {
+                if (gdi_buffer != 0)
+                {
+                    if (gdi_dirty) gdi_render_to(gdi_buffer);
+                    if (gdi_buffer != 0) gdi_present(dc);
+                    else gdi_render_to(dc);
+                }
+                else gdi_render_to(dc);
+                drv_fps_stop();
+            }
             EndPaint(window, &paint);
             return 0;
         case WM_ERASEBKGND: return 1;
@@ -720,7 +964,8 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
             }
             return 0;
         case WM_TIMER:
-            if (wparam == GDI_TIMER && drv_auto_enabled && gdi_ready)
+            if (wparam == GDI_TIMER && drv_auto_enabled && gdi_ready &&
+                globe_ready() && !gdi_draw_paused)
             {
                 tick = GetTickCount();
                 elapsed = (tick - gdi_auto_tick) & 0xffffffffUL;

@@ -18,6 +18,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "testglob.h"
 #include "drv.h"
@@ -28,6 +29,15 @@
 #include "tex_ext.h"
 #endif
 
+/* The application owns the shared scene; each driver owns native objects. */
+static void testglobe_cleanup(void)
+{
+#ifdef TEXTURE
+    texture_free();
+#endif
+    globe_free();
+}
+
 #ifdef GDI
 /* The Win16 driver owns WinMain and its instance/show-window arguments. */
 int testglobe_main(int argc, char **argv)
@@ -36,11 +46,20 @@ int main(int argc, char **argv)
 #endif
 {
     drv_ext_init();
+    globe_init();
+#ifdef TEXTURE
+    texture_init();
+#endif
+    /* Register shared ownership first: native cleanup runs before this
+     * callback when a legacy event loop must terminate through exit(). */
+    if (atexit(testglobe_cleanup) != 0)
+        error("Cannot register scene cleanup");
     drv_init(&argc, argv);
     /* Native window creation determines the actual color format and size. */
-    drv_init_window(0,0,0,0);
+    if (!drv_init_window(0,0,0,0))
+        error("Cannot initialize application window");
 
-#if !defined(GDI) && !defined(SEG68)
+#ifndef DRV_NO_CONSOLE
     printf("%s %i.%i\n", TESTGLOBE_NAME, TESTGLOBE_VERSION_MAJOR, TESTGLOBE_VERSION_MINOR);
     printf("Driver: %s\n", drv_name);
     printf("Resolution: %u x %u\n", drv_win_width, drv_win_height);
@@ -56,11 +75,8 @@ int main(int argc, char **argv)
 #endif
 #endif /* Native GUI applications have no console. */
     
-    globe_init();
-    globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS);
-#ifdef TEXTURE
-    texture_init();
-#endif
+    /* A valid native window can remain interactive even if no mesh fits. */
+    (void)globe_set_resolution(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS);
     drv_loop();
 
     return 0;

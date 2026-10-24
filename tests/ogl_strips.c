@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include "earth_reference.h"
 #include "testglob.h"
 #include "drv.h"
 #include "types.h"
@@ -17,8 +18,6 @@
 #endif
 
 extern Vertex *globe_verts;
-extern Color *globe_colors;
-extern Coord *globe_coords;
 extern int globe_longitude, globe_latitude;
 
 static unsigned long cap_calls, strip_calls, rendered_triangles;
@@ -71,7 +70,8 @@ static void check_cap(Vertex *a, Vertex *b, Vertex *c,
     for (i = 0; i < 3; ++i) {
         assert(vertices[i] == globe_verts + expected[i]);
         if (drv_texture_enabled) {
-            assert(coords[i] == globe_coords + expected[i]);
+            assert(coords[i]->u == (float)(expected[i] % (globe_longitude + 1UL)) / globe_longitude);
+            assert(coords[i]->v == (float)(expected[i] / (globe_longitude + 1UL)) / globe_latitude);
             assert(coords[i]->u >= 0.0f && coords[i]->u <= 1.0f);
             assert(coords[i]->v >= 0.0f && coords[i]->v <= 1.0f);
         } else {
@@ -79,7 +79,6 @@ static void check_cap(Vertex *a, Vertex *b, Vertex *c,
         }
     }
     face = band * globe_longitude + cell;
-    assert(globe_colors[face].color == expected_data[face]);
     if (!drv_texture_enabled) assert(color == expected_data[face]);
     assert(outward_area(a, b, c) > 0.0);
     ++cap_calls;
@@ -107,8 +106,8 @@ static void check_strip(unsigned int count, const Vertex *vertices,
         assert(index < globe_verts_num);
         same_vertex(vertices + i, globe_verts + index);
         if (coords != NULL) {
-            assert(coords[i].u == globe_coords[index].u);
-            assert(coords[i].v == globe_coords[index].v);
+            assert(coords[i].u == (float)(index % (globe_longitude + 1UL)) / globe_longitude);
+            assert(coords[i].v == (float)(index / (globe_longitude + 1UL)) / globe_latitude);
             assert(coords[i].u >= 0.0f && coords[i].u <= 1.0f);
             assert(coords[i].v > 0.0f && coords[i].v < 1.0f);
         }
@@ -135,7 +134,6 @@ static void check_strip(unsigned int count, const Vertex *vertices,
             same_vertex(c, globe_verts + bottom + 1UL);
         }
         face = band * globe_longitude + cell;
-        assert(globe_colors[face].color == expected_data[face]);
         if (colors != NULL) assert(colors[i] == expected_data[face]);
         assert(outward_area(a, b, c) > 0.0);
         ++rendered_triangles;
@@ -178,8 +176,9 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
     check_strip(count, vertices, NULL, coords);
 }
 
-void drv_texture_enable(void) { drv_texture_enabled = TRUE; }
-void drv_texture_disable(void) { drv_texture_enabled = FALSE; }
+void drv_texture_enable(void) { drv_texture_enabled = drv_texture_active = TRUE; }
+void drv_texture_disable(void) { drv_texture_enabled = drv_texture_active = FALSE; }
+void drv_release_optional(void) {}
 
 static void check_drawing(void)
 {
@@ -243,14 +242,14 @@ int main(void)
     unsigned char *datasets[5];
     sizes[0] = 32; sizes[1] = 64; sizes[2] = 128;
     sizes[3] = 256; sizes[4] = 512;
-    datasets[0] = earth_data_32; datasets[1] = earth_data_64;
-    datasets[2] = earth_data_128; datasets[3] = earth_data_256;
-    datasets[4] = earth_data_512;
+    datasets[0] = test_earth_data(32); datasets[1] = test_earth_data(64);
+    datasets[2] = test_earth_data(128); datasets[3] = test_earth_data(256);
+    datasets[4] = test_earth_data(512);
     drv_ext_init();
     globe_init();
     assert(GLOBE_DEFAULT_LONGITUDE == 512);
     assert(drv_texture_avail && !drv_texture_enabled);
-    expected_data = earth_data_512;
+    expected_data = test_earth_data(512);
     assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
     check_counts(512);
     check_drawing();

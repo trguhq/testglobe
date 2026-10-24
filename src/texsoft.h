@@ -7,6 +7,12 @@
 /* Copy the RGB image and construct its complete mipmap pyramid. */
 extern int texsoft_texture(unsigned int width, unsigned int height,
                              const unsigned char *rgb);
+/* Adopt malloc-owned RGB bytes as level zero without copying them. This
+ * consumes the pointer on EVERY result, including invalid dimensions and
+ * partial mipmap failure. Only DRV_OK leaves a usable replacement texture.
+ * The caller must not pass borrowed data or an already-adopted pointer. */
+extern Drv_result texsoft_texture_take(unsigned int width, unsigned int height,
+                                      unsigned char *rgb);
 /* Matrices use row vectors: clip = vertex * model * projection. OpenGL's
  * column-major matrix memory has this same layout when viewed as [4][4].
  * Bottom-up numeric words contain 0xAABBGGRR or a color index. IRIS GL can

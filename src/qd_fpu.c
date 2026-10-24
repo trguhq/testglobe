@@ -14,6 +14,7 @@
 #pragma segment QDFPU
 #endif
 #include "qd_math.h"
+#include "globe.h"
 
 typedef struct Qd_fpu_point
 {
@@ -25,6 +26,7 @@ typedef struct Qd_fpu_point
 static float qd_fpu_matrix[3][3];
 static Qd_fpu_point qd_fpu_points[QD_FPU_MAX_VERTICES];
 static unsigned int qd_fpu_count;
+static int qd_fpu_ready;
 
 /* The application's rotation angles are normalized to [0,360). Reduce
  * into [-pi/2,pi/2] so this degree-13 sine polynomial has absolute error
@@ -33,8 +35,9 @@ static unsigned int qd_fpu_count;
 static double qd_fpu_sine(double angle)
 {
     double radians, square;
-    while (angle > 180.0) angle -= 360.0;
-    while (angle < -180.0) angle += 360.0;
+    /* prepare() bounds this input to [0,450), including cosine's quarter
+     * turn. A single subtraction also avoids non-progress on huge values. */
+    if (angle > 180.0) angle -= 360.0;
     if (angle > 90.0) angle = 180.0 - angle;
     if (angle < -90.0) angle = -180.0 - angle;
     radians = angle * 0.017453292519943295769;
@@ -45,16 +48,19 @@ static double qd_fpu_sine(double angle)
            square * (1.0 / 6227020800.0)))))));
 }
 
-void qd_fpu_prepare(const float *rotation_x, const float *rotation_y)
+int qd_fpu_prepare(const float *rotation_x, const float *rotation_y)
 {
     double sx, cx, sy, cy;
     qd_fpu_count = 0;
-    if (rotation_x == NULL || rotation_y == NULL) return;
+    qd_fpu_ready = FALSE;
+    if (rotation_x == NULL || rotation_y == NULL) return FALSE;
+    if (!(*rotation_x >= 0.0f && *rotation_x < 360.0f &&
+          *rotation_y >= 0.0f && *rotation_y < 360.0f)) return FALSE;
     sx = qd_fpu_sine((double)*rotation_x);
     cx = qd_fpu_sine((double)*rotation_x + 90.0);
     sy = qd_fpu_sine((double)*rotation_y);
     cy = qd_fpu_sine((double)*rotation_y + 90.0);
-    /* OpenGL's Rx(x) Ry(y) Rx(-90) Rz(-90), then z=-3000. */
+    /* OpenGL's Rx(x) Ry(y) Rx(-90) Rz(-90), then camera translation. */
     qd_fpu_matrix[0][0] = (float)sy;
     qd_fpu_matrix[0][1] = (float)cy;
     qd_fpu_matrix[0][2] = 0.0f;
@@ -64,6 +70,8 @@ void qd_fpu_prepare(const float *rotation_x, const float *rotation_y)
     qd_fpu_matrix[2][0] = (float)(cx * cy);
     qd_fpu_matrix[2][1] = (float)(-cx * sy);
     qd_fpu_matrix[2][2] = (float)sx;
+    qd_fpu_ready = TRUE;
+    return TRUE;
 }
 
 void qd_fpu_transform(unsigned int count, const Vertex *vertices)
@@ -71,7 +79,7 @@ void qd_fpu_transform(unsigned int count, const Vertex *vertices)
     unsigned int i;
     float x, y, z;
     qd_fpu_count = 0;
-    if (vertices == NULL || count > QD_FPU_MAX_VERTICES) return;
+    if (!qd_fpu_ready || vertices == NULL || count > QD_FPU_MAX_VERTICES) return;
     for (i = 0; i < count; ++i)
     {
         x = vertices[i].x;
@@ -85,7 +93,7 @@ void qd_fpu_transform(unsigned int count, const Vertex *vertices)
                               qd_fpu_matrix[1][2] * z;
         qd_fpu_points[i].z = qd_fpu_matrix[2][0] * x +
                               qd_fpu_matrix[2][1] * y +
-                              qd_fpu_matrix[2][2] * z - 3000.0f;
+                              qd_fpu_matrix[2][2] * z - GLOBE_VIEW_DISTANCE;
     }
     qd_fpu_count = count;
 }
@@ -135,12 +143,12 @@ int qd_fpu_project_polygon(const unsigned int *indices, unsigned int count,
         if (indices[index] >= qd_fpu_count) return 0;
         a[index] = qd_fpu_points[indices[index]];
     }
-    clipped_count = qd_fpu_clip_z(a, (int)count, b, -1.0f, FALSE);
+    clipped_count = qd_fpu_clip_z(a, (int)count, b, -GLOBE_NEAR_DISTANCE, FALSE);
     if (clipped_count < 3) return 0;
-    clipped_count = qd_fpu_clip_z(b, clipped_count, a, -10000.0f, TRUE);
+    clipped_count = qd_fpu_clip_z(b, clipped_count, a, -GLOBE_FAR_DISTANCE, TRUE);
     if (clipped_count < 3) return 0;
-    /* 45-degree vertical field of view, downward-Y QuickDraw coordinates. */
-    focal = (double)height * 1.2071067811865475244;
+    /* Shared vertical field of view, downward-Y QuickDraw coordinates. */
+    focal = (double)height * GLOBE_FOCAL_SCALE;
     for (i = 0; i < clipped_count; ++i)
     {
         x = (double)width / 2.0 + (double)a[i].x * focal / -(double)a[i].z;

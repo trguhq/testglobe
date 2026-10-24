@@ -1,6 +1,7 @@
 /* Execute the Classic Macintosh driver against Toolbox call records.
  * This is NOT an MPW SDK, ABI validation, or QuickDraw renderer. */
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,8 @@ static GDevice *second_device_ptr = &second_device;
 static int multiple_devices;
 static GWorldPtr world_live;
 static GDHandle world_device;
+static GDevice offscreen_device;
+static GDevice *offscreen_device_ptr = &offscreen_device;
 static PixMap world_pixmap;
 static PixMap *world_pixmap_ptr = &world_pixmap;
 static int world_locked;
@@ -61,6 +64,16 @@ static int fail_lock;
 static int failure_profile;
 static int fail_polygon;
 static int fail_pattern;
+static int fail_color_table;
+static int fail_palette;
+static int fail_resource;
+static OSErr resource_error;
+static Handle resource_lock_failure;
+static Ptr resource_lock_bytes;
+static unsigned int pattern_calls;
+static unsigned int polygon_calls;
+static int reentry_requested;
+static unsigned int reentry_calls, reentry_width;
 static short find_part = inGoAway;
 static unsigned long ticks;
 static unsigned int window_calls, color_calls, world_calls, copy_calls;
@@ -72,7 +85,8 @@ static void *handle_blocks[64];
 static Size handle_sizes[64];
 static unsigned int handle_locks[64];
 static PaletteHandle window_palette;
-static RGBColor foreground, background;
+typedef struct { RGBColor foreground, background; } Test_port_colors;
+static Test_port_colors desktop_colors, window_colors, world_colors;
 static Point pen;
 static PolyHandle recording_poly;
 static Point pending_points[16];
@@ -100,6 +114,24 @@ typedef struct {
 static RecordedPolygon recorded[5000];
 
 static void color_api(void) { assert(has_color); ++color_calls; }
+static Test_port_colors *test_current_colors(void)
+{
+    if (current_port == &desktop_port) return &desktop_colors;
+    if (current_port == (GrafPtr)&window_port) return &window_colors;
+    assert(world_live != NULL && current_port == (GrafPtr)world_live);
+    return &world_colors;
+}
+static void test_init_colors(Test_port_colors *colors)
+{
+    memset(colors, 0, sizeof(*colors));
+    colors->background.red = colors->background.green = colors->background.blue = 65535U;
+}
+static void test_drawing_device(void)
+{
+    if (world_live != NULL && current_port == (GrafPtr)world_live)
+        assert(current_device == world_device);
+    else assert(current_device == qd_device);
+}
 static unsigned long rgb_value(const RGBColor *c)
 {
     return ((unsigned long)(c->red >> 8) << 16) |
@@ -144,6 +176,8 @@ Handle NewHandle(Size size)
     unsigned int i;
     Handle handle;
     assert(size > 0);
+    if (fail_color_table && size == (Size)(sizeof(ColorTable) +
+                                          255L * sizeof(ColorSpec))) return NULL;
     handle = (Handle)malloc(sizeof(Ptr));
     assert(handle != NULL);
     *handle = (Ptr)calloc((size_t)size, 1);
@@ -172,7 +206,14 @@ void HLock(Handle h)
 {
     unsigned int i;
     for (i = 0; i < 64; ++i)
-        if (handle_blocks[i] == h) { ++handle_locks[i]; return; }
+        if (handle_blocks[i] == h) {
+            ++handle_locks[i];
+            if (h == resource_lock_failure) {
+                resource_lock_bytes = *h;
+                *h = NULL;
+            }
+            return;
+        }
     assert(!"Unknown locked Macintosh handle");
 }
 void HUnlock(Handle h)
@@ -180,6 +221,11 @@ void HUnlock(Handle h)
     unsigned int i;
     for (i = 0; i < 64; ++i)
         if (handle_blocks[i] == h) {
+            if (h == resource_lock_failure) {
+                *h = resource_lock_bytes;
+                resource_lock_failure = NULL;
+                resource_lock_bytes = NULL;
+            }
             assert(handle_locks[i] > 0); --handle_locks[i]; return;
         }
     assert(!"Unknown unlocked Macintosh handle");
@@ -198,17 +244,25 @@ Handle Get1Resource(OSType type, short id)
     unsigned char *bytes;
     Handle handle;
     assert(type == 0x45415254UL);
+    resource_error = noErr;
+    if (fail_resource == 1 || fail_resource == 2) {
+        resource_error = fail_resource == 1 ? memFullErr : -192;
+        return NULL;
+    }
     bytes = test_earth_resource(id, &size);
-    handle = NewHandle((Size)size);
+    handle = NewHandle((Size)(size + (fail_resource == 3 ? 1UL : 0UL)));
     memcpy(*handle, bytes, (size_t)size);
     free(bytes);
+    if (fail_resource == 4) resource_lock_failure = handle;
     return handle;
 }
 void ReleaseResource(Handle h) { DisposeHandle(h); }
+OSErr ResError(void) { return resource_error; }
 OSErr MemError(void) { return noErr; }
 unsigned long TickCount(void) { ticks = (ticks + 1UL) & 0xffffffffUL; return ticks; }
 void InitGraf(GrafPtr *port)
 {
+    test_init_colors(&desktop_colors);
     memset(&desktop_port, 0, sizeof(desktop_port));
     desktop_port.portRect.right = screen_width; desktop_port.portRect.bottom = screen_height;
     desktop_port.portBits.bounds = desktop_port.portRect;
@@ -257,6 +311,7 @@ static WindowPtr create_window(const Rect *bounds, ConstStr255Param title,
     assert(window_live == NULL && bounds != NULL && title != NULL && title[0] != 0);
     assert(visible && close_box);
     memset(&window_port, 0, sizeof(window_port));
+    test_init_colors(&window_colors);
     window_port.portRect.right = bounds->right - bounds->left;
     window_port.portRect.bottom = bounds->bottom - bounds->top;
     window_port.portBits.bounds = window_port.portRect;
@@ -308,12 +363,11 @@ QDErr NewGWorld(GWorldPtr *world, short depth, const Rect *bounds,
     color_api(); ++world_calls;
     assert(qd_version >= gestalt32BitQD && world_live == NULL);
     assert(world != NULL && bounds != NULL && (depth == 0 || depth == display_depth));
-    (void)table; (void)flags;
-    assert(device == (multiple_devices && second_pixmap.pixelSize > screen_pixmap.pixelSize ?
-                        &second_device_ptr : &screen_device_ptr));
+    (void)table;
     if (fail_gworld) { *world = NULL; return memFullErr; }
     world_live = (GWorldPtr)calloc(1, sizeof(CGrafPort));
     assert(world_live != NULL);
+    test_init_colors(&world_colors);
     world_live->portRect = *bounds;
     world_live->portBits.bounds = *bounds;
     world_pixmap.bounds = *bounds; world_pixmap.pixelSize = display_depth;
@@ -322,7 +376,20 @@ QDErr NewGWorld(GWorldPtr *world, short depth, const Rect *bounds,
                                       (bounds->bottom - bounds->top), 1);
     assert(world_pixmap.baseAddr != NULL);
     world_live->portPixMap = &world_pixmap_ptr;
-    *world = world_live; world_device = device; ++world_count;
+    *world = world_live;
+    if (flags & noNewDevice) {
+        assert(device != NULL);
+        world_device = device;
+    } else {
+        /* Native QuickDraw ignores the supplied device and owns a new
+         * offscreen GDevice when noNewDevice is clear. */
+        memset(&offscreen_device, 0, sizeof(offscreen_device));
+        offscreen_device.gdPMap = &world_pixmap_ptr;
+        offscreen_device.gdRect = *bounds;
+        world_device = &offscreen_device_ptr;
+        assert(world_device != qd_device);
+    }
+    ++world_count;
     return noErr;
 }
 PixMapHandle GetGWorldPixMap(GWorldPtr world) { color_api(); assert(world == world_live); return &world_pixmap_ptr; }
@@ -349,7 +416,11 @@ void PaintRect(const Rect *r) { assert(r != NULL && current_port != NULL); }
 PolyHandle OpenPoly(void)
 {
     assert(recording_poly == NULL && !pen_hidden);
-    if (fail_polygon) return NULL;
+    ++polygon_calls;
+    if (fail_polygon) {
+        if (fail_polygon == 2) fail_polygon = 0;
+        return NULL;
+    }
     pen_hidden = TRUE;
     recording_poly = (PolyHandle)NewHandle((Size)(sizeof(Polygon) + 12 * sizeof(Point)));
     pending_count = 0; ++poly_count;
@@ -371,11 +442,35 @@ void LineTo(short h, short v)
         assert(pending_count < 12); pending_points[pending_count++] = pen;
     }
 }
-static void record_polygon(PolyHandle poly, unsigned int black)
+static void record_polygon(PolyHandle poly, unsigned int black, const RGBColor *color)
 {
     RecordedPolygon *entry;
+    EventRecord event;
+    Vertex *borrowed;
+    unsigned long revision;
+    unsigned int width;
+    int longitude, osd;
     int i, count;
     assert(poly != NULL && current_port != NULL);
+    if (reentry_requested) {
+        reentry_requested = FALSE; ++reentry_calls;
+        assert(qd_rendering);
+        borrowed = globe_verts; revision = globe_revision;
+        longitude = globe_longitude; width = drv_win_width;
+        osd = drv_osd_enabled;
+        qd_keyboard('2');
+        qd_keyboard('o');
+        memset(&event, 0, sizeof(event));
+        event.what = keyDown; event.message = 'o';
+        qd_event(&event);
+        qd_resize((int)reentry_width, (int)drv_win_height);
+        qd_refresh_display();
+        event.what = updateEvt; event.message = (long)qd_window;
+        qd_event(&event);
+        assert(globe_verts == borrowed && globe_revision == revision);
+        assert(globe_longitude == longitude && drv_win_width == width);
+        assert(drv_osd_enabled == osd && qd_rendering);
+    }
     count = pending_count;
     if (count > 3 && pending_points[count - 1].h == pending_points[0].h &&
         pending_points[count - 1].v == pending_points[0].v) --count;
@@ -398,15 +493,15 @@ static void record_polygon(PolyHandle poly, unsigned int black)
     }
     assert(recorded_count < 5000);
     entry = recorded + recorded_count++;
-    entry->count = count; entry->color = rgb_value(&foreground); entry->pattern_black = black;
+    entry->count = count; entry->color = rgb_value(color); entry->pattern_black = black;
     for (i = 0; i < count; ++i) {
         entry->points[i] = pending_points[i];
         assert(entry->points[i].h >= 0 && entry->points[i].h <= (int)drv_win_width);
         assert(entry->points[i].v >= 0 && entry->points[i].v <= (int)drv_win_height);
     }
 }
-void PaintPoly(PolyHandle p) { assert(has_color); record_polygon(p, 64U); }
-void FillPoly(PolyHandle p, const Pattern *pattern) { assert(pattern != NULL); record_polygon(p, pattern_bits(pattern->pat)); }
+void PaintPoly(PolyHandle p) { assert(has_color); record_polygon(p, 64U, &test_current_colors()->foreground); }
+void FillPoly(PolyHandle p, const Pattern *pattern) { assert(pattern != NULL); record_polygon(p, pattern_bits(pattern->pat), &test_current_colors()->foreground); }
 void PenSize(short h, short v) { assert(h >= 0 && v >= 0); }
 void PenNormal(void) {}
 void HidePen(void) { assert(!pen_hidden); pen_hidden = TRUE; }
@@ -414,25 +509,32 @@ void ShowPen(void) { assert(pen_hidden); pen_hidden = FALSE; }
 PixPatHandle NewPixPat(void)
 {
     color_api();
+    ++pattern_calls;
     if (fail_pattern) return NULL;
     ++pixpat_count;
     return (PixPatHandle)NewHandle((Size)sizeof(PixPat));
 }
 void DisposePixPat(PixPatHandle p) { color_api(); assert(pixpat_count > 0); DisposeHandle((Handle)p); --pixpat_count; }
-void MakeRGBPat(PixPatHandle p, const RGBColor *c) { color_api(); assert(p != NULL && c != NULL && current_device == qd_device); (*p)->color = *c; }
-void FillCPoly(PolyHandle p, PixPatHandle pattern) { color_api(); assert(pattern != NULL); foreground = (*pattern)->color; record_polygon(p, 64U); }
+void MakeRGBPat(PixPatHandle p, const RGBColor *c) { color_api(); assert(p != NULL && c != NULL); test_drawing_device(); (*p)->color = *c; }
+void FillCPoly(PolyHandle p, PixPatHandle pattern) { color_api(); assert(pattern != NULL); record_polygon(p, 64U, &(*pattern)->color); }
 void ForeColor(long color)
 {
+    RGBColor *foreground;
     assert(color == blackColor || color == whiteColor);
-    foreground.red = foreground.green = foreground.blue = color == blackColor ? 0 : 65535U;
+    foreground = &test_current_colors()->foreground;
+    foreground->red = foreground->green = foreground->blue = color == blackColor ? 0 : 65535U;
 }
 void BackColor(long color)
 {
+    RGBColor *background;
     assert(color == blackColor || color == whiteColor);
-    background.red = background.green = background.blue = color == blackColor ? 0 : 65535U;
+    background = &test_current_colors()->background;
+    background->red = background->green = background->blue = color == blackColor ? 0 : 65535U;
 }
-void RGBForeColor(const RGBColor *color) { color_api(); assert(color != NULL && current_device == qd_device); foreground = *color; }
-void RGBBackColor(const RGBColor *color) { color_api(); assert(color != NULL && current_device == qd_device); background = *color; }
+void RGBForeColor(const RGBColor *color) { color_api(); assert(color != NULL); test_drawing_device(); test_current_colors()->foreground = *color; }
+void RGBBackColor(const RGBColor *color) { color_api(); assert(color != NULL); test_drawing_device(); test_current_colors()->background = *color; }
+void GetForeColor(RGBColor *color) { color_api(); assert(color != NULL); *color = test_current_colors()->foreground; }
+void GetBackColor(RGBColor *color) { color_api(); assert(color != NULL); *color = test_current_colors()->background; }
 void TextFont(short font) { (void)font; }
 void TextSize(short size) { assert(size > 0); }
 void TextMode(short mode) { (void)mode; }
@@ -455,6 +557,9 @@ void CopyBits(const BitMap *source, const BitMap *destination, const Rect *a,
     assert(has_color && source != NULL && destination != NULL && a != NULL && b != NULL);
     assert(mode == srcCopy || mode == (srcCopy | ditherCopy)); (void)mask;
     assert(source->bounds.right == a->right && source->bounds.bottom == a->bottom);
+    assert(current_port == (GrafPtr)&window_port);
+    assert(rgb_value(&window_colors.foreground) == 0);
+    assert(rgb_value(&window_colors.background) == 0xffffffUL);
     ++copy_calls;
 }
 long GetCTSeed(void) { color_api(); return 1; }
@@ -470,6 +575,7 @@ PaletteHandle NewPalette(short count, CTabHandle table, short usage, short toler
         assert((*table)->ctTable[i].rgb.blue == earth_cmap[i][2] * 257U);
     }
     (void)usage; (void)tolerance;
+    if (fail_palette) return NULL;
     p = (PaletteHandle)NewHandle((Size)sizeof(Palette));
     (*p)->entries = count; ++palette_count; ++palette_calls;
     return p;
@@ -504,13 +610,38 @@ Boolean WaitNextEvent(EventMask mask, EventRecord *event, unsigned long sleep, R
     if (!contract_started) {
         contract_started = TRUE;
         if (failure_profile) {
+            unsigned int before_polygons;
             assert(qd_ready && qd_world != NULL);
             SetPort(&desktop_port);
             SetGDevice(&screen_device_ptr);
             fail_polygon = failure_profile == 1;
             fail_pattern = failure_profile == 2;
+            before_polygons = polygon_calls;
             drv_render();
-            assert(!"Expected QuickDraw allocation failure");
+            assert(qd_ready && qd_running);
+            assert(alert_calls == 0 && !world_locked && !qd_rendering);
+            if (failure_profile == 1) {
+                assert(qd_frame_paused && polygon_calls == before_polygons + 2U);
+                assert(qd_world == NULL && qd_pending_polygon == NULL);
+                assert(current_port == &desktop_port && current_device == &screen_device_ptr);
+                osd_text[0] = 0;
+                drv_render();
+                assert(polygon_calls == before_polygons + 2U);
+                assert(strstr(osd_text, "paused") != NULL);
+                fail_polygon = FALSE;
+                qd_keyboard('1');
+                assert(!qd_frame_paused);
+                recorded_count = 0; osd_text[0] = 0;
+                drv_render();
+                assert(recorded_count != 0 && !drv_frame_failed);
+                qd_make_palette();
+                qd_make_buffer();
+                puts("PASS QuickDraw polygon failure: two bounded attempts unwind ports, then pause; a key retries successfully without an alert");
+            } else {
+                assert(qd_pattern_unavailable);
+                fail_pattern = FALSE;
+                puts("PASS QuickDraw pattern failure: nearest-color drawing continues without an alert");
+            }
         }
         run_contract();
     }
@@ -580,33 +711,22 @@ void GlobalToLocal(Point *p) { assert(p != NULL); }
 void LocalToGlobal(Point *p) { assert(p != NULL); }
 void ParamText(ConstStr255Param a, ConstStr255Param b, ConstStr255Param c, ConstStr255Param d)
 {
-    const char *expected;
     (void)b; (void)c; (void)d; assert(a != NULL);
-    if (failure_profile) {
-        expected = failure_profile == 1 ? "Cannot allocate QuickDraw polygon" :
-                                          "Cannot allocate QuickDraw color pattern";
-        assert(a[0] == strlen(expected));
-        assert(memcmp(a + 1, expected, a[0]) == 0);
-    }
-    else fprintf(stderr, "Unexpected Toolbox error: %.*s\n", (int)a[0], a + 1);
+    fprintf(stderr, "Unexpected Toolbox error: %.*s\n", (int)a[0], a + 1);
 }
 short StopAlert(short id, void *filter)
 {
     unsigned int previous_texts;
     EventRecord event;
     assert(id == 128 && filter == NULL); ++alert_calls;
-    if (failure_profile) {
-        assert(!qd_ready && !qd_running && !qd_active && !qd_rendering);
-        assert(!world_locked && qd_locked_pixels == NULL && qd_pending_polygon == NULL);
-        assert(current_port == &desktop_port && current_device == &screen_device_ptr);
-        assert(poly_count == 0 && recording_poly == NULL && !pen_hidden);
-        previous_texts = text_calls;
-        memset(&event, 0, sizeof(event));
-        event.what = updateEvt; event.message = (long)qd_window;
-        qd_event(&event); drv_render(); drv_draw_osd();
-        assert(text_calls == previous_texts);
-        puts("PASS QuickDraw fatal allocation: polygon and locked GWorld released, caller port/device restored before a quiescent modal alert");
-    }
+    assert(!qd_ready && !qd_running && !qd_active && !qd_rendering);
+    assert(!world_locked && qd_locked_pixels == NULL && qd_pending_polygon == NULL);
+    assert(poly_count == 0 && recording_poly == NULL && !pen_hidden);
+    previous_texts = text_calls;
+    memset(&event, 0, sizeof(event));
+    event.what = updateEvt; event.message = (long)qd_window;
+    qd_event(&event); drv_render(); drv_draw_osd();
+    assert(text_calls == previous_texts);
     return 1;
 }
 void SysBeep(short duration) { (void)duration; }
@@ -818,7 +938,7 @@ static void camera_triangle(double z0, double z1, double z2)
     source[1].x = (float)(z1 + 3000.0); source[1].y = 100.0f; source[1].z = -100.0f;
     source[2].x = (float)(z2 + 3000.0); source[2].y = 0.0f; source[2].z = 100.0f;
     if (qd_has_fpu) {
-        qd_fpu_prepare(&zero, &zero);
+        assert(qd_fpu_prepare(&zero, &zero));
         qd_fpu_transform(3, source);
     } else {
         qd_fixed_points[0].x = -1600L; qd_fixed_points[0].y = -1600L;
@@ -842,7 +962,7 @@ static void camera_quad(double z0, double z1, double z2, double z3)
         source[i].z = i < 2 ? -1000.0f : 1000.0f;
     }
     if (qd_has_fpu) {
-        qd_fpu_prepare(&zero, &zero);
+        assert(qd_fpu_prepare(&zero, &zero));
         qd_fpu_transform(4U, source);
     } else {
         for (i = 0; i < 4; ++i) {
@@ -859,26 +979,26 @@ static void check_clipping(void)
     unsigned int indices[4];
     indices[0] = 0; indices[1] = 1; indices[2] = 2; indices[3] = 3;
     camera_triangle(-9000.0, -9000.0, -11000.0);
-    assert(qd_prepare_polygon(indices, 3U, polygon) == 4);
+    assert(qd_prepare_polygon(indices, 3U, 3U, polygon) == 4);
     camera_triangle(-11000.0, -11000.0, -11000.0);
-    assert(qd_prepare_polygon(indices, 3U, polygon) == 0);
+    assert(qd_prepare_polygon(indices, 3U, 3U, polygon) == 0);
     camera_triangle(0.0, 0.0, 0.0);
-    assert(qd_prepare_polygon(indices, 3U, polygon) == 0);
+    assert(qd_prepare_polygon(indices, 3U, 3U, polygon) == 0);
     camera_triangle(-2.0, -2.0, -0.5);
-    count = qd_prepare_polygon(indices, 3U, polygon);
+    count = qd_prepare_polygon(indices, 3U, 3U, polygon);
     assert(count >= 3 && count <= 10);
     for (i = 0; i < count; ++i) {
         assert(polygon[i].h >= 0 && polygon[i].h <= (int)drv_win_width);
         assert(polygon[i].v >= 0 && polygon[i].v <= (int)drv_win_height);
     }
     camera_quad(-9000.0, -9000.0, -11000.0, -9000.0);
-    assert(qd_prepare_polygon(indices, 4U, polygon) == 5);
+    assert(qd_prepare_polygon(indices, 4U, 4U, polygon) == 5);
     camera_quad(-11000.0, -11000.0, -11000.0, -11000.0);
-    assert(qd_prepare_polygon(indices, 4U, polygon) == 0);
+    assert(qd_prepare_polygon(indices, 4U, 4U, polygon) == 0);
     camera_quad(0.0, 0.0, 0.0, 0.0);
-    assert(qd_prepare_polygon(indices, 4U, polygon) == 0);
+    assert(qd_prepare_polygon(indices, 4U, 4U, polygon) == 0);
     camera_quad(-2.0, -2.0, -0.5, -2.0);
-    count = qd_prepare_polygon(indices, 4U, polygon);
+    count = qd_prepare_polygon(indices, 4U, 4U, polygon);
     assert(count >= 3 && count <= 10);
     for (i = 0; i < count; ++i) {
         assert(polygon[i].h >= 0 && polygon[i].h <= (int)drv_win_width);
@@ -886,6 +1006,76 @@ static void check_clipping(void)
     }
     test_soft3d_shared_pipeline();
 }
+
+static void check_fpu_angles(void)
+{
+    Vertex vertices[3];
+    Qd_screen_point projected[QD_FPU_MAX_POLY];
+    float zero, last, bad[7];
+    unsigned int i;
+    if (!qd_has_fpu) return;
+    zero = 0.0f; last = 359.999f;
+    for (i = 0; i < 3U; ++i) vertices[i].x = 0;
+    vertices[0].y = -100; vertices[0].z = -100;
+    vertices[1].y = 100; vertices[1].z = -100;
+    vertices[2].y = 0; vertices[2].z = 100;
+    bad[0] = -1.0f; bad[1] = 360.0f;
+    bad[2] = FLT_MAX; bad[3] = -FLT_MAX;
+    /* These host-only tests explicitly exercise IEEE nonfinite inputs. */
+    bad[4] = (float)strtod("inf", NULL);
+    bad[5] = -bad[4]; bad[6] = (float)strtod("nan", NULL);
+    assert(bad[4] > FLT_MAX && bad[6] != bad[6]);
+    for (i = 0; i < 7U; ++i) {
+        assert(qd_fpu_prepare(&zero, &zero));
+        qd_fpu_transform(3U, vertices);
+        assert(qd_fpu_project(0U, 1U, 2U, 640U, 480U, projected) == 3);
+        assert(!qd_fpu_prepare(bad + i, &zero));
+        qd_fpu_transform(3U, vertices);
+        assert(qd_fpu_project(0U, 1U, 2U, 640U, 480U, projected) == 0);
+        assert(!qd_fpu_prepare(&zero, bad + i));
+    }
+    assert(!qd_fpu_prepare(NULL, &zero));
+    assert(!qd_fpu_prepare(&zero, NULL));
+    assert(qd_fpu_prepare(&last, &last));
+    qd_fpu_transform(3U, vertices);
+    assert(qd_fpu_project(0U, 1U, 2U, 640U, 480U, projected) == 3);
+    puts("PASS QuickDraw FPU angles: normalized endpoints accepted, huge/nonfinite/null inputs rejected without loops or reuse of a stale transform");
+}
+
+static void check_buffer_recovery(void)
+{
+    Test_port_colors saved_colors;
+    GrafPtr saved_port;
+    GDHandle saved_device;
+    unsigned int previous_copies;
+    int saved_osd;
+    if (!qd_world_available || fail_gworld || fail_lock) return;
+    saved_port = current_port; saved_device = current_device;
+    saved_osd = drv_osd_enabled;
+    fail_gworld = TRUE;
+    qd_resize((int)drv_win_width, (int)drv_win_height);
+    assert(qd_world == NULL);
+    drv_osd_enabled = TRUE;
+    recorded_count = 0; osd_text[0] = 0;
+    drv_render();
+    saved_colors = window_colors;
+    if (qd_depth > 1) {
+        assert(rgb_value(&saved_colors.foreground) == 0xffffffUL);
+        assert(rgb_value(&saved_colors.background) == 0);
+    }
+    fail_gworld = FALSE;
+    qd_resize((int)drv_win_width, (int)drv_win_height);
+    assert(qd_world != NULL && world_device != qd_device);
+    previous_copies = copy_calls;
+    recorded_count = 0; osd_text[0] = 0;
+    drv_render();
+    assert(copy_calls == previous_copies + 1U);
+    assert(memcmp(&window_colors, &saved_colors, sizeof(saved_colors)) == 0);
+    assert(current_port == saved_port && current_device == saved_device && !world_locked);
+    drv_osd_enabled = saved_osd;
+    puts("PASS QuickDraw GWorld recovery: direct rendering followed by buffering copies with black/white destination colors, restores port colors and uses its own offscreen device");
+}
+
 static void event_key(unsigned char key, short modifiers)
 {
     EventRecord event;
@@ -1083,6 +1273,129 @@ static void check_display_refresh(void)
     puts("PASS QuickDraw display refresh: resume and activation rebuild palette/GWorld policy for changed device depth and restore the selected display");
 }
 
+static void check_render_reentry(void)
+{
+    unsigned int old_width, old_height;
+    int old_osd;
+    GrafPtr port;
+    GDHandle device;
+    old_width = drv_win_width; old_height = drv_win_height;
+    old_osd = drv_osd_enabled;
+    GetPort(&port); device = has_color ? GetGDevice() : NULL;
+    event_key('1', 0);
+    drv_osd_enabled = FALSE;
+    reentry_width = old_width - 16U;
+    reentry_requested = TRUE;
+    recorded_count = 0; osd_text[0] = 0;
+    drv_render();
+    assert(!reentry_requested && reentry_calls == 1U);
+    assert(globe_longitude == 32 && drv_win_width == old_width);
+    assert(qd_pending_count == 4U && qd_pending_resize && qd_pending_refresh);
+    assert(current_port == port && current_device == device && !world_locked);
+    SizeWindow(qd_window, (short)reentry_width, (short)old_height, TRUE);
+    recorded_count = 0; osd_text[0] = 0;
+    qd_apply_pending();
+    assert(globe_longitude == 64 && drv_win_width == reentry_width);
+    assert(!drv_osd_enabled && qd_pending_count == 0U);
+    assert(!qd_pending_resize && !qd_pending_refresh && !qd_rendering);
+    assert(current_port == port && current_device == device && !world_locked);
+    SizeWindow(qd_window, (short)old_width, (short)old_height, TRUE);
+    drv_fps_average = 99.0f;
+    qd_resize((int)old_width, (int)old_height);
+    assert(drv_fps_average == 0.0f);
+    drv_osd_enabled = old_osd;
+    puts("PASS QuickDraw reentry: native fill callbacks defer resolution, toggles, resize and updates until mesh borrows and native ports are released; resize resets timing");
+}
+
+static void check_recoverable_resources(void)
+{
+    unsigned char bytes[512];
+    unsigned int handles, texts, calls;
+    int old_osd, i;
+    Drv_result expected;
+    GrafPtr saved_port;
+    GDHandle saved_device;
+    handles = handle_count;
+    assert(drv_load_earth_chunk(TG_EARTH_32_ID, 512UL, NULL) == DRV_BAD_INPUT);
+    assert(drv_load_earth_chunk(TG_EARTH_32_ID, 0UL, bytes) == DRV_BAD_INPUT);
+    for (i = 1; i <= 4; ++i) {
+        fail_resource = i;
+        expected = i == 1 || i == 4 ? DRV_NO_MEMORY : DRV_BAD_DATA;
+        assert(drv_load_earth_chunk(TG_EARTH_32_ID, 512UL, bytes) == expected);
+        assert(handle_count == handles && resource_lock_failure == NULL);
+    }
+    fail_resource = 0;
+    assert(drv_load_earth_chunk(TG_EARTH_32_ID, 512UL, bytes) == DRV_OK);
+    assert(handle_count == handles);
+    GetPort(&saved_port);
+    saved_device = has_color ? GetGDevice() : NULL;
+    if (has_color && qd_depth <= 8) {
+        qd_dispose_buffer();
+        qd_dispose_palette();
+        handles = handle_count;
+        fail_color_table = TRUE;
+        qd_make_palette();
+        fail_color_table = FALSE;
+        assert(qd_colors == NULL && qd_palette == NULL && qd_palette_reduced);
+        assert(handle_count == handles);
+        fail_palette = TRUE;
+        qd_make_palette();
+        fail_palette = FALSE;
+        assert(qd_colors == NULL && qd_palette == NULL && qd_palette_reduced);
+        assert(handle_count == handles);
+        qd_make_buffer();
+        recorded_count = 0; osd_text[0] = 0;
+        drv_render();
+        assert(recorded_count != 0 && alert_calls == 0);
+        if (qd_depth > 1) {
+            if (qd_pattern != NULL) DisposePixPat(qd_pattern);
+            qd_pattern = NULL;
+            qd_pattern_unavailable = FALSE;
+            calls = pattern_calls;
+            fail_pattern = TRUE;
+            recorded_count = 0; osd_text[0] = 0;
+            drv_render();
+            assert(recorded_count != 0 && qd_pattern_unavailable);
+            assert(pattern_calls == calls + 1U && qd_pattern == NULL);
+            recorded_count = 0; osd_text[0] = 0;
+            drv_render();
+            assert(recorded_count != 0 && pattern_calls == calls + 1U);
+            fail_pattern = FALSE;
+        }
+    }
+    fail_polygon = 2;
+    calls = polygon_calls;
+    recorded_count = 0; osd_text[0] = 0;
+    drv_render();
+    assert(recorded_count != 0 && !qd_frame_paused && !drv_frame_failed);
+    assert(polygon_calls > calls + 1U && !world_locked && !qd_rendering);
+    assert(current_port == saved_port && current_device == saved_device);
+    drv_release_optional();
+    assert(qd_world == NULL && qd_pattern == NULL && qd_palette == NULL);
+    assert(qd_colors == NULL && !world_locked && !qd_rendering);
+    assert(current_port == saved_port && current_device == saved_device);
+    recorded_count = 0; osd_text[0] = 0;
+    drv_render();
+    assert(recorded_count != 0 && qd_ready && qd_running && alert_calls == 0);
+    old_osd = drv_osd_enabled;
+    drv_osd_enabled = FALSE;
+    globe_free();
+    assert(!globe_ready());
+    drv_notice("No globe; select a resolution to retry");
+    texts = text_calls;
+    recorded_count = 0; osd_text[0] = 0;
+    drv_render();
+    assert(recorded_count == 0 && text_calls > texts);
+    assert(strstr(osd_text, "No globe") != NULL);
+    event_key('2', 0);
+    assert(globe_ready() && globe_longitude == 64);
+    drv_osd_enabled = old_osd;
+    if (has_color && qd_depth <= 8) qd_make_palette();
+    qd_make_buffer();
+    assert(current_port == saved_port && current_device == saved_device);
+    puts("PASS QuickDraw recovery: resource errors release handles; palette/pattern failures and optional-buffer release keep drawing; empty scenes show status and accept a resolution retry");
+}
+
 static int run_contract(void)
 {
     int resolution, pose, i;
@@ -1104,6 +1417,7 @@ static int run_contract(void)
     assert(drv_win_width == expected_width && drv_win_height == expected_height);
     assert(strstr(drv_help, "1-5") != NULL);
     assert(qd_world != NULL || !has_color || fail_gworld || qd_version < gestalt32BitQD);
+    check_fpu_angles();
     drv_osd_enabled = FALSE;
     saved = current_port;
     for (resolution = 0; resolution < 2; ++resolution) {
@@ -1138,6 +1452,7 @@ static int run_contract(void)
     event_key('2', 0);
     drv_rot_x = 19.0f; drv_rot_y = 37.0f;
     check_clipping();
+    check_buffer_recovery();
     puts("PASS QuickDraw rendering: five quad resolutions, independent perspective/color/dither references, compact pole triangles, FPU/fixed paths, clipping and native fills");
     old_x = drv_rot_x; old_y = drv_rot_y;
     memset(&event, 0, sizeof(event)); event.what = mouseDown;
@@ -1187,30 +1502,23 @@ static int run_contract(void)
         Point tiny[10];
         unsigned int indices[3];
         indices[0] = 0; indices[1] = 1; indices[2] = 2;
-        assert(qd_prepare_polygon(indices, 3U, tiny) >= 3);
+        assert(qd_prepare_polygon(indices, 3U, 3U, tiny) >= 3);
     }
     SizeWindow(qd_window, 800, 600, TRUE); qd_resize(800, 600);
     ticks = 0xfffffff0UL;
-    for (i = 0; i < 61; ++i) { drv_fps_start(); drv_fps_stop(); }
-    assert(fabs(drv_fps_average - 60.0f) < 0.01);
+    drv_reset_timing();
+    for (i = 0; i < 2 * DRV_FPS_HISTORY; ++i) { drv_fps_start(); drv_fps_stop(); }
+    /* Each fake start/stop consumes a tick: completed frames are two ticks
+     * apart, including the wrap, rather than one render-call tick apart. */
+    assert(fabs(drv_fps_average - 30.0f) < 0.01);
     if (!has_color) assert(color_calls == 0 && world_calls == 0 && palette_calls == 0);
     else if (!fail_gworld && !fail_lock && qd_version >= gestalt32BitQD) assert(copy_calls > 0 && world_calls >= 3);
     if (fail_gworld || fail_lock || qd_version < gestalt32BitQD) assert(copy_calls == 0);
+    check_render_reentry();
+    check_recoverable_resources();
     puts("PASS QuickDraw events: adaptive default/explicit window size, 1-5 keys, wrapped OSD and GWorld state, mouse, resize, port restoration and TickCount rollover");
     return 0;
 }
-static void failure_cleanup_audit(void)
-{
-    assert(failure_profile && alert_calls == 1 && contract_started);
-    assert(!qd_ready && !qd_running && !qd_rendering && !world_locked);
-    assert(window_live == NULL && world_live == NULL);
-    assert(ptr_count == 0 && handle_count == 0 && poly_count == 0 && menu_count == 0);
-    assert(world_count == 0 && palette_count == 0 && window_count == 0 && pixpat_count == 0);
-    assert(qd_locked_pixels == NULL && qd_pending_polygon == NULL && !pen_hidden);
-    qd_cleanup();
-    puts("PASS QuickDraw fatal cleanup: all transient and persistent resources released; teardown is idempotent");
-}
-
 int main(int argc, char **argv)
 {
     char *arguments[2];
@@ -1243,8 +1551,6 @@ int main(int argc, char **argv)
     has_color = strcmp(argv[1], "mono") != 0;
     if (strcmp(argv[1], "polyfail") == 0) failure_profile = 1;
     if (strcmp(argv[1], "patternfail") == 0) failure_profile = 2;
-    /* Register first so the production cleanup runs before this audit. */
-    if (failure_profile) assert(atexit(failure_cleanup_audit) == 0);
     display_depth = has_color ? (short)atoi(argv[1]) : 1;
     if (display_depth == 0) display_depth = 8;
     multiple_devices = strcmp(argv[1], "multi") == 0;
@@ -1273,6 +1579,8 @@ int main(int argc, char **argv)
     assert(!drv_auto_enabled && text_calls == 0);
     arguments[0] = "testglobe"; arguments[1] = NULL;
     assert(testglobe_main(1, arguments) == 0);
+    /* The process-level owner releases scene storage after native cleanup. */
+    globe_free();
     assert(contract_started && window_live == NULL);
     assert(ptr_count == 0 && handle_count == 0 && poly_count == 0 && menu_count == 0);
     assert(world_count == 0 && palette_count == 0 && window_count == 0 && !world_locked);

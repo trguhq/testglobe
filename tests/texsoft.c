@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <float.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "texsoft.h"
 
@@ -79,6 +80,7 @@ static void all_pixels(unsigned int width,unsigned int height,unsigned long expe
 static void magnification_and_repeat(void)
 {
     unsigned long expected[36];
+    unsigned char *adopted;
     reset_matrices();
     assert(texsoft_texture(2,2,quadrants));
     assert(texsoft_begin(6,6,model,projection,0,NULL));
@@ -92,6 +94,13 @@ static void magnification_and_repeat(void)
     memcpy(expected,texsoft_pixels(),sizeof(expected));
     assert(texsoft_begin(6,6,model,projection,0,NULL));
     textured_quad(2,-3,3,-2);
+    assert(memcmp(expected,texsoft_pixels(),sizeof(expected))==0);
+    adopted=(unsigned char *)malloc(sizeof(quadrants));
+    assert(adopted!=NULL);
+    memcpy(adopted,quadrants,sizeof(quadrants));
+    assert(texsoft_texture_take(2,2,adopted)==DRV_OK);
+    assert(texsoft_begin(6,6,model,projection,0,NULL));
+    textured_quad(0,0,1,1);
     assert(memcmp(expected,texsoft_pixels(),sizeof(expected))==0);
 }
 

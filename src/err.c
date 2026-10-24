@@ -27,7 +27,7 @@ void error(char *message)
 {
 #ifdef GDI
     gdi_error(message);
-#elif defined(SEG68)
+#elif defined(DRV_QD)
     qd_error(message);
 #else
     fprintf(stderr, "ERROR - %s\n", message);

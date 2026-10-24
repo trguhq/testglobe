@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <float.h>
+#include <time.h>
 #include <conio.h>
 #include <dos.h>
 #include "drv.h"
@@ -28,6 +30,10 @@
 struct pg_com pg;
 static int mtx_initialized;
 static int mtx_palette_saved;
+static int mtx_error_policy_saved;
+static int mtx_cleanup_active;
+static int mtx_io_failed;
+static short mtx_previous_error_reporting;
 static int mtx_dirty = TRUE;
 static int mtx_mouse_present;
 static unsigned short mtx_previous_lut;
@@ -41,27 +47,174 @@ static float mtx_eye_x;
 static float mtx_eye_y;
 static float mtx_eye_z = 1.0f;
 
+/* LSERROR stalls the shell before a second unread error. A blocking
+ * lslibsync() cannot service that register, so use a counted LSINQ reply
+ * as a completion marker while polling the SDK's error and Read FIFO APIs.
+ * Packets contain a small command or color/polygon pair and a four-byte
+ * inquiry; LUT writes and text are bounded so even a legacy 256-byte
+ * command FIFO cannot fill before error servicing resumes. */
+#define MTX_WAIT_TICKS (10UL * (unsigned long)CLOCKS_PER_SEC)
+
+static int mtx_failure(const char *operation, unsigned short errors,
+                        int communication)
+{
+    char message[128];
+    const char *reason;
+    if (communication) mtx_io_failed = TRUE;
+    if (errors & 1U) reason = "undefined opcode";
+    else if (errors & 2U) reason = "unsupported parameter";
+    else if (errors & 4U) reason = "board memory exhausted";
+    else if (errors & 8U) reason = "arithmetic overflow";
+    else if (errors & 16U) reason = "command-list nesting";
+    else if (errors & 32U) reason = "command-list memory exhausted";
+    else reason = communication ? "communication timeout" : "unknown error";
+    sprintf(message, "Matrox %s: %s (0x%02X)", operation, reason,
+            (unsigned int)errors);
+    if (mtx_cleanup_active) fprintf(stderr, "%s\n", message);
+    else error(message);
+    return FALSE;
+}
+
+static int mtx_read_word(unsigned short *word, unsigned short *errors,
+                         const char *operation, clock_t start)
+{
+    clock_t now;
+    for (;;)
+    {
+        /* One deadline covers the entire reply, including immediately
+         * available words in a malformed, unexpectedly long reply. */
+        now = clock();
+        if (start == (clock_t)-1 || now == (clock_t)-1 ||
+            (unsigned long)now - (unsigned long)start >= MTX_WAIT_TICKS)
+            return mtx_failure(operation, *errors, TRUE);
+        /* IOGETERROR reads/acknowledges the eight-bit error register; zero
+         * has no error bits set. Keep draining while firmware is busy. */
+        *errors |= (unsigned short)iogeterror();
+        /* SDK integration assumption: a positive RDFIFOCNT must mean that
+         * IOGETW can read one complete word without waiting. The supplied
+         * headers expose only word reads, but do not document count units
+         * or atomic availability; verify this on the actual board/binding. */
+        if (rdfifocnt() > 0)
+        {
+            *word = (unsigned short)iogetw();
+            return TRUE;
+        }
+    }
+}
+
+static int mtx_inquire(unsigned short code, unsigned short *value,
+                        const char *operation, char *invalid_reply)
+{
+    unsigned short remaining, word, errors = 0;
+    clock_t start = clock();
+    int valid;
+    lsinq(code);
+    ioflush();
+    if (!mtx_read_word(&remaining, &errors, operation, start)) return FALSE;
+    valid = remaining == 1U;
+    /* These two inquiries return exactly one value. Drain short malformed
+     * replies for cleanup, but do not trust an unbounded corrupted count. */
+    if (remaining > 16U)
+    {
+        mtx_io_failed = TRUE;
+        if (mtx_cleanup_active) fprintf(stderr, "%s\n", invalid_reply);
+        else error(invalid_reply);
+        return FALSE;
+    }
+    while (remaining != 0U)
+    {
+        if (!mtx_read_word(&word, &errors, operation, start)) return FALSE;
+        if (valid) *value = word;
+        --remaining;
+    }
+    errors |= (unsigned short)iogeterror();
+    if (errors != 0) return mtx_failure(operation, errors, FALSE);
+    if (!valid)
+    {
+        if (mtx_cleanup_active) fprintf(stderr, "%s\n", invalid_reply);
+        else error(invalid_reply);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static int mtx_checkpoint(const char *operation)
+{
+    unsigned short reporting;
+    if (mtx_io_failed) return FALSE;
+    return mtx_inquire(77, &reporting, operation,
+                       "Invalid Matrox error-policy inquiry reply length");
+}
+
+#define MTX_COMMAND(command, operation) \
+    do { command; (void)mtx_checkpoint(operation); } while (0)
+
+static int mtx_read_words(short *words, unsigned short count,
+                           const char *operation)
+{
+    unsigned short word, errors = 0;
+    clock_t start = clock();
+    ioflush();
+    while (count != 0U)
+    {
+        if (!mtx_read_word(&word, &errors, operation, start)) return FALSE;
+        *words++ = (short)word;
+        --count;
+    }
+    errors |= (unsigned short)iogeterror();
+    if (errors != 0) return mtx_failure(operation, errors, FALSE);
+    return TRUE;
+}
+
+static int mtx_upload_palette(struct Lutval *palette)
+{
+    unsigned short first;
+    for (first = 0; first < 256U; first += 16U)
+    {
+        lslutmd(0, first, 16, palette + first);
+        if (!mtx_checkpoint("palette upload")) return FALSE;
+    }
+    return TRUE;
+}
+
 static void mtx_cleanup(void)
 {
     if (!mtx_initialized)
         return;
-    if (mtx_palette_saved)
+    mtx_cleanup_active = TRUE;
+    if (!mtx_io_failed && mtx_palette_saved)
     {
-        lslutmd(0, 0, 256, mtx_saved_palette);
-        lslutsl(mtx_previous_lut, 0);
+        (void)mtx_upload_palette(mtx_saved_palette);
     }
-    ioflush();
-    lslibsync();
-    lsemulen(1);
-    ioflush();
+    if (!mtx_io_failed && mtx_palette_saved)
+    {
+        lslutsl(mtx_previous_lut, 0);
+        (void)mtx_checkpoint("restore palette selection");
+    }
+    if (!mtx_io_failed)
+    {
+        lserror(mtx_error_policy_saved ? mtx_previous_error_reporting : 0);
+        (void)mtx_checkpoint("restore error reporting");
+    }
+    if (!mtx_io_failed)
+    {
+        /* Emulation is the final command; it may stop servicing inquiries. */
+        lsemulen(1);
+        ioflush();
+    }
     mtx_initialized = FALSE;
+    mtx_cleanup_active = FALSE;
 }
 
 void drv_close(void)
 {
-    globe_free();
     /* atexit also restores the board after shared allocation failures. */
     exit(0);
+}
+
+/* This immediate-mode driver owns no optional host rendering cache. */
+void drv_release_optional(void)
+{
 }
 
 static void mtx_init_mouse(void)
@@ -84,29 +237,16 @@ static void mtx_init_mouse(void)
 
 static unsigned short mtx_inquire_lut(void)
 {
-    unsigned short remaining;
-    lsinq(78);
-    ioflush();
-    /* LSINQ replies start with the number of following data words, unlike
-     * the fixed-size LSINQSYS and LSLUTRD replies. Read both header and LUT. */
-    remaining = (unsigned short)iogetw();
-    if (remaining != 1U)
-    {
-        /* Leave the Read FIFO synchronized before atexit restores the board. */
-        while (remaining != 0U)
-        {
-            (void)iogetw();
-            --remaining;
-        }
-        error("Invalid Matrox LUT inquiry reply length");
-        return 0;
-    }
-    return (unsigned short)iogetw();
+    unsigned short value = 0;
+    (void)mtx_inquire(78, &value, "LUT inquiry",
+                      "Invalid Matrox LUT inquiry reply length");
+    return value;
 }
 
 void drv_init(int *argc, char **argv)
 {
     short system_info[10];
+    unsigned short reporting;
     (void)argc;
     (void)argv;
     lsinit(0, 1);
@@ -117,9 +257,13 @@ void drv_init(int *argc, char **argv)
         mtx_cleanup();
         error("Cannot register Matrox cleanup");
     }
+    if (!mtx_inquire(77, &reporting, "error-policy inquiry",
+                     "Invalid Matrox error-policy inquiry reply length")) return;
+    mtx_previous_error_reporting = reporting != 0;
+    mtx_error_policy_saved = TRUE;
+    MTX_COMMAND(lserror(1), "enable error reporting");
     lsinqsys();
-    ioflush();
-    iogetbuf(system_info, 10);
+    if (!mtx_read_words(system_info, 10, "system inquiry")) return;
     if ((unsigned short)system_info[0] < DRV_WIN_WIDTH ||
         (unsigned short)system_info[1] < DRV_WIN_HEIGHT ||
         (unsigned short)system_info[2] < 256)
@@ -127,8 +271,8 @@ void drv_init(int *argc, char **argv)
     /* Preserve the table replaced and the currently displayed LUT label. */
     mtx_previous_lut = mtx_inquire_lut();
     lslutrd(0, 0, 256);
-    ioflush();
-    iogetbuf((short *)mtx_saved_palette, 256 * 3);
+    if (!mtx_read_words((short *)mtx_saved_palette, 256 * 3,
+                        "palette inquiry")) return;
     mtx_palette_saved = TRUE;
     mtx_init_mouse();
 }
@@ -168,39 +312,39 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
             mtx_foreground = (unsigned short)i;
         }
     }
-    lslutmd(0, 0, 256, mtx_palette);
-    lslutsl(0, 0);
-    lslutpm(0, 0xff);
-    lssbm(-1);
-    lssclpl(-1);
-    scsorg(0, 0);
-    v2gpsvwp(0, DRV_WIN_WIDTH - 1, 0, DRV_WIN_HEIGHT - 1);
+    if (!mtx_upload_palette(mtx_palette)) return 0;
+    MTX_COMMAND(lslutsl(0, 0), "palette selection");
+    MTX_COMMAND(lslutpm(0, 0xff), "palette mask");
+    MTX_COMMAND(lssbm(-1), "screen bitmap");
+    MTX_COMMAND(lssclpl(-1), "clipping selection");
+    MTX_COMMAND(scsorg(0, 0), "screen origin");
+    MTX_COMMAND(v2gpsvwp(0, DRV_WIN_WIDTH - 1, 0, DRV_WIN_HEIGHT - 1), "viewport");
     /* 4:3 aspect, 400-pixel globe diameter, room for the status display. */
-    v2gpswdw(-1600.0, 1600.0, -1200.0, 1200.0);
-    v3gpsproj(0);                /* Documented orthographic projection. */
-    v3gpsdist(3000.0);
-    v3gpshclip(0);
-    v3gpsyclip(0);
-    krhwsbop(0);                 /* REPLACE, not SET-all-ones. */
-    krhwsmsk(0xff);
-    krhwstdef(0);
-    lssafapat(-1);               /* Solid fill, no board-specific shading. */
-    krgcdi();
-    lssfont(-4);                 /* Documented 640x480, 8x16 raster font. */
-    sctxsalign(0, 0);
-    sctxsdmode(0);               /* Text must not enqueue read-FIFO replies. */
-    sctxssf(1.0, 1.0);
-    ioflush();
-    lslibsync();
+    MTX_COMMAND(v2gpswdw(-1600.0, 1600.0, -1200.0, 1200.0), "world window");
+    MTX_COMMAND(v3gpsproj(0), "projection");                /* Documented orthographic projection. */
+    MTX_COMMAND(v3gpsdist((double)GLOBE_VIEW_DISTANCE), "view distance");
+    MTX_COMMAND(v3gpshclip(0), "hither clipping");
+    MTX_COMMAND(v3gpsyclip(0), "yon clipping");
+    MTX_COMMAND(krhwsbop(0), "drawing operation");                 /* REPLACE, not SET-all-ones. */
+    MTX_COMMAND(krhwsmsk(0xff), "plane mask");
+    MTX_COMMAND(krhwstdef(0), "transparency");
+    MTX_COMMAND(lssafapat(-1), "solid fill");               /* Solid fill, no board-specific shading. */
+    MTX_COMMAND(krgcdi(), "graphics cursor");
+    MTX_COMMAND(lssfont(-4), "font selection");                 /* Documented 640x480, 8x16 raster font. */
+    MTX_COMMAND(sctxsalign(0, 0), "text alignment");
+    MTX_COMMAND(sctxsdmode(0), "text mode");               /* Text must not enqueue read-FIFO replies. */
+    MTX_COMMAND(sctxssf(1.0, 1.0), "text scale");
     mtx_dirty = TRUE;
     return 1;
 }
 
 static short mtx_angle(float angle)
 {
-    while (angle < 0.0f) angle += 360.0f;
-    while (angle >= 360.0f) angle -= 360.0f;
-    return (short)angle;
+    double wrapped;
+    if (!(angle >= -FLT_MAX && angle <= FLT_MAX)) return 0;
+    wrapped = fmod((double)angle, 360.0);
+    if (wrapped < 0.0) wrapped += 360.0;
+    return (short)wrapped;
 }
 
 static void mtx_set_transform(void)
@@ -213,12 +357,12 @@ static void mtx_set_transform(void)
     /* A single rotation in each stage avoids undocumented cumulative
      * matrix ordering. Globe longitude runs around its Z axis. The view
      * command moves the viewer about X around the reference point. */
-    v3mdid();
-    v3mdorg(0.0, 0.0, 0.0);
-    v3mdrotz(yaw);
-    v3vwid();
-    v3vwrpt(0.0, 0.0, 0.0);
-    v3vwrotx(pitch);
+    MTX_COMMAND(v3mdid(), "model identity");
+    MTX_COMMAND(v3mdorg(0.0, 0.0, 0.0), "model origin");
+    MTX_COMMAND(v3mdrotz(yaw), "model rotation");
+    MTX_COMMAND(v3vwid(), "view identity");
+    MTX_COMMAND(v3vwrpt(0.0, 0.0, 0.0), "view reference");
+    MTX_COMMAND(v3vwrotx(pitch), "view rotation");
     /* Inverse model yaw applied to the viewer's world-space direction.
      * Use exactly the integer-degree angles sent to LibShell. */
     mtx_eye_x = (float)(-sin(yaw_radians) * sin_pitch);
@@ -269,8 +413,10 @@ static void mtx_draw_flat_color(unsigned short npoints,
     nz = ax * by - ay * bx;
     if (nx * mtx_eye_x + ny * mtx_eye_y + nz * mtx_eye_z <= 0.0f)
         return;
+    /* Color (4), four 16.16 vertices (52), inquiry (4): 60 bytes total. */
     krhwsfcol((unsigned short)color);
     v3arwplygn(count, vertices);
+    (void)mtx_checkpoint("polygon fill");
     if (npoints == 3)
         ++globe_tris_num_vis;
     else
@@ -305,27 +451,40 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1,
     mtx_draw_flat_color(4, source, color);
 }
 
+static void mtx_draw_text(short x, short y, char *text)
+{
+    char bounded[120];
+    /* SCTXBSTRING expands bytes into 16-bit SCTXSTRING characters. With
+     * its eight-byte header and the inquiry, 119 characters use 250 bytes.
+     * Text beyond this limit is already outside the 640-pixel display. */
+    strncpy(bounded, text, sizeof(bounded) - 1);
+    bounded[sizeof(bounded) - 1] = '\0';
+    MTX_COMMAND(sctxbstring(x, y, bounded), "OSD text");
+}
+
 void drv_draw_osd(void)
 {
     char status[128];
-    krhwsfcol(mtx_foreground);
-    sctxbstring(8, DRV_WIN_HEIGHT - 20, drv_help);
+    MTX_COMMAND(krhwsfcol(mtx_foreground), "text color");
+    mtx_draw_text(8, DRV_WIN_HEIGHT - 20, drv_help);
     drv_format_stats(status);
-    sctxbstring(8, 8, status);
+    mtx_draw_text(8, 8, status);
 }
 
 void drv_render(void)
 {
     drv_fps_start();
-    krhwcclr(mtx_background);
-    mtx_set_transform();
+    MTX_COMMAND(krhwcclr(mtx_background), "clear screen");
     globe_quads_num_vis = 0;
-    globe_draw_quads();
-    if (drv_osd_enabled) drv_draw_osd();
-    ioflush();
-    lslibsync();                 /* FPS includes actual board execution. */
+    if (globe_ready())
+    {
+        mtx_set_transform();
+        globe_draw_quads();
+    }
+    if (drv_osd_enabled || !globe_ready()) drv_draw_osd();
+    /* Every completion marker includes actual board execution in FPS. */
     drv_fps_stop();
-    if (drv_auto_enabled) drv_globe_rotate();
+    if (drv_auto_enabled && globe_ready()) drv_globe_rotate();
 }
 
 static void mtx_keyboard(unsigned char key)
@@ -376,7 +535,7 @@ void drv_loop(void)
             mtx_keyboard((unsigned char)key);
         }
         mtx_poll_mouse();
-        if (mtx_dirty || drv_auto_enabled)
+        if (mtx_dirty || (drv_auto_enabled && globe_ready()))
         {
             drv_render();
             mtx_dirty = FALSE;

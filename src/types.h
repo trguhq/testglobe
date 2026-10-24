@@ -20,6 +20,18 @@
 #ifndef types_h
 #define types_h
 
+/* Small C89 results distinguish recoverable exhaustion from invalid data or
+ * a native renderer whose state can no longer be trusted. */
+typedef enum Drv_result
+{
+    DRV_OK = 0,
+    DRV_NO_MEMORY,
+    DRV_BAD_DATA,
+    DRV_BAD_INPUT,
+    DRV_UNAVAILABLE,
+    DRV_NATIVE_FAILED
+} Drv_result;
+
 /* Microsoft C 7 huge pointers normalize arithmetic across 64 KiB segments. */
 #ifdef SEG86
 #define TG_HUGE _huge

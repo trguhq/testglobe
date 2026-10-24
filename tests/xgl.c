@@ -7,17 +7,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "earth_reference.h"
 static void *test_xgl_malloc(size_t size);
-static int test_texture_try_generate(int size);
 #define malloc test_xgl_malloc
-#define texture_try_generate test_texture_try_generate
 #include "../src/drv_xgl.c"
-#undef texture_try_generate
 #undef malloc
-extern int texture_try_generate(int size);
 
 extern Vertex *globe_verts;
-extern Coord *globe_coords;
 extern int globe_longitude, globe_latitude;
 
 struct Test_xgl_object {
@@ -44,6 +40,8 @@ static Xgl_error_type injected_error_type;
 static unsigned long frame_texture_facets;
 static int frame_flush_ok;
 static int native_stopped, fail_cleanup;
+static unsigned int allocation_failures;
+static int allocation_failure_type;
 
 static int inject(const char *name)
 {
@@ -62,15 +60,10 @@ static void native_error(int fatal)
 
 static void *test_xgl_malloc(size_t size)
 {
-    if (xgl_texture_scope && drv_texture_enabled && inject("stripallocfail"))
+    if (inject("flatstripfail") ||
+        (xgl_texture_scope && drv_texture_enabled && inject("stripallocfail")))
         return NULL;
     return malloc(size);
-}
-
-static int test_texture_try_generate(int size)
-{
-    if (inject("stagefail")) return FALSE;
-    return texture_try_generate(size);
 }
 
 static Xgl_object allocate_object(int type)
@@ -166,6 +159,14 @@ static void attributes(Xgl_object object, int attribute, va_list args)
             assert(descriptor->texture_info.mipmap.interp_info.filter2 == XGL_TEXTURE_INTERP_BILINEAR);
             assert(descriptor->texture_info.mipmap.orientation_matrix[0][0] == 1.0f);
             assert(descriptor->texture_info.mipmap.orientation_matrix[1][1] == 1.0f);
+            /* Native Xgl_matrix_f2d is three rows by two columns; the
+             * last row holds UV translation, not a third column. */
+            assert(sizeof(descriptor->texture_info.mipmap.orientation_matrix[0]) ==
+                   2U * sizeof(float));
+            assert(descriptor->texture_info.mipmap.orientation_matrix[0][1] == 0.0f);
+            assert(descriptor->texture_info.mipmap.orientation_matrix[1][0] == 0.0f);
+            assert(descriptor->texture_info.mipmap.orientation_matrix[2][0] == 0.0f);
+            assert(descriptor->texture_info.mipmap.orientation_matrix[2][1] == 0.0f);
             assert(descriptor->comp_info.color_info.num_render_comp_desc == 1);
             assert(descriptor->comp_info.color_info.num_channels[0] == 3);
             assert(descriptor->comp_info.color_info.render_component_desc[0].comp == XGL_RENDER_COMP_DIFFUSE_COLOR);
@@ -209,8 +210,19 @@ Xgl_object xgl_object_create(Xgl_sys_state system, Xgl_obj_type type,
         assert(window->X_window == (Xgl_usgn32)xgl_window);
         assert(window->X_screen == DefaultScreen(xgl_display));
     } else assert(descriptor == NULL);
+    if (type == XGL_MEM_RAS && fault != NULL && strcmp(fault, "stagefail") == 0)
+        return NULL;
     if ((type == XGL_MEM_RAS && inject("rasterfail")) ||
-        (type == XGL_MIPMAP_TEXTURE && inject("mipmapfail"))) return NULL;
+        (type == XGL_MIPMAP_TEXTURE && inject("mipmapfail"))) {
+        /* Fail the initial attempt and the same-size retry after eviction;
+         * the bounded next size must then succeed. */
+        allocation_failure_type = type;
+        allocation_failures = 2;
+    }
+    if (type == allocation_failure_type && allocation_failures != 0) {
+        --allocation_failures;
+        return NULL;
+    }
     if (type == XGL_TMAP && inject("mapfail")) {
         native_error(FALSE);
         return NULL;
@@ -248,9 +260,10 @@ void xgl_object_get(Xgl_object object, Xgl_attribute attribute, void *value)
         assert(object->type == XGL_MEM_RAS);
         assert(object->value[XGL_RAS_DEPTH] == 32);
         assert(object->value[XGL_DEV_COLOR_TYPE] == XGL_COLOR_RGB);
-        assert(object->value[XGL_RAS_WIDTH] == 512);
-        assert(object->value[XGL_RAS_HEIGHT] == 256);
-        object->image = calloc(512U * 256U, sizeof(Xgl_usgn32));
+        assert(object->value[XGL_RAS_WIDTH] >= 32 && object->value[XGL_RAS_WIDTH] <= 512);
+        assert(object->value[XGL_RAS_HEIGHT] == object->value[XGL_RAS_WIDTH] / 2);
+        object->image = calloc((size_t)object->value[XGL_RAS_WIDTH] *
+                                object->value[XGL_RAS_HEIGHT], sizeof(Xgl_usgn32));
         assert(object->image != NULL);
         *(Xgl_usgn32 **)value = (Xgl_usgn32 *)object->image;
         break;
@@ -384,22 +397,26 @@ void xgl_transform_translate(Xgl_trans transform, Xgl_pt *point,
 void xgl_mipmap_texture_build(Xgl_object mipmap, Xgl_mem_ras memory,
                               int u_boundary, int v_boundary)
 {
-    unsigned int x, y;
+    unsigned int x, y, width, height, levels, smaller;
     Xgl_usgn32 *pixels, expected;
     unsigned char index;
     assert(!native_stopped);
     assert(mipmap->type == XGL_MIPMAP_TEXTURE && memory->type == XGL_MEM_RAS);
-    assert(mipmap->value[XGL_MIPMAP_TEXTURE_LEVELS] == 8);
+    width = (unsigned int)memory->value[XGL_RAS_WIDTH];
+    height = (unsigned int)memory->value[XGL_RAS_HEIGHT];
+    smaller = height; levels = 0;
+    while (smaller > 1U) { smaller /= 2U; ++levels; }
+    assert(mipmap->value[XGL_MIPMAP_TEXTURE_LEVELS] == (int)levels);
     assert(u_boundary == XGL_TEXTURE_BOUNDARY_WRAP && v_boundary == XGL_TEXTURE_BOUNDARY_WRAP);
     pixels = (Xgl_usgn32 *)memory->image;
     assert(pixels != NULL);
-    for (y = 0; y < 256; ++y)
-        for (x = 0; x < 512; ++x) {
-            index = earth_data_512[(unsigned long)y * 512UL + x];
+    for (y = 0; y < height; ++y)
+        for (x = 0; x < width; ++x) {
+            index = test_earth_data((int)width)[(unsigned long)y * width + x];
             expected = (Xgl_usgn32)earth_cmap[index][0] |
                        ((Xgl_usgn32)earth_cmap[index][1] << 8) |
                        ((Xgl_usgn32)earth_cmap[index][2] << 16);
-            assert(pixels[(unsigned long)(255U - y) * 512UL + x] == expected);
+            assert(pixels[(unsigned long)(height - 1U - y) * width + x] == expected);
         }
     ++mipmap_builds;
     if (inject("buildfail")) native_error(FALSE);
@@ -409,11 +426,11 @@ void xgl_mipmap_texture_build(Xgl_object mipmap, Xgl_mem_ras memory,
 static unsigned char *earth_data(void)
 {
     switch (globe_longitude) {
-    case 32: return earth_data_32;
-    case 64: return earth_data_64;
-    case 128: return earth_data_128;
-    case 256: return earth_data_256;
-    case 512: return earth_data_512;
+    case 32: return test_earth_data(32);
+    case 64: return test_earth_data(64);
+    case 128: return test_earth_data(128);
+    case 256: return test_earth_data(256);
+    case 512: return test_earth_data(512);
     default: assert(!"Unsupported test resolution"); return NULL;
     }
 }
@@ -421,8 +438,8 @@ static unsigned char *earth_data(void)
 void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *points)
 {
     unsigned int i;
-    unsigned long index, face, band, cap[3];
-    unsigned int cell;
+    unsigned long index, face, band, cap[3], interior;
+    unsigned int cell, first;
     int polar;
     unsigned char value;
     const Vertex *vertex;
@@ -430,7 +447,7 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     Xgl_pt_f3d *plain;
     assert(!native_stopped);
     assert(context == xgl_context);
-    if (drv_texture_enabled && inject("drawfail")) { native_error(FALSE); return; }
+    if (drv_texture_active && inject("drawfail")) { native_error(FALSE); return; }
     assert(context->value[XGL_CTX_SURF_FRONT_COLOR_SELECTOR] == XGL_SURF_COLOR_FACET);
     assert(context->value[XGL_CTX_SURF_FRONT_FILL_STYLE] == XGL_SURF_FILL_SOLID);
     assert(context->value[XGL_3D_CTX_SURF_FRONT_ILLUMINATION] == XGL_ILLUM_NONE);
@@ -441,18 +458,22 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     assert(context->value[XGL_CTX_GEOM_DATA_IS_VOLATILE]);
     assert(context->value[XGL_CTX_CLIP_PLANES] == (XGL_CLIP_XMIN | XGL_CLIP_XMAX |
            XGL_CLIP_YMIN | XGL_CLIP_YMAX | XGL_CLIP_ZMIN | XGL_CLIP_ZMAX));
-    assert(frame_bands < (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
+    assert(frame_facets < globe_tris_num);
     polar = FALSE;
-    cell = 0;
-    if (frame_bands < (unsigned long)globe_longitude) {
+    cell = first = 0;
+    interior = (globe_latitude - 2UL) * 2UL * globe_longitude;
+    if (frame_facets < (unsigned long)globe_longitude) {
         band = 0;
-        cell = (unsigned int)frame_bands;
+        cell = (unsigned int)frame_facets;
         polar = TRUE;
-    } else if (frame_bands < (unsigned long)globe_longitude + globe_latitude - 2UL) {
-        band = frame_bands - globe_longitude + 1UL;
+    } else if (frame_facets < (unsigned long)globe_longitude + interior) {
+        index = frame_facets - globe_longitude;
+        band = index / (2UL * globe_longitude) + 1UL;
+        first = (unsigned int)(index % (2UL * globe_longitude));
+        assert((first & 1U) == 0U);
     } else {
         band = (unsigned long)globe_latitude - 1UL;
-        cell = (unsigned int)(frame_bands - globe_longitude - globe_latitude + 2UL);
+        cell = (unsigned int)(frame_facets - globe_longitude - interior);
         polar = TRUE;
     }
     if (polar) {
@@ -461,31 +482,35 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
         cap[0] = index + (band == 0 ? 1UL : 0UL);
         cap[1] = index + globe_longitude + 1UL;
         cap[2] = band == 0 ? cap[1] + 1UL : index + 1UL;
-    } else assert(points->num_pts == 2U * ((unsigned int)globe_longitude + 1U));
+    } else {
+        assert(points->num_pts <= 2U * ((unsigned int)globe_longitude + 1U) - first);
+        assert((points->num_pts & 1U) == 0U);
+    }
     assert(facets->facet_type == XGL_FACET_COLOR);
     assert(facets->num_facets == points->num_pts - 2U);
-    assert(points->pt_type == (drv_texture_enabled ? XGL_PT_DATA_F3D : XGL_PT_F3D));
-    if (drv_texture_enabled) {
+    assert(points->pt_type == (drv_texture_active ? XGL_PT_DATA_F3D : XGL_PT_F3D));
+    if (drv_texture_active) {
         assert(points->num_data_values == 2);
         assert(context->value[XGL_3D_CTX_SURF_FRONT_TMAP_SWITCHES]);
     } else assert(!context->value[XGL_3D_CTX_SURF_FRONT_TMAP_SWITCHES]);
     for (i = 0; i < points->num_pts; ++i) {
-        index = polar ? cap[i] : (band + i % 2U) * (globe_longitude + 1UL) + i / 2U;
+        index = polar ? cap[i] : (band + (first + i) % 2U) *
+                                 (globe_longitude + 1UL) + (first + i) / 2U;
         vertex = globe_verts + index;
-        if (drv_texture_enabled) {
+        if (drv_texture_active) {
             packed = (float *)points->pts.data_f3d + (unsigned long)i * 5UL;
             assert(packed[0] == vertex->x && packed[1] == vertex->y && packed[2] == vertex->z);
-            assert(packed[3] == globe_coords[index].u);
-            assert(packed[4] == globe_coords[index].v);
+            assert(packed[3] == (float)(index % (globe_longitude + 1UL)) / globe_longitude);
+            assert(packed[4] == (float)(index / (globe_longitude + 1UL)) / globe_latitude);
         } else {
             plain = points->pts.f3d + i;
             assert(plain->x == vertex->x && plain->y == vertex->y && plain->z == vertex->z);
         }
     }
     for (i = 0; i < facets->num_facets; ++i) {
-        face = band * globe_longitude + (polar ? cell : i / 2U);
+        face = band * globe_longitude + (polar ? cell : (first + i) / 2U);
         value = earth_data()[face];
-        if (drv_texture_enabled) {
+        if (drv_texture_active) {
             /* REPLACE takes its RGB from the texture, not a facet color. */
             assert(facets->facets.color_facets[i].color.rgb.r == 1.0f);
             assert(facets->facets.color_facets[i].color.rgb.g == 1.0f);
@@ -499,6 +524,7 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     ++frame_bands;
     frame_facets += facets->num_facets;
     if (points->pt_type == XGL_PT_DATA_F3D) frame_texture_facets += facets->num_facets;
+    if (inject("abortscene")) drv_abort_frame("Injected scene traversal failure");
 }
 
 void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
@@ -522,6 +548,9 @@ void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
         assert(strstr((char *)text, !drv_texture_enabled ? ", texture off" :
                       (frame_texture_facets != 0 && frame_flush_ok ?
                        ", texture on" : ", texture fail")) != NULL);
+    } else if (!globe_ready() && point->y == 18.0f) {
+        assert(strstr((char *)text, "No globe:") == (char *)text);
+        assert(strstr((char *)text, "retry") != NULL);
     } else assert(strstr((char *)text, "T = texture mapping") != NULL);
     ++text_calls;
 }
@@ -555,7 +584,7 @@ void xgl_context_flush(Xgl_ctx context, int action)
 {
     assert(!native_stopped);
     assert(action == XGL_FLUSH_SYNCHRONIZE);
-    if (context == xgl_context && drv_texture_enabled && xgl_texture_scope && inject("flushfail")) {
+    if (context == xgl_context && xgl_texture_scope && inject("flushfail")) {
         native_error(FALSE);
         return;
     }
@@ -570,7 +599,7 @@ static void check_render(void)
     frame_bands = frame_facets = 0;
     before_text = text_calls; before_clear = clear_calls; before_switches = buffer_switches;
     drv_render();
-    assert(frame_bands == (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
+    assert(frame_bands >= (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
     assert(frame_facets == globe_tris_num);
     assert(text_calls == before_text + (drv_osd_enabled ? 2U : 0U));
     assert(clear_calls >= before_clear + 1U && clear_calls <= before_clear + 2U);
@@ -652,6 +681,19 @@ static void check_texture_failure(void)
         send_key(XK_t);
     }
     check_render();
+    if (strcmp(profile, "rasterfail") == 0 || strcmp(profile, "mipmapfail") == 0 ||
+        strcmp(profile, "stripallocfail") == 0) {
+        assert(drv_texture_enabled && drv_texture_loaded && xgl_texture_used &&
+               !xgl_texture_failed && !drv_texture_active);
+        if (strcmp(profile, "stripallocfail") == 0) {
+            assert(xgl_strip_limited && frame_bands >
+                    (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
+        } else assert(texture_size == 256U);
+        puts("PASS XGL bounded resource fallback: smaller textures/packets preserve complete geometry and active texturing");
+        tests_complete = TRUE;
+        drv_close();
+    }
+    fault = NULL;
     assert(drv_texture_enabled && xgl_texture_failed && !xgl_texture_used);
     assert(!drv_texture_loaded && xgl_tmap == NULL && xgl_mipmap == NULL &&
            xgl_texture_raster == NULL && texture_data == NULL);
@@ -684,6 +726,10 @@ static void cleanup_checks(void)
     assert(allocated_objects == 0);
     assert(xgl_system == NULL && xgl_display == NULL);
     assert(xgl_strip_points == NULL && xgl_strip_facets == NULL && xgl_strip_texture_points == NULL);
+    /* This harness supplies main, so perform the application's shared
+     * shutdown after the native driver's registered cleanup has run. */
+    texture_free();
+    globe_free();
     assert(globe_verts == NULL && texture_data == NULL);
     puts("PASS XGL recorded cleanup: native objects, temporary raster, strip packets, geometry and X11 display released");
 }
@@ -691,7 +737,7 @@ static void cleanup_checks(void)
 int main(int argc, char **argv)
 {
     int sizes[5], i;
-    unsigned int old_width, old_height;
+    unsigned int old_width, old_height, before_text, before_mipmaps;
     float old_x, old_y;
     XWindowAttributes geometry;
     XEvent close;
@@ -711,6 +757,7 @@ int main(int argc, char **argv)
     assert(GLOBE_DEFAULT_LONGITUDE == 128 && globe_longitude == 128);
     texture_init();
     drain_events();
+    if (strcmp(profile, "flatstripfail") == 0) fault = profile;
     check_render();
     sizes[0] = 32; sizes[1] = 64; sizes[2] = 128; sizes[3] = 256; sizes[4] = 512;
     for (i = 0; i < 5; ++i) {
@@ -718,7 +765,8 @@ int main(int argc, char **argv)
         assert(globe_longitude == sizes[i]);
         check_render();
     }
-    if (strcmp(profile, "double") != 0 && strcmp(profile, "single") != 0)
+    if (strcmp(profile, "double") != 0 && strcmp(profile, "single") != 0 &&
+        strcmp(profile, "flatstripfail") != 0)
         check_texture_failure();
     send_key(XK_t);
     assert(drv_texture_enabled && drv_texture_loaded);
@@ -733,6 +781,50 @@ int main(int argc, char **argv)
     send_key(XK_f); assert(!drv_fps_enabled); check_render();
     send_key(XK_F); assert(drv_fps_enabled); check_render();
     puts("PASS XGL recorded rendering: native strip/facet packets, transforms, depth/cull, RGB texture rows, mipmap descriptor and OSD toggle");
+
+    /* A usable window and native texture outlive an empty scene. Recovery
+     * must show controls even with normal OSD disabled, without mistaking
+     * absent polygons for a failed texture submission. */
+    before_mipmaps = mipmap_builds;
+    send_key(XK_a);
+    assert(drv_auto_enabled && xgl_animating());
+    globe_free();
+    assert(!globe_ready());
+    drv_osd_enabled = FALSE;
+    before_text = text_calls;
+    drv_render();
+    assert(frame_facets == 0 && text_calls == before_text + 2U);
+    assert(drv_texture_enabled && drv_texture_loaded && !xgl_texture_failed);
+    assert(!drv_texture_active && mipmap_builds == before_mipmaps);
+    assert(drv_auto_enabled && !xgl_animating());
+    drv_osd_enabled = TRUE;
+    assert(globe_init_verts(512, -1, GLOBE_RADIUS));
+    drv_release_optional();
+    assert(drv_texture_loaded && xgl_strip_limited && xgl_strip_points == NULL);
+    check_render();
+    assert(xgl_animating());
+    send_key(XK_a);
+    send_key(XK_t);
+    drv_release_optional();
+    assert(!drv_texture_loaded && xgl_mipmap == NULL && xgl_tmap == NULL);
+    check_render();
+    send_key(XK_t);
+    check_render();
+    assert(mipmap_builds == before_mipmaps + 1U);
+    before_text = text_calls;
+    drv_osd_enabled = FALSE;
+    send_key(XK_a);
+    fault = "abortscene";
+    drv_render();
+    assert(drv_frame_failed && frame_facets == 0 && text_calls == before_text + 2U);
+    assert(!xgl_texture_used && !xgl_texture_failed && drv_texture_loaded);
+    assert(!drv_texture_active);
+    assert(drv_auto_enabled && !xgl_animating());
+    drv_osd_enabled = TRUE;
+    check_render();
+    assert(xgl_animating());
+    send_key(XK_a);
+    puts("PASS XGL empty scene and optional eviction: controls remain available, valid textures survive empty frames, and bounded packets recover after pressure");
 
     old_x = drv_rot_x; old_y = drv_rot_y;
     send_mouse(ButtonPress, Button1, 100, 100);
