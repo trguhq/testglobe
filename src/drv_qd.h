@@ -11,6 +11,11 @@
 #ifndef DRV
 #define DRV
 #endif
+#include "soft3d.h"
+/* Both FPU and integer paths must accept the same scene domain. */
+#define DRV_MAX_RADIUS SOFT3D_MAX_RADIUS
+#define DRV_NO_CONSOLE
+
 #define DRV_NAME "QuickDraw"
 #define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, F = FPS, Esc/Cmd-Q = quit"
 #define DRV_WIN_X 20

@@ -18,7 +18,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(command, expected_returncode=0, expected_stderr=None, required_output=None):
+def run(command, expected_returncode=0, expected_stderr=None, required_output=None,
+        expected_stdout=None):
     try:
         result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True,
                                 timeout=60)
@@ -26,6 +27,7 @@ def run(command, expected_returncode=0, expected_stderr=None, required_output=No
         raise SystemExit("Timed out: " + shlex.join(str(part) for part in command))
     if (result.returncode != expected_returncode or
             (expected_stderr is not None and result.stderr != expected_stderr) or
+            (expected_stdout is not None and result.stdout != expected_stdout) or
             (required_output is not None and required_output not in result.stdout)):
         print("COMMAND:", shlex.join(str(part) for part in command))
         print(result.stdout, end="")
@@ -63,7 +65,8 @@ def check_production_units(cc, common, options, output, driver, sources):
 
 def check_configurations(cc, common):
     source = ["-fsyntax-only", str(ROOT / "tests/configuration.c")]
-    clean = ["-U__APPLE__", "-U__MACH__", "-Uapplec", "-U__SC__", "-Usparc", "-U__sparc"]
+    clean = ["-U__APPLE__", "-U__MACH__", "-Uapplec", "-U__SC__", "-Usparc", "-U__sparc",
+             "-D_huge="]
     modes = (
         ["-D__APPLE__", "-D__MACH__", "-DTEST_DRIVER_OGL"],
         ["-D__APPLE__", "-DTEST_DRIVER_QD"],
@@ -351,10 +354,23 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/e_saved.c"),
             "-lm", "-o", str(output / "flat_recovery")])
         run([str(output / "flat_recovery")])
+        diagnostics_pass = "PASS scene diagnostics: committed and recovered meshes only\n"
+        run([str(output / "flat_recovery"), "diagnostics"], expected_stderr="",
+            expected_stdout="Globe resolution: 32 x 16\nVertices: 561\nTriangles: 960\n" * 2 +
+                            diagnostics_pass)
         run(cc + common + ["-DSEG86", "-DDRV_GDI", "-D_huge=",
             str(ROOT / "tests/recovery.c"), str(ROOT / "src/globe.c"),
             "-lm", "-o", str(output / "resource_recovery")])
         run([str(output / "resource_recovery")])
+        run([str(output / "resource_recovery"), "diagnostics"], expected_stderr="",
+            expected_stdout=diagnostics_pass)
+        run(cc + common + ["-DSEG68", "-DDRV_QD",
+            str(ROOT / "tests/recovery.c"), str(ROOT / "src/globe.c"),
+            "-lm", "-o", str(output / "qd_recovery")])
+        run([str(output / "qd_recovery")])
+        run([str(output / "qd_recovery"), "diagnostics"], expected_stderr="",
+            expected_stdout=diagnostics_pass)
+        print("PASS committed mesh diagnostics: startup/recovery print once; no-op and failed attempts are silent; GDI and QuickDraw remain console-free")
         if args.qd_contract:
             check_production_units(cc, common, qd, output, "QuickDraw",
                 ("drv.c", "drv_qd.c", "err.c", "globe.c", "main.c", "qd_fpu.c", "soft3d.c"))
@@ -502,6 +518,22 @@ def main():
                 if "glGenerateMipmap" in symbols or (label == "legacy" and "glutGetProcAddress" in symbols):
                     raise SystemExit("OpenGL 1.1 object unexpectedly links a later entry point")
             print("PASS OpenGL 1.1 object linkage: legacy and optional builds compile with GL 1.1 declarations and never import glGenerateMipmap")
+            for label, define in (("missing_query", "TEST_OGL_NO_MODE_QUERY"),
+                                  ("old_glut", "TEST_OGL_OLD_GLUT")):
+                legacy_options = ogl + ["-DNO_GENMIPMAP", "-D" + define]
+                binary = output / ("ogl_" + label)
+                run(cc + common + legacy_options + ogl_sources + ["-o", str(binary)])
+                for mode in ("legacy-glut", "rgb16"):
+                    run([str(binary), mode], expected_stderr="",
+                        required_output="PASS legacy GLUT window: one RGB/double request at final size and position, no probes or display strings, actual pixel/depth/buffer attributes validated")
+                obj = output / ("ogl_" + label + ".o")
+                run(cc + common + legacy_options + ["-c", str(ROOT / "src/drv_ogl.c"),
+                    "-o", str(obj)])
+                symbols = subprocess.run(["nm", "-u", str(obj)], text=True,
+                    capture_output=True, check=True).stdout
+                if "glutInitDisplayString" in symbols:
+                    raise SystemExit("Legacy GLUT object unexpectedly imports display-string probing")
+            print("PASS legacy GLUT linkage: API 3 and API 4 without mode queries create a validated window and never import glutInitDisplayString")
             run(cc + common + ogl + ["-DNO_GENMIPMAP", "-DTEXTURE_CACHE_RASTER=1"] +
                 ogl_sources + ["-o", str(output / "ogl_cached")])
             run([str(output / "ogl_cached"), "indexed"])

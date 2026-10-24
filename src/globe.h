@@ -27,8 +27,7 @@
 #endif
 
 #define GLOBE_RADIUS 1000
-/* Shared scene bounds fit the fixed-point software transform backends. */
-#define GLOBE_MAX_RADIUS 1000L
+/* Shared camera; individual drivers may impose a smaller radius domain. */
 #define GLOBE_VIEW_DISTANCE 3000L
 #define GLOBE_NEAR_DISTANCE 1L
 #define GLOBE_FAR_DISTANCE 10000L

@@ -19,6 +19,7 @@
 
 #include <stdlib.h>
 #include <math.h>
+#include <float.h>
 #include "testglob.h"
 #include "drv.h"
 #include "globe.h"
@@ -157,8 +158,11 @@ static int globe_supported(int longitude)
 static Drv_result globe_validate(int longitude, int latitude, float radius)
 {
     if (!globe_supported(longitude) || latitude < 2 ||
-        latitude > longitude / 2 || !(radius > 0.0f && radius <= GLOBE_MAX_RADIUS))
+        latitude > longitude / 2 || !(radius > 0.0f && radius <= FLT_MAX))
         return DRV_BAD_INPUT;
+#ifdef DRV_MAX_RADIUS
+    if (radius > DRV_MAX_RADIUS) return DRV_BAD_INPUT;
+#endif
     return DRV_OK;
 }
 
@@ -313,6 +317,17 @@ int globe_init_verts(int longitude, int latitude, float radius)
     }
     globe_valid = TRUE;
     ++globe_revision;
+#ifndef DRV_NO_CONSOLE
+    /* Report only committed geometry: failed attempts and no-ops are silent. */
+    printf("Globe resolution: %i x %i\n", globe_longitude, globe_latitude);
+    printf("Vertices: %lu\n", globe_verts_num);
+#if defined(TRI) || defined(TRISTRIP)
+    printf("Triangles: %lu\n", globe_tris_num);
+#endif
+#ifdef QUAD
+    printf("Quads: %lu\n", globe_quads_num);
+#endif
+#endif
     return TRUE;
 failed:
     globe_free();

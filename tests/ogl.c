@@ -36,6 +36,8 @@ extern int globe_longitude,globe_latitude;
 
 static const char *profile;
 static unsigned int requested_mode;
+static unsigned int display_mode_calls,display_string_calls,mode_queries;
+static int initial_x,initial_y;
 static int active_window, next_window=1, window_count, destroy_count;
 static unsigned int probe_windows,probe_destroys,final_windows;
 static unsigned int probe_callbacks,probe_redraws,initial_window_redraws;
@@ -179,9 +181,11 @@ static void initial_redraw(void)
 }
 
 void glutInit(int *argc,char **argv){assert(argc&&argv);}
-void glutInitDisplayMode(unsigned int mode){requested_mode=mode;}
+void glutInitDisplayMode(unsigned int mode){requested_mode=mode;++display_mode_calls;}
+#if GLUT_API_VERSION >= 4
 void glutInitDisplayString(const char *s)
 {
+    ++display_string_calls;
     requested_mode=0;
     if(strstr(s,"depth"))requested_mode|=GLUT_DEPTH;
     if(strstr(s,"index"))requested_mode|=GLUT_INDEX;
@@ -193,10 +197,13 @@ void glutInitDisplayString(const char *s)
     if(strstr(s,"rgba"))requested_mode|=GLUT_ALPHA;
 #endif
 }
+#endif
 int glutGet(GLenum query)
 {
     struct Test_window *w=&windows[active_window];
-    if(query==GLUT_DISPLAY_MODE_POSSIBLE)return available(requested_mode);
+#ifdef GLUT_DISPLAY_MODE_POSSIBLE
+    if(query==GLUT_DISPLAY_MODE_POSSIBLE){++mode_queries;return available(requested_mode);}
+#endif
     assert(active_window>0&&w->live);
     switch(query){
     case GLUT_WINDOW_RGBA:return !w->indexed;
@@ -212,7 +219,7 @@ int glutGet(GLenum query)
     }
 }
 void glutInitWindowSize(int w,int h){output_width=w;output_height=h;}
-void glutInitWindowPosition(int x,int y){assert(x>=-32768&&y>=-32768);}
+void glutInitWindowPosition(int x,int y){assert(x>=-32768&&y>=-32768);initial_x=x;initial_y=y;}
 int glutCreateWindow(const char *title)
 {
     struct Test_window *w;
@@ -225,9 +232,16 @@ int glutCreateWindow(const char *title)
     }
     else {
         assert(strcmp(title,TESTGLOBE_NAME)==0&&final_windows==0);
+#ifdef GLUT_DISPLAY_MODE_POSSIBLE
         assert(probe_windows>0&&probe_destroys==probe_windows);
+#else
+        assert(probe_windows==0&&probe_destroys==0);
+        assert(requested_mode==(GLUT_RGB|GLUT_DOUBLE));
+        assert(display_mode_calls==1&&display_string_calls==0&&mode_queries==0);
+#endif
         assert(window_count==destroy_count&&active_window==0);
         assert(output_width==64&&output_height==48);
+        assert(initial_x==(int)drv_win_x&&initial_y==(int)drv_win_y);
         ++final_windows;
     }
     active_window=next_window++;w=&windows[active_window];memset(w,0,sizeof(*w));
@@ -648,6 +662,7 @@ int main(int argc,char **argv)
     Vertex a,b,c;unsigned int i,level;int indexed;
     char stats[128];
     profile=argc>1?argv[1]:"rgba";
+#if GLUT_API_VERSION >= 4
     glutInitDisplayString("rgba");
 #ifdef TEST_OGL_FREEGLUT
     assert((requested_mode&GLUT_ALPHA)==0);
@@ -656,6 +671,8 @@ int main(int argc,char **argv)
 #endif
     glutInitDisplayString("rgb");assert((requested_mode&GLUT_ALPHA)==0);
     glutInitDisplayString("rgb alpha>=8");assert((requested_mode&GLUT_ALPHA)!=0);
+#endif
+    display_string_calls=0;
     if(strcmp(profile,"limited")==0)maximum_texture_size=256;
     matrix_identity(matrices[0][0]);matrix_identity(matrices[1][0]);
     drv_ext_init();drv_init(&argc,argv);assert(!drv_texture_enabled);
@@ -665,8 +682,15 @@ int main(int argc,char **argv)
     indexed=software_profile();
     if(indexed)assert(drv_bits_per_pixel==8&&drv_colormapped);
     else if(strcmp(profile,"rgb16")==0)assert(drv_bits_per_pixel==16&&!drv_colormapped);
+#ifndef GLUT_DISPLAY_MODE_POSSIBLE
+    else assert(drv_bits_per_pixel==24&&!drv_colormapped);
+    assert(window_count==1&&destroy_count==0&&probe_windows==0);
+    assert(drv_bytes_per_pixel==(strcmp(profile,"rgb16")==0?2U:3U));
+    assert(ogl_has_depth==FALSE&&ogl_double_buffer==TRUE);
+#else
     else if(strcmp(profile,"rgb24")==0||strcmp(profile,"unknownalpha")==0)assert(drv_bits_per_pixel==24&&!drv_colormapped);
     else assert(drv_bits_per_pixel==32&&!drv_colormapped);
+#endif
     if(strcmp(profile,"rgba-single")==0)assert(!windows[active_window].doubled);
     else assert(windows[active_window].doubled);
     assert(window_count-destroy_count==1&&final_windows==1);
@@ -733,7 +757,7 @@ int main(int argc,char **argv)
         render_checked(indexed);check_cached_frame(indexed);
     }
     if(indexed)assert(draw_pixels_calls==10);
-    if(strcmp(profile,"rgba")==0||indexed)check_display_list_toggle(indexed);
+    if(strcmp(profile,"rgba")==0||strcmp(profile,"legacy-glut")==0||indexed)check_display_list_toggle(indexed);
     if(!indexed){
 #if !defined(NO_GENMIPMAP) && defined(TEST_OGL_FREEGLUT)
         if(strcmp(profile,"legacy11")==0||strcmp(profile,"badversion")==0||strcmp(profile,"nullversion")==0)
@@ -756,7 +780,11 @@ cleanup:
     assert(list_deletions==native_lists);
     assert(globe_verts==NULL&&texture_data==NULL);
     puts("PASS OpenGL window lifecycle: safe per-window callbacks through early probe/setup/show redraws, renderer and redisplay activated after globe initialization");
+#ifdef GLUT_DISPLAY_MODE_POSSIBLE
     puts("PASS OpenGL format selection: highest verified RGBA/RGB/index precision, buffering/depth fallbacks and unknown alpha handling");
+#else
+    puts("PASS legacy GLUT window: one RGB/double request at final size and position, no probes or display strings, actual pixel/depth/buffer attributes validated");
+#endif
     puts("PASS OpenGL indexed/native rendering: palette bytes, indexed facets, packed CI software pixels and native RGB textures");
     puts("PASS OpenGL retained diagnostics and controls: private error logger, right-button metadata, FPS toggle and software raster cache policy");
     if(strcmp(profile,"listfail")==0)puts("PASS OpenGL display-list allocation failure: complete uncached geometry at every resolution without invalid list calls");

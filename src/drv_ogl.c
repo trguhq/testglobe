@@ -134,6 +134,38 @@ static void ogl_pending_display(void)
 {
 }
 
+/* These queries describe the window actually created, including legacy GLUT
+ * implementations which cannot check a format before creating a window. */
+static int ogl_window_format(Ogl_format *format)
+{
+    memset(format, 0, sizeof(*format));
+    format->rgba = glutGet(GLUT_WINDOW_RGBA) > 0;
+    format->buffer = glutGet(GLUT_WINDOW_BUFFER_SIZE);
+    format->depth = glutGet(GLUT_WINDOW_DEPTH_SIZE);
+    format->double_buffer = glutGet(GLUT_WINDOW_DOUBLEBUFFER) > 0;
+    if (format->depth < 0) format->depth = 0;
+    if (format->rgba)
+    {
+        format->red = glutGet(GLUT_WINDOW_RED_SIZE);
+        format->green = glutGet(GLUT_WINDOW_GREEN_SIZE);
+        format->blue = glutGet(GLUT_WINDOW_BLUE_SIZE);
+        format->alpha = glutGet(GLUT_WINDOW_ALPHA_SIZE);
+        format->alpha_known = format->alpha >= 0;
+        if (format->alpha < 0) format->alpha = 0;
+        if (format->red <= 0 || format->green <= 0 || format->blue <= 0)
+            return FALSE;
+        if (format->buffer <= 0)
+            format->buffer = format->red + format->green + format->blue + format->alpha;
+    }
+    else
+    {
+        format->palette = glutGet(GLUT_WINDOW_COLORMAP_SIZE);
+        if (format->buffer < 8 || format->palette < 256) return FALSE;
+    }
+    return TRUE;
+}
+
+#ifdef GLUT_DISPLAY_MODE_POSSIBLE
 static int ogl_better_format(const Ogl_format *candidate, const Ogl_format *best)
 {
     int total, previous, rgb, old_rgb;
@@ -158,12 +190,14 @@ static int ogl_better_format(const Ogl_format *candidate, const Ogl_format *best
         return candidate->double_buffer > best->double_buffer;
     return candidate->depth > best->depth;
 }
+#endif
 
 /* GLUT exposes requests and selected-window queries, rather than a portable
  * enumeration of every native pixel format. Probe supported request classes
  * and rank their actual results, giving color precision priority over buffers. */
 static int ogl_select_window(Ogl_format *selected, int x, int y, int width, int height)
 {
+#ifdef GLUT_DISPLAY_MODE_POSSIBLE
     static const char *requests[] = {
         "rgba red>=8 green>=8 blue>=8 alpha>=8",
         /* Classic GLUT's bare "rgba" also requires an alpha channel. */
@@ -198,46 +232,15 @@ static int ogl_select_window(Ogl_format *selected, int x, int y, int width, int 
 #else
                 (void)requests; (void)request;
 #endif
-#ifdef GLUT_DISPLAY_MODE_POSSIBLE
                 if (!glutGet(GLUT_DISPLAY_MODE_POSSIBLE)) continue;
-#else
-                error("GLUT display-mode availability queries are required");
-                return 0;
-#endif
                 window = glutCreateWindow("testglobe pixel-format probe");
                 if (window <= 0) continue;
                 glutDisplayFunc(ogl_pending_display);
                 glutHideWindow();
-                memset(&current, 0, sizeof(current));
-                current.rgba = glutGet(GLUT_WINDOW_RGBA) > 0;
-                current.buffer = glutGet(GLUT_WINDOW_BUFFER_SIZE);
-                current.depth = glutGet(GLUT_WINDOW_DEPTH_SIZE);
-                current.double_buffer = glutGet(GLUT_WINDOW_DOUBLEBUFFER) > 0;
-                if (current.depth < 0) current.depth = 0;
-                if (current.rgba)
+                if (!ogl_window_format(&current))
                 {
-                    current.red = glutGet(GLUT_WINDOW_RED_SIZE);
-                    current.green = glutGet(GLUT_WINDOW_GREEN_SIZE);
-                    current.blue = glutGet(GLUT_WINDOW_BLUE_SIZE);
-                    current.alpha = glutGet(GLUT_WINDOW_ALPHA_SIZE);
-                    current.alpha_known = current.alpha >= 0;
-                    if (current.alpha < 0) current.alpha = 0;
-                    if (current.red <= 0 || current.green <= 0 || current.blue <= 0)
-                    {
-                        glutDestroyWindow(window);
-                        continue;
-                    }
-                    if (current.buffer <= 0)
-                        current.buffer = current.red + current.green + current.blue + current.alpha;
-                }
-                else
-                {
-                    current.palette = glutGet(GLUT_WINDOW_COLORMAP_SIZE);
-                    if (current.buffer < 8 || current.palette < 256)
-                    {
-                        glutDestroyWindow(window);
-                        continue;
-                    }
+                    glutDestroyWindow(window);
+                    continue;
                 }
                 if (best == 0 || ogl_better_format(&current, selected))
                 {
@@ -265,6 +268,24 @@ static int ogl_select_window(Ogl_format *selected, int x, int y, int width, int 
     window = glutCreateWindow(TESTGLOBE_NAME);
     if (window > 0) glutDisplayFunc(ogl_pending_display);
     return window;
+#else
+    int window;
+    /* Older GLUT may terminate on an unsupported request. Use the original
+     * RGB/double-buffer request once, without probing or requiring newer
+     * display-string APIs, and validate the actual returned format. */
+    glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
+    glutInitWindowSize(width, height);
+    glutInitWindowPosition(x, y);
+    window = glutCreateWindow(TESTGLOBE_NAME);
+    if (window <= 0) return 0;
+    glutDisplayFunc(ogl_pending_display);
+    if (!ogl_window_format(selected))
+    {
+        glutDestroyWindow(window);
+        return 0;
+    }
+    return window;
+#endif
 }
 
 static void ogl_install_palette(void)

@@ -8,6 +8,8 @@
 
 #include "types.h"
 
+/* Q4 input and Q14 rotation intermediates are proven for this radius. */
+#define SOFT3D_MAX_RADIUS 1000L
 #define SOFT3D_MAX_VERTICES 130
 #define SOFT3D_MAX_POLY 10
 

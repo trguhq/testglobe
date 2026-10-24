@@ -112,6 +112,7 @@ int main(int argc, char **argv)
     unsigned char *datasets[5];
     unsigned long expected_tris, row;
     int n;
+    unsigned long vertex;
     char stats[128], counts[80];
     unsigned char coarse_colors[96];
     unsigned int latitude, column, source_row;
@@ -189,7 +190,23 @@ int main(int argc, char **argv)
     globe_draw_tris();
     assert(texture_calls == 128UL);
     globe_toggle_tex();
+    /* Unbounded native-float geometry must not inherit a software-driver
+     * radius limit. This exercises construction only, not camera visibility. */
+    assert(globe_init_verts(32, -1, 1500.0f));
+    assert(globe_verts[0].z == 1500.0f);
+    assert(globe_init_verts(32, -1, 2000.0f));
+    assert(globe_verts[0].z == 2000.0f);
+    for (vertex = 0UL; vertex < globe_verts_num; ++vertex) {
+        assert(globe_verts[vertex].x >= -2000.0f && globe_verts[vertex].x <= 2000.0f);
+        assert(globe_verts[vertex].y >= -2000.0f && globe_verts[vertex].y <= 2000.0f);
+        assert(globe_verts[vertex].z >= -2000.0f && globe_verts[vertex].z <= 2000.0f);
+    }
+    saved_verts = globe_verts;
+    assert(!globe_init_verts(32, -1, 0.0f));
+    assert(!globe_init_verts(32, -1, -1.0f));
+    assert(globe_last_result == DRV_BAD_INPUT && globe_verts == saved_verts);
     globe_free();
+    puts("PASS native float radii: larger finite geometry accepted, nonpositive requests preserve existing mesh");
     puts("PASS geometry: five resolutions, outward triangles, original palette indices, texture UVs, large buffers");
     puts("PASS custom globe latitudes: full-map center sampling, outward pole triangles and unchanged UV range");
     return 0;

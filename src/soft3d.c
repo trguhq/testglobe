@@ -124,12 +124,12 @@ int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
             !soft3d_float_fixed(&vertices[i].z, 4, &source[2]))
             return 0;
         /* Q4 coordinates * Q14 matrix: every sum is below 786432000. */
-        if (source[0] < -GLOBE_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            source[0] > GLOBE_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            source[1] < -GLOBE_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            source[1] > GLOBE_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            source[2] < -GLOBE_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            source[2] > GLOBE_MAX_RADIUS * SOFT3D_COORD_SCALE)
+        if (source[0] < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            source[0] > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            source[1] < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            source[1] > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            source[2] < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            source[2] > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE)
             return 0;
         for (row = 0; row < 3; ++row)
         {

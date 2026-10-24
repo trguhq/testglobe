@@ -59,7 +59,7 @@ int main(int argc, char **argv)
     if (!drv_init_window(0,0,0,0))
         error("Cannot initialize application window");
 
-#if !defined(GDI) && !defined(SEG68)
+#ifndef DRV_NO_CONSOLE
     printf("%s %i.%i\n", TESTGLOBE_NAME, TESTGLOBE_VERSION_MAJOR, TESTGLOBE_VERSION_MINOR);
     printf("Driver: %s\n", drv_name);
     printf("Resolution: %u x %u\n", drv_win_width, drv_win_height);

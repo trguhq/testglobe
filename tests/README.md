@@ -101,7 +101,9 @@ does not use that test-only file I/O.
   and checks XGL's distinct RGB/UV signatures. Plural `globe_draw_*` traversal names
   and singular `drv_draw_*` callbacks are checked as separate interfaces.
 - Custom latitude counts sample the full source map. Nonfinite radii must preserve
-  an existing valid mesh and return a failure result. Compiled paths borrow indexed
+  an existing valid mesh and return a failure result. Native floating-point drivers
+  accept radii above 1,000; bounded drivers reject requests above their own limits
+  before replacing a valid mesh. Compiled paths borrow indexed
   map spans; resource-backed builds populate final color storage directly. Generated
   UVs and packet-local RGB expansion must match the original mesh reference.
 
@@ -120,6 +122,7 @@ errors for unsupported legacy drivers.
 and resource-backed builds. It checks bounded retries, restoring or reducing the
 resolution, empty-scene recovery, no-op revision handling, direct resource loading,
 reduced-latitude compaction, exact retained allocation sizes, and aborted traversal.
+Console diagnostics describe committed meshes only; GUI builds remain silent.
 
 `tests/tex_take.c` verifies ownership transfer of the software texture base image,
 all nine lower-mipmap allocation failures, invalid dimensions, and the retained
@@ -145,7 +148,9 @@ python3 tests/run.py --ogl-contract
   UVs. Display-list checks cover the enabled default, `d`/`D`, redraws, deletion,
   immediate drawing while disabled, lazy rebuilding, and resolution/texture changes.
 - **Compatibility and failures:** OpenGL 1.1 declarations and object imports are
-  checked. GLU handles legacy or unsuitable modern-mipmap cases. Allocation,
+  checked. GLUT headers without display-mode availability queries use one RGB,
+  double-buffered window request, including old headers without display strings.
+  GLU handles legacy or unsuitable modern-mipmap cases. Allocation,
   compilation, validation, and execution failures must delete bad lists and draw
   complete immediate geometry without retrying failed caches every frame. Texture
   creation, binding, mipmap, and transfer failures must release failed state, draw

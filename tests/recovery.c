@@ -152,7 +152,28 @@ static void reset_faults(void)
     bad_data = 0;
 }
 
-int main(void)
+/* The runner checks exact stdout: two committed meshes, no messages for
+ * no-op/invalid/failed candidates, and no console diagnostics on GUI builds. */
+static void diagnostic_sequence(void)
+{
+    unsigned long revision;
+    Vertex TG_HUGE *vertices;
+    assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
+    budget = used;
+    vertices = globe_verts;
+    revision = globe_revision;
+    assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
+    assert(!globe_set_resolution(33, -1, GLOBE_RADIUS));
+    assert(globe_verts == vertices && globe_revision == revision);
+    assert(globe_set_resolution(512, -1, GLOBE_RADIUS));
+    assert(globe_longitude == 32 && globe_last_result == DRV_NO_MEMORY);
+    budget = 0UL;
+    assert(!globe_set_resolution(512, -1, GLOBE_RADIUS));
+    assert(!globe_ready() && used == 0UL);
+    puts("PASS scene diagnostics: committed and recovered meshes only");
+}
+
+int main(int argc, char **argv)
 {
     unsigned long retained, revision, count, width32, width64, width512;
     Vertex TG_HUGE *vertices;
@@ -160,6 +181,12 @@ int main(void)
     unsigned int row, column, source_row;
 #endif
     globe_init();
+    if (argc > 1)
+    {
+        assert(argc == 2 && strcmp(argv[1], "diagnostics") == 0);
+        diagnostic_sequence();
+        return 0;
+    }
     assert(!globe_ready() && used == 0UL);
     assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
     width32 = used;
@@ -184,8 +211,23 @@ int main(void)
     assert(globe_revision == revision && globe_ready());
     assert(!globe_init_verts(32, 1, GLOBE_RADIUS));
     assert(!globe_init_verts(32, 17, GLOBE_RADIUS));
-    assert(!globe_init_verts(32, 16, GLOBE_MAX_RADIUS + 1.0f));
+    assert(!globe_init_verts(32, 16, 0.0f));
+    assert(!globe_init_verts(32, 16, -1.0f));
+#ifdef DRV_MAX_RADIUS
+    /* The initial 1000-unit sphere exercises the inclusive software bound. */
+    assert(GLOBE_RADIUS == DRV_MAX_RADIUS);
+    assert(!globe_init_verts(32, 16, DRV_MAX_RADIUS + 1.0f));
+    assert(!globe_set_resolution(64, -1, DRV_MAX_RADIUS + 1.0f));
+    assert(globe_last_result == DRV_BAD_INPUT && releases == 0UL);
+#endif
     assert(globe_verts == vertices && globe_revision == revision);
+#ifndef DRV_MAX_RADIUS
+    /* Native float drivers retain their previous positive-finite domain. */
+    assert(globe_set_resolution(32, -1, 1500.0f));
+    assert(globe_verts[0].z == 1500.0f);
+    assert(globe_set_resolution(32, -1, 2000.0f));
+    assert(globe_verts[0].z == 2000.0f);
+#endif
 
     assert(globe_set_resolution(64, -1, GLOBE_RADIUS));
     width64 = used;

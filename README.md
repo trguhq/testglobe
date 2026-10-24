@@ -66,6 +66,10 @@ Keys `1`–`5` select maps 32, 64, 128, 256, and 512 pixels wide (`EARTH_32` thr
 GDI, and QuickDraw, and triangles for the other drivers. Pole patches count as quads
 even when coincident vertices collapse to a triangle for drawing.
 
+Console builds print the globe resolution, vertex count, and triangle or quad count
+after each successful mesh construction. Failed attempts and selecting the current
+resolution do not repeat these messages. GDI and QuickDraw use their native OSD.
+
 Matrox, GDI, and QuickDraw also report polygons retained after software culling.
 The other drivers report totals because native culling supplies no visibility count.
 FPS starts enabled; turning it off leaves rotation timing active. FPS measures the
@@ -328,6 +332,11 @@ RGB-plus-alpha precision before buffering. Requests include 8/8/8/8, 8/8/8, 5/6/
 5/5/5, unconstrained RGB(A), and color index with at least eight bits. GLUT probes do
 not enumerate every native visual; older implementations may expose fewer choices.
 Classic GLUT RGB fallbacks do not require an alpha channel.
+
+When GLUT lacks `GLUT_DISPLAY_MODE_POSSIBLE`, the driver makes the original single
+RGB, double-buffered window request and reads the resulting window attributes.
+It cannot safely probe alternative formats on those implementations: an unsupported
+request may terminate GLUT instead of returning a failure.
 
 Flat shading retains each Earth palette byte, converting it to RGB for RGB(A) windows
 or submitting the index directly. Color-index windows use the shared software texture
@@ -758,6 +767,13 @@ The scene contract is one opaque convex globe, with the camera, clipping limits,
 radius, and starting pose defined in `globe.h`. Back-face rejection supplies visibility
 for paths without a depth buffer; those paths are not general renderers for intersecting
 or transparent objects.
+
+The default radius remains 1,000. OpenGL, IRIS GL, and XGL accept positive finite
+custom radii without the software drivers' limit; their camera and clipping values
+must still suit the chosen scene. GDI and QuickDraw retain a maximum radius of 1,000
+for their shared fixed-point pipeline. Matrox retains the validated 1,000-unit range
+for LibShell's fixed-point transforms. These limits are driver capabilities rather
+than a restriction on every globe.
 
 Triangle strips follow complete interior latitude bands. At key 5, an interior strip
 has 1,026 vertices and 1,024 triangles. OpenGL sends 254 such strips plus one cap batch:

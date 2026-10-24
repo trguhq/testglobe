@@ -85,7 +85,9 @@ typedef double GLclampd;
 #define GLUT_DOUBLE 0x0002
 #define GLUT_ALPHA 0x0008
 #define GLUT_DEPTH 0x0010
+#if !defined(TEST_OGL_NO_MODE_QUERY) && !defined(TEST_OGL_OLD_GLUT)
 #define GLUT_DISPLAY_MODE_POSSIBLE 0x0190
+#endif
 #define GLUT_WINDOW_BUFFER_SIZE 0x0068
 #define GLUT_WINDOW_ALPHA_SIZE 0x006E
 #define GLUT_WINDOW_RED_SIZE 0x006B
@@ -113,11 +115,17 @@ typedef double GLclampd;
 #define GL_TEXTURE_ENV 0x2300
 #define GL_TEXTURE_ENV_MODE 0x2200
 #define GL_REPLACE 0x1E01
+#ifdef TEST_OGL_OLD_GLUT
+#define GLUT_API_VERSION 3
+#else
 #define GLUT_API_VERSION 4
+#endif
 #define GLUT_BITMAP_HELVETICA_12 ((void *)1)
 extern void glutInit(int *argc,char **argv);
 extern void glutInitDisplayMode(unsigned int mode);
+#if GLUT_API_VERSION >= 4
 extern void glutInitDisplayString(const char *string);
+#endif
 extern int glutGet(GLenum query);
 extern void glutInitWindowSize(int width,int height);
 extern void glutInitWindowPosition(int x,int y);
