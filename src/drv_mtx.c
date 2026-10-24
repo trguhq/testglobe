@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <float.h>
 #include <time.h>
 #include <conio.h>
 #include <dos.h>
@@ -207,9 +208,13 @@ static void mtx_cleanup(void)
 
 void drv_close(void)
 {
-    globe_free();
     /* atexit also restores the board after shared allocation failures. */
     exit(0);
+}
+
+/* This immediate-mode driver owns no optional host rendering cache. */
+void drv_release_optional(void)
+{
 }
 
 static void mtx_init_mouse(void)
@@ -317,7 +322,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     /* 4:3 aspect, 400-pixel globe diameter, room for the status display. */
     MTX_COMMAND(v2gpswdw(-1600.0, 1600.0, -1200.0, 1200.0), "world window");
     MTX_COMMAND(v3gpsproj(0), "projection");                /* Documented orthographic projection. */
-    MTX_COMMAND(v3gpsdist(3000.0), "view distance");
+    MTX_COMMAND(v3gpsdist((double)GLOBE_VIEW_DISTANCE), "view distance");
     MTX_COMMAND(v3gpshclip(0), "hither clipping");
     MTX_COMMAND(v3gpsyclip(0), "yon clipping");
     MTX_COMMAND(krhwsbop(0), "drawing operation");                 /* REPLACE, not SET-all-ones. */
@@ -335,9 +340,11 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 
 static short mtx_angle(float angle)
 {
-    while (angle < 0.0f) angle += 360.0f;
-    while (angle >= 360.0f) angle -= 360.0f;
-    return (short)angle;
+    double wrapped;
+    if (!(angle >= -FLT_MAX && angle <= FLT_MAX)) return 0;
+    wrapped = fmod((double)angle, 360.0);
+    if (wrapped < 0.0) wrapped += 360.0;
+    return (short)wrapped;
 }
 
 static void mtx_set_transform(void)
@@ -468,13 +475,16 @@ void drv_render(void)
 {
     drv_fps_start();
     MTX_COMMAND(krhwcclr(mtx_background), "clear screen");
-    mtx_set_transform();
     globe_quads_num_vis = 0;
-    globe_draw_quads();
-    if (drv_osd_enabled) drv_draw_osd();
+    if (globe_ready())
+    {
+        mtx_set_transform();
+        globe_draw_quads();
+    }
+    if (drv_osd_enabled || !globe_ready()) drv_draw_osd();
     /* Every completion marker includes actual board execution in FPS. */
     drv_fps_stop();
-    if (drv_auto_enabled) drv_globe_rotate();
+    if (drv_auto_enabled && globe_ready()) drv_globe_rotate();
 }
 
 static void mtx_keyboard(unsigned char key)
@@ -525,7 +535,7 @@ void drv_loop(void)
             mtx_keyboard((unsigned char)key);
         }
         mtx_poll_mouse();
-        if (mtx_dirty || drv_auto_enabled)
+        if (mtx_dirty || (drv_auto_enabled && globe_ready()))
         {
             drv_render();
             mtx_dirty = FALSE;

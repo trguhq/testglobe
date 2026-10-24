@@ -68,7 +68,11 @@ even when coincident vertices collapse to a triangle for drawing.
 
 Matrox, GDI, and QuickDraw also report polygons retained after software culling.
 The other drivers report totals because native culling supplies no visibility count.
-FPS starts enabled; turning it off leaves rotation timing active.
+FPS starts enabled; turning it off leaves rotation timing active. FPS measures the
+interval between completed presentations, including event-loop waits. It is an
+interactive frame rate, not a synchronized GPU throughput benchmark; native swap
+and flush calls provide different completion guarantees. Scene and rendering-mode
+changes restart the sample.
 
 | Status | Meaning |
 | --- | --- |
@@ -87,10 +91,35 @@ XGL's internal software pipeline still reports `texture on`; IRIS GL cannot dete
 all silent native texture failures. Their driver sections describe these limits.
 OpenGL places `dlist` after FPS and before texture status, with its `d` help last.
 QuickDraw appends GWorld status after the other statistics.
+When a smaller texture is active, its width follows the status, for example
+`texture on (128)` or `texture soft (128)`. GDI reports direct drawing, individual
+polygons, reduced colors, or manual rotation when those fallbacks are active.
 
 On displays of 640 × 480 or smaller, GDI and QuickDraw default to a 320 × 240 client
 area; larger displays use 640 × 480. Explicit size requests are preserved, with
 QuickDraw clamping its window to the selected screen.
+
+### Resource recovery
+
+Selecting the current resolution does not rebuild the mesh. When a new mesh cannot
+be allocated, optional rendering caches are released before retrying. The application
+can restore the previous resolution or select a smaller supported level; startup uses
+the same lower-resolution fallback. The OSD identifies the active result and any
+recovery notice. A scene that still cannot be built leaves a responsive empty window
+so another resolution can be selected. Bad data and invalid requests remain distinct
+from insufficient memory.
+
+Insufficient texture memory or a queried native size limit can reduce the image from
+512 through 256, 128, 64, and 32 pixels wide. Other native errors are not assumed to
+be memory shortages. If no usable texture can be created, the request remains enabled
+while flat colors are drawn and `texture fail` is reported. Geometry caches and large submission
+packets are optional: direct drawing or smaller packets preserve the same globe.
+Fallback resolution, texture size, buffering, and cache use affect performance, so
+compare runs using the actual reported settings.
+
+These fallbacks preserve usable native rendering resources. Selecting another valid
+resource can recover from bad map data, but does not repair the damaged resource.
+A lost device or an opaque native-library error can still require shutdown.
 
 ## Binary releases
 
@@ -191,6 +220,10 @@ application resource fork when copying its executable.
 OpenGL, IRIS GL, Sun XGL, and Matrox compile generated arrays of at most 16 KiB.
 Driver `EARTH_*` defines select the maps included in each executable; Matrox includes
 only the 32- and 64-wide maps. GDI and QuickDraw embed all maps as native resources.
+The five maps total 170.5 KiB; Matrox's two maps total 2.5 KiB. Generated and saved
+source files are build copies, not additional runtime map allocations. Compiled-data
+paths borrow bounded read-only map spans. GDI and QuickDraw load selected chunks
+directly into the final owned index buffer; neither retains a second full source map.
 
 Make regenerates build source when missing or when an input changes. `EARTH_DATA`
 (Unix) and `MTX_DATA` (DOS) select the input directory, defaulting to `data` beside
@@ -307,8 +340,11 @@ display lists.
 
 Display-list allocation, compilation, validation, and execution are checked with
 OpenGL 1.1 calls, including `glIsList` and `glGetError`. A failed cache is discarded and
-geometry is drawn immediately. Recoverable texture failures release failed resources
-and draw flat colors. Diagnostics use `glGetError`, without modern debug extensions.
+geometry is drawn immediately. Texture-memory shortages and native size limits try
+smaller images; other texture failures release failed resources and draw flat colors.
+Failed lists are not rebuilt every frame or on resolution changes; toggling `d` or
+`t` explicitly permits a retry.
+Diagnostics use `glGetError`, without modern debug extensions.
 
 All three targets default to GLU mipmaps. Omitting `NO_GENMIPMAP` permits an optional
 path when FreeGLUT 2.0 or later headers are available: the running context must report
@@ -346,6 +382,8 @@ example. No later MIPS ISA or ABI is imposed.
 The default globe is key 3. IRIS GL performs model/view transforms, 45-degree
 perspective, clipping, triangle-mesh drawing, back-face rejection, and bitmap-font
 OSD. Geometry is cached in a GL object and rebuilt for resolution or texture changes.
+If the object cannot be allocated or validated, the driver draws the same geometry
+directly and retains the user's requested rendering settings.
 Interior bands use `bgntmesh`/`endtmesh`; polar caps use three-vertex meshes.
 
 Runtime queries compare single- and double-buffered RGB(A) formats, preferring total
@@ -411,7 +449,9 @@ XGL supplies its own software pipeline when hardware cannot accelerate texturing
 Because the API exposes no reliable per-frame backend query, successful texturing
 reports `texture on` for either internal path. Recoverable texture failures release
 partial resources and draw flat colors. Nonrecoverable errors and unrelated setup,
-flat-rendering, or OSD errors remain fatal.
+native rendering, or OSD errors remain fatal. Native texture rasters are filled from
+indexed map rows without an intermediate full RGB image. Packet allocation failures
+use smaller strips, retaining overlap, winding, colors, and UVs.
 
 #### Validation
 
@@ -510,7 +550,8 @@ instance at a time.
 The default globe is key 1, with all five resolutions and no texture mapping. The
 window uses the display's 8-bit depth. A 256-entry logical Earth palette is realized
 on activation; Windows retains its reserved system colors. An 8-bit compatible bitmap
-and memory DC provide the back buffer.
+and memory DC normally provide the back buffer. If they cannot be allocated, the
+driver paints directly into the window's paint DC.
 
 Software transforms, perspective projection, clipping, and culling operate on whole
 quads. Shared vertices are transformed once per packet, then retained polygons are
@@ -518,6 +559,9 @@ grouped by palette index for `PolyPolygon` calls of at most 64 polygons. Pole ve
 collapse to triangles. Visibility relies on the convex globe rather than a depth
 buffer for intersecting geometry. Native Windows messages handle input, resizing,
 palette changes, and window closure.
+Failed `PolyPolygon` submission can fall back to individual `Polygon` calls. Brush
+allocation can reclaim cached brushes or use a stock color. Failure to create the
+animation timer leaves manual rotation and keyboard input available.
 
 #### Platform notes
 
@@ -600,6 +644,10 @@ The driver chooses the highest currently configured depth among active displays,
 without changing display modes. It supports monochrome and Color QuickDraw: 1-bit
 output uses ordered luminance patterns, 4/8-bit output maps Earth RGB colors to the
 device palette, and 16/32-bit output uses native RGB drawing.
+Unavailable optional palettes or color patterns fall back to native nearest-color
+drawing. Polygon allocation failures unwind the native drawing scope and release
+optional resources before one retry; repeated failure pauses drawing until input
+requests another attempt.
 
 With 32-bit QuickDraw, an optional GWorld supplies an offscreen back buffer presented
 through `CopyBits`. This uses ordinary GWorld pixel memory. QuickDraw selects available
@@ -679,9 +727,9 @@ can draw to RGB windows.
 
 | Location | Responsibility |
 | --- | --- |
-| `src/globe.c` | Mesh construction and plural traversal functions: `globe_draw_tris()`, `globe_draw_tristrips()`, `globe_draw_quads()`, `globe_draw_quadbatches()`, and OpenGL pole-cap traversal. |
+| `src/globe.c` | Scene ownership, recoverable mesh construction, and plural traversals: `globe_draw_tris()`, `globe_draw_tristrips()`, `globe_draw_quads()`, `globe_draw_quadbatches()`, and OpenGL pole-cap traversal. |
 | `src/drv_*.c` | Singular native callbacks such as `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*`; group color/RGB/UV variants by primitive. |
-| `src/drv.c` | Shared input, rotation, FPS/OSD, geometry-packet helpers, and Earth-resource traversal. |
+| `src/drv.c` | Shared allocation/clock services, input, rotation, FPS/OSD, geometry-packet helpers, and Earth-resource traversal. |
 | Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
 
@@ -690,6 +738,11 @@ Shared geometry helpers include `drv_validate_quadbatch()`,
 `drv_split_tristrip_batches()`. Shared input uses `drv_handle_key()`,
 `drv_rotate_drag()`, and `drv_rotate_elapsed()`. Backend resize and texture-loading
 helpers remain private; `drv_render()` and `drv_close()` are common driver entry points.
+Drawing callbacks borrow inputs for the call and never rebuild the scene inside a
+native begin/end or paint scope. Scene revisions invalidate geometry caches; texture
+intent and the active draw pass are separate. `Drv_result` distinguishes allocation,
+data, input, unavailable-feature, and native failures. Optional-cache eviction occurs
+outside rendering scopes through `drv_release_optional()`.
 Unsupported PGC/PHIGS selections report configuration errors; their headers are
 reference stubs. `types.h` provides wide arithmetic aliases for segmented builds.
 
@@ -701,11 +754,19 @@ IRIS GL, and XGL use `s_`, `a_`, `i_`, and `x_` prefixes. DOS uses `.obj`, GDI u
 
 ### Geometry submission
 
+The scene contract is one opaque convex globe, with the camera, clipping limits,
+radius, and starting pose defined in `globe.h`. Back-face rejection supplies visibility
+for paths without a depth buffer; those paths are not general renderers for intersecting
+or transparent objects.
+
 Triangle strips follow complete interior latitude bands. At key 5, an interior strip
 has 1,026 vertices and 1,024 triangles. OpenGL sends 254 such strips plus one cap batch:
 263,676 submitted vertices for 261,120 triangles, compared with 783,360 vertices for
 independent triangles. IRIS GL and XGL use separate three-vertex cap meshes/strips.
-Flat colors and UVs preserve the independent-triangle topology.
+Flat colors and UVs preserve the independent-triangle topology. Under allocation
+pressure, bounded packets may split a latitude band without changing its facets.
+UVs are generated from grid coordinates for submission instead of retaining a full
+two-dimensional UV array. XGL expands palette indices only for its current RGB packet.
 
 `DRV_QUAD_BATCH` is a capability of `QUAD`. GDI and QuickDraw use at most 64 quads and
 130 shared vertices per packet, with four indices and one palette byte per quad.
@@ -721,8 +782,8 @@ rotation/transforms, clipping, projection, and back-face rejection. Driver-local
 hold transformed packets; projection validates indices against their actual point
 count. GDI also has a floating-point path. QuickDraw's isolated `qd_fpu.c`/`qd_math.h`
 interface preserves the SANE/68881 boundary. Only these two targets link the integer
-pipeline (`g_soft.obj` or `q_soft.o`). Resource-backed map buffers are released after
-mesh colors are built, saving 128 KiB at key 5.
+pipeline (`g_soft.obj` or `q_soft.o`). Resource-backed indices are loaded into their
+final storage, avoiding an extra full-map allocation during mesh construction.
 
 OpenGL and IRIS GL share `src/texsoft.c`/`.h` for software texturing: homogeneous
 clipping, depth/culling, perspective-correct UVs, repeat sampling, and filtered mipmaps.
@@ -732,6 +793,11 @@ object prefixes. `src/texture.h` sets `TEXTURE_MAX_SIZE=512`,
 texturing releases frame/depth buffers and OpenGL's transfer copy while retaining
 mipmaps. Resizing releases obsolete rasters before replacement. Same-size staging
 images reuse allocation; changed sizes replace the old image only after completion.
+The software mipmap builder can adopt the generated RGB base image instead of
+copying it. IRIS GL fills its native packed image directly from indexed rows; XGL
+fills its native raster the same way. OpenGL's GLU path retains the complete RGB
+staging image required by that interface. Native libraries may retain their own
+texture, geometry, and framebuffer storage.
 
 The Earth converter uses POSIX file operations on Unix and Microsoft runtime calls
 on DOS to reserve output paths safely. Generated readers handle chunk and 64 KiB

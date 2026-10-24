@@ -52,6 +52,8 @@ static CTabHandle qd_colors;
 static PaletteHandle qd_palette;
 static PixPatHandle qd_pattern;
 static int qd_pattern_color = -1;
+static int qd_pattern_unavailable;
+static int qd_palette_reduced;
 static MenuHandle qd_file_menu;
 static int qd_color_available;
 static int qd_world_available;
@@ -62,6 +64,8 @@ static int qd_running;
 static int qd_active;
 static int qd_dirty = TRUE;
 static int qd_rendering;
+static int qd_frame_paused;
+static int qd_polygon_failed;
 static GrafPtr qd_render_port;
 static GDHandle qd_render_device;
 static PixMapHandle qd_locked_pixels;
@@ -71,6 +75,28 @@ static unsigned long qd_auto_tick;
 static Rect qd_screen;
 static long qd_fixed_matrix[3][3];
 static Soft3d_fixed_point qd_fixed_points[QD_MAX_VERTICES];
+/* A native call may dispatch an event while a packet borrows mesh data.
+ * Copy bounded events; process them only at the outer event-loop boundary. */
+#define QD_PENDING_EVENTS 8
+static EventRecord qd_pending_events[QD_PENDING_EVENTS];
+static unsigned int qd_pending_count;
+static int qd_pending_close, qd_pending_refresh, qd_pending_resize;
+static int qd_pending_width, qd_pending_height;
+static int qd_pending_mouse, qd_pending_mouse_x, qd_pending_mouse_y;
+
+static void qd_defer_event(const EventRecord *event)
+{
+    unsigned int i;
+    /* Several updates to one window need only one later update scope. */
+    if (event->what == updateEvt)
+        for (i = 0; i < qd_pending_count; ++i)
+            if (qd_pending_events[i].what == updateEvt &&
+                qd_pending_events[i].message == event->message) return;
+    if (qd_pending_count < QD_PENDING_EVENTS)
+        qd_pending_events[qd_pending_count++] = *event;
+    else
+        drv_abort_frame("QuickDraw input queue full; retry control");
+}
 
 static void qd_pascal(Str255 result, const char *text)
 {
@@ -116,11 +142,29 @@ static void qd_dispose_palette(void)
     qd_colors = NULL;
 }
 
+/* Called between frames when shared allocation recovery needs heap space.
+ * Restore the caller's port before releasing its possible pixel storage. */
+void drv_release_optional(void)
+{
+    qd_finish_render();
+    qd_dispose_buffer();
+    if (qd_pattern != NULL) DisposePixPat(qd_pattern);
+    qd_pattern = NULL;
+    qd_pattern_unavailable = qd_color_available && qd_depth > 1;
+    qd_dispose_palette();
+    qd_palette_reduced = qd_color_available && qd_depth <= 8;
+    qd_dirty = TRUE;
+    drv_notice("QuickDraw optional buffers released");
+}
+
 static void qd_cleanup(void)
 {
     qd_ready = FALSE;
     qd_running = FALSE;
     qd_active = FALSE;
+    qd_pending_count = 0;
+    qd_pending_close = qd_pending_refresh = qd_pending_resize = FALSE;
+    qd_pending_mouse = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     qd_finish_render();
     qd_dispose_buffer();
@@ -135,7 +179,6 @@ static void qd_cleanup(void)
         DisposeMenu(qd_file_menu);
     }
     qd_file_menu = NULL;
-    globe_free();
 }
 
 void qd_error(char *message)
@@ -156,6 +199,11 @@ void qd_error(char *message)
 
 void drv_close(void)
 {
+    if (qd_rendering)
+    {
+        qd_pending_close = TRUE;
+        return;
+    }
     qd_ready = FALSE;
     qd_running = FALSE;
     qd_active = FALSE;
@@ -169,6 +217,13 @@ void drv_init(int *argc, char **argv)
     static const unsigned char quit_item[] = "\006Quit/Q";
     (void)argc; (void)argv;
     qd_ready = FALSE;
+    qd_pattern_unavailable = FALSE;
+    qd_palette_reduced = FALSE;
+    qd_frame_paused = FALSE;
+    qd_polygon_failed = FALSE;
+    qd_pending_count = 0;
+    qd_pending_close = qd_pending_refresh = qd_pending_resize = FALSE;
+    qd_pending_mouse = FALSE;
     MaxApplZone();
     InitGraf(&qd.thePort);
     InitFonts();
@@ -197,30 +252,32 @@ void drv_init(int *argc, char **argv)
     qd_active = TRUE;
 }
 
-void drv_load_earth_chunk(unsigned int id, unsigned long length,
+Drv_result drv_load_earth_chunk(unsigned int id, unsigned long length,
                            unsigned char TG_HUGE *destination)
 {
     Handle resource;
     if (destination == NULL || length == 0 || length > TG_EARTH_CHUNK_SIZE)
-        qd_error("Invalid QuickDraw Earth resource chunk");
+        return DRV_BAD_INPUT;
     resource = Get1Resource((ResType)0x45415254UL, (short)id);
-    if (resource == NULL) qd_error("Cannot load QuickDraw Earth resource");
+    if (resource == NULL)
+        return ResError() == memFullErr ? DRV_NO_MEMORY : DRV_BAD_DATA;
     if (GetHandleSize(resource) != (Size)length)
     {
         ReleaseResource(resource);
-        qd_error("QuickDraw Earth resource has the wrong size");
+        return DRV_BAD_DATA;
     }
     HLock(resource);
     if (*resource == NULL)
     {
         HUnlock(resource);
         ReleaseResource(resource);
-        qd_error("Cannot lock QuickDraw Earth resource");
+        return DRV_NO_MEMORY;
     }
     /* The shared loader limits every locked resource to 16 KiB. */
     memcpy(destination, *resource, (size_t)length);
     HUnlock(resource);
     ReleaseResource(resource);
+    return DRV_OK;
 }
 
 static void qd_display_info(void)
@@ -260,7 +317,12 @@ static void qd_make_palette(void)
 {
     int i;
     qd_colors = (CTabHandle)NewHandle((Size)(sizeof(ColorTable) + 255L * sizeof(ColorSpec)));
-    if (qd_colors == NULL) qd_error("Cannot allocate Earth color table");
+    if (qd_colors == NULL)
+    {
+        qd_palette_reduced = TRUE;
+        drv_notice("QuickDraw uses the display palette");
+        return;
+    }
     (**qd_colors).ctSeed = GetCTSeed();
     (**qd_colors).ctFlags = 0;
     (**qd_colors).ctSize = 255;
@@ -272,7 +334,14 @@ static void qd_make_palette(void)
         (**qd_colors).ctTable[i].rgb.blue = (unsigned short)(earth_cmap[i][2] * 257U);
     }
     qd_palette = NewPalette(256, qd_colors, pmTolerant, 0);
-    if (qd_palette == NULL) qd_error("Cannot allocate Earth palette");
+    if (qd_palette == NULL)
+    {
+        qd_dispose_palette();
+        qd_palette_reduced = TRUE;
+        drv_notice("QuickDraw uses the display palette");
+        return;
+    }
+    qd_palette_reduced = FALSE;
     SetPalette(qd_window, qd_palette, TRUE);
     ActivatePalette(qd_window);
 }
@@ -298,6 +367,7 @@ static void qd_refresh_display(void)
     Rect old_screen;
     int old_depth;
     if (!qd_ready || qd_window == NULL) return;
+    if (qd_rendering) { qd_pending_refresh = TRUE; return; }
     old_device = qd_device;
     old_depth = qd_depth;
     old_screen = qd_screen;
@@ -318,15 +388,27 @@ static void qd_refresh_display(void)
         qd_dirty = TRUE;
     }
     if (qd_palette != NULL) ActivatePalette(qd_window);
+    qd_auto_tick = TickCount();
+    drv_reset_timing();
 }
 
 static void qd_resize(int width, int height)
 {
     if (width < 1 || height < 1) return;
+    if (qd_rendering)
+    {
+        qd_pending_width = width;
+        qd_pending_height = height;
+        qd_pending_resize = TRUE;
+        return;
+    }
     if (width > 32767 || height > 32767) qd_error("QuickDraw window is too large");
     drv_win_width = (unsigned int)width;
     drv_win_height = (unsigned int)height;
     if (qd_window != NULL) qd_make_buffer();
+    qd_frame_paused = FALSE;
+    qd_auto_tick = TickCount();
+    drv_reset_timing();
     qd_dirty = TRUE;
 }
 
@@ -420,26 +502,31 @@ static void qd_flat_color(PolyHandle polygon, unsigned char index)
         rgb.red = (unsigned short)(earth_cmap[index][0] * 257U);
         rgb.green = (unsigned short)(earth_cmap[index][1] * 257U);
         rgb.blue = (unsigned short)(earth_cmap[index][2] * 257U);
-        if (qd_depth <= 8)
+        if (qd_depth <= 8 && !qd_pattern_unavailable)
         {
             if (qd_pattern == NULL)
             {
                 qd_pattern = NewPixPat();
-                if (qd_pattern == NULL) qd_error("Cannot allocate QuickDraw color pattern");
+                if (qd_pattern == NULL)
+                {
+                    qd_pattern_unavailable = TRUE;
+                    drv_notice("QuickDraw uses nearest display colors");
+                }
             }
-            if (qd_pattern_color != index)
+            if (qd_pattern != NULL && qd_pattern_color != index)
             {
                 MakeRGBPat(qd_pattern, &rgb);
                 qd_pattern_color = index;
             }
             /* Color QuickDraw dithers this RGB pattern at low pixel depths. */
-            FillCPoly(polygon, qd_pattern);
+            if (qd_pattern != NULL)
+            {
+                FillCPoly(polygon, qd_pattern);
+                return;
+            }
         }
-        else
-        {
-            RGBForeColor(&rgb);
-            PaintPoly(polygon);
-        }
+        RGBForeColor(&rgb);
+        PaintPoly(polygon);
     }
     else
     {
@@ -480,7 +567,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     unsigned int i, j, corners[4];
     int point, total;
     PolyHandle polygon;
-    if (!qd_ready || vertex_count == 0 || quad_count == 0 || vertices == NULL ||
+    if (!qd_ready || drv_frame_failed || vertex_count == 0 || quad_count == 0 || vertices == NULL ||
         indices == NULL || colors == NULL) return;
     if (!drv_validate_quadbatch(vertex_count, quad_count, indices))
         qd_error("QuickDraw quad batch or vertex index is out of range");
@@ -494,7 +581,12 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         total = qd_prepare_polygon(corners, 4U, vertex_count, projected);
         if (total == 0) continue;
         polygon = OpenPoly();
-        if (polygon == NULL) qd_error("Cannot allocate QuickDraw polygon");
+        if (polygon == NULL)
+        {
+            qd_polygon_failed = TRUE;
+            drv_abort_frame("QuickDraw polygon allocation failed");
+            return;
+        }
         qd_pending_polygon = polygon;
         MoveTo(projected[0].h, projected[0].v);
         for (point = 1; point < total; ++point)
@@ -538,7 +630,7 @@ static Int qd_osd_text(const char *text, Int baseline, short width, int draw)
 
 void drv_draw_osd(void)
 {
-    char status[160];
+    char status[224];
     RGBColor white;
     short width;
     Int next_line, help_baseline;
@@ -556,6 +648,9 @@ void drv_draw_osd(void)
     sprintf(status + strlen(status), ", %s, GWorld %s",
              qd_has_fpu ? "68881 math" : "integer math",
              qd_world != NULL ? "on" : "off");
+    if (qd_depth > 1 && qd_depth <= 8 &&
+        (qd_palette_reduced || qd_pattern_unavailable))
+        strcat(status, ", color reduced");
     width = (short)(drv_win_width - 16U);
     next_line = qd_osd_text(status, 14, width, TRUE);
     help_baseline = (Int)drv_win_height + 4L -
@@ -585,7 +680,7 @@ static void qd_present(void)
     RGBBackColor(&saved_background);
 }
 
-void drv_render(void)
+static void qd_render_pass(void)
 {
     CGrafPtr old_world;
     GDHandle old_device;
@@ -593,7 +688,7 @@ void drv_render(void)
     Rect bounds;
     RGBColor background;
     int buffered;
-    if (!qd_ready || qd_rendering || qd_window == NULL || globe_verts_num == 0) return;
+    if (!qd_ready || qd_rendering || qd_window == NULL) return;
     drv_fps_start();
     GetPort(&qd_render_port);
     qd_render_device = NULL;
@@ -627,10 +722,23 @@ void drv_render(void)
     else BackColor(whiteColor);
     EraseRect(&bounds);
     PenNormal();
-    qd_set_transform();
     globe_quads_num_vis = 0;
-    globe_draw_quadbatches();
-    if (drv_osd_enabled) drv_draw_osd();
+    if (globe_ready() && !qd_frame_paused)
+    {
+        qd_set_transform();
+        globe_draw_quadbatches();
+    }
+    if (drv_frame_failed)
+    {
+        /* Do not present an incomplete offscreen frame, or release its
+         * pixels while their port is selected. Recovery runs after unwind. */
+        qd_finish_render();
+        drv_reset_timing();
+        return;
+    }
+    if (qd_frame_paused)
+        drv_abort_frame("QuickDraw paused; use a control to retry");
+    if (drv_osd_enabled || !globe_ready() || qd_frame_paused) drv_draw_osd();
     if (buffered)
     {
         SetGWorld(old_world, old_device);
@@ -643,18 +751,59 @@ void drv_render(void)
     drv_fps_stop();
 }
 
+void drv_render(void)
+{
+    int attempt;
+    if (!qd_ready || qd_rendering || qd_window == NULL) return;
+    for (attempt = 0; attempt < 2; ++attempt)
+    {
+        qd_polygon_failed = FALSE;
+        qd_render_pass();
+        if (!qd_polygon_failed) return;
+        if (attempt == 0) drv_release_optional();
+    }
+    /* Both complete-frame attempts failed. Keep a usable event loop and
+     * paint a status view; only a subsequent user action retries geometry. */
+    qd_frame_paused = TRUE;
+    drv_auto_enabled = FALSE;
+    qd_polygon_failed = FALSE;
+    qd_render_pass();
+}
+
 static void qd_keyboard(unsigned char key)
 {
+    EventRecord event;
     if (!qd_ready) return;
+    if (qd_rendering)
+    {
+        if (key == 27) qd_pending_close = TRUE;
+        else
+        {
+            memset(&event, 0, sizeof(event));
+            event.what = keyDown;
+            event.message = key;
+            qd_defer_event(&event);
+        }
+        return;
+    }
     if (key == 27) { drv_close(); return; }
     if (!drv_handle_key(key)) return;
-    if (key == 'a' || key == 'A') qd_auto_tick = TickCount();
+    qd_frame_paused = FALSE;
+    /* Mesh recovery may have taken time; it is not animation elapsed time. */
+    qd_auto_tick = TickCount();
     qd_dirty = TRUE;
 }
 
 static void qd_mouse_move(int x, int y)
 {
     if (!qd_ready) return;
+    if (qd_rendering)
+    {
+        qd_pending_mouse_x = x;
+        qd_pending_mouse_y = y;
+        qd_pending_mouse = TRUE;
+        return;
+    }
     if (drv_lmouse_pressed)
     {
         drv_rotate_drag((long)x - qd_old_x, (long)y - qd_old_y);
@@ -679,6 +828,7 @@ static void qd_event(EventRecord *event)
     short part;
     unsigned char key;
     if (!qd_ready || !qd_running || event == NULL) return;
+    if (qd_rendering) { qd_defer_event(event); return; }
     switch (event->what)
     {
         case mouseDown:
@@ -770,6 +920,46 @@ static void qd_event(EventRecord *event)
     }
 }
 
+static void qd_apply_pending(void)
+{
+    EventRecord event;
+    unsigned int remaining;
+    if (qd_rendering || !qd_ready || !qd_running) return;
+    if (qd_pending_close)
+    {
+        qd_pending_close = FALSE;
+        qd_pending_count = 0;
+        drv_close();
+        return;
+    }
+    if (qd_pending_resize)
+    {
+        qd_pending_resize = FALSE;
+        qd_resize(qd_pending_width, qd_pending_height);
+    }
+    if (qd_pending_refresh)
+    {
+        qd_pending_refresh = FALSE;
+        qd_refresh_display();
+    }
+    if (qd_pending_mouse)
+    {
+        qd_pending_mouse = FALSE;
+        qd_mouse_move(qd_pending_mouse_x, qd_pending_mouse_y);
+    }
+    /* Newly dispatched native callbacks cannot create an unbounded drain. */
+    remaining = QD_PENDING_EVENTS;
+    while (qd_pending_count != 0 && remaining-- != 0 && qd_running)
+    {
+        event = qd_pending_events[0];
+        --qd_pending_count;
+        if (qd_pending_count != 0)
+            memmove(qd_pending_events, qd_pending_events + 1,
+                      qd_pending_count * sizeof(EventRecord));
+        qd_event(&event);
+    }
+}
+
 void drv_loop(void)
 {
     EventRecord event;
@@ -779,8 +969,11 @@ void drv_loop(void)
     qd_auto_tick = TickCount();
     while (qd_running)
     {
+        qd_apply_pending();
+        if (!qd_running) break;
         if (WaitNextEvent(everyEvent, &event,
-                           (drv_auto_enabled || drv_lmouse_pressed) ? 1L : 30L, NULL))
+                           ((drv_auto_enabled && globe_ready() && !qd_frame_paused) ||
+                            drv_lmouse_pressed || qd_pending_count != 0) ? 1L : 30L, NULL))
             qd_event(&event);
         if (!qd_running) break;
         if (qd_active && drv_lmouse_pressed)
@@ -790,7 +983,7 @@ void drv_loop(void)
             qd_mouse_move(point.h, point.v);
             if (!Button()) drv_lmouse_pressed = FALSE;
         }
-        if (qd_active && drv_auto_enabled)
+        if (qd_active && drv_auto_enabled && globe_ready() && !qd_frame_paused)
         {
             tick = TickCount();
             elapsed = (tick - qd_auto_tick) & 0xffffffffUL;
@@ -800,6 +993,7 @@ void drv_loop(void)
         }
         else qd_auto_tick = TickCount();
         if (qd_active && qd_dirty) drv_render();
+        qd_apply_pending();
     }
     qd_cleanup();
 }

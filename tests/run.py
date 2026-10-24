@@ -51,6 +51,16 @@ def check_driver_api(command, driver, hidden_symbols):
     print("PASS " + driver + " rendering API: supported callbacks declared, unsupported primitives hidden and plural globe entry points")
 
 
+def check_production_units(cc, common, options, output, driver, sources):
+    """Compile real translation units without a fixture's preceding includes."""
+    objects = output / (driver + "_units")
+    objects.mkdir()
+    for source in sources:
+        run(cc + common + options + ["-c", str(ROOT / "src" / source),
+            "-o", str(objects / (Path(source).stem + ".o"))])
+    print("PASS " + driver + " production units: independent compilation with recorder declarations; native SDK/ABI validation remains separate")
+
+
 def check_configurations(cc, common):
     source = ["-fsyntax-only", str(ROOT / "tests/configuration.c")]
     clean = ["-U__APPLE__", "-U__MACH__", "-Uapplec", "-U__SC__", "-Usparc", "-U__sparc"]
@@ -63,6 +73,7 @@ def check_configurations(cc, common):
         ["-DDRV_GDI", "-DTEST_DRIVER_GDI"],
         ["-DDRV_MTX", "-DTEST_DRIVER_MTX"],
         ["-DDRV_QD", "-DTEST_DRIVER_QD"],
+        ["-DDRV_IGL", "-DTEST_DRIVER_IGL"],
         ["-DDRV_OGL", "-D__APPLE__", "-DTEST_DRIVER_OGL"],
         ["-DDRV_OGL", "-D__BORLANDC__", "-DTEST_DRIVER_OGL"],
     )
@@ -73,6 +84,10 @@ def check_configurations(cc, common):
         (["-DDRV_PGC"], "retained PGC/PHIGS headers have no implemented driver"),
         (["-DDRV_PHG"], "retained PGC/PHIGS headers have no implemented driver"),
         (["-DDRV_OGL", "-DFLAT", "-DSEG86"], "Choose exactly one memory architecture"),
+        (["-DDRV_OGL", "-DDRV_IGL"], "Select only one graphics driver"),
+        (["-DDRV_GDI", "-DFLAT"], "Windows GDI requires the SEG86 memory model"),
+        (["-DDRV_QD", "-DFLAT"], "Classic QuickDraw requires the SEG68 memory model"),
+        (["-DDRV_OGL", "-DTRI"], "Select exactly one driver primitive"),
     )
     for options, expected in invalid:
         result = subprocess.run(cc + common + clean + options + source,
@@ -300,8 +315,7 @@ def main():
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "geometry")])
         run([str(output / "geometry")])
         for mode in ("nan", "infinity"):
-            run([str(output / "geometry"), mode], expected_returncode=1,
-                expected_stderr="ERROR - Invalid globe dimensions\n",
+            run([str(output / "geometry"), mode], expected_stderr="",
                 required_output="PASS invalid globe radius: nonfinite input fails before replacing the existing mesh")
         run(cc + common + flat + [str(ROOT / "tests/ogl_strips.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
@@ -330,7 +344,20 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl_strips")])
         run([str(output / "igl_strips")])
+        run(cc + common + flat + [str(ROOT / "tests/tex_take.c"),
+            "-lm", "-o", str(output / "tex_take")])
+        run([str(output / "tex_take")])
+        run(cc + common + flat + [str(ROOT / "tests/recovery.c"),
+            str(ROOT / "src/globe.c"), str(ROOT / "src/e_saved.c"),
+            "-lm", "-o", str(output / "flat_recovery")])
+        run([str(output / "flat_recovery")])
+        run(cc + common + ["-DSEG86", "-DDRV_GDI", "-D_huge=",
+            str(ROOT / "tests/recovery.c"), str(ROOT / "src/globe.c"),
+            "-lm", "-o", str(output / "resource_recovery")])
+        run([str(output / "resource_recovery")])
         if args.qd_contract:
+            check_production_units(cc, common, qd, output, "QuickDraw",
+                ("drv.c", "drv_qd.c", "err.c", "globe.c", "main.c", "qd_fpu.c", "soft3d.c"))
             run(cc + common + qd + [str(ROOT / "tests/qd.c"),
                 str(ROOT / "src/qd_fpu.c"), str(ROOT / "src/soft3d.c"),
                 str(ROOT / "src/globe.c"),
@@ -339,14 +366,11 @@ def main():
             for mode in ("mono", "1", "4", "8", "16", "32", "fpu", "falsefpu",
                          "oldcolor", "nogworld", "lockfail", "multi", "small640",
                          "small512", "large800", "tall640", "explicit",
-                         "explicitwidth", "explicitheight"):
+                         "explicitwidth", "explicitheight", "patternfail", "polyfail"):
                 run([str(output / "qd"), mode])
-            for mode in ("polyfail", "patternfail"):
-                run([str(output / "qd"), mode], expected_returncode=1,
-                    expected_stderr="",
-                    required_output="PASS QuickDraw fatal cleanup: all transient and persistent resources released; teardown is idempotent")
         if args.gdi_contract:
-            run(cc + common + gdi + ["-fsyntax-only", str(ROOT / "src/main.c")])
+            check_production_units(cc, common, gdi + ["-Wno-cast-function-type"], output, "GDI",
+                ("drv.c", "drv_gdi.c", "err.c", "globe.c", "main.c", "soft3d.c"))
             # Win16 MakeProcInstance requires FARPROC/WNDPROC casts;
             # GCC diagnoses those historical, intentional callback casts.
             run(cc + common + gdi + ["-Wno-cast-function-type", str(ROOT / "tests/gdi.c"),
@@ -354,9 +378,9 @@ def main():
                 str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi")])
             for mode in ("fpu", "fixed", "287", "small640", "small512", "tall640",
-                         "fpu-escape", "fixed-escape", "maxframe"):
+                         "fpu-escape", "fixed-escape", "maxframe", "fatal-poly", "fatal-oom"):
                 run([str(output / "gdi"), mode])
-            for mode in ("fatal-poly", "fatal-oom", "fatal-size"):
+            for mode in ("fatal-size",):
                 run([str(output / "gdi"), mode], expected_returncode=1,
                     expected_stderr="",
                     required_output="PASS GDI fatal error: modal paint/timer/input dispatch cannot reenter rendering or partial scene state, and cleanup releases all resources")
@@ -370,20 +394,25 @@ def main():
                 parser.error("--xgl-contract requires xvfb-run and Xvfb on PATH")
             xgl_cppflags = shlex.split(os.environ.get("XGL_TEST_CPPFLAGS", ""))
             xgl_ldflags = shlex.split(os.environ.get("XGL_TEST_LDFLAGS", ""))
+            check_production_units(cc, common, strips + xgl_cppflags +
+                ["-I" + str(ROOT / "tests/xgl_record")], output, "XGL",
+                ("drv.c", "drv_xgl.c", "err.c", "globe.c", "main.c", "texture.c", "e_saved.c"))
             run(cc + common + strips + xgl_cppflags +
                 ["-I" + str(ROOT / "tests/xgl_record"),
                  str(ROOT / "tests/xgl.c"), str(ROOT / "src/e_saved.c"), str(ROOT / "src/globe.c"),
                  str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                  str(ROOT / "src/err.c")] + xgl_ldflags +
                 ["-lm", "-lX11", "-o", str(output / "xgl")])
-            for mode in ("double", "single"):
+            for mode in ("double", "single", "flatstripfail"):
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode])
+            for mode in ("rasterfail", "mipmapfail", "stripallocfail"):
+                run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
+                     str(output / "xgl"), mode],
+                    required_output="PASS XGL bounded resource fallback:")
             xgl_texture_failures = {
-                "stagefail": "Cannot generate XGL texture image",
-                "rasterfail": "Cannot allocate XGL texture raster",
+                "stagefail": "Cannot allocate XGL texture raster",
                 "accessfail": "Cannot access XGL texture raster",
-                "mipmapfail": "Cannot create XGL mipmap",
                 "buildfail": "Cannot build XGL mipmap",
                 "mapfail": "Cannot create XGL texture map",
                 "configurefail": "Cannot configure XGL texture map",
@@ -392,7 +421,6 @@ def main():
                 "drawfail": "Cannot use XGL texture",
                 "flushfail": "Cannot use XGL texture",
                 "unloaded": "XGL texture data is not loaded",
-                "stripallocfail": "Cannot allocate XGL texture strip packet",
             }
             xgl_native_error = "XGL error: test-123: injected texture failure (test operator)\n"
             for mode, message in xgl_texture_failures.items():
@@ -412,26 +440,28 @@ def main():
                                      else "PASS XGL nonrecoverable error:"))
         if args.ogl_contract:
             ogl = ["-DFLAT", "-DDRV_OGL", "-I" + str(ROOT / "tests/ogl_record")]
+            check_production_units(cc, common, ogl + ["-DNO_GENMIPMAP"], output, "OpenGL",
+                ("drv.c", "drv_ogl.c", "err.c", "globe.c", "main.c", "texture.c", "texsoft.c", "e_saved.c"))
             ogl_sources = [str(ROOT / "tests/ogl.c"), str(ROOT / "src/e_saved.c"),
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm"]
             run(cc + common + ogl + ["-DNO_GENMIPMAP"] + ogl_sources +
                 ["-o", str(output / "ogl")])
-            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail"):
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "reduced", "softreduced", "glureduced"):
                 run([str(output / "ogl"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl"), mode],
-                    expected_stderr="OpenGL error: Out of memory!\n" * 30,
+                    expected_stderr="OpenGL error: Out of memory!\n" * 6,
                     required_output="PASS OpenGL display-list compilation failure: rejected or incomplete lists are deleted before complete immediate rendering")
             for mode in ("validationfail", "callfail"):
                 run([str(output / "ogl"), mode],
-                    expected_stderr="OpenGL error: Invalid operation!\n" * 30 if mode == "callfail" else "",
+                    expected_stderr="OpenGL error: Invalid operation!\n" * 6 if mode == "callfail" else "",
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
             texture_failures = {
-                "gluerror": "Cannot build OpenGL texture mipmaps",
-                "stagefail": "Cannot generate OpenGL texture image",
-                "softmipfail": "Cannot allocate indexed OpenGL texture mipmaps",
+                "gluerror": "Insufficient memory for texture; drawing flat colors",
+                "stagefail": "Insufficient memory for texture; drawing flat colors",
+                "softmipfail": "Insufficient memory for texture; drawing flat colors",
                 "softframefail": "Cannot prepare indexed OpenGL texture raster",
                 "softtransferallocfail": "Cannot present indexed OpenGL texture raster",
                 "softtransfererror": "Cannot present indexed OpenGL texture raster",
@@ -453,11 +483,11 @@ def main():
                 run([str(output / "ogl_modern"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl_modern"), mode],
-                    expected_stderr="OpenGL error: Out of memory!\n" * 30,
+                    expected_stderr="OpenGL error: Out of memory!\n" * 6,
                     required_output="PASS OpenGL display-list compilation failure: rejected or incomplete lists are deleted before complete immediate rendering")
             for mode in ("validationfail", "callfail"):
                 run([str(output / "ogl_modern"), mode],
-                    expected_stderr="OpenGL error: Invalid operation!\n" * 30 if mode == "callfail" else "",
+                    expected_stderr="OpenGL error: Invalid operation!\n" * 6 if mode == "callfail" else "",
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
             for mode in ("texallocerror", "texuploaderror", "mipmaperror"):
                 message = ("Cannot allocate OpenGL texture" if mode == "texallocerror"
@@ -481,18 +511,19 @@ def main():
                 run([str(output / "ogl_tri"), mode])
         if args.igl_contract:
             igl = ["-DFLAT", "-DDRV_IGL", "-I" + str(ROOT / "tests/igl_record")]
-            run(cc + common + igl + ["-fsyntax-only", str(ROOT / "src/main.c")])
+            check_production_units(cc, common, igl, output, "IRIS_GL",
+                ("drv.c", "drv_igl.c", "err.c", "globe.c", "main.c", "texture.c", "texsoft.c", "e_saved.c"))
             run(cc + common + igl + [str(ROOT / "tests/igl.c"), str(ROOT / "src/e_saved.c"),
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl")])
             for mode in ("double", "single", "indexed", "indexed-single", "noz", "software", "unknown", "affine", "winquit", "winshut",
-                         "rgba", "rgba-single", "rgb-single", "unknown-alpha"):
+                         "rgba", "rgba-single", "rgb-single", "unknown-alpha", "cachefail", "reduced", "softreduced"):
                 run([str(output / "igl"), mode])
             igl_texture_failures = {
-                "stagefail": "Cannot generate IRIS GL texture image",
-                "imagefail": "Cannot allocate IRIS GL texture image",
-                "softmipfail": "Cannot allocate IRIS GL software texture mipmaps",
+                "stagefail": "Insufficient memory for texture; drawing flat colors",
+                "imagefail": "Insufficient memory for texture; drawing flat colors",
+                "softmipfail": "Insufficient memory for texture; drawing flat colors",
                 "softframefail": "Cannot prepare IRIS GL software texture framebuffer",
                 "softpixelsfail": "IRIS GL software texture pixels are unavailable",
                 "capabilitylost": "IRIS GL native texturing is unavailable",
@@ -547,7 +578,8 @@ def main():
                      "-D__interrupt=", "-D__far=", "-D_far=", "-D_near=",
                      "-I" + str(ROOT / "tests/dos_shim"),
                      "-I" + str(output / "sdk")]
-        run(cc + common + segmented + ["-fsyntax-only", str(ROOT / "src/main.c")])
+        check_production_units(cc, common, segmented, output, "Matrox",
+            ("drv.c", "drv_mtx.c", "err.c", "globe.c", "main.c", "e_saved.c"))
         run(cc + common + segmented + [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "matrox")])

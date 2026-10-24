@@ -14,7 +14,8 @@ int main(int argc, char **argv)
         0UL, 511UL, 16383UL, 16384UL, 32767UL, 32768UL,
         65535UL, 65536UL, 98303UL, 98304UL, 131071UL
     };
-    unsigned int i, j, count;
+    unsigned int i, j, count, available;
+    const unsigned char *span;
     int width, highest, files;
     (void)argv;
     files = argc == 1;
@@ -38,7 +39,17 @@ int main(int argc, char **argv)
             continue;
         }
         assert(earth_data_size(width) == total);
+        assert(earth_data_span(width, 0UL, NULL) == NULL);
+        available = 7U;
+        assert(earth_data_span(width, total, &available) == NULL && available == 0U);
         reference = files ? test_earth_data(width) : NULL;
+        for (offset = 0UL; offset < total; offset += available)
+        {
+            span = earth_data_span(width, offset, &available);
+            assert(span != NULL && available > 0U && available <= 16384U);
+            assert(available <= total - offset);
+            if (files) assert(memcmp(span, reference + offset, available) == 0);
+        }
         assert(earth_read_data(width, 0UL, 0U, NULL));
         assert(earth_read_data(width, total, 0U, NULL));
         assert(!earth_read_data(width, total + 1UL, 0U, NULL));
@@ -66,6 +77,9 @@ int main(int argc, char **argv)
         {
             offset = boundaries[i];
             if (offset >= total) continue;
+            span = earth_data_span(width, offset, &available);
+            assert(span != NULL && available <= 16384UL - offset % 16384UL);
+            if (files) assert(*span == reference[offset]);
             count = (unsigned int)(total - offset < 2UL ? 1U : 2U);
             assert(earth_read_data(width, offset, count, buffer));
             if (files) assert(memcmp(buffer, reference + offset, count) == 0);

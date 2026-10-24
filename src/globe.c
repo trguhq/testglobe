@@ -19,22 +19,12 @@
 
 #include <stdlib.h>
 #include <math.h>
-#include <float.h>
 #include "testglob.h"
-#ifdef SEG86
-#include <malloc.h>
-#endif
 #include "drv.h"
 #include "globe.h"
 #include "drv_ext.h"
 #include "types.h"
 #include "e_ext.h"
-#ifdef GDI
-#include <windows.h>
-#endif
-#ifdef SEG68
-#include <Memory.h>
-#endif
 
 /* The small palette is shared by every Earth rendering path. */
 #ifdef EARTH
@@ -42,12 +32,12 @@
 #endif
 
 Vertex TG_HUGE *globe_verts;
-Color TG_HUGE *globe_colors;
-#ifdef TEXTURE
-Coord TG_HUGE *globe_coords;
+#ifdef DRV_EARTH_RESOURCES
+/* Resource maps are loaded directly into their final owned index storage. */
+Color_Index TG_HUGE *globe_colors;
 #endif
 #ifdef TRISTRIP
-/* One whole latitude band is contiguous for a single native strip call. */
+/* One latitude band; RGB and UV expansion never require a full second grid. */
 static Vertex TG_HUGE *globe_strip_verts;
 #ifdef DRV_COLORMAP
 static unsigned char TG_HUGE *globe_strip_colors;
@@ -59,7 +49,6 @@ static Coord TG_HUGE *globe_strip_coords;
 #endif
 #endif
 #ifdef DRV_QUAD_BATCH
-/* Bounded indexed packets retain shared corners even on segmented heaps. */
 static Vertex TG_HUGE *globe_quad_verts;
 static unsigned int TG_HUGE *globe_quad_indices;
 static unsigned char TG_HUGE *globe_quad_colors;
@@ -73,95 +62,16 @@ unsigned long globe_quads_num;
 unsigned long globe_quads_num_vis;
 int globe_longitude;
 int globe_latitude;
-#ifdef DRV_EARTH_RESOURCES
-static unsigned char TG_HUGE *globe_data;
-#endif
+int globe_requested_longitude;
+unsigned long globe_revision;
+Drv_result globe_last_result = DRV_OK;
+static int globe_valid;
 
-#ifdef GDI
-/* Win16's global heap supplies tiled selectors for objects over 64 KiB.
- * Keep the original handles; huge-pointer normalization can change selectors. */
-#define GLOBE_ALLOCATION_SLOTS 7
-static struct
-{
-    HGLOBAL handle;
-    void TG_HUGE *memory;
-} globe_allocations[GLOBE_ALLOCATION_SLOTS];
-#endif
-
-/* Allocations and arithmetic must not truncate at the 16-bit size_t boundary. */
-static void TG_HUGE *globe_alloc_items(unsigned long count, unsigned int size)
-{
-#ifdef GDI
-    int slot;
-    HGLOBAL handle;
-    void TG_HUGE *memory;
-    if (size == 0 || count == 0 || count > 0xFFFFFFFFUL / size)
-        return NULL;
-    for (slot = 0; slot < GLOBE_ALLOCATION_SLOTS; ++slot)
-    {
-        if (globe_allocations[slot].handle != 0)
-            continue;
-        handle = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, count * size);
-        if (handle == 0)
-            return NULL;
-        memory = (void TG_HUGE *)GlobalLock(handle);
-        if (memory == NULL)
-        {
-            GlobalFree(handle);
-            return NULL;
-        }
-        globe_allocations[slot].handle = handle;
-        globe_allocations[slot].memory = memory;
-        return memory;
-    }
-    return NULL;
-#elif defined(SEG68)
-    /* MPW's Size is signed 32-bit; never truncate through a small size_t. */
-    if (size == 0 || count == 0 || count > 0x7FFFFFFFUL / size)
-        return NULL;
-    return (void *)NewPtr((Size)(count * size));
-#else
-#ifdef SEG86
-    return _halloc((long)count, size);
-#else
-    return malloc((size_t)count * size);
-#endif
-#endif
-}
-
-static void globe_free_items(void TG_HUGE *memory)
-{
-#ifdef GDI
-    int slot;
-    for (slot = 0; slot < GLOBE_ALLOCATION_SLOTS; ++slot)
-    {
-        if (globe_allocations[slot].handle != 0 &&
-            globe_allocations[slot].memory == memory)
-        {
-            GlobalUnlock(globe_allocations[slot].handle);
-            GlobalFree(globe_allocations[slot].handle);
-            globe_allocations[slot].handle = 0;
-            globe_allocations[slot].memory = NULL;
-            return;
-        }
-    }
-#elif defined(SEG68)
-    if (memory != NULL) DisposePtr((Ptr)memory);
-#else
-#ifdef SEG86
-    _hfree(memory);
-#else
-    free(memory);
-#endif
-#endif
-}
-
-void globe_init(void)
+static void globe_reset(void)
 {
     globe_verts = NULL;
+#ifdef DRV_EARTH_RESOURCES
     globe_colors = NULL;
-#ifdef TEXTURE
-    globe_coords = NULL;
 #endif
 #ifdef TRISTRIP
     globe_strip_verts = NULL;
@@ -175,173 +85,150 @@ void globe_init(void)
     globe_quad_indices = NULL;
     globe_quad_colors = NULL;
 #endif
-    globe_radius = 0;
-    globe_verts_num = 0UL;
-    globe_faces_num = 0UL;
-    globe_tris_num = 0UL;
-    globe_tris_num_vis = 0UL;
-    globe_quads_num = 0UL;
-    globe_quads_num_vis = 0UL;
-    globe_longitude = 0;
-    globe_latitude = 0;
-#ifdef DRV_EARTH_RESOURCES
-    globe_data = NULL;
-#endif
+    globe_radius = 0.0f;
+    globe_verts_num = globe_faces_num = 0UL;
+    globe_tris_num = globe_tris_num_vis = 0UL;
+    globe_quads_num = globe_quads_num_vis = 0UL;
+    globe_longitude = globe_latitude = 0;
+    globe_valid = FALSE;
+}
+
+int globe_ready(void)
+{
+    return globe_valid;
 }
 
 void globe_free(void)
 {
+    if (globe_valid) ++globe_revision;
+    drv_free_items(globe_verts);
 #ifdef DRV_EARTH_RESOURCES
-    if (globe_data != NULL)
-        globe_free_items(globe_data);
-#endif
-    if (globe_verts != NULL)
-        globe_free_items(globe_verts);
-    if (globe_colors != NULL)
-        globe_free_items(globe_colors);
-#ifdef TEXTURE
-    if (globe_coords != NULL)
-        globe_free_items(globe_coords);
+    drv_free_items(globe_colors);
 #endif
 #ifdef TRISTRIP
-    if (globe_strip_verts != NULL)
-        globe_free_items(globe_strip_verts);
-    if (globe_strip_colors != NULL)
-        globe_free_items(globe_strip_colors);
+    drv_free_items(globe_strip_verts);
+    drv_free_items(globe_strip_colors);
 #ifdef TEXTURE
-    if (globe_strip_coords != NULL)
-        globe_free_items(globe_strip_coords);
+    drv_free_items(globe_strip_coords);
 #endif
 #endif
 #ifdef DRV_QUAD_BATCH
-    if (globe_quad_verts != NULL)
-        globe_free_items(globe_quad_verts);
-    if (globe_quad_indices != NULL)
-        globe_free_items(globe_quad_indices);
-    if (globe_quad_colors != NULL)
-        globe_free_items(globe_quad_colors);
+    drv_free_items(globe_quad_verts);
+    drv_free_items(globe_quad_indices);
+    drv_free_items(globe_quad_colors);
 #endif
-    globe_init();
+    globe_reset();
 }
 
-static void globe_alloc(void)
+void globe_init(void)
 {
-    globe_verts = (Vertex TG_HUGE *)globe_alloc_items(globe_verts_num, sizeof(Vertex));
-    if (globe_verts == NULL)
-        error("Couldn't allocate memory for vertices!");
-    /* One color per lat/long patch, shared by its two triangles or one quad. */
-    globe_colors = (Color TG_HUGE *)globe_alloc_items(globe_faces_num, sizeof(Color));
-    if (globe_colors == NULL)
-        error("Couldn't allocate memory for colors!");
-#ifdef TEXTURE
-    globe_coords = (Coord TG_HUGE *)globe_alloc_items(globe_verts_num, sizeof(Coord));
-    if (globe_coords == NULL)
-        error("Couldn't allocate memory for texture coordinates!");
-#endif
-#ifdef TRISTRIP
-    globe_strip_verts = (Vertex TG_HUGE *)globe_alloc_items(
-        2UL * (globe_longitude + 1UL), sizeof(Vertex));
-#ifdef DRV_COLORMAP
-    globe_strip_colors = (unsigned char TG_HUGE *)globe_alloc_items(
-        2UL * globe_longitude, sizeof(unsigned char));
-#else
-    globe_strip_colors = (Color_RGB TG_HUGE *)globe_alloc_items(
-        2UL * globe_longitude, sizeof(Color_RGB));
-#endif
-    if (globe_strip_verts == NULL || globe_strip_colors == NULL)
-        error("Couldn't allocate memory for triangle strips!");
-#ifdef TEXTURE
-    globe_strip_coords = (Coord TG_HUGE *)globe_alloc_items(
-        2UL * (globe_longitude + 1UL), sizeof(Coord));
-    if (globe_strip_coords == NULL)
-        error("Couldn't allocate memory for strip texture coordinates!");
-#endif
-#endif
-#ifdef DRV_QUAD_BATCH
-    globe_quad_verts = (Vertex TG_HUGE *)globe_alloc_items(
-        2UL * (DRV_QUAD_BATCH_MAX + 1UL), sizeof(Vertex));
-    globe_quad_indices = (unsigned int TG_HUGE *)globe_alloc_items(
-        4UL * DRV_QUAD_BATCH_MAX, sizeof(unsigned int));
-    globe_quad_colors = (unsigned char TG_HUGE *)globe_alloc_items(
-        DRV_QUAD_BATCH_MAX, sizeof(unsigned char));
-    if (globe_quad_verts == NULL || globe_quad_indices == NULL ||
-        globe_quad_colors == NULL)
-        error("Couldn't allocate memory for quad batches!");
-#endif
+    globe_free();
+    globe_requested_longitude = 0;
+    globe_last_result = DRV_OK;
 }
 
-static void globe_validate_data(int longitude)
+static int globe_supported(int longitude)
 {
 #ifdef DRV_EARTH_RESOURCES
-    /* Validate the selected level here; load its bytes into the heap below. */
     switch (longitude)
     {
 #ifdef EARTH_32
-        case 32: return;
+        case 32: return TRUE;
 #endif
 #ifdef EARTH_64
-        case 64: return;
+        case 64: return TRUE;
 #endif
 #ifdef EARTH_128
-        case 128: return;
+        case 128: return TRUE;
 #endif
 #ifdef EARTH_256
-        case 256: return;
+        case 256: return TRUE;
 #endif
 #ifdef EARTH_512
-        case 512: return;
+        case 512: return TRUE;
 #endif
-        default: error("Unsupported globe resolution");
+        default: return FALSE;
     }
 #else
-    if (earth_data_size(longitude) == 0UL)
-        error("Unsupported globe resolution");
+    return earth_data_size(longitude) != 0UL;
 #endif
 }
 
-static void globe_calc_colors(void)
+static Drv_result globe_validate(int longitude, int latitude, float radius)
 {
-    unsigned long row, source_row;
-    int column;
-    unsigned char value;
-    Color TG_HUGE *color_ptr;
-    const unsigned char TG_HUGE *data_ptr;
-#ifndef DRV_EARTH_RESOURCES
-    /* At most one source row, including on a 16-bit DOS stack. */
-    unsigned char data_row[512];
-#endif
-
-    color_ptr = globe_colors;
-    for (row = 0UL; row < (unsigned long)globe_latitude; ++row)
-    {
-        /* Center-sample the full source map when fewer latitude bands are
-         * requested; the normal source-height case selects identical bytes. */
-        source_row = ((2UL * row + 1UL) *
-                       ((unsigned long)globe_longitude / 2UL)) /
-                      (2UL * globe_latitude);
-#ifdef DRV_EARTH_RESOURCES
-        data_ptr = globe_data + source_row * globe_longitude;
-#else
-        if (!earth_read_data(globe_longitude, source_row * globe_longitude,
-                             (unsigned int)globe_longitude, data_row))
-            error("Couldn't read embedded Earth data!");
-        data_ptr = data_row;
-#endif
-        for (column = 0; column < globe_longitude; ++column)
-        {
-            value = *data_ptr++;
-#ifdef DRV_COLORMAP
-            /* The driver maps this original palette byte to its native color. */
-            color_ptr->color = value;
-#else
-            color_ptr->r = earth_cmap[value][0];
-            color_ptr->g = earth_cmap[value][1];
-            color_ptr->b = earth_cmap[value][2];
-#endif
-            ++color_ptr;
-        }
-    }
+    if (!globe_supported(longitude) || latitude < 2 ||
+        latitude > longitude / 2 || !(radius > 0.0f && radius <= GLOBE_MAX_RADIUS))
+        return DRV_BAD_INPUT;
+    return DRV_OK;
 }
+
+static Drv_result globe_alloc(void)
+{
+    globe_verts = (Vertex TG_HUGE *)drv_alloc_items(globe_verts_num, sizeof(Vertex));
+    if (globe_verts == NULL) return DRV_NO_MEMORY;
+#ifdef TRISTRIP
+    globe_strip_verts = (Vertex TG_HUGE *)drv_alloc_items(
+        2UL * (globe_longitude + 1UL), sizeof(Vertex));
+#ifdef DRV_COLORMAP
+    globe_strip_colors = (unsigned char TG_HUGE *)drv_alloc_items(
+        2UL * globe_longitude, sizeof(unsigned char));
+#else
+    globe_strip_colors = (Color_RGB TG_HUGE *)drv_alloc_items(
+        2UL * globe_longitude, sizeof(Color_RGB));
+#endif
+    if (globe_strip_verts == NULL || globe_strip_colors == NULL)
+        return DRV_NO_MEMORY;
+#ifdef TEXTURE
+    globe_strip_coords = (Coord TG_HUGE *)drv_alloc_items(
+        2UL * (globe_longitude + 1UL), sizeof(Coord));
+    if (globe_strip_coords == NULL) return DRV_NO_MEMORY;
+#endif
+#endif
+#ifdef DRV_QUAD_BATCH
+    globe_quad_verts = (Vertex TG_HUGE *)drv_alloc_items(
+        2UL * (DRV_QUAD_BATCH_MAX + 1UL), sizeof(Vertex));
+    globe_quad_indices = (unsigned int TG_HUGE *)drv_alloc_items(
+        4UL * DRV_QUAD_BATCH_MAX, sizeof(unsigned int));
+    globe_quad_colors = (unsigned char TG_HUGE *)drv_alloc_items(
+        DRV_QUAD_BATCH_MAX, sizeof(unsigned char));
+    if (globe_quad_verts == NULL || globe_quad_indices == NULL ||
+        globe_quad_colors == NULL) return DRV_NO_MEMORY;
+#endif
+    return DRV_OK;
+}
+
+/* Rows divide every embedded 16 KiB chunk exactly. Borrow only the bounded
+ * row span, never assume successive chunks are contiguous on a huge heap. */
+static const unsigned char TG_HUGE *globe_color_row(int row)
+{
+#ifdef DRV_EARTH_RESOURCES
+    return (const unsigned char TG_HUGE *)globe_colors +
+           (unsigned long)row * globe_longitude;
+#else
+    unsigned long source_row;
+    unsigned int available;
+    const unsigned char TG_HUGE *colors;
+    source_row = ((2UL * row + 1UL) * (globe_longitude / 2UL)) /
+                 (2UL * globe_latitude);
+    colors = earth_data_span(globe_longitude, source_row * globe_longitude,
+                             &available);
+    if (colors == NULL || available < (unsigned int)globe_longitude)
+    {
+        drv_abort_frame("Earth data unavailable");
+        return NULL;
+    }
+    return colors;
+#endif
+}
+
+#ifndef DRV_COLORMAP
+static void globe_color_rgb(unsigned char index, Color_RGB *color)
+{
+    color->r = earth_cmap[index][0];
+    color->g = earth_cmap[index][1];
+    color->b = earth_cmap[index][2];
+}
+#endif
 
 int globe_init_verts(int longitude, int latitude, float radius)
 {
@@ -350,63 +237,67 @@ int globe_init_verts(int longitude, int latitude, float radius)
     float longitude_step, latitude_step;
     float longitude_angle, latitude_angle;
     Vertex TG_HUGE *vertex_ptr;
-#ifdef TEXTURE
-    Coord TG_HUGE *coord_ptr;
-#endif
-    globe_validate_data(longitude);
-    if (latitude < 1)
-        latitude = longitude / 2;
-    if (latitude < 2 || latitude > longitude / 2 ||
-        !(radius > 0.0f && radius <= FLT_MAX))
-        error("Invalid globe dimensions");
-    globe_free();
 #ifdef DRV_EARTH_RESOURCES
-    globe_data = (unsigned char TG_HUGE *)globe_alloc_items(
-        (unsigned long)longitude * (longitude / 2UL), sizeof(unsigned char));
-    if (globe_data == NULL)
-        error("Couldn't allocate memory for Earth data!");
-    drv_load_earth_data(longitude, globe_data);
+    unsigned long row, source_row;
+    unsigned char TG_HUGE *destination;
+    const unsigned char TG_HUGE *source;
 #endif
+    if (latitude < 1) latitude = longitude / 2;
+    globe_last_result = globe_validate(longitude, latitude, radius);
+    if (globe_last_result != DRV_OK) return FALSE;
+    if (globe_valid && globe_longitude == longitude &&
+        globe_latitude == latitude && globe_radius == radius) return TRUE;
+    globe_free();
     globe_radius = radius;
     globe_longitude = longitude;
     globe_latitude = latitude;
-    globe_verts_num = (globe_latitude + 1UL) * (globe_longitude + 1UL);
-    globe_faces_num = (unsigned long)globe_longitude * globe_latitude;
-    globe_tris_num = (globe_latitude - 1UL) * globe_longitude * 2UL;
-    /* Visibility is counted during rendering by drivers that report it. */
-    globe_tris_num_vis = 0UL;
+    globe_verts_num = (latitude + 1UL) * (longitude + 1UL);
+    globe_faces_num = (unsigned long)longitude * latitude;
+    globe_tris_num = (latitude - 1UL) * longitude * 2UL;
     globe_quads_num = globe_faces_num;
-    globe_quads_num_vis = 0UL;
-
-#if !defined(GDI) && !defined(SEG68)
-    printf("Globe resolution: %i x %i\n", globe_longitude, globe_latitude);
-    printf("Vertices: %lu\n", globe_verts_num);
-#if defined(TRI) || defined(TRISTRIP)
-    printf("Triangles: %lu\n", globe_tris_num);
+#ifdef DRV_EARTH_RESOURCES
+    /* Load before allocating the large vertex grid. Custom shorter latitude
+     * requests retain a source-sized buffer and compact sampled rows in place;
+     * source_row >= row makes forward compaction safe without another map. */
+    globe_colors = (Color_Index TG_HUGE *)drv_alloc_items(
+        (unsigned long)longitude * (longitude / 2UL), sizeof(unsigned char));
+    if (globe_colors == NULL)
+    {
+        globe_last_result = DRV_NO_MEMORY;
+        goto failed;
+    }
+    globe_last_result = drv_load_earth_data(longitude,
+                                    (unsigned char TG_HUGE *)globe_colors);
+    if (globe_last_result != DRV_OK) goto failed;
+    if (latitude != longitude / 2)
+    {
+        destination = (unsigned char TG_HUGE *)globe_colors;
+        for (row = 0UL; row < (unsigned long)latitude; ++row)
+        {
+            source_row = ((2UL * row + 1UL) * (longitude / 2UL)) /
+                         (2UL * latitude);
+            source = (const unsigned char TG_HUGE *)globe_colors +
+                     source_row * longitude;
+            for (j = 0; j < longitude; ++j) *destination++ = *source++;
+        }
+    }
 #endif
-#ifdef QUAD
-    printf("Quads: %lu\n", globe_quads_num);
-#endif
-#endif
-    globe_alloc();
+    globe_last_result = globe_alloc();
+    if (globe_last_result != DRV_OK) goto failed;
     vertex_ptr = globe_verts;
-#ifdef TEXTURE
-    coord_ptr = globe_coords;
-#endif
-    longitude_step = (float)(2.0 * PI / globe_longitude);
-    latitude_step = (float)(PI / globe_latitude);
-    for (i = 0; i <= globe_latitude; ++i)
+    longitude_step = (float)(2.0 * PI / longitude);
+    latitude_step = (float)(PI / latitude);
+    for (i = 0; i <= latitude; ++i)
     {
         latitude_angle = (float)(PI / 2.0) - i * latitude_step;
-        xy = globe_radius * (float)COS(latitude_angle);
-        z = globe_radius * (float)SIN(latitude_angle);
-        /* Exact coincident pole vertices let polygon drivers reduce caps to triangles. */
-        if (i == 0 || i == globe_latitude)
+        xy = radius * (float)COS(latitude_angle);
+        z = radius * (float)SIN(latitude_angle);
+        if (i == 0 || i == latitude)
         {
             xy = 0.0f;
-            z = (i == 0 ? globe_radius : -globe_radius);
+            z = (i == 0 ? radius : -radius);
         }
-        for (j = 0; j <= globe_longitude; ++j)
+        for (j = 0; j <= longitude; ++j)
         {
             longitude_angle = j * longitude_step;
             x = xy * (float)COS(longitude_angle);
@@ -418,92 +309,138 @@ int globe_init_verts(int longitude, int latitude, float radius)
             memset(vertex_ptr->reserved, 0, sizeof(vertex_ptr->reserved));
 #endif
             ++vertex_ptr;
-#ifdef TEXTURE
-            coord_ptr->u = (float)j / globe_longitude;
-            coord_ptr->v = (float)i / globe_latitude;
-            ++coord_ptr;
-#endif
         }
     }
-    globe_calc_colors();
-#ifdef DRV_EARTH_RESOURCES
-    /* All drawing uses globe_colors; do not retain a duplicate source map. */
-    globe_free_items(globe_data);
-    globe_data = NULL;
-#endif
-    return 1;
+    globe_valid = TRUE;
+    ++globe_revision;
+    return TRUE;
+failed:
+    globe_free();
+    return FALSE;
+}
+
+/* Recovery never owns two meshes. Remember the old recipe, release it, then
+ * rebuild at most once per candidate; callbacks cannot enter this routine. */
+int globe_set_resolution(int longitude, int latitude, float radius)
+{
+    int previous_longitude, previous_latitude, candidate;
+    float previous_radius;
+    Drv_result failure;
+    char notice[96];
+
+    if (latitude < 1) latitude = longitude / 2;
+    globe_last_result = globe_validate(longitude, latitude, radius);
+    if (globe_last_result != DRV_OK)
+    {
+        drv_notice("invalid globe dimensions");
+        return FALSE;
+    }
+    globe_requested_longitude = longitude;
+    previous_longitude = globe_valid ? globe_longitude : 0;
+    previous_latitude = globe_latitude;
+    previous_radius = globe_radius;
+    if (globe_init_verts(longitude, latitude, radius))
+    {
+        drv_notice("");
+        if (previous_longitude != longitude || previous_latitude != latitude ||
+            previous_radius != radius) drv_reset_timing();
+        return TRUE;
+    }
+    failure = globe_last_result;
+    drv_release_optional();
+    if (globe_init_verts(longitude, latitude, radius))
+    {
+        globe_last_result = failure;
+        drv_notice("optional caches released");
+        drv_reset_timing();
+        return TRUE;
+    }
+    if (previous_longitude != 0 &&
+        (previous_longitude != longitude || previous_latitude != latitude ||
+         previous_radius != radius) &&
+        globe_init_verts(previous_longitude, previous_latitude, previous_radius))
+        goto recovered;
+    for (candidate = longitude / 2; candidate >= 32; candidate /= 2)
+    {
+        if (!globe_supported(candidate) || candidate == previous_longitude)
+            continue;
+        if (globe_init_verts(candidate, -1, radius)) goto recovered;
+    }
+    globe_last_result = failure;
+    drv_notice("scene unavailable; select a resolution to retry");
+    drv_reset_timing();
+    return FALSE;
+recovered:
+    globe_last_result = failure;
+    sprintf(notice, "resolution %d unavailable; using %d", longitude,
+            globe_longitude);
+    drv_notice(notice);
+    drv_reset_timing();
+    return TRUE;
 }
 
 #if defined(TRI) || defined(DRV_TRI_CAPS)
-/* Keep the individual-triangle traversal for TRI and separate strip caps. */
 static void globe_draw_tri_rows(int first, int last)
 {
-    Color TG_HUGE *color_ptr;
-    Vertex TG_HUGE *v1;
-    Vertex TG_HUGE *v2;
-    Vertex TG_HUGE *v1_1;
-    Vertex TG_HUGE *v2_1;
+    const unsigned char TG_HUGE *colors;
+    Vertex TG_HUGE *v1, *v2, *v1_1, *v2_1;
+#ifndef DRV_COLORMAP
+    Color_RGB color;
+#endif
 #ifdef TEXTURE
-    Coord TG_HUGE *c1;
-    Coord TG_HUGE *c2;
-    Coord TG_HUGE *c1_1;
-    Coord TG_HUGE *c2_1;
+    Coord c1, c2, c1_1, c2_1;
 #endif
     int i, j;
     unsigned long row;
 
-    if (first >= last) return;
-    color_ptr = globe_colors + (unsigned long)first * globe_longitude;
+    if (!globe_valid || drv_frame_failed || first >= last) return;
     for (i = first; i < last; ++i)
     {
+        colors = globe_color_row(i);
+        if (colors == NULL) return;
         row = (unsigned long)i * (globe_longitude + 1UL);
         v1 = globe_verts + row;
         v1_1 = v1 + 1;
         v2 = v1 + globe_longitude + 1;
         v2_1 = v2 + 1;
 #ifdef TEXTURE
-        c1 = globe_coords + row;
-        c1_1 = c1 + 1;
-        c2 = c1 + globe_longitude + 1;
-        c2_1 = c2 + 1;
+        c1.v = c1_1.v = (float)i / globe_latitude;
+        c2.v = c2_1.v = (float)(i + 1) / globe_latitude;
 #endif
         for (j = 0; j < globe_longitude; ++j)
         {
 #ifdef TEXTURE
-            if (drv_texture_enabled)
+            if (drv_texture_active)
             {
-                if (i != 0)
-                    drv_draw_tri_flat_uv(v1, v2, v1_1, c1, c2, c1_1);
+                c1.u = c2.u = (float)j / globe_longitude;
+                c1_1.u = c2_1.u = (float)(j + 1) / globe_longitude;
+                if (i != 0) drv_draw_tri_flat_uv(v1, v2, v1_1, &c1, &c2, &c1_1);
+                if (drv_frame_failed) return;
                 if (i != globe_latitude - 1)
-                    drv_draw_tri_flat_uv(v1_1, v2, v2_1, c1_1, c2, c2_1);
+                    drv_draw_tri_flat_uv(v1_1, v2, v2_1, &c1_1, &c2, &c2_1);
             }
             else
 #endif
             {
+#ifndef DRV_COLORMAP
+                globe_color_rgb(colors[j], &color);
+#endif
                 if (i != 0)
 #ifdef DRV_COLORMAP
-                    drv_draw_tri_flat_color(v1, v2, v1_1, color_ptr->color);
+                    drv_draw_tri_flat_color(v1, v2, v1_1, colors[j]);
 #else
-                    drv_draw_tri_flat_rgb(v1, v2, v1_1, color_ptr);
+                    drv_draw_tri_flat_rgb(v1, v2, v1_1, &color);
 #endif
+                if (drv_frame_failed) return;
                 if (i != globe_latitude - 1)
 #ifdef DRV_COLORMAP
-                    drv_draw_tri_flat_color(v1_1, v2, v2_1, color_ptr->color);
+                    drv_draw_tri_flat_color(v1_1, v2, v2_1, colors[j]);
 #else
-                    drv_draw_tri_flat_rgb(v1_1, v2, v2_1, color_ptr);
+                    drv_draw_tri_flat_rgb(v1_1, v2, v2_1, &color);
 #endif
             }
-            ++color_ptr;
-            ++v1;
-            ++v1_1;
-            ++v2;
-            ++v2_1;
-#ifdef TEXTURE
-            ++c1;
-            ++c1_1;
-            ++c2;
-            ++c2_1;
-#endif
+            if (drv_frame_failed) return;
+            ++v1; ++v1_1; ++v2; ++v2_1;
         }
     }
 }
@@ -524,11 +461,10 @@ void globe_draw_pole_tris(void)
 #endif
 
 #ifdef TRISTRIP
-/* Bands and nondegenerate pole triangles share the same packet dispatch. */
 static void globe_submit_tristrip(unsigned int count)
 {
 #ifdef TEXTURE
-    if (drv_texture_enabled)
+    if (drv_texture_active)
     {
         drv_draw_tristrip_flat_uv(count, globe_strip_verts, globe_strip_coords);
         return;
@@ -545,30 +481,26 @@ void globe_draw_tristrips(void)
 {
     int i, j;
     unsigned int count;
-    unsigned long top, bottom, face;
+    unsigned long top, bottom;
+    const unsigned char TG_HUGE *colors;
 #ifndef DRV_TRI_CAPS
     int k;
     unsigned long cap[3];
 #endif
-    /* A complete latitude band needs at most 1026 vertices (EARTH_512).
-     * Alternating top/bottom rows gives exactly the TRI path's winding;
-     * the two facets for each longitude patch use the same flat color.
-     * Drivers with DRV_TRI_CAPS submit poles separately as triangles.
-     * Other drivers use three-vertex pole strips to preserve the TRI path's
-     * exact UVs and avoid zero-area facets in native normal calculations. */
+    if (!globe_valid || drv_frame_failed) return;
     count = 2U * ((unsigned int)globe_longitude + 1U);
     for (i = 0; i < globe_latitude; ++i)
     {
+        colors = globe_color_row(i);
+        if (colors == NULL) return;
         top = (unsigned long)i * (globe_longitude + 1UL);
         bottom = top + globe_longitude + 1UL;
-        face = (unsigned long)i * globe_longitude;
         if (i == 0 || i == globe_latitude - 1)
         {
 #ifndef DRV_TRI_CAPS
             for (j = 0; j < globe_longitude; ++j)
             {
-                /* Preserve the individual TRI path's exact pole UVs,
-                 * rather than merging the cap into a differently mapped fan. */
+                /* Coincident poles retain each original triangle's UVs. */
                 if (i == 0)
                 {
                     cap[0] = top + j + 1;
@@ -585,16 +517,22 @@ void globe_draw_tristrips(void)
                 {
                     globe_strip_verts[k] = globe_verts[cap[k]];
 #ifdef TEXTURE
-                    if (drv_texture_enabled)
-                        globe_strip_coords[k] = globe_coords[cap[k]];
+                    if (drv_texture_active)
+                    {
+                        globe_strip_coords[k].u =
+                            (float)(cap[k] % (globe_longitude + 1UL)) / globe_longitude;
+                        globe_strip_coords[k].v =
+                            (float)(cap[k] / (globe_longitude + 1UL)) / globe_latitude;
+                    }
 #endif
                 }
 #ifdef DRV_COLORMAP
-                globe_strip_colors[0] = globe_colors[face + j].color;
+                globe_strip_colors[0] = colors[j];
 #else
-                globe_strip_colors[0] = globe_colors[face + j];
+                globe_color_rgb(colors[j], globe_strip_colors);
 #endif
                 globe_submit_tristrip(3);
+                if (drv_frame_failed) return;
             }
 #endif
             continue;
@@ -604,24 +542,26 @@ void globe_draw_tristrips(void)
             globe_strip_verts[2 * j] = globe_verts[top + j];
             globe_strip_verts[2 * j + 1] = globe_verts[bottom + j];
 #ifdef TEXTURE
-            if (drv_texture_enabled)
+            if (drv_texture_active)
             {
-                globe_strip_coords[2 * j] = globe_coords[top + j];
-                globe_strip_coords[2 * j + 1] = globe_coords[bottom + j];
+                globe_strip_coords[2 * j].u = (float)j / globe_longitude;
+                globe_strip_coords[2 * j + 1].u = (float)j / globe_longitude;
+                globe_strip_coords[2 * j].v = (float)i / globe_latitude;
+                globe_strip_coords[2 * j + 1].v = (float)(i + 1) / globe_latitude;
             }
 #endif
             if (j < globe_longitude)
             {
 #ifdef DRV_COLORMAP
-                globe_strip_colors[2 * j] = globe_colors[face + j].color;
-                globe_strip_colors[2 * j + 1] = globe_colors[face + j].color;
+                globe_strip_colors[2 * j] = colors[j];
 #else
-                globe_strip_colors[2 * j] = globe_colors[face + j];
-                globe_strip_colors[2 * j + 1] = globe_colors[face + j];
+                globe_color_rgb(colors[j], globe_strip_colors + 2 * j);
 #endif
+                globe_strip_colors[2 * j + 1] = globe_strip_colors[2 * j];
             }
         }
         globe_submit_tristrip(count);
+        if (drv_frame_failed) return;
     }
 }
 #endif
@@ -629,16 +569,17 @@ void globe_draw_tristrips(void)
 #ifdef QUAD
 void globe_draw_quads(void)
 {
-    Color TG_HUGE *color_ptr;
-    Vertex TG_HUGE *v1;
-    Vertex TG_HUGE *v2;
-    Vertex TG_HUGE *v1_1;
-    Vertex TG_HUGE *v2_1;
+    const unsigned char TG_HUGE *colors;
+    Vertex TG_HUGE *v1, *v2, *v1_1, *v2_1;
+#ifndef DRV_COLORMAP
+    Color_RGB color;
+#endif
     int i, j;
-
-    color_ptr = globe_colors;
+    if (!globe_valid || drv_frame_failed) return;
     for (i = 0; i < globe_latitude; ++i)
     {
+        colors = globe_color_row(i);
+        if (colors == NULL) return;
         v1 = globe_verts + (unsigned long)i * (globe_longitude + 1UL);
         v1_1 = v1 + 1;
         v2 = v1 + globe_longitude + 1;
@@ -646,15 +587,13 @@ void globe_draw_quads(void)
         for (j = 0; j < globe_longitude; ++j)
         {
 #ifdef DRV_COLORMAP
-            drv_draw_quad_flat_color(v1, v2, v2_1, v1_1, color_ptr->color);
+            drv_draw_quad_flat_color(v1, v2, v2_1, v1_1, colors[j]);
 #else
-            drv_draw_quad_flat_rgb(v1, v2, v2_1, v1_1, color_ptr);
+            globe_color_rgb(colors[j], &color);
+            drv_draw_quad_flat_rgb(v1, v2, v2_1, v1_1, &color);
 #endif
-            ++color_ptr;
-            ++v1;
-            ++v1_1;
-            ++v2;
-            ++v2_1;
+            if (drv_frame_failed) return;
+            ++v1; ++v1_1; ++v2; ++v2_1;
         }
     }
 }
@@ -662,15 +601,17 @@ void globe_draw_quads(void)
 #ifdef DRV_QUAD_BATCH
 void globe_draw_quadbatches(void)
 {
-    unsigned long top, bottom, face;
+    unsigned long top, bottom;
     unsigned int first, count, j, index;
+    const unsigned char TG_HUGE *colors;
     int i;
-
+    if (!globe_valid || drv_frame_failed) return;
     for (i = 0; i < globe_latitude; ++i)
     {
+        colors = globe_color_row(i);
+        if (colors == NULL) return;
         top = (unsigned long)i * (globe_longitude + 1UL);
         bottom = top + globe_longitude + 1UL;
-        face = (unsigned long)i * globe_longitude;
         for (first = 0; first < (unsigned int)globe_longitude; first += count)
         {
             count = (unsigned int)globe_longitude - first;
@@ -681,16 +622,16 @@ void globe_draw_quadbatches(void)
                 globe_quad_verts[index] = globe_verts[top + first + j];
                 globe_quad_verts[index + 1U] = globe_verts[bottom + first + j];
                 if (j == count) continue;
-                /* Same outward order as the individual QUAD traversal. */
                 globe_quad_indices[4U * j] = index;
                 globe_quad_indices[4U * j + 1U] = index + 1U;
                 globe_quad_indices[4U * j + 2U] = index + 3U;
                 globe_quad_indices[4U * j + 3U] = index + 2U;
-                globe_quad_colors[j] = globe_colors[face + first + j].color;
+                globe_quad_colors[j] = colors[first + j];
             }
             drv_draw_quadbatch_flat_color(2U * (count + 1U), globe_quad_verts,
                                           count, globe_quad_indices,
                                           globe_quad_colors);
+            if (drv_frame_failed) return;
         }
     }
 }
@@ -700,7 +641,6 @@ void globe_draw_quadbatches(void)
 void globe_toggle_res(char key)
 {
     int new_longitude;
-
     switch (key)
     {
 #ifdef EARTH_32
@@ -720,15 +660,13 @@ void globe_toggle_res(char key)
 #endif
         default: return;
     }
-    globe_init_verts(new_longitude, -1, GLOBE_RADIUS);
+    globe_set_resolution(new_longitude, -1, GLOBE_RADIUS);
 }
 
 #ifdef TEXTURE
 void globe_toggle_tex(void)
 {
-    if (drv_texture_enabled)
-        drv_texture_disable();
-    else
-        drv_texture_enable();
+    if (drv_texture_enabled) drv_texture_disable();
+    else drv_texture_enable();
 }
 #endif

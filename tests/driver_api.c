@@ -25,8 +25,33 @@
 
 void test_driver_api(void)
 {
+    void TG_HUGE *(*allocate)(unsigned long, unsigned int);
+    void (*release)(void TG_HUGE *);
+    double (*clock_now)(void);
+    allocate = drv_alloc_items;
+    release = drv_free_items;
+    clock_now = drv_time_now;
+    (void)allocate; (void)release; (void)clock_now;
     (void)sizeof(&drv_render);
     (void)sizeof(&drv_close);
+    (void)sizeof(&drv_release_optional);
+    (void)sizeof(&drv_reset_timing);
+    (void)sizeof(&drv_result_text);
+    (void)sizeof(&drv_abort_frame);
+    (void)sizeof(&drv_append_status);
+    (void)sizeof(&globe_ready);
+    (void)sizeof(&globe_set_resolution);
+    (void)sizeof(globe_revision);
+    (void)sizeof(globe_last_result);
+#ifdef DRV_EARTH_RESOURCES
+    {
+        Drv_result (*load)(int, unsigned char TG_HUGE *);
+        Drv_result (*chunk)(unsigned int, unsigned long, unsigned char TG_HUGE *);
+        load = drv_load_earth_data;
+        chunk = drv_load_earth_chunk;
+        (void)load; (void)chunk;
+    }
+#endif
 #ifdef DRV_TRI_COLOR
     (void)sizeof(&drv_draw_tri_flat_color);
 #endif

@@ -316,7 +316,27 @@ static void earth_emit_reader(FILE *output)
         fputs("        default: return NULL;\n        }\n#endif\n", output);
     }
     fputs("    default: return NULL;\n    }\n}\n\n"
-          "/* Count is bounded by unsigned int; offsets retain all 128 KiB.\n"
+          "/* Return only bytes belonging to the same static chunk object. */\n"
+          "const unsigned char TG_HUGE *earth_data_span(int longitude,\n"
+          "                       unsigned long offset, unsigned int *available)\n"
+          "{\n"
+          "    unsigned long size, remaining;\n"
+          "    unsigned int position;\n"
+          "    const unsigned char TG_HUGE *source;\n"
+          "    if (available == NULL) return NULL;\n"
+          "    *available = 0;\n"
+          "    size = earth_data_size(longitude);\n", output);
+    fputs("    if (offset >= size) return NULL;\n"
+          "    source = earth_data_chunk(longitude,\n"
+          "                    (unsigned int)(offset / TG_EARTH_CHUNK_SIZE));\n"
+          "    if (source == NULL) return NULL;\n"
+          "    position = (unsigned int)(offset % TG_EARTH_CHUNK_SIZE);\n"
+          "    remaining = TG_EARTH_CHUNK_SIZE - position;\n"
+          "    if (remaining > size - offset) remaining = size - offset;\n"
+          "    *available = (unsigned int)remaining;\n"
+          "    return source + position;\n"
+          "}\n\n", output);
+    fputs("/* Count is bounded by unsigned int; offsets retain all 128 KiB.\n"
           " * Copy each <=16 KiB object separately, using normalized huge pointers\n"
           " * for both source and destination on segmented Microsoft builds. */\n", output);
     fputs("int earth_read_data(int longitude, unsigned long offset,\n"

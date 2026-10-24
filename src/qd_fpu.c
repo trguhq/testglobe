@@ -14,6 +14,7 @@
 #pragma segment QDFPU
 #endif
 #include "qd_math.h"
+#include "globe.h"
 
 typedef struct Qd_fpu_point
 {
@@ -59,7 +60,7 @@ int qd_fpu_prepare(const float *rotation_x, const float *rotation_y)
     cx = qd_fpu_sine((double)*rotation_x + 90.0);
     sy = qd_fpu_sine((double)*rotation_y);
     cy = qd_fpu_sine((double)*rotation_y + 90.0);
-    /* OpenGL's Rx(x) Ry(y) Rx(-90) Rz(-90), then z=-3000. */
+    /* OpenGL's Rx(x) Ry(y) Rx(-90) Rz(-90), then camera translation. */
     qd_fpu_matrix[0][0] = (float)sy;
     qd_fpu_matrix[0][1] = (float)cy;
     qd_fpu_matrix[0][2] = 0.0f;
@@ -92,7 +93,7 @@ void qd_fpu_transform(unsigned int count, const Vertex *vertices)
                               qd_fpu_matrix[1][2] * z;
         qd_fpu_points[i].z = qd_fpu_matrix[2][0] * x +
                               qd_fpu_matrix[2][1] * y +
-                              qd_fpu_matrix[2][2] * z - 3000.0f;
+                              qd_fpu_matrix[2][2] * z - GLOBE_VIEW_DISTANCE;
     }
     qd_fpu_count = count;
 }
@@ -142,12 +143,12 @@ int qd_fpu_project_polygon(const unsigned int *indices, unsigned int count,
         if (indices[index] >= qd_fpu_count) return 0;
         a[index] = qd_fpu_points[indices[index]];
     }
-    clipped_count = qd_fpu_clip_z(a, (int)count, b, -1.0f, FALSE);
+    clipped_count = qd_fpu_clip_z(a, (int)count, b, -GLOBE_NEAR_DISTANCE, FALSE);
     if (clipped_count < 3) return 0;
-    clipped_count = qd_fpu_clip_z(b, clipped_count, a, -10000.0f, TRUE);
+    clipped_count = qd_fpu_clip_z(b, clipped_count, a, -GLOBE_FAR_DISTANCE, TRUE);
     if (clipped_count < 3) return 0;
-    /* 45-degree vertical field of view, downward-Y QuickDraw coordinates. */
-    focal = (double)height * 1.2071067811865475244;
+    /* Shared vertical field of view, downward-Y QuickDraw coordinates. */
+    focal = (double)height * GLOBE_FOCAL_SCALE;
     for (i = 0; i < clipped_count; ++i)
     {
         x = (double)width / 2.0 + (double)a[i].x * focal / -(double)a[i].z;

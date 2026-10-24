@@ -137,6 +137,7 @@ void HUnlock(Handle);
 Size GetHandleSize(Handle);
 Handle Get1Resource(OSType, short);
 void ReleaseResource(Handle);
+OSErr ResError(void);
 OSErr MemError(void);
 unsigned long TickCount(void);
 void InitGraf(GrafPtr *);

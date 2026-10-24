@@ -145,7 +145,7 @@ void qd_error(char *message)
 }
 #endif
 
-void drv_load_earth_chunk(unsigned int resource, unsigned long size,
+Drv_result drv_load_earth_chunk(unsigned int resource, unsigned long size,
                            unsigned char TG_HUGE *destination)
 {
     unsigned long count;
@@ -154,7 +154,10 @@ void drv_load_earth_chunk(unsigned int resource, unsigned long size,
     assert(count == size && count > 0 && count <= TG_EARTH_CHUNK_SIZE);
     memcpy(destination, chunk, (size_t)count);
     free(chunk);
+    return DRV_OK;
 }
+
+void drv_release_optional(void) {}
 
 static void same_vertex(const Vertex *a, const Vertex *b)
 {

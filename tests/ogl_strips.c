@@ -18,8 +18,6 @@
 #endif
 
 extern Vertex *globe_verts;
-extern Color *globe_colors;
-extern Coord *globe_coords;
 extern int globe_longitude, globe_latitude;
 
 static unsigned long cap_calls, strip_calls, rendered_triangles;
@@ -72,7 +70,8 @@ static void check_cap(Vertex *a, Vertex *b, Vertex *c,
     for (i = 0; i < 3; ++i) {
         assert(vertices[i] == globe_verts + expected[i]);
         if (drv_texture_enabled) {
-            assert(coords[i] == globe_coords + expected[i]);
+            assert(coords[i]->u == (float)(expected[i] % (globe_longitude + 1UL)) / globe_longitude);
+            assert(coords[i]->v == (float)(expected[i] / (globe_longitude + 1UL)) / globe_latitude);
             assert(coords[i]->u >= 0.0f && coords[i]->u <= 1.0f);
             assert(coords[i]->v >= 0.0f && coords[i]->v <= 1.0f);
         } else {
@@ -80,7 +79,6 @@ static void check_cap(Vertex *a, Vertex *b, Vertex *c,
         }
     }
     face = band * globe_longitude + cell;
-    assert(globe_colors[face].color == expected_data[face]);
     if (!drv_texture_enabled) assert(color == expected_data[face]);
     assert(outward_area(a, b, c) > 0.0);
     ++cap_calls;
@@ -108,8 +106,8 @@ static void check_strip(unsigned int count, const Vertex *vertices,
         assert(index < globe_verts_num);
         same_vertex(vertices + i, globe_verts + index);
         if (coords != NULL) {
-            assert(coords[i].u == globe_coords[index].u);
-            assert(coords[i].v == globe_coords[index].v);
+            assert(coords[i].u == (float)(index % (globe_longitude + 1UL)) / globe_longitude);
+            assert(coords[i].v == (float)(index / (globe_longitude + 1UL)) / globe_latitude);
             assert(coords[i].u >= 0.0f && coords[i].u <= 1.0f);
             assert(coords[i].v > 0.0f && coords[i].v < 1.0f);
         }
@@ -136,7 +134,6 @@ static void check_strip(unsigned int count, const Vertex *vertices,
             same_vertex(c, globe_verts + bottom + 1UL);
         }
         face = band * globe_longitude + cell;
-        assert(globe_colors[face].color == expected_data[face]);
         if (colors != NULL) assert(colors[i] == expected_data[face]);
         assert(outward_area(a, b, c) > 0.0);
         ++rendered_triangles;
@@ -179,8 +176,9 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
     check_strip(count, vertices, NULL, coords);
 }
 
-void drv_texture_enable(void) { drv_texture_enabled = TRUE; }
-void drv_texture_disable(void) { drv_texture_enabled = FALSE; }
+void drv_texture_enable(void) { drv_texture_enabled = drv_texture_active = TRUE; }
+void drv_texture_disable(void) { drv_texture_enabled = drv_texture_active = FALSE; }
+void drv_release_optional(void) {}
 
 static void check_drawing(void)
 {

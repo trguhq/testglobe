@@ -34,7 +34,6 @@ static clock_t recorded_mtx_clock(void);
 
 extern int globe_longitude, globe_latitude;
 extern Vertex TG_HUGE *globe_verts;
-extern Color TG_HUGE *globe_colors;
 
 static unsigned long allocated_blocks;
 static unsigned long submitted_quads, filled_polygons, filled_triangles;
@@ -350,7 +349,11 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
     int cap;
     Vertex *third;
     assert(submitted_quads < globe_faces_num);
-    assert(color == globe_colors[submitted_quads].color);
+    {
+        unsigned char expected;
+        assert(earth_read_data(globe_longitude, submitted_quads, 1U, &expected));
+        assert(color == expected);
+    }
     assert(color == expected_data[submitted_quads]);
     assert(a >= globe_verts && a < globe_verts + globe_verts_num);
     assert(b >= globe_verts && b < globe_verts + globe_verts_num);
@@ -604,6 +607,8 @@ int main(int process_argc, char **process_argv)
     argc = 1; argv[0] = "testglob.exe"; argv[1] = NULL;
     /* Registered first, so this checks the production atexit cleanup last. */
     assert(atexit(cleanup_checks) == 0);
+    /* Main owns the scene; native cleanup remains registered afterward. */
+    assert(atexit(globe_free) == 0);
     drv_ext_init();
     assert(GLOBE_DEFAULT_LONGITUDE == 32);
     assert(drv_colormapped && !drv_texture_avail && !drv_texture_enabled);
@@ -678,6 +683,21 @@ int main(int process_argc, char **process_argv)
     assert(!drv_rmouse_pressed && mtx_dirty && drv_rot_x == x && drv_rot_y == y);
     assert(mouse_polls >= 4 && mouse_motion_reads >= 4);
     puts("PASS DOS input: INT 33h polling, motion drain, left drag/release, right-button redraw, key restrictions and toggles");
+    {
+        unsigned int before_osd;
+        globe_free();
+        drv_osd_enabled = FALSE;
+        before_osd = osd_calls;
+        drv_notice("no globe; choose a resolution");
+        drv_render();
+        assert(!globe_ready() && osd_calls == before_osd + 2U);
+        drv_release_optional();
+        mtx_keyboard('1');
+        assert(globe_ready());
+        assert(mtx_angle(FLT_MAX) >= 0 && mtx_angle(FLT_MAX) < 360);
+        assert(mtx_angle((float)HUGE_VAL) == 0);
+    }
+    puts("PASS Matrox recovery: empty scene draws status with OSD disabled and resolution input restores the globe");
     mtx_keyboard(27);
     assert(!"Escape must terminate the application");
     return 1;

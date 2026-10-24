@@ -26,16 +26,20 @@
 #include <stdio.h>
 #include <math.h>
 #include <float.h>
+#include <stdlib.h>
+#include <string.h>
 #ifdef DRV_EARTH_RESOURCES
 #include "earthres.h"
 #endif
 #ifdef GDI
 #include <windows.h>
-#elif defined(SEG68)
+#elif defined(DRV_QD)
 #include <Events.h>
+#include <Memory.h>
 #else
-#ifdef SEG86
+#ifdef DRV_MTX
 #include <time.h>
+#include <malloc.h>
 #else /* FLAT */
 #include <sys/time.h>
 #endif
@@ -47,6 +51,7 @@ int drv_colormapped;                    /* bool is colormap window */
 int drv_texture_avail;                  /* is texturing available in the driver */
 int drv_texture_loaded;                 /* has texture been loaded */
 int drv_texture_enabled;                /* is texturing enabled */
+int drv_texture_active;                 /* effective material for this pass */
 int drv_osd_enabled;                    /* is OSD enabled */
 unsigned int drv_bits_per_pixel;        /* bits depth */
 unsigned int drv_colormap_bits;         /* bits per color */
@@ -61,23 +66,118 @@ int drv_rmouse_pressed;                 /* */
 char drv_help[256];                     /* OSD help string to print */
 int drv_fps_enabled;                    /* fps counter enabled */
 float drv_fps_average;                  /* average fps */
-#if defined(GDI) || defined(SEG68)
-static unsigned long drv_frame_start, drv_frame_stop;
-#else
-#ifdef SEG86
-static clock_t drv_frame_start, drv_frame_stop;
-#else /* FLAT */
-static struct timeval drv_frame_start, drv_frame_stop;
-#endif
-#endif
-static float drv_frame_seconds;
+static double drv_frame_start, drv_previous_present, drv_animation_tick;
+static int drv_present_valid, drv_animation_valid;
 static float drv_fps_history_seconds;
 static long drv_fps_history_num;        /* frames in this FPS sample */
 int drv_auto_enabled;                   /* automatically rotate */
+int drv_auto_available;
+int drv_frame_failed;
+static char drv_message[64];
+
+#ifdef GDI
+/* Preserve original handles: normalized huge pointers may change selectors. */
+#define DRV_ALLOCATION_SLOTS 8
+static struct { HGLOBAL handle; void TG_HUGE *memory; }
+    drv_allocations[DRV_ALLOCATION_SLOTS];
+#endif
+
+void TG_HUGE *drv_alloc_items(unsigned long count, unsigned int size)
+{
+#ifdef GDI
+    int slot;
+    HGLOBAL handle;
+    void TG_HUGE *memory;
+    if (!count || !size || count > 0xffffffffUL / size) return NULL;
+    for (slot = 0; slot < DRV_ALLOCATION_SLOTS; ++slot)
+    {
+        if (drv_allocations[slot].handle != 0) continue;
+        handle = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, count * size);
+        if (handle == 0) return NULL;
+        memory = (void TG_HUGE *)GlobalLock(handle);
+        if (memory == NULL) { GlobalFree(handle); return NULL; }
+        drv_allocations[slot].handle = handle;
+        drv_allocations[slot].memory = memory;
+        return memory;
+    }
+    return NULL;
+#elif defined(DRV_QD)
+    if (!count || !size || count > 0x7fffffffUL / size) return NULL;
+    return (void *)NewPtr((Size)(count * size));
+#elif defined(DRV_MTX)
+    if (!count || !size || count > 0x7fffffffUL / size) return NULL;
+    return _halloc((long)count, size);
+#else
+    if (!count || !size || count > (size_t)-1 / size) return NULL;
+    return malloc((size_t)count * size);
+#endif
+}
+
+void drv_free_items(void TG_HUGE *memory)
+{
+#ifdef GDI
+    int slot;
+    if (memory == NULL) return;
+    for (slot = 0; slot < DRV_ALLOCATION_SLOTS; ++slot)
+        if (drv_allocations[slot].handle != 0 &&
+            drv_allocations[slot].memory == memory)
+        {
+            GlobalUnlock(drv_allocations[slot].handle);
+            GlobalFree(drv_allocations[slot].handle);
+            drv_allocations[slot].handle = 0;
+            drv_allocations[slot].memory = NULL;
+            return;
+        }
+#elif defined(DRV_QD)
+    if (memory != NULL) DisposePtr((Ptr)memory);
+#elif defined(DRV_MTX)
+    if (memory != NULL) _hfree(memory);
+#else
+    free(memory);
+#endif
+}
+
+const char *drv_result_text(Drv_result result)
+{
+    switch (result)
+    {
+        case DRV_OK: return "ready";
+        case DRV_NO_MEMORY: return "insufficient memory";
+        case DRV_BAD_DATA: return "invalid Earth data";
+        case DRV_BAD_INPUT: return "invalid request";
+        case DRV_UNAVAILABLE: return "unavailable";
+        default: return "native rendering failure";
+    }
+}
+
+void drv_append_status(char *buffer, unsigned int capacity, const char *message)
+{
+    unsigned int used;
+    if (buffer == NULL || capacity == 0 || message == NULL) return;
+    used = 0;
+    while (used < capacity && buffer[used] != 0) ++used;
+    if (used == capacity) { buffer[capacity - 1U] = 0; return; }
+    while (used + 1U < capacity && *message != 0) buffer[used++] = *message++;
+    buffer[used] = 0;
+}
+
+void drv_notice(const char *message)
+{
+    drv_message[0] = 0;
+    if (message != NULL) drv_append_status(drv_message, sizeof(drv_message), message);
+}
+
+const char *drv_get_notice(void) { return drv_message; }
+
+void drv_abort_frame(const char *message)
+{
+    drv_frame_failed = TRUE;
+    drv_notice(message);
+}
 
 void drv_format_stats(char *buffer)
 {
-    char status[192];
+    char status[256];
     size_t length;
     unsigned long total;
     const char *primitive;
@@ -85,6 +185,16 @@ void drv_format_stats(char *buffer)
     unsigned long visible;
 #endif
     if (buffer == NULL) return;
+    if (!globe_ready())
+    {
+        strcpy(buffer, "No globe: press a resolution key to retry; Esc to exit");
+        if (drv_message[0] != 0)
+        {
+            drv_append_status(buffer, 128U, "; ");
+            drv_append_status(buffer, 128U, drv_message);
+        }
+        return;
+    }
 #ifdef QUAD
     total = globe_quads_num;
     primitive = "quads";
@@ -104,6 +214,11 @@ void drv_format_stats(char *buffer)
     /* Native pipelines cull internally without returning a facet count. */
     sprintf(status, "%lu %s", total, primitive);
 #endif
+    if (drv_message[0] != 0)
+    {
+        drv_append_status(status, sizeof(status), "; ");
+        drv_append_status(status, sizeof(status), drv_message);
+    }
     if (drv_fps_enabled)
         sprintf(status + strlen(status), ", %.2f frames per second",
                  (double)drv_fps_average);
@@ -134,11 +249,11 @@ void drv_split_tristrip_batches(unsigned int count,
     max_facets &= ~1U;
     if (max_facets < 2U)
     {
-        error("Strip batch must hold at least two facets");
+        drv_abort_frame("Strip batch must hold at least two facets");
         return;
     }
     first = 0;
-    while (first < count - 2U)
+    while (first < count - 2U && !drv_frame_failed)
     {
         facets = count - 2U - first;
         if (facets > max_facets) facets = max_facets;
@@ -157,7 +272,7 @@ void drv_expand_tristrip_uv(unsigned int count,
     unsigned int i, first, second;
     if (count < 3U || vertices == NULL || coords == NULL || draw_triangle == NULL)
         return;
-    for (i = 0; i < count - 2U; ++i)
+    for (i = 0; i < count - 2U && !drv_frame_failed; ++i)
     {
         first = (i & 1U) ? i + 1U : i;
         second = (i & 1U) ? i : i + 1U;
@@ -194,10 +309,11 @@ void drv_submit_quad_as_batch(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
 #endif
 
 #ifdef DRV_EARTH_RESOURCES
-void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
+Drv_result drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
 {
     unsigned int resource;
     unsigned long remaining, length;
+    Drv_result result;
     switch (longitude)
     {
         case 32: resource = TG_EARTH_32_ID; break;
@@ -205,22 +321,23 @@ void drv_load_earth_data(int longitude, unsigned char TG_HUGE *destination)
         case 128: resource = TG_EARTH_128_ID; break;
         case 256: resource = TG_EARTH_256_ID; break;
         case 512: resource = TG_EARTH_512_ID; break;
-        default: error("Unsupported Earth resource resolution"); return;
+        default: return DRV_BAD_INPUT;
     }
     if (destination == NULL)
     {
-        error("Missing Earth resource destination");
-        return;
+        return DRV_BAD_INPUT;
     }
     remaining = (unsigned long)longitude * ((unsigned long)longitude / 2UL);
     while (remaining != 0)
     {
         length = remaining < TG_EARTH_CHUNK_SIZE ? remaining : TG_EARTH_CHUNK_SIZE;
-        drv_load_earth_chunk(resource, length, destination);
+        result = drv_load_earth_chunk(resource, length, destination);
+        if (result != DRV_OK) return result;
         destination += length;
         remaining -= length;
         ++resource;
     }
+    return DRV_OK;
 }
 #endif
 
@@ -262,64 +379,88 @@ void drv_ext_init(void)
     drv_fps_average = 0;
     drv_fps_history_num = 0;
     drv_fps_history_seconds = 0;
-    drv_frame_seconds = 0;
     drv_auto_enabled = FALSE;
+    drv_auto_available = TRUE;
+    drv_texture_active = FALSE;
+    drv_frame_failed = FALSE;
+    drv_notice(NULL);
+    drv_reset_timing();
     
 }
 
-/* frame start */
-void drv_fps_start(void)
+/* Native clocks are hidden behind one service. Wrapping 32-bit tick clocks
+ * accumulate unsigned deltas; the POSIX fallback never moves backwards. */
+double drv_time_now(void)
 {
+#if defined(GDI) || defined(DRV_QD) || defined(DRV_MTX)
+    static unsigned long previous;
+    static int initialized;
+    static double elapsed;
+    unsigned long tick;
+    double frequency;
 #ifdef GDI
-    drv_frame_start = GetTickCount();
-#elif defined(SEG68)
-    drv_frame_start = TickCount();
+    tick = GetTickCount(); frequency = 1000.0;
+#elif defined(DRV_QD)
+    tick = TickCount(); frequency = 60.0;
 #else
-#ifdef SEG86
-    /* Microsoft C's DOS clock() reports elapsed time without POSIX headers. */
-    drv_frame_start = clock();
-#else /* FLAT */
-    gettimeofday(&drv_frame_start, NULL);
+    clock_t sample;
+    sample = clock();
+    if (sample == (clock_t)-1) return elapsed;
+    tick = (unsigned long)sample; frequency = (double)CLOCKS_PER_SEC;
 #endif
+    tick &= 0xffffffffUL;
+    if (initialized)
+        elapsed += (double)((tick - previous) & 0xffffffffUL) / frequency;
+    else initialized = TRUE;
+    previous = tick;
+    return elapsed;
+#else
+    struct timeval sample;
+    static double previous;
+    double current;
+    if (gettimeofday(&sample, NULL) != 0) return previous;
+    current = (double)sample.tv_sec + (double)sample.tv_usec / 1000000.0;
+    if (current < previous) return previous;
+    previous = current;
+    return current;
 #endif
 }
 
-/* frame stop */
+void drv_reset_timing(void)
+{
+    drv_present_valid = FALSE;
+    drv_animation_valid = FALSE;
+    drv_fps_average = 0;
+    drv_fps_history_seconds = 0;
+    drv_fps_history_num = 0;
+}
+
+void drv_fps_start(void)
+{
+    drv_frame_failed = FALSE;
+    drv_frame_start = drv_time_now();
+    if (!drv_animation_valid)
+    {
+        drv_animation_tick = drv_frame_start;
+        drv_animation_valid = TRUE;
+    }
+}
+
+/* Count completed presentations over wall time, including event-loop waits.
+ * This is observed presentation throughput, not a GPU-completion benchmark.
+ * Each driver calls this after its native presentation operation returns. */
 void drv_fps_stop(void)
 {
-#ifdef GDI
-    drv_frame_stop = GetTickCount();
-    /* GetTickCount is a wrapping 32-bit counter, including on test hosts. */
-    drv_frame_seconds = (float)((drv_frame_stop - drv_frame_start) &
-                                0xFFFFFFFFUL) / 1000.0f;
-#elif defined(SEG68)
-    drv_frame_stop = TickCount();
-    drv_frame_seconds = (float)((drv_frame_stop - drv_frame_start) &
-                                0xFFFFFFFFUL) / 60.0f;
-#else
-#ifdef SEG86
-    drv_frame_stop = clock();
-    if (drv_frame_start == (clock_t)-1 || drv_frame_stop == (clock_t)-1)
+    double now, seconds;
+    now = drv_time_now();
+    if (drv_frame_failed || !globe_ready())
     {
-        drv_frame_seconds = 0;
+        drv_reset_timing();
+        return;
     }
-    else
-    {
-        /* Unsigned subtraction also handles a 32-bit DOS clock rollover. */
-        drv_frame_seconds = (float)((unsigned long)drv_frame_stop -
-                                    (unsigned long)drv_frame_start) /
-                            (float)CLOCKS_PER_SEC;
-    }
-#else /* FLAT */
-    gettimeofday(&drv_frame_stop, NULL);
-    drv_frame_seconds = (float)(drv_frame_stop.tv_sec - drv_frame_start.tv_sec) +
-                        (float)(drv_frame_stop.tv_usec - drv_frame_start.tv_usec) /
-                        1000000.0f;
-    if (drv_frame_seconds < 0)
-        drv_frame_seconds = 0;
-#endif
-#endif
-
+    seconds = now - (drv_present_valid ? drv_previous_present : drv_frame_start);
+    drv_previous_present = now;
+    drv_present_valid = TRUE;
     if (!drv_fps_enabled)
     {
         drv_fps_average = 0;
@@ -327,25 +468,22 @@ void drv_fps_stop(void)
         drv_fps_history_seconds = 0;
         return;
     }
-    if (drv_frame_seconds >= 1.0f)
+    if (seconds < 0.0) seconds = 0.0;
+    if (seconds >= 1.0)
     {
-        drv_fps_average = 1.0f / drv_frame_seconds;
+        drv_fps_average = (float)(1.0 / seconds);
         drv_fps_history_num = 0;
         drv_fps_history_seconds = 0;
-    } else
+        return;
+    }
+    drv_fps_history_seconds += (float)seconds;
+    ++drv_fps_history_num;
+    if (drv_fps_history_num >= DRV_FPS_HISTORY)
     {
-        drv_fps_history_seconds += drv_frame_seconds;
-        drv_fps_history_num++;
-
-        if (drv_fps_history_num >= DRV_FPS_HISTORY)
-        {
-            /* A coarse DOS timer can return zero for an entire short sample. */
-            if (drv_fps_history_seconds > 0)
-                drv_fps_average = (float)drv_fps_history_num /
-                                  drv_fps_history_seconds;
-            drv_fps_history_num = 0;
-            drv_fps_history_seconds = 0;
-        }
+        if (drv_fps_history_seconds > 0)
+            drv_fps_average = (float)drv_fps_history_num / drv_fps_history_seconds;
+        drv_fps_history_num = 0;
+        drv_fps_history_seconds = 0;
     }
 }
 
@@ -373,20 +511,25 @@ int drv_handle_key(unsigned char key)
             globe_toggle_res((char)key);
             return TRUE;
         case 'a': case 'A':
+            if (!drv_auto_available)
+            {
+                drv_notice("Automatic rotation unavailable; use mouse");
+                return TRUE;
+            }
             drv_auto_enabled = !drv_auto_enabled;
+            drv_reset_timing();
             return TRUE;
         case 'o': case 'O':
             drv_osd_enabled = !drv_osd_enabled;
             return TRUE;
         case 'f': case 'F':
             drv_fps_enabled = !drv_fps_enabled;
-            drv_fps_average = 0;
-            drv_fps_history_num = 0;
-            drv_fps_history_seconds = 0;
+            drv_reset_timing();
             return TRUE;
 #ifdef TEXTURE
         case 't': case 'T':
             globe_toggle_tex();
+            drv_reset_timing();
             return TRUE;
 #endif
         default: return FALSE;
@@ -425,5 +568,16 @@ void drv_rotate_elapsed(double seconds)
 /* rotate globe at a fixed speed */
 void drv_globe_rotate(void)
 {
-    drv_rotate_elapsed((double)drv_frame_seconds);
+    double now, seconds;
+    now = drv_time_now();
+    if (!drv_animation_valid)
+    {
+        drv_animation_tick = now;
+        drv_animation_valid = TRUE;
+        return;
+    }
+    seconds = now - drv_animation_tick;
+    drv_animation_tick = now;
+    if (seconds < 0.0) seconds = 0.0;
+    drv_rotate_elapsed(seconds);
 }

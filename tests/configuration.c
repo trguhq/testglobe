@@ -13,6 +13,11 @@
 #error XGL selection must use the flat architecture
 #endif
 #endif
+#ifdef TEST_DRIVER_IGL
+#if !defined(DRV_IGL) || !defined(FLAT) || defined(SEG86) || defined(SEG68)
+#error IRIS GL selection must use the flat architecture
+#endif
+#endif
 #ifdef TEST_DRIVER_QD
 #if !defined(DRV_QD) || !defined(SEG68) || defined(FLAT) || defined(SEG86)
 #error QuickDraw selection must use the segmented 68000 architecture

@@ -33,6 +33,8 @@ extern int drv_colormapped;
 extern int drv_texture_avail;
 extern int drv_texture_loaded;
 extern int drv_texture_enabled;
+/* User intent remains enabled; active describes only the current draw pass. */
+extern int drv_texture_active;
 extern int drv_osd_enabled;
 extern unsigned int drv_bits_per_pixel;
 extern unsigned int drv_bytes_per_pixel;
@@ -48,6 +50,24 @@ extern int drv_rmouse_pressed;
 extern float drv_fps_average;
 extern int drv_fps_enabled;
 extern int drv_auto_enabled;
+extern int drv_auto_available;
+extern int drv_frame_failed;
+
+/* Services selected by the native backend, not by pointer width. Allocations
+ * retain native handles internally; callers own only successful results. */
+extern void TG_HUGE *drv_alloc_items(unsigned long count, unsigned int size);
+extern void drv_free_items(void TG_HUGE *memory);
+extern double drv_time_now(void);
+extern void drv_reset_timing(void);
+extern void drv_notice(const char *message);
+extern const char *drv_get_notice(void);
+extern void drv_abort_frame(const char *message);
+extern void drv_append_status(char *buffer, unsigned int capacity,
+                               const char *message);
+extern const char *drv_result_text(Drv_result result);
+/* Called only outside primitive/render scopes. Native drivers may evict
+ * optional caches, but must retain a usable window and requested settings. */
+extern void drv_release_optional(void);
 
 
 extern void drv_ext_init(void);
@@ -55,7 +75,11 @@ extern void drv_init(int *argc, char **argv);
 extern int drv_init_window(int in_x, int in_y, int in_width, int in_height);
 extern void drv_render(void);
 extern void drv_close(void);
-/* TRI: selected traversal, separate caps, and retained driver capabilities. */
+/* TRI: selected traversal, separate caps, and retained driver capabilities.
+ * Callbacks borrow their inputs only for the call. OpenGL's native triangle
+ * callbacks require its enclosing GL_TRIANGLES scope; the driver owns that
+ * begin/end pair. Strip/quad callbacks own their native submission scopes.
+ * No callback may rebuild/free the mesh; abort and unwind the frame first. */
 #ifdef DRV_TRI_COLOR
 extern void drv_draw_tri_flat_color(Vertex TG_HUGE *xyz1, Vertex TG_HUGE *xyz2,
                                     Vertex TG_HUGE *xyz3, unsigned char color);
@@ -155,10 +179,10 @@ extern void drv_draw_osd(void);
 /* Common OSD prefix; caller supplies at least 128 bytes. */
 extern void drv_format_stats(char *buffer);
 #ifdef DRV_EARTH_RESOURCES
-extern void drv_load_earth_data(int longitude,
+extern Drv_result drv_load_earth_data(int longitude,
                                 unsigned char TG_HUGE *destination);
 /* Native adapter: validate and copy one bounded resource into the heap. */
-extern void drv_load_earth_chunk(unsigned int id, unsigned long length,
+extern Drv_result drv_load_earth_chunk(unsigned int id, unsigned long length,
                                  unsigned char TG_HUGE *destination);
 #endif
 extern void drv_fps_start(void);

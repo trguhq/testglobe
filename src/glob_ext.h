@@ -27,6 +27,14 @@
 extern void globe_init(void);
 extern void globe_free(void);
 extern int globe_init_verts(int, int, float);
+/* Returns true if the requested, restored, or reduced scene is usable. */
+extern int globe_set_resolution(int, int, float);
+extern int globe_ready(void);
+extern Drv_result globe_last_result;
+extern unsigned long globe_revision;
+extern int globe_requested_longitude;
+extern int globe_longitude;
+extern int globe_latitude;
 #ifdef TRI
 extern void globe_draw_tris(void);
 #endif

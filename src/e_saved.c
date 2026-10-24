@@ -11061,6 +11061,27 @@ static const unsigned char TG_HUGE *earth_data_chunk(int longitude,
     }
 }
 
+/* Return only bytes belonging to the same static chunk object. */
+const unsigned char TG_HUGE *earth_data_span(int longitude,
+                       unsigned long offset, unsigned int *available)
+{
+    unsigned long size, remaining;
+    unsigned int position;
+    const unsigned char TG_HUGE *source;
+    if (available == NULL) return NULL;
+    *available = 0;
+    size = earth_data_size(longitude);
+    if (offset >= size) return NULL;
+    source = earth_data_chunk(longitude,
+                    (unsigned int)(offset / TG_EARTH_CHUNK_SIZE));
+    if (source == NULL) return NULL;
+    position = (unsigned int)(offset % TG_EARTH_CHUNK_SIZE);
+    remaining = TG_EARTH_CHUNK_SIZE - position;
+    if (remaining > size - offset) remaining = size - offset;
+    *available = (unsigned int)remaining;
+    return source + position;
+}
+
 /* Count is bounded by unsigned int; offsets retain all 128 KiB.
  * Copy each <=16 KiB object separately, using normalized huge pointers
  * for both source and destination on segmented Microsoft builds. */

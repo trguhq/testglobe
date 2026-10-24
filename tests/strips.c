@@ -22,8 +22,6 @@
 #endif
 
 extern Vertex *globe_verts;
-extern Color_RGB *globe_colors;
-extern Coord *globe_coords;
 extern int globe_longitude, globe_latitude;
 
 static unsigned long strip_calls, rendered_triangles, full_bands, cap_strips;
@@ -92,8 +90,8 @@ static void check_strip(unsigned int count, const Vertex *vertices,
         assert(index < globe_verts_num);
         same_vertex(vertices + i, globe_verts + index);
         if (coords != NULL) {
-            assert(coords[i].u == globe_coords[index].u);
-            assert(coords[i].v == globe_coords[index].v);
+            assert(coords[i].u == (float)(index % (globe_longitude + 1UL)) / globe_longitude);
+            assert(coords[i].v == (float)(index / (globe_longitude + 1UL)) / globe_latitude);
             assert(coords[i].u >= 0.0f && coords[i].u <= 1.0f);
             assert(coords[i].v >= 0.0f && coords[i].v <= 1.0f);
         }
@@ -151,8 +149,9 @@ void drv_draw_tristrip_flat_uv(unsigned int count, const Vertex *vertices,
     check_strip(count, vertices, NULL, coords);
 }
 
-void drv_texture_enable(void) { drv_texture_enabled = TRUE; }
-void drv_texture_disable(void) { drv_texture_enabled = FALSE; }
+void drv_texture_enable(void) { drv_texture_enabled = drv_texture_active = TRUE; }
+void drv_texture_disable(void) { drv_texture_enabled = drv_texture_active = FALSE; }
+void drv_release_optional(void) {}
 
 static void check_drawing(void)
 {

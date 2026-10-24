@@ -190,6 +190,7 @@ BOOL PeekMessage(MSG *, HWND, UINT, UINT, UINT);
 BOOL TranslateMessage(const MSG *);
 LONG DispatchMessage(const MSG *);
 void PostQuitMessage(int);
+BOOL PostMessage(HWND, UINT, WPARAM, LPARAM);
 void InvalidateRect(HWND, const RECT *, BOOL);
 HDC GetDC(HWND);
 int ReleaseDC(HWND, HDC);

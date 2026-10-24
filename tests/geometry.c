@@ -13,20 +13,15 @@
 #include "globe.h"
 
 extern Vertex *globe_verts;
-extern Color *globe_colors;
-extern Coord *globe_coords;
 extern int globe_longitude, globe_latitude;
 
 static unsigned long flat_calls, texture_calls;
 static unsigned char *expected_data;
 static Vertex *saved_verts;
-static Color *saved_colors;
-static Coord *saved_coords;
 
 static void invalid_radius_cleanup(void)
 {
-    assert(globe_verts == saved_verts && globe_colors == saved_colors &&
-           globe_coords == saved_coords);
+    assert(globe_verts == saved_verts);
     assert(globe_longitude == 32 && globe_latitude == 16);
     assert(globe_verts_num == 561UL && globe_faces_num == 512UL);
     assert(globe_verts[0].z == GLOBE_RADIUS);
@@ -76,20 +71,25 @@ void drv_draw_tri_flat_uv(Vertex *a, Vertex *b, Vertex *c,
                           Coord *u, Coord *v, Coord *w)
 {
     Coord *coords[3];
+    Vertex *vertices[3];
+    unsigned long index;
     int i;
     check_triangle(a, b, c);
     coords[0] = u; coords[1] = v; coords[2] = w;
+    vertices[0] = a; vertices[1] = b; vertices[2] = c;
     for (i = 0; i < 3; ++i) {
-        assert(coords[i] >= globe_coords &&
-               coords[i] < globe_coords + globe_verts_num);
+        index = (unsigned long)(vertices[i] - globe_verts);
+        assert(coords[i]->u == (float)(index % (globe_longitude + 1UL)) / globe_longitude);
+        assert(coords[i]->v == (float)(index / (globe_longitude + 1UL)) / globe_latitude);
         assert(coords[i]->u >= 0 && coords[i]->u <= 1);
         assert(coords[i]->v >= 0 && coords[i]->v <= 1);
     }
     ++texture_calls;
 }
 
-void drv_texture_enable(void) { drv_texture_enabled = TRUE; }
-void drv_texture_disable(void) { drv_texture_enabled = FALSE; }
+void drv_texture_enable(void) { drv_texture_enabled = drv_texture_active = TRUE; }
+void drv_texture_disable(void) { drv_texture_enabled = drv_texture_active = FALSE; }
+void drv_release_optional(void) {}
 
 static float special_radius(unsigned long pattern)
 {
@@ -125,12 +125,12 @@ int main(int argc, char **argv)
     if (argc > 1) {
         assert(strcmp(argv[1], "nan") == 0 || strcmp(argv[1], "infinity") == 0);
         assert(globe_init_verts(32, -1, GLOBE_RADIUS));
-        saved_verts = globe_verts; saved_colors = globe_colors;
-        saved_coords = globe_coords;
-        assert(atexit(invalid_radius_cleanup) == 0);
-        globe_init_verts(32, -1, special_radius(strcmp(argv[1], "nan") == 0 ?
-                                               0x7fc00000UL : 0x7f800000UL));
-        assert(!"Nonfinite globe radius must be rejected");
+        saved_verts = globe_verts;
+        assert(!globe_init_verts(32, -1, special_radius(strcmp(argv[1], "nan") == 0 ?
+                                               0x7fc00000UL : 0x7f800000UL)));
+        assert(globe_last_result == DRV_BAD_INPUT);
+        invalid_radius_cleanup();
+        return 0;
     }
     assert(GLOBE_DEFAULT_LONGITUDE == 512);
     for (n = 0; n < 5; ++n) {
@@ -149,7 +149,7 @@ int main(int argc, char **argv)
         assert(globe_verts[0].z == GLOBE_RADIUS);
         assert(globe_verts[row].z == -GLOBE_RADIUS);
         flat_calls = texture_calls = 0;
-        drv_texture_enabled = FALSE;
+        drv_texture_enabled = drv_texture_active = FALSE;
         globe_draw_tris();
         assert(flat_calls == expected_tris && texture_calls == 0);
         globe_toggle_tex();

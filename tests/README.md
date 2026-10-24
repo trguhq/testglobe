@@ -52,6 +52,11 @@ Compilation uses strict C89, warnings, ASan, and UBSan, with undefined behavior
 handled as fatal. `NO_SINF` selects the C89 math path; the runner does not replay
 every Makefile target's compiler options.
 
+Each requested driver contract also compiles its production source files as separate
+translation units. This catches dependencies accidentally supplied by a fixture that
+includes a driver `.c` file. These checks use the same recorder declarations as the
+behavior tests; they do not substitute for compiling with the native SDK and linker.
+
 Most legacy API declarations come from test fixtures; Matrox uses the supplied SDK
 headers. Call recorders check submitted arguments and simulated outcomes. They do
 not implement the original graphics libraries, establish native binary ABIs, or
@@ -96,17 +101,30 @@ does not use that test-only file I/O.
   and checks XGL's distinct RGB/UV signatures. Plural `globe_draw_*` traversal names
   and singular `drv_draw_*` callbacks are checked as separate interfaces.
 - Custom latitude counts sample the full source map. Nonfinite radii must preserve
-  an existing valid mesh; resource-backed builds release temporary map bytes after
-  constructing indexed colors.
+  an existing valid mesh and return a failure result. Compiled paths borrow indexed
+  map spans; resource-backed builds populate final color storage directly. Generated
+  UVs and packet-local RGB expansion must match the original mesh reference.
 
 ### Shared utilities and configuration
 
 `tests/driver_helpers.c` exercises flat OpenGL and segmented GDI configurations:
 strip splitting with even overlap and odd limits, UV triangle parity, quad packet
 bounds and packing, invalid inputs, key handling, FPS toggling, debug metadata,
-bounded dragging, zero-sized windows, and large elapsed-time rotations. Configuration
-checks cover platform and architecture defaults, conflicting settings, and explicit
+bounded dragging, zero-sized windows, and large elapsed-time rotations. Shared-service
+checks cover allocation bounds, handle release, bounded status messages, empty-scene
+OSD, and completed-presentation timing that includes time between native events.
+Configuration checks cover platform and architecture defaults, conflicting settings, and explicit
 errors for unsupported legacy drivers.
+
+`tests/recovery.c` injects failures into each scene-allocation stage in compiled-map
+and resource-backed builds. It checks bounded retries, restoring or reducing the
+resolution, empty-scene recovery, no-op revision handling, direct resource loading,
+reduced-latitude compaction, exact retained allocation sizes, and aborted traversal.
+
+`tests/tex_take.c` verifies ownership transfer of the software texture base image,
+all nine lower-mipmap allocation failures, invalid dimensions, and the retained
+copying interface for borrowed input. Every adopted allocation must be released
+exactly once, including partial-construction failures.
 
 ## OpenGL
 
@@ -129,8 +147,10 @@ python3 tests/run.py --ogl-contract
 - **Compatibility and failures:** OpenGL 1.1 declarations and object imports are
   checked. GLU handles legacy or unsuitable modern-mipmap cases. Allocation,
   compilation, validation, and execution failures must delete bad lists and draw
-  complete immediate geometry. Texture creation, binding, mipmap, and transfer
-  failures must release failed state, draw flat colors, and allow off/on retry.
+  complete immediate geometry without retrying failed caches every frame. Texture
+  creation, binding, mipmap, and transfer failures must release failed state, draw
+  flat colors, and allow off/on retry.
+  Native and software allocation-pressure profiles select smaller usable images.
 - **Window lifecycle and controls:** early probe and window redraws verify a safe
   display callback before rendering is ready, including Apple's GLUT ordering.
   Checks also cover probe cleanup, final size, FPS toggling, right-button metadata,
@@ -170,9 +190,10 @@ python3 tests/run.py --igl-contract
 - **Input:** keyboard, tied mouse samples, focus, resize, overflow, Escape, and window
   quit. Missing or reversed mouse samples must neither block nor consume later
   keyboard/window events.
-- **Recovery and status:** deleted geometry objects fall back to complete direct
-  drawing and rebuild on the next frame. Recoverable texture failures invalidate
-  incompatible caches, draw flat colors, preserve the requested toggle, and allow a
+- **Recovery and status:** unavailable geometry objects fall back to complete direct
+  drawing; cache allocation failure is latched to avoid repeated failed work.
+  Recoverable texture failures invalidate incompatible caches, draw flat colors,
+  preserve the requested toggle, and allow a
   retry. Status checks distinguish API submission from application software rendering.
 
 ### Native validation
@@ -276,9 +297,12 @@ python3 tests/run.py --gdi-contract
   buffering, and wrapped OSD statistics.
 - **Input and lifecycle:** `WinMain`, common startup, keyboard/mouse/resize messages,
   timer rollover, Escape/window close, and heap/GDI-object ownership.
-- **Failures:** drawing and allocation failures and oversized windows must disable
-  rendering before a modal error dialog can dispatch paint, timer, or input messages.
-  Partial mesh state must remain untouched, and cleanup must release all owned objects.
+- **Recovery:** missing back buffers use direct paint; failed `PolyPolygon` calls
+  fall back to individual polygons; brush allocation retries or uses a stock color.
+  Resource failures return typed results, empty scenes still repaint, and timer
+  failure leaves manual input available. Former allocation/drawing fatal profiles
+  now verify recovery. Oversized windows still follow the fatal guard: modal paint,
+  timer, and input messages must not touch failed state, and cleanup releases ownership.
 
 ### Native validation
 
@@ -315,9 +339,11 @@ python3 tests/run.py --qd-contract
 - **Input and lifecycle:** startup, short drag-poll waits, activation/suspend/resume,
   resize, `TickCount` rollover, animation, window close, Command-Q, and ownership.
   Early drawing and late teardown events must respect readiness guards.
-- **Failures:** polygon and color-pattern allocation failures must release pending
-  polygons, unlock pixels, and restore the caller's port/device before a modal alert.
-  Reentrant drawing is blocked and repeated cleanup must be safe.
+- **Recovery:** unavailable optional palettes/patterns use native color drawing;
+  native resource reads return typed failures and empty scenes remain interactive.
+  Polygon allocation failures unwind native state before one retry, then pause
+  without repeated allocations. A subsequent key resumes drawing after the fault
+  clears. Every attempt restores ports/devices and releases temporary ownership.
 
 ### Native validation
 
@@ -343,7 +369,10 @@ table for re-enabling at a resized viewport.
 The same options run `tests/texture.c`, comparing every expanded RGB texel with the
 Earth palette source at all five resolutions. Checks cover same-size allocation reuse,
 transactional allocation failure, invalid sizes, idempotent cleanup, and dimensions
-needed by XGL after the staging image is released.
+needed after the staging image is released. Native IRIS GL and XGL recorders verify
+direct map-row conversion into packed images/rasters. Allocation-pressure profiles
+check smaller texture selection and flat-color recovery after exhausting supported
+sizes; retained OpenGL GLU staging remains covered by the OpenGL 1.1 checks.
 
 ### GDI and QuickDraw geometry
 

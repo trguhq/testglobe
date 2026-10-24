@@ -4,11 +4,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include "earth_reference.h"
+#include "e_ext.h"
 
 static void *allocations[4];
 static unsigned int allocation_count, allocation_calls;
 static int fail_allocation, expect_error, errors;
 static const char *last_error;
+static unsigned int read_calls, fail_read_at;
+
+static int tracked_earth_read_data(int longitude, unsigned long offset,
+                                   unsigned int count,
+                                   unsigned char TG_HUGE *destination)
+{
+    ++read_calls;
+    if (read_calls == fail_read_at) return 0;
+    return earth_read_data(longitude, offset, count, destination);
+}
 
 static void *tracked_malloc(size_t bytes)
 {
@@ -36,9 +47,11 @@ static void tracked_free(void *pointer)
  * failure without adding a test-only public API to the application. */
 #define malloc tracked_malloc
 #define free tracked_free
+#define earth_read_data tracked_earth_read_data
 #include "../src/texture.c"
 #undef malloc
 #undef free
+#undef earth_read_data
 
 #include "e_cmap.h"
 
@@ -68,6 +81,7 @@ int main(void)
     texture_init();
     assert(texture_data==NULL&&texture_size==0&&allocation_count==0);
     calls=allocation_calls;
+    assert(texture_build(33)==DRV_BAD_INPUT);
     assert(!texture_try_generate(33)&&!texture_try_generate(-1));
     assert(errors==0&&allocation_calls==calls&&texture_data==NULL&&texture_size==0);
     fail_allocation=1;
@@ -109,10 +123,31 @@ int main(void)
     /* XGL uploads release RGB staging before reading the last dimensions. */
     assert(texture_size==32);
     assert(texture_try_generate(64));check_image(64,test_earth_data(64));
+    saved=texture_data;
+    fail_read_at=read_calls+2;
+    assert(texture_build(128)==DRV_BAD_DATA);
+    assert(texture_data==saved&&allocation_count==1&&texture_size==64);
+    fail_read_at=0;
+    check_image(64,test_earth_data(64));
+    fail_read_at=read_calls+2;
+    assert(texture_build(64)==DRV_BAD_DATA);
+    assert(texture_data==NULL&&texture_data_size==0&&allocation_count==0);
+    fail_read_at=0;
+    fail_allocation=1;
+    assert(texture_build(64)==DRV_NO_MEMORY);
+    assert(allocation_count==0);
+    assert(texture_build(64)==DRV_OK);
+    saved=texture_take_data();
+    assert(saved!=NULL&&texture_data==NULL&&texture_data_size==0&&texture_size==64);
+    texture_free();
+    assert(allocation_count==1);
+    assert(texture_take_data()==NULL);
+    tracked_free(saved);
     texture_init();texture_init();
     assert(texture_data==NULL&&texture_size==0&&allocation_count==0);
     puts("PASS Earth texture RGB expansion: all five resolutions match every source palette index");
     puts("PASS Texture ownership: repeated generation, transactional allocation failure, invalid sizes and idempotent cleanup");
     puts("PASS Recoverable texture generation: invalid sizes and allocation failure preserve owned bytes and dimensions without fatal errors");
+    puts("PASS Texture result and transfer contracts: data failures are distinct from allocation failures, partial reused images are invalidated and detached bytes are freed by one owner");
     return 0;
 }

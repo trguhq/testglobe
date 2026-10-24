@@ -30,6 +30,11 @@ extern unsigned char earth_cmap[][3];
 #ifndef DRV_EARTH_RESOURCES
 /* Generated from the binary maps in data/. Each object is at most 16 KiB. */
 extern unsigned long earth_data_size(int longitude);
+/* Borrow an immutable span within one embedded object (at most 16 KiB).
+ * Storage lives for the program lifetime. Never walk past *available; request
+ * another span at the next offset instead. Invalid/end offsets return NULL. */
+extern const unsigned char TG_HUGE *earth_data_span(int longitude,
+                       unsigned long offset, unsigned int *available);
 /* Copy a bounded range without exposing chunk or segment boundaries.
  * Return zero for an unsupported level, invalid range, or NULL destination
  * with a nonzero count. A zero-byte read may use NULL at any valid offset. */

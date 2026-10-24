@@ -52,7 +52,7 @@ static int quit_code;
 static unsigned long submitted_polygons, submitted_vertices;
 static unsigned int recorded_count;
 static int stream_polygons;
-static char last_status[200];
+static char last_status[320];
 typedef struct { unsigned char color; int count; POINT points[12]; } RecordedPolygon;
 static RecordedPolygon recorded[5000];
 static int run_contract(void);
@@ -62,7 +62,13 @@ static BOOL last_realize_background;
 static const char *profile;
 static unsigned int fail_allocation, allocation_attempts;
 static int fail_polygon;
+static int fail_single_polygon, fail_bitmap, fail_blit, fail_timer;
+static unsigned int fail_brushes;
+static int fail_resource_load, fail_resource_lock, fail_resource_size;
 static unsigned int fatal_dialogs;
+static MSG deferred_messages[8];
+static unsigned int deferred_count;
+static int reenter_render;
 
 static HANDLE object_new(int kind)
 {
@@ -149,7 +155,7 @@ DWORD SizeofResource(HINSTANCE instance, HRSRC resource)
     assert(instance == 1);
     data = test_earth_resource((short)resource, &size);
     free(data);
-    return size;
+    return fail_resource_size ? size + 1UL : size;
 }
 HGLOBAL LoadResource(HINSTANCE instance, HRSRC resource)
 {
@@ -157,6 +163,7 @@ HGLOBAL LoadResource(HINSTANCE instance, HRSRC resource)
     unsigned long size;
     unsigned char *data;
     assert(instance == 1);
+    if (fail_resource_load) return 0;
     data = test_earth_resource((short)resource, &size);
     assert(data != NULL && size <= TG_EARTH_CHUNK_SIZE);
     handle = object_new(OBJ_RESOURCE);
@@ -168,6 +175,7 @@ HGLOBAL LoadResource(HINSTANCE instance, HRSRC resource)
 LPSTR LockResource(HGLOBAL handle)
 {
     assert(objects[handle].kind == OBJ_RESOURCE);
+    if (fail_resource_lock) return NULL;
     ++objects[handle].locks;
     return (LPSTR)objects[handle].memory;
 }
@@ -263,6 +271,18 @@ LONG DispatchMessage(const MSG *message)
     return window_callback(message->hwnd, message->message, message->wParam, message->lParam);
 }
 void PostQuitMessage(int code) { ++quit_messages; quit_code = code; }
+BOOL PostMessage(HWND window, UINT message, WPARAM word, LPARAM parameter)
+{
+    MSG *entry;
+    assert(window == main_window && deferred_count < 8U);
+    entry = deferred_messages + deferred_count++;
+    memset(entry, 0, sizeof(*entry));
+    entry->hwnd = window;
+    entry->message = message;
+    entry->wParam = word;
+    entry->lParam = parameter;
+    return TRUE;
+}
 void InvalidateRect(HWND window, const RECT *rectangle, BOOL erase)
 {
     assert(window == main_window);
@@ -284,6 +304,7 @@ int ReleaseDC(HWND window, HDC dc)
 {
     assert(window == main_window || window == 0);
     assert(objects[dc].kind == OBJ_DC);
+    assert(!objects[dc].memory_dc);
     object_delete(dc);
     return 1;
 }
@@ -295,6 +316,7 @@ HDC BeginPaint(HWND window, PAINTSTRUCT *paint)
 }
 void EndPaint(HWND window, const PAINTSTRUCT *paint)
 {
+    assert(gdi_target != paint->hdc);
     ReleaseDC(window, paint->hdc);
 }
 void GetClientRect(HWND window, RECT *rectangle)
@@ -335,12 +357,14 @@ HDC CreateCompatibleDC(HDC source)
 BOOL DeleteDC(HDC dc)
 {
     assert(objects[dc].kind == OBJ_DC);
+    assert(objects[dc].memory_dc);
     object_delete(dc);
     return 1;
 }
 HBITMAP CreateCompatibleBitmap(HDC dc, int width, int height)
 {
     assert(objects[dc].kind == OBJ_DC && width > 0 && height > 0);
+    if (fail_bitmap) return 0;
     return object_new(OBJ_BITMAP);
 }
 HGDIOBJ SelectObject(HDC dc, HGDIOBJ object)
@@ -427,6 +451,7 @@ HBRUSH CreateSolidBrush(COLORREF color)
 {
     HBRUSH brush;
     assert((color & 0xFFFFFF00UL) == 0x01000000UL);
+    if (fail_brushes != 0U) { --fail_brushes; return 0; }
     brush = object_new(OBJ_BRUSH);
     objects[brush].color = color;
     return brush;
@@ -475,6 +500,7 @@ static void record_polygon(HDC dc, const POINT *points, int count)
 BOOL Polygon(HDC dc, const POINT *points, int count)
 {
     ++polygon_calls;
+    if (fail_single_polygon) return FALSE;
     record_polygon(dc, points, count);
     return 1;
 }
@@ -484,6 +510,15 @@ BOOL PolyPolygon(HDC dc, const POINT *points, int *counts, int polygons)
     unsigned long total;
     assert(polygons > 0 && polygons <= DRV_QUAD_BATCH_MAX);
     ++polypolygon_calls;
+    if (reenter_render)
+    {
+        unsigned long revision;
+        revision = globe_revision;
+        reenter_render = FALSE;
+        window_callback(main_window, WM_CHAR, '1', 0);
+        window_callback(main_window, WM_SIZE, 0, (LPARAM)(640UL | (480UL << 16)));
+        assert(globe_revision == revision && gdi_rendering && deferred_count == 2U);
+    }
     if (fail_polygon) return FALSE;
     total = 0;
     for (i = 0; i < polygons; ++i) {
@@ -506,6 +541,7 @@ BOOL BitBlt(HDC dc, int x, int y, int width, int height, HDC source,
     assert(width > 0 && height > 0 && operation == SRCCOPY);
     (void)x; (void)y; (void)source_x; (void)source_y;
     ++bitblts;
+    if (fail_blit) return FALSE;
     return 1;
 }
 int FillRect(HDC dc, const RECT *rectangle, HBRUSH brush)
@@ -524,7 +560,12 @@ COLORREF SetBkColor(HDC dc, COLORREF color) { assert(objects[dc].kind == OBJ_DC)
 static void check_text(LPCSTR text, int length)
 {
     assert(text != NULL && length > 0 && strstr(text, "texture") == NULL);
-    if (strstr(text, "visible") != NULL) {
+    if (strstr(text, "No globe:") != NULL) {
+        assert(length < (int)sizeof(last_status));
+        memcpy(last_status, text, (size_t)length);
+        last_status[length] = 0;
+        assert(strstr(last_status, "retry") != NULL);
+    } else if (strstr(text, "visible") != NULL) {
         assert(length < (int)sizeof(last_status));
         memcpy(last_status, text, (size_t)length);
         last_status[length] = 0;
@@ -579,6 +620,7 @@ void ReleaseCapture(void) { capture_window = 0; }
 UINT SetTimer(HWND window, UINT id, UINT milliseconds, TIMERPROC callback)
 {
     assert(window == main_window && milliseconds > 0 && callback == NULL);
+    if (fail_timer) return 0;
     ++timer_calls;
     return id != 0 ? id : 1;
 }
@@ -997,26 +1039,9 @@ static int run_contract(void)
     assert(drv_win_width == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 320 : 640));
     assert(drv_win_height == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 240 : 480));
     assert(allocated_count >= 4 && loaded_chunks > 0);
-    if (strncmp(profile, "fatal-", 6) == 0) {
-        if (strcmp(profile, "fatal-size") == 0) {
+    if (strcmp(profile, "fatal-size") == 0) {
             gdi_cleanup();
             drv_init_window(0, 0, 32767, 300);
-        } else {
-            window_callback(main_window, WM_LBUTTONDOWN, MK_LBUTTON, 0);
-            window_callback(main_window, WM_RBUTTONDOWN, 0, 0);
-            drv_auto_enabled = TRUE;
-            if (strcmp(profile, "fatal-poly") == 0) {
-                fail_polygon = TRUE;
-                gdi_dirty = TRUE;
-                drv_render();
-            } else {
-                assert(strcmp(profile, "fatal-oom") == 0);
-                fail_allocation = 2U;
-                allocation_attempts = 0;
-                gdi_dirty = FALSE;
-                window_callback(main_window, WM_CHAR, '5', 0);
-            }
-        }
         assert(!"Fatal GDI error must exit after the modal dialog");
     }
     recorded_count = 0;
@@ -1188,11 +1213,120 @@ static int run_contract(void)
     gdi_resize(800, 600);
     assert(drv_win_width == 800 && drv_win_height == 600);
     ticks = 0xffffffd0UL;
-    for (i = 0; i < 61; ++i) { drv_fps_start(); drv_fps_stop(); }
-    assert(fabs(drv_fps_average - 62.5f) < 0.01);
+    for (i = 0; i < 2 * DRV_FPS_HISTORY + 1; ++i)
+    { drv_fps_start(); drv_fps_stop(); }
+    assert(fabs(drv_fps_average - 31.25f) < 0.01);
+    drv_fps_start();
+    ticks += 1000UL;
+    drv_fps_stop();
+    assert(drv_fps_average > 0.95f && drv_fps_average < 1.0f);
+    reenter_render = TRUE;
+    recorded_count = 0;
+    drv_render();
+    assert(!gdi_rendering && deferred_count == 2U);
+    for (i = 0; (unsigned int)i < deferred_count; ++i)
+        DispatchMessage(deferred_messages + i);
+    deferred_count = 0;
+    assert(globe_longitude == 32 && drv_win_width == 640 && drv_win_height == 480);
+    /* Resource failures return precise results and release temporary locks. */
+    {
+        unsigned char bytes[512];
+        unsigned int before;
+        before = resource_count;
+        assert(drv_load_earth_chunk(TG_EARTH_32_ID, 512UL, NULL) == DRV_BAD_INPUT);
+        fail_resource_size = TRUE;
+        assert(drv_load_earth_chunk(TG_EARTH_32_ID, 512UL, bytes) == DRV_BAD_DATA);
+        fail_resource_size = FALSE;
+        fail_resource_load = TRUE;
+        assert(drv_load_earth_chunk(TG_EARTH_32_ID, 512UL, bytes) == DRV_NO_MEMORY);
+        fail_resource_load = FALSE;
+        fail_resource_lock = TRUE;
+        assert(drv_load_earth_chunk(TG_EARTH_32_ID, 512UL, bytes) == DRV_NO_MEMORY);
+        fail_resource_lock = FALSE;
+        assert(resource_count == before);
+    }
+    /* Optional storage can disappear without borrowing or deleting a paint DC. */
+    fail_blit = TRUE;
+    stream_polygons = TRUE;
+    drv_render();
+    stream_polygons = FALSE;
+    assert(gdi_buffer == 0 && !gdi_rendering);
+    fail_blit = FALSE;
+    fail_bitmap = TRUE;
+    gdi_resize(640, 480);
+    assert(gdi_buffer == 0 && gdi_bitmap == 0);
+    fail_bitmap = FALSE;
+    recorded_count = 0;
+    realized = bitblts;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(bitblts == realized && recorded_count > 0 && gdi_target == 0);
+    gdi_release_brushes();
+    fail_brushes = 1;
+    assert(gdi_brush(17) != 0 && !gdi_brush_reduced && fail_brushes == 0);
+    fail_brushes = 2;
+    assert(gdi_brush(18) >= 900 && gdi_brush_reduced && fail_brushes == 0);
+    drv_notice(NULL);
+    drv_osd_enabled = TRUE;
+    recorded_count = 0;
+    drv_render();
+    assert(strstr(last_status, "direct drawing") != NULL &&
+           strstr(last_status, "reduced colors") != NULL);
+    drv_osd_enabled = FALSE;
+    gdi_brush_reduced = FALSE;
+    /* The first failure restarts a complete frame through native Polygon. */
+    fail_polygon = TRUE;
+    gdi_batch_enabled = TRUE;
+    recorded_count = 0;
+    drv_render();
+    assert(!gdi_batch_enabled && polygon_calls > 0 && !gdi_draw_paused);
+    assert(recorded_count == globe_quads_num_vis);
+    fail_polygon = FALSE;
+    drv_notice(NULL);
+    drv_osd_enabled = TRUE;
+    recorded_count = 0;
+    drv_render();
+    assert(strstr(last_status, "individual polygons") != NULL);
+    drv_osd_enabled = FALSE;
+    fail_single_polygon = TRUE;
+    drv_render();
+    assert(gdi_draw_paused && gdi_ready && !drv_auto_enabled);
+    realized = polygon_calls;
+    drv_fps_average = 100.0f;
+    drv_render();
+    assert(polygon_calls == realized && drv_fps_average == 0.0f);
+    fail_single_polygon = FALSE;
+    window_callback(main_window, WM_CHAR, '2', 0);
+    recorded_count = 0;
+    drv_render();
+    assert(!gdi_draw_paused && recorded_count > 0);
+    if (strcmp(profile, "fatal-oom") == 0) {
+        fail_allocation = 2U;
+        allocation_attempts = 0;
+        window_callback(main_window, WM_CHAR, '5', 0);
+        assert(globe_ready() && !gdi_failed && gdi_ready);
+        fail_allocation = 0;
+    }
+    globe_free();
+    assert(!globe_ready());
+    drv_auto_enabled = TRUE;
+    old_y = drv_rot_y;
+    realized = invalidations;
+    window_callback(main_window, WM_TIMER, GDI_TIMER, 0);
+    assert(drv_rot_y == old_y && invalidations == realized);
+    drv_auto_enabled = FALSE;
+    drv_osd_enabled = FALSE;
+    texts = text_calls;
+    drv_notice("no globe; choose a resolution");
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(text_calls > texts && gdi_ready);
+    window_callback(main_window, WM_CHAR, '1', 0);
+    assert(globe_ready());
+    puts("PASS GDI recovery: resource errors, direct paint, bounded brush retry, individual polygons, paused draw retry and empty-scene input");
     /* Explicit client dimensions override the detected small-screen default. */
+    globe_free();
     gdi_cleanup();
     assert(resource_count == 0 && allocated_count == 0 && proc_instances == 0);
+    fail_timer = TRUE;
     if (strcmp(profile, "maxframe") == 0) {
         assert(drv_init_window(0, 0, 32759, 32739));
         assert(drv_win_width == 32759U && drv_win_height == 32739U);
@@ -1202,6 +1336,14 @@ static int run_contract(void)
         assert(drv_win_width == 444 && drv_win_height == 333);
         assert(client_width == 444 && client_height == 333);
     }
+    assert(!gdi_timer_active && !drv_auto_available);
+    window_callback(main_window, WM_CHAR, 'a', 0);
+    assert(!drv_auto_enabled);
+    gdi_ready = TRUE;
+    drv_notice(NULL);
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(strstr(last_status, "manual rotation") != NULL);
+    fail_timer = FALSE;
     puts("PASS GDI input: production WinMain/common startup, left/right mouse capture, drag, 1-5/O/A/F keys, palette events, screen defaults/overrides, resize, paint and 32-bit timer rollover");
     return 0;
 }
@@ -1218,7 +1360,7 @@ int main(int argc, char **argv)
 {
     assert(argc == 2);
     profile = argv[1];
-    if (strncmp(profile, "fatal-", 6) == 0)
+    if (strcmp(profile, "fatal-size") == 0)
         assert(atexit(check_fatal_cleanup) == 0);
     windows_flags = WF_CPU386;
     if (strstr(argv[1], "fpu") != NULL) windows_flags |= WF_80x87;
@@ -1228,6 +1370,7 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "small512") == 0) { screen_width = 512; screen_height = 342; }
     if (strcmp(argv[1], "tall640") == 0) { screen_width = 640; screen_height = 600; }
     assert(WinMain(1, 0, "", SW_SHOW) == 0);
+    globe_free();
     assert(contract_started && created_windows == 2 && destroyed_windows == created_windows && quit_messages == created_windows);
     assert(resource_count == 0 && allocated_count == 0 && proc_instances == 0);
     assert(timer_calls == 0 && capture_window == 0 && main_window == 0);

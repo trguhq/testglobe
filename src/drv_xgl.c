@@ -22,6 +22,7 @@
 #include "globe.h"
 #include "glob_ext.h"
 #include "tex_ext.h"
+#include "e_ext.h"
 
 static Display *xgl_display;
 static Window xgl_window;
@@ -49,6 +50,7 @@ static int xgl_texture_error;
 static int xgl_texture_failed;
 static int xgl_texture_used;
 static int xgl_texture_submitted;
+static int xgl_texture_pending;
 static const char *xgl_texture_reason;
 static int xgl_dirty = TRUE;
 static int xgl_old_x;
@@ -58,6 +60,11 @@ static unsigned int xgl_strip_texture_capacity;
 static Xgl_pt_f3d *xgl_strip_points;
 static Xgl_color_facet *xgl_strip_facets;
 static float *xgl_strip_texture_points;
+/* A failed growth request must not be retried for every latitude band. */
+static int xgl_strip_limited;
+static Xgl_pt_f3d xgl_small_points[4];
+static Xgl_color_facet xgl_small_facets[4];
+static float xgl_small_texture_points[20];
 
 static void xgl_cleanup(void)
 {
@@ -86,9 +93,7 @@ static void xgl_cleanup(void)
     xgl_strip_texture_capacity = 0;
     xgl_mipmap = xgl_tmap = xgl_texture_raster = NULL;
     xgl_texture_used = xgl_texture_failed = FALSE;
-    drv_texture_loaded = drv_texture_enabled = FALSE;
-    globe_free();
-    texture_free();
+    drv_texture_loaded = drv_texture_enabled = drv_texture_active = FALSE;
 }
 
 static Xgl_sgn32 xgl_error_notify(Xgl_sys_state state)
@@ -116,8 +121,6 @@ static void xgl_checkerrors(void)
 
 void drv_close(void)
 {
-    globe_free();
-    texture_free();
     exit(0);
 }
 
@@ -140,9 +143,9 @@ static void xgl_projection(int width, int height)
 {
     Xgl_matrix_d3d matrix;
     Xgl_bounds_d3d bounds;
-    double near_plane = 1.0;
-    double far_plane = 10000.0;
-    double cotangent = 1.0 / tan(PI / 8.0);
+    double near_plane = GLOBE_NEAR_DISTANCE;
+    double far_plane = GLOBE_FAR_DISTANCE;
+    double cotangent = 1.0 / tan(GLOBE_FIELD_OF_VIEW * PI / 360.0);
     memset(matrix, 0, sizeof(matrix));
     /* XGL uses row vectors. This is a 45-degree perspective projection,
      * with near mapped to VDC z=1 and far to z=0 (Y_UP_Z_TOWARD). */
@@ -180,6 +183,7 @@ static void xgl_resize(int width, int height)
         xgl_projection(width, height);
         xgl_checkerrors();
     }
+    drv_reset_timing();
     xgl_dirty = TRUE;
 }
 
@@ -320,7 +324,7 @@ static void xgl_model_transform(void)
     xgl_checkerrors();
     offset.x = 0.0f;
     offset.y = 0.0f;
-    offset.z = -3000.0f;
+    offset.z = -GLOBE_VIEW_DISTANCE;
     translation.pt_type = XGL_PT_F3D;
     translation.pt.f3d = &offset;
     xgl_transform_translate(xgl_model, &translation, XGL_TRANS_POSTCONCAT);
@@ -334,6 +338,7 @@ static void xgl_texture_begin(void)
     xgl_checkerrors();
     xgl_texture_scope = TRUE;
     xgl_texture_error = FALSE;
+    xgl_texture_pending = FALSE;
     xgl_texture_reason = NULL;
 }
 
@@ -382,6 +387,9 @@ static void xgl_texture_failure(const char *message)
     xgl_texture_failed = TRUE;
     xgl_texture_used = FALSE;
     xgl_texture_error = FALSE;
+    drv_texture_active = FALSE;
+    drv_notice(message);
+    drv_reset_timing();
     fprintf(stderr, "Sun XGL texture: %s\n", message);
 }
 
@@ -416,47 +424,55 @@ static int xgl_texture_ready(void)
     return xgl_texture_check() && map == xgl_tmap && enabled;
 }
 
-static int xgl_texture_load(void)
+static Drv_result xgl_texture_load_size(unsigned int size)
 {
     Xgl_usgn32 *pixels;
     Xgl_texture_general_desc descriptor;
     Xgl_render_component_desc *composition;
     unsigned int x, y, levels, smaller;
-    unsigned char *source;
+    unsigned char row[512], index;
+    Drv_result result;
     const char *message;
-    if (drv_texture_loaded) return TRUE;
-    message = "Cannot generate XGL texture image";
-    if (!texture_try_generate(TEXTURE_DEFAULT_SIZE)) goto failed;
+    result = DRV_NATIVE_FAILED;
+    if (size > sizeof(row) || size < 32U ||
+        earth_data_size((int)size) != (unsigned long)size * (size / 2U))
+        return DRV_BAD_DATA;
     message = "Cannot allocate XGL texture raster";
     xgl_texture_raster = xgl_object_create(xgl_system, XGL_MEM_RAS, NULL,
                                 XGL_DEV_COLOR_TYPE, XGL_COLOR_RGB,
                                 XGL_RAS_DEPTH, 32,
-                                XGL_RAS_WIDTH, texture_size,
-                                XGL_RAS_HEIGHT, texture_size / 2, 0);
-    if (!xgl_texture_check() || xgl_texture_raster == NULL) goto failed;
+                                XGL_RAS_WIDTH, size,
+                                XGL_RAS_HEIGHT, size / 2, 0);
+    if (!xgl_texture_check()) goto failed;
+    if (xgl_texture_raster == NULL) { result = DRV_NO_MEMORY; goto failed; }
     message = "Cannot access XGL texture raster";
     pixels = NULL;
     xgl_object_get(xgl_texture_raster, XGL_MEM_RAS_IMAGE_BUFFER_ADDR, &pixels);
     if (!xgl_texture_check() || pixels == NULL) goto failed;
-    for (y = 0; y < texture_size / 2; ++y)
+    for (y = 0; y < size / 2; ++y)
     {
-        source = texture_data + (unsigned long)y * texture_size * 3UL;
-        for (x = 0; x < texture_size; ++x)
+        if (!earth_read_data((int)size, (unsigned long)y * size, size, row))
+        {
+            result = DRV_BAD_DATA;
+            message = "Cannot read XGL texture Earth data";
+            goto failed;
+        }
+        for (x = 0; x < size; ++x)
         {
             /* Raster top-left rows become the globe's bottom-left UV rows. */
-            pixels[(unsigned long)(texture_size / 2 - 1 - y) * texture_size + x] =
-                (Xgl_usgn32)source[0] |
-                ((Xgl_usgn32)source[1] << 8) |
-                ((Xgl_usgn32)source[2] << 16);
-            source += 3;
+            index = row[x];
+            pixels[(unsigned long)(size / 2 - 1 - y) * size + x] =
+                (Xgl_usgn32)earth_cmap[index][0] |
+                ((Xgl_usgn32)earth_cmap[index][1] << 8) |
+                ((Xgl_usgn32)earth_cmap[index][2] << 16);
         }
     }
-    texture_free();
     message = "Cannot create XGL mipmap";
     xgl_mipmap = xgl_object_create(xgl_system, XGL_MIPMAP_TEXTURE, NULL, 0);
-    if (!xgl_texture_check() || xgl_mipmap == NULL) goto failed;
+    if (!xgl_texture_check()) goto failed;
+    if (xgl_mipmap == NULL) { result = DRV_NO_MEMORY; goto failed; }
     levels = 0;
-    smaller = texture_size / 2;
+    smaller = size / 2;
     while (smaller > 1) { ++levels; smaller /= 2; }
     message = "Cannot build XGL mipmap";
     xgl_object_set(xgl_mipmap, XGL_MIPMAP_TEXTURE_LEVELS, levels, 0);
@@ -500,9 +516,50 @@ static int xgl_texture_load(void)
                    xgl_tmap_switch, 0);
     if (!xgl_texture_check()) goto failed;
     drv_texture_loaded = TRUE;
-    return TRUE;
+    texture_size = size;
+    return DRV_OK;
 failed:
-    xgl_texture_failure(message);
+    /* Only a NULL allocation without a library error permits a smaller
+     * retry. Recoverable native errors still use the established flat path;
+     * NONRECOVERABLE errors have already stopped in xgl_checkerrors(). */
+    xgl_texture_scope = FALSE;
+    xgl_texture_release();
+    xgl_texture_reason = message;
+    return result;
+}
+
+static int xgl_texture_load(void)
+{
+    unsigned int size;
+    int released;
+    Drv_result result;
+    if (drv_texture_loaded) return TRUE;
+    size = TEXTURE_DEFAULT_SIZE;
+    released = FALSE;
+    for (;;)
+    {
+        xgl_texture_begin();
+        result = xgl_texture_load_size(size);
+        if (result == DRV_OK)
+        {
+            if (size != TEXTURE_DEFAULT_SIZE)
+                drv_notice("XGL uses a smaller texture");
+            return TRUE;
+        }
+        if (result == DRV_BAD_DATA || result == DRV_BAD_INPUT)
+            error("Invalid XGL texture Earth data");
+        if (result != DRV_NO_MEMORY) break;
+        if (!released)
+        {
+            drv_release_optional();
+            released = TRUE;
+            continue;
+        }
+        if (size <= 32U) break;
+        size /= 2U;
+    }
+    xgl_texture_failure(xgl_texture_reason != NULL ? xgl_texture_reason :
+                         "Cannot allocate XGL texture");
     return FALSE;
 }
 
@@ -511,6 +568,8 @@ void drv_texture_enable(void)
     drv_texture_enabled = TRUE;
     xgl_texture_failed = xgl_texture_used = FALSE;
     xgl_dirty = TRUE;
+    if (!globe_ready()) { xgl_texture_pending = TRUE; return; }
+    xgl_texture_pending = FALSE;
     xgl_texture_begin();
     if (!drv_texture_loaded && !xgl_texture_load()) return;
     xgl_texture_switch(TRUE);
@@ -524,6 +583,8 @@ void drv_texture_enable(void)
 void drv_texture_disable(void)
 {
     drv_texture_enabled = FALSE;
+    drv_texture_active = FALSE;
+    xgl_texture_pending = FALSE;
     xgl_texture_failed = xgl_texture_used = FALSE;
     xgl_dirty = TRUE;
     xgl_texture_begin();
@@ -542,66 +603,77 @@ static size_t xgl_packet_bytes(unsigned int count, size_t stride)
     return bytes;
 }
 
-static int xgl_reserve_strip(unsigned int count, int textured)
+static unsigned int xgl_reserve_strip(unsigned int count, int textured)
 {
     Xgl_pt_f3d *points;
     Xgl_color_facet *facets;
     float *texture_points;
-    if (count > xgl_strip_capacity)
+    unsigned int capacity;
+    if (!xgl_strip_limited && count > xgl_strip_capacity)
     {
         points = (Xgl_pt_f3d *)malloc(xgl_packet_bytes(count, sizeof(*points)));
         facets = (Xgl_color_facet *)malloc(xgl_packet_bytes(count, sizeof(*facets)));
         if (points == NULL || facets == NULL)
         {
             free(points); free(facets);
-            error("Cannot allocate XGL triangle strip packet");
+            xgl_strip_limited = TRUE;
+            drv_notice("XGL uses smaller strip packets");
+            drv_reset_timing();
         }
-        free(xgl_strip_points);
-        free(xgl_strip_facets);
-        xgl_strip_points = points;
-        xgl_strip_facets = facets;
-        xgl_strip_capacity = count;
+        else
+        {
+            free(xgl_strip_points);
+            free(xgl_strip_facets);
+            xgl_strip_points = points;
+            xgl_strip_facets = facets;
+            xgl_strip_capacity = count;
+        }
     }
-    if (textured && count > xgl_strip_texture_capacity)
+    if (!xgl_strip_limited && textured && count > xgl_strip_texture_capacity)
     {
         texture_points = (float *)malloc(xgl_packet_bytes(count, 5 * sizeof(*texture_points)));
-        if (texture_points == NULL) return FALSE;
-        free(xgl_strip_texture_points);
-        xgl_strip_texture_points = texture_points;
-        xgl_strip_texture_capacity = count;
+        if (texture_points == NULL)
+        {
+            xgl_strip_limited = TRUE;
+            drv_notice("XGL uses smaller strip packets");
+            drv_reset_timing();
+        }
+        else
+        {
+            free(xgl_strip_texture_points);
+            xgl_strip_texture_points = texture_points;
+            xgl_strip_texture_capacity = count;
+        }
     }
-    return TRUE;
+    capacity = xgl_strip_capacity;
+    if (textured && xgl_strip_texture_capacity < capacity)
+        capacity = xgl_strip_texture_capacity;
+    return capacity >= 4U ? capacity : 4U;
 }
 
-static void xgl_draw_tristrip(unsigned int count, const Vertex *vertices,
-                               const Color_RGB *facet_colors,
-                               const Coord *coords)
+/* A bounded packet has complete native ownership during this one call.
+ * XGL_CTX_GEOM_DATA_IS_VOLATILE makes reuse safe after submission. */
+static void xgl_submit_tristrip(unsigned int count, const Vertex *vertices,
+                               const Color_RGB *facet_colors, const Coord *coords,
+                               Xgl_pt_f3d *plain, Xgl_color_facet *colors,
+                               float *texture_points)
 {
     Xgl_pt_list points;
     Xgl_facet_list facets;
     unsigned int i;
     float *destination;
     int textured;
-    if (count < 3 || vertices == NULL ||
-        (facet_colors == NULL && coords == NULL)) return;
     textured = coords != NULL;
-    if (textured && xgl_texture_error) return;
-    if (!xgl_reserve_strip(count, textured))
-    {
-        xgl_texture_error = TRUE;
-        xgl_texture_reason = "Cannot allocate XGL texture strip packet";
-        return;
-    }
     xgl_texture_switch(textured);
     xgl_checkerrors();
     if (textured && !xgl_texture_check()) return;
     for (i = 0; i < count - 2; ++i)
     {
-        xgl_strip_facets[i].color.rgb.r = facet_colors == NULL ?
+        colors[i].color.rgb.r = facet_colors == NULL ?
                                            1.0f : (float)facet_colors[i].r / 255.0f;
-        xgl_strip_facets[i].color.rgb.g = facet_colors == NULL ?
+        colors[i].color.rgb.g = facet_colors == NULL ?
                                            1.0f : (float)facet_colors[i].g / 255.0f;
-        xgl_strip_facets[i].color.rgb.b = facet_colors == NULL ?
+        colors[i].color.rgb.b = facet_colors == NULL ?
                                            1.0f : (float)facet_colors[i].b / 255.0f;
     }
     memset(&points, 0, sizeof(points));
@@ -610,7 +682,7 @@ static void xgl_draw_tristrip(unsigned int count, const Vertex *vertices,
     {
         /* DATA_F3D is variable-sized: XYZ followed by two contiguous floats,
          * not an array of fixed sizeof(Xgl_pt_data_f3d) elements. */
-        destination = xgl_strip_texture_points;
+        destination = texture_points;
         for (i = 0; i < count; ++i)
         {
             *destination++ = vertices[i].x;
@@ -621,26 +693,84 @@ static void xgl_draw_tristrip(unsigned int count, const Vertex *vertices,
         }
         points.pt_type = XGL_PT_DATA_F3D;
         points.num_data_values = 2;
-        points.pts.data_f3d = (Xgl_pt_data_f3d *)xgl_strip_texture_points;
+        points.pts.data_f3d = (Xgl_pt_data_f3d *)texture_points;
     }
     else
     {
         for (i = 0; i < count; ++i)
         {
-            xgl_strip_points[i].x = vertices[i].x;
-            xgl_strip_points[i].y = vertices[i].y;
-            xgl_strip_points[i].z = vertices[i].z;
+            plain[i].x = vertices[i].x;
+            plain[i].y = vertices[i].y;
+            plain[i].z = vertices[i].z;
         }
         points.pt_type = XGL_PT_F3D;
-        points.pts.f3d = xgl_strip_points;
+        points.pts.f3d = plain;
     }
     memset(&facets, 0, sizeof(facets));
     facets.facet_type = XGL_FACET_COLOR;
     facets.num_facets = (Xgl_usgn32)(count - 2);
-    facets.facets.color_facets = xgl_strip_facets;
+    facets.facets.color_facets = colors;
     xgl_triangle_strip(xgl_context, &facets, &points);
     xgl_checkerrors();
     if (textured && xgl_texture_check()) xgl_texture_submitted = TRUE;
+}
+
+static void xgl_draw_tristrip(unsigned int count, const Vertex *vertices,
+                               const Color_RGB *facet_colors, const Coord *coords)
+{
+    unsigned int capacity, first, facets, maximum;
+    Xgl_pt_f3d *plain;
+    Xgl_color_facet *colors;
+    float *texture_points;
+    int textured;
+    if (count < 3 || vertices == NULL ||
+        (facet_colors == NULL && coords == NULL)) return;
+    textured = coords != NULL;
+    if (textured && xgl_texture_error) return;
+    capacity = xgl_reserve_strip(count, textured);
+    if (xgl_strip_capacity < 4U ||
+        (textured && xgl_strip_texture_capacity < 4U))
+    {
+        plain = xgl_small_points;
+        colors = xgl_small_facets;
+        texture_points = xgl_small_texture_points;
+    }
+    else
+    {
+        plain = xgl_strip_points;
+        colors = xgl_strip_facets;
+        texture_points = xgl_strip_texture_points;
+    }
+    /* Nonfinal pieces contain an even number of facets, retaining the
+     * strip's original winding and its final two vertices in the next piece. */
+    maximum = (capacity - 2U) & ~1U;
+    first = 0;
+    while (first < count - 2U)
+    {
+        facets = count - 2U - first;
+        if (facets > maximum) facets = maximum;
+        xgl_submit_tristrip(facets + 2U, vertices + first,
+                             facet_colors == NULL ? NULL : facet_colors + first,
+                             coords == NULL ? NULL : coords + first,
+                             plain, colors, texture_points);
+        if (drv_frame_failed || (textured && xgl_texture_error)) return;
+        first += facets;
+    }
+}
+
+void drv_release_optional(void)
+{
+    /* Recovery is called between frames. Never discard a packet still in
+     * the caller's active pass, or issue XGL calls after invalid native state. */
+    if (drv_texture_active || xgl_failed || xgl_nonrecoverable) return;
+    free(xgl_strip_points); free(xgl_strip_facets);
+    free(xgl_strip_texture_points);
+    xgl_strip_points = NULL; xgl_strip_facets = NULL;
+    xgl_strip_texture_points = NULL;
+    xgl_strip_capacity = xgl_strip_texture_capacity = 0;
+    xgl_strip_limited = TRUE;
+    if (!drv_texture_enabled) xgl_texture_release();
+    drv_reset_timing();
 }
 
 void drv_draw_tristrip_flat_rgb(unsigned int count, const Vertex *vertices,
@@ -664,9 +794,14 @@ void drv_draw_osd(void)
 {
     Xgl_pt_f2d position;
     char status[160];
+    char texture_status[40];
     drv_format_stats(status);
-    strcat(status, !drv_texture_enabled ? ", texture off" :
-                   (xgl_texture_used ? ", texture on" : ", texture fail"));
+    if (xgl_texture_used && texture_size != TEXTURE_DEFAULT_SIZE)
+        sprintf(texture_status, ", texture on (%u)", texture_size);
+    else
+        strcpy(texture_status, !drv_texture_enabled ? ", texture off" :
+                    (xgl_texture_used ? ", texture on" : ", texture fail"));
+    drv_append_status(status, sizeof(status), texture_status);
     position.x = 10.0f;
     position.y = 18.0f;
     xgl_stroke_text(xgl_overlay, status, &position, NULL);
@@ -676,33 +811,46 @@ void drv_draw_osd(void)
     xgl_checkerrors();
 }
 
+static int xgl_animating(void)
+{
+    return drv_auto_enabled && globe_ready() && !drv_frame_failed;
+}
+
 void drv_render(void)
 {
-    int requested, ready;
+    int requested, ready, scene, native_ok;
     const char *reason;
     drv_fps_start();
     requested = drv_texture_enabled;
+    scene = globe_ready();
+    if (!scene) drv_frame_failed = TRUE;
+    drv_texture_active = FALSE;
     xgl_texture_used = xgl_texture_submitted = FALSE;
     xgl_context_new_frame(xgl_context);
     xgl_checkerrors();
     xgl_model_transform();
-    ready = requested && drv_texture_loaded && !xgl_texture_failed;
-    if (requested && !xgl_texture_failed && !drv_texture_loaded)
+    if (scene && requested && xgl_texture_pending)
+        drv_texture_enable();
+    if (scene && requested && !xgl_texture_failed && !drv_texture_loaded)
         xgl_texture_failure("XGL texture data is not loaded");
+    ready = scene && requested && drv_texture_loaded && !xgl_texture_failed;
     if (ready)
     {
         xgl_texture_begin();
         ready = xgl_texture_ready();
         if (ready)
         {
+            drv_texture_active = TRUE;
             globe_draw_tristrips();
+            drv_texture_active = FALSE;
             /* Complete deferred geometry before choosing this frame's status. */
             xgl_context_flush(xgl_context, XGL_FLUSH_SYNCHRONIZE);
             xgl_checkerrors();
             ready = xgl_texture_check() && xgl_texture_submitted;
         }
         reason = xgl_texture_reason;
-        if (!xgl_texture_end() || !ready)
+        native_ok = xgl_texture_end();
+        if (!native_ok || (!ready && !drv_frame_failed))
         {
             xgl_texture_failure(reason != NULL ? reason : "Cannot use XGL texture");
             ready = FALSE;
@@ -710,19 +858,26 @@ void drv_render(void)
             xgl_checkerrors();
             xgl_model_transform();
         }
-        else xgl_texture_used = TRUE;
+        else if (!drv_frame_failed) xgl_texture_used = TRUE;
     }
-    if (!ready)
+    if (scene && !ready && !drv_frame_failed)
     {
-        /* Keep the public flag as the user's request for normal T toggling. */
-        drv_texture_enabled = FALSE;
+        drv_texture_active = FALSE;
         xgl_texture_switch(FALSE);
         globe_draw_tristrips();
         xgl_context_flush(xgl_context, XGL_FLUSH_SYNCHRONIZE);
         xgl_checkerrors();
-        drv_texture_enabled = requested;
     }
-    if (drv_osd_enabled) drv_draw_osd();
+    if (scene && drv_frame_failed)
+    {
+        /* A failed traversal is not a texture failure. Complete/unwind the
+         * pass, then erase partial geometry while retaining usable resources. */
+        drv_texture_active = FALSE;
+        xgl_texture_used = FALSE;
+        xgl_context_new_frame(xgl_context);
+        xgl_checkerrors();
+    }
+    if (drv_osd_enabled || !scene || drv_frame_failed) drv_draw_osd();
     xgl_context_flush(xgl_overlay, XGL_FLUSH_SYNCHRONIZE);
     xgl_checkerrors();
     if (xgl_double_buffer)
@@ -736,7 +891,7 @@ void drv_render(void)
     }
     xgl_checkerrors();
     drv_fps_stop();
-    if (drv_auto_enabled) drv_globe_rotate();
+    if (xgl_animating()) drv_globe_rotate();
 }
 
 static void xgl_keyboard(unsigned char key)
@@ -825,7 +980,7 @@ void drv_loop(void)
     XEvent event;
     for (;;)
     {
-        if (!drv_auto_enabled && !xgl_dirty)
+        if (!xgl_animating() && !xgl_dirty)
         {
             XNextEvent(xgl_display, &event);
             xgl_event(&event);
@@ -835,7 +990,7 @@ void drv_loop(void)
             XNextEvent(xgl_display, &event);
             xgl_event(&event);
         }
-        if (xgl_dirty || drv_auto_enabled)
+        if (xgl_dirty || xgl_animating())
         {
             drv_render();
             xgl_dirty = FALSE;
