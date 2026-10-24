@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="An interactive WebGL version of testglobe. Compare flat-shaded Earth polygons with texture mapping at five resolutions.">
+  <meta name="theme-color" content="#0d151b">
+  <title>testglobe · Live WebGL demo</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="testglobe.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="masthead">
+      <a class="brand" href="../">testglobe<span class="edition">WebGL</span></a>
+      <nav aria-label="Project links">
+        <a href="../">About the project</a>
+        <a href="https://github.com/trguhq/testglobe">Source code</a>
+      </nav>
+    </header>
+
+    <main id="demo">
+      <div class="intro">
+        <div>
+          <p class="eyebrow">LIVE GRAPHICS TEST</p>
+          <h1>The Earth, rendered in WebGL.</h1>
+          <p>Compare flat polygons and texture mapping. Drag to explore.</p>
+        </div>
+        <span class="api-badge">WebGL 2</span>
+      </div>
+
+      <section class="viewer" aria-label="Interactive Earth globe">
+        <div id="viewport" class="viewport" aria-busy="true">
+          <canvas id="globe" data-testid="globe" tabindex="0"
+            aria-label="Earth globe. Drag to rotate. Keys 1 through 5 change detail; A rotates automatically; T toggles texture; O toggles the overlay; F toggles FPS; Escape pauses.">
+            This demo needs JavaScript and a browser with WebGL 2 support.
+          </canvas>
+          <div id="osd" class="osd">
+            <p id="stats" data-testid="status">Loading globe…</p>
+            <p class="osd-help">1–5 detail &nbsp; A rotate &nbsp; O overlay &nbsp; F FPS &nbsp; T texture</p>
+          </div>
+          <div id="loading" class="screen-message" aria-hidden="true">
+            <span class="loading-dot"></span><span>Loading Earth data…</span>
+          </div>
+          <div id="unavailable" class="screen-message unavailable" hidden>
+            <h2 id="unavailable-title">WebGL 2 is unavailable</h2>
+            <p id="unavailable-message">Try a browser with WebGL 2 enabled.</p>
+          </div>
+        </div>
+        <div class="viewer-caption">
+          <span id="renderer-info">Preparing WebGL 2</span>
+          <button id="reset-view" data-testid="reset" class="text-button" type="button" disabled>↺ Reset view</button>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="Globe controls">
+        <fieldset class="detail-controls">
+          <legend>Earth detail <span>map width</span></legend>
+          <div class="resolution-list">
+            <button type="button" data-resolution="32" data-testid="resolution-32" aria-label="Resolution 1: 32 by 16" aria-pressed="false" disabled><kbd>1</kbd><strong>32</strong></button>
+            <button type="button" data-resolution="64" data-testid="resolution-64" aria-label="Resolution 2: 64 by 32" aria-pressed="false" disabled><kbd>2</kbd><strong>64</strong></button>
+            <button type="button" data-resolution="128" data-testid="resolution-128" aria-label="Resolution 3: 128 by 64" aria-pressed="false" disabled><kbd>3</kbd><strong>128</strong></button>
+            <button type="button" data-resolution="256" data-testid="resolution-256" aria-label="Resolution 4: 256 by 128" aria-pressed="false" disabled><kbd>4</kbd><strong>256</strong></button>
+            <button type="button" data-resolution="512" data-testid="resolution-512" aria-label="Resolution 5: 512 by 256" aria-pressed="false" disabled><kbd>5</kbd><strong>512</strong></button>
+          </div>
+        </fieldset>
+        <fieldset class="mode-controls">
+          <legend>Rendering</legend>
+          <div class="toggle-list">
+            <button id="toggle-texture" data-testid="texture" type="button" aria-pressed="false" disabled><kbd>T</kbd> Texture</button>
+            <button id="toggle-auto" data-testid="auto" type="button" aria-pressed="false" disabled><kbd>A</kbd> Rotate</button>
+            <button id="toggle-osd" data-testid="osd" type="button" aria-pressed="true" disabled><kbd>O</kbd> Overlay</button>
+            <button id="toggle-fps" data-testid="fps" type="button" aria-pressed="true" disabled><kbd>F</kbd> FPS</button>
+          </div>
+        </fieldset>
+      </section>
+      <div class="notice-row">
+        <p id="notice" data-testid="notice" role="status" aria-live="polite">Loading the 512 × 256 Earth map.</p>
+        <button id="retry" data-testid="retry" class="text-button" type="button" hidden>Retry</button>
+      </div>
+      <noscript><p class="noscript">Enable JavaScript to run this demo. The <a href="../">project documentation</a> is available without it.</p></noscript>
+
+      <footer>
+        <p>The same Earth maps and palette as the native testglobe drivers.</p>
+        <p>Frame rate includes browser scheduling and display refresh limits; compare it separately from native builds. <kbd>Esc</kbd> pauses rotation.</p>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

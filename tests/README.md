@@ -2,11 +2,13 @@
 
 These checks compile production code on a host system and verify geometry,
 software-rendered pixels, graphics API arguments, input, and resource cleanup.
+Separate [WebGL checks](#webgl) verify the browser frontend's data, geometry,
+rendered pixels, and controls without changing the native test requirements.
 For application build instructions, see the [project README](../README.md#build-instructions).
 
 ## Requirements and quick start
 
-Run commands from the repository root. The runner requires:
+Run commands from the repository root. The native C runner requires:
 
 - Python 3.8 or later.
 - A C compiler accepting GCC/Clang-style options, with AddressSanitizer and
@@ -33,7 +35,7 @@ Additional options may be combined:
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
 
-With all prerequisites installed, run every group with:
+With all prerequisites installed, run every native group with:
 
 ```sh
 python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
@@ -128,6 +130,56 @@ Console diagnostics describe committed meshes only; GUI builds remain silent.
 all nine lower-mipmap allocation failures, invalid dimensions, and the retained
 copying interface for borrowed input. Every adopted allocation must be released
 exactly once, including partial-construction failures.
+
+## WebGL
+
+### Commands and requirements
+
+Palette verification requires Python 3. The data and geometry checks require Node.js
+18 or later, with no npm packages, browser, or server:
+
+```sh
+python3 web/gen_cmap.py --check
+node tests/web.mjs
+```
+
+Browser checks require Python 3.10 or later, the Python Playwright package, and
+Chromium. Install them in a suitable Python environment if needed:
+
+```sh
+python3 -m pip install playwright
+python3 -m playwright install chromium
+python3 tests/web_browser.py
+```
+
+The browser test starts its own HTTP server at the repository root. It selects
+`CHROMIUM_BIN`, then `chromium` or `chromium-browser` on `PATH`, then Playwright's
+installed Chromium. These checks run separately from `tests/run.py` and add no native
+application build dependencies.
+
+### Coverage
+
+- **Canonical data:** the generated palette matches `src/e_cmap.h`; fetched bytes
+  match every `data/*.bin` map. Tests reject unsupported widths, HTTP failures,
+  incorrect chunk sizes, and partial or cancelled loads.
+- **Geometry:** all five resolutions match the native triangle topology, including
+  nondegenerate pole triangles, outward winding, strip-restart parity, index bounds,
+  and UV coordinates. The frontend retains no global map-data cache.
+- **Browser rendering and controls:** the browser checks exercise the production
+  page, canvas output, resolution selection, texture/rotation/OSD/FPS controls,
+  resetting the view, dragging, resizing, and touch input.
+- **Recovery:** browser checks cover unavailable WebGL, failed map requests,
+  resolution fallback, competing requests, texture failure and reduction, resize
+  retry, retained resources after failed GPU uploads, and context loss/restoration
+  when `WEBGL_lose_context` is available.
+
+### Validation limits
+
+The browser checks exercise a real WebGL implementation, which may use a software
+renderer in headless environments. They do not establish hardware acceleration,
+cross-browser compatibility, mobile performance, or availability of the public demo.
+Manual browser checks remain useful for graphics drivers, accessibility, and touch
+behavior on physical devices. The frontend requires WebGL 2 and has no WebGL 1 path.
 
 ## OpenGL
 

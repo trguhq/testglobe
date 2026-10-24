@@ -9,9 +9,11 @@ triangle or quad an Earth-map color, while texturing samples the map across it.
 Texture mapping starts disabled. Higher resolutions use more memory and rendering time.
 
 OpenGL is the original backend. The additional backends and subsequent changes include
-AI-generated code. These experimental backends have host regression coverage; native
-validation remains pending. See [Testing and validation](#testing-and-validation) for
+AI-generated code. The experimental native backends have host regression coverage;
+native validation remains pending. See [Testing and validation](#testing-and-validation) for
 the distinction between host checks and native rendering.
+
+Browser version: [live WebGL demo](https://testglobe.dev/web/).
 
 ![OpenGL rendering of the Earth](testglobe.png)
 
@@ -36,9 +38,11 @@ the distinction between host checks and native rendering.
 Earth maps store 8-bit palette indices. OpenGL and IRIS GL use those indices in either
 RGB(A) or color-index windows; Sun XGL expands them to RGB. Matrox LibShell, Windows
 GDI, and QuickDraw draw through the Earth palette.
+The browser frontend uses WebGL 2 with the same maps and palette.
 
 | Driver | Platform | Default globe | Texture toggle |
 | --- | --- | --- | --- |
+| [WebGL](#webgl) | Modern browsers with WebGL 2 | Key 5: 512 × 256 | Yes |
 | [OpenGL](#opengl) | Linux, Unix and modern macOS | Key 5: 512 × 256 | Yes |
 | [IRIS GL](#iris-gl) | IRIX 4.0, 32-bit MIPS | Key 3: 128 × 64 | Yes |
 | [Sun XGL](#sun-xgl) | Solaris 2.6, 32-bit SPARC | Key 3: 128 × 64 | Yes |
@@ -53,13 +57,16 @@ Letter controls accept either case.
 | Input | Action |
 | --- | --- |
 | `1`–`5` | Select globe resolution; Matrox LibShell supports only `1` and `2`. |
-| Left mouse drag | Rotate the globe. |
+| Left mouse drag | Rotate the globe; the WebGL frontend also supports touch dragging. |
 | `a` | Toggle automatic rotation. |
 | `f` | Toggle FPS measurement and its on-screen statistic. |
 | `o` | Toggle the on-screen display (OSD). |
-| `t` | Toggle texture mapping in OpenGL, IRIS GL, and Sun XGL. |
+| `t` | Toggle texture mapping in OpenGL, IRIS GL, Sun XGL, and WebGL. |
 | `d` | Toggle display lists in OpenGL; enabled by default. |
-| `Esc` | Exit. |
+| `Esc` | Exit native applications; in WebGL, pause rotation and release dragging. |
+
+WebGL also provides on-screen controls and a **Reset view** button. Its retained GPU
+buffers replace display lists; the `d` control applies only to native OpenGL.
 
 Keys `1`–`5` select maps 32, 64, 128, 256, and 512 pixels wide (`EARTH_32` through
 `EARTH_512`); map height is half the width. The OSD counts quad patches for Matrox,
@@ -83,6 +90,7 @@ changes restart the sample.
 | `texture on` | The frame uses the graphics API's texturing path; this does not guarantee hardware acceleration. |
 | `texture soft` | OpenGL or IRIS GL uses the application's software texture rasterizer. |
 | `texture off` | Texture mapping is disabled. |
+| `texture loading` | WebGL is fetching or uploading a texture; flat colors remain visible. |
 | `texture fail` | Texturing is enabled but a detected failure prevents its use; recoverable failures draw flat colors. |
 | `dlist on` | OpenGL successfully uses a display list for the current frame. |
 | `dlist off` | Display lists are disabled. |
@@ -105,19 +113,19 @@ QuickDraw clamping its window to the selected screen.
 
 ### Resource recovery
 
-Selecting the current resolution does not rebuild the mesh. When a new mesh cannot
-be allocated, optional rendering caches are released before retrying. The application
-can restore the previous resolution or select a smaller supported level; startup uses
-the same lower-resolution fallback. The OSD identifies the active result and any
-recovery notice. A scene that still cannot be built leaves a responsive empty window
-so another resolution can be selected. Bad data and invalid requests remain distinct
-from insufficient memory.
+Native backends do not rebuild the mesh when its current resolution is selected.
+When a new mesh cannot be allocated, optional rendering caches are released before
+retrying. The application can restore the previous resolution or select a smaller
+supported level; startup uses the same lower-resolution fallback. The OSD identifies
+the active result and any recovery notice. A scene that still cannot be built leaves
+a responsive empty window so another resolution can be selected. Bad data and invalid
+requests remain distinct from insufficient memory.
 
 Insufficient texture memory or a queried native size limit can reduce the image from
 512 through 256, 128, 64, and 32 pixels wide. Other native errors are not assumed to
 be memory shortages. If no usable texture can be created, the request remains enabled
-while flat colors are drawn and `texture fail` is reported. Geometry caches and large submission
-packets are optional: direct drawing or smaller packets preserve the same globe.
+while flat colors are drawn and `texture fail` is reported. Geometry caches and large
+submission packets are optional: direct drawing or smaller packets preserve the same globe.
 Fallback resolution, texture size, buffering, and cache use affect performance, so
 compare runs using the actual reported settings.
 
@@ -139,10 +147,11 @@ OpenGL binaries for these platforms:
 
 ## Build instructions
 
-The portable Makefiles use plain macro assignments and explicit rules shared by
-traditional Unix/System V make, IRIX/Solaris make, and Microsoft NMAKE. GNU make is not
-required. Run the following commands from the repository root or `src`, with the
-appropriate platform's compiler and libraries installed:
+The [WebGL frontend](#webgl) runs without a native build. The portable Makefiles use
+plain macro assignments and explicit rules shared by traditional Unix/System V make,
+IRIX/Solaris make, and Microsoft NMAKE. GNU make is not required. Run the following
+commands from the repository root or `src`, with the appropriate platform's compiler
+and libraries installed:
 
 | Target | Command | Output |
 | --- | --- | --- |
@@ -199,8 +208,9 @@ describe the cache and memory policy.
 
 ### Earth map data
 
-Each application embeds its selected Earth maps and needs no external data files at
-runtime. Preserve binary bytes when transferring the project; preserve QuickDraw's
+Each native application embeds its selected Earth maps and needs no external data
+files at runtime. WebGL fetches the same binary inputs from the static site's `data/`
+directory. Preserve binary bytes when transferring the project; preserve QuickDraw's
 application resource fork when copying its executable.
 
 | File | Role |
@@ -210,6 +220,7 @@ application resource fork when copying its executable.
 | `e_data.c` / `m_data.c` | Disposable generated C source in the Unix / DOS build directory. |
 | `src/e_saved.c` | Supplied generated copy for manual builds; normal builds generate their own source. |
 | `src/e_cmap.h` | Earth color palette. |
+| `web/e_cmap.js` | Browser palette generated from `src/e_cmap.h` by `web/gen_cmap.py`. |
 | `src/earthres.h` | Shared chunk size and native resource IDs. |
 | `src/gdi.rc` / `src/qd.r` | Embed binary chunks as Windows `RCDATA` / Macintosh `EART` resources. |
 
@@ -248,6 +259,79 @@ The converter rejects input/output aliases, nonregular destinations, occupied
 keep any `.bak` until the output is verified or restored. Changing the chunk size also
 requires resplitting the binaries and updating generator/resource tables; a compile-time
 guard rejects stale generated readers.
+
+### WebGL
+
+#### Requirements
+
+A modern browser with WebGL 2 enabled is required. Unsupported browsers show an
+explanation; there is no WebGL 1 renderer. The frontend uses plain JavaScript ES
+modules, with no framework, npm dependencies, or server-side application.
+
+#### Run and host
+
+Serve the repository root with any static HTTP server. For example:
+
+```sh
+python3 -m http.server 8000
+```
+
+Open `http://localhost:8000/web/`. Opening `web/index.html` directly through a
+`file:` URL does not provide the HTTP fetching needed for modules and map data.
+Publish `web/` and `data/` as sibling directories to retain the relative data URLs.
+The browser page is independent of the existing README-based site landing page.
+
+For GitHub Pages, include those directories in the branch/folder or Actions artifact
+selected in **Settings → Pages**. Keep the existing README publishing setup and
+`CNAME`; the demo is an additional page at `https://testglobe.dev/web/`. If Pages
+publishes `main`, changes on `develop` must reach `main` before the demo becomes live.
+The checked-in browser files need no build step during deployment.
+
+The palette module is checked in. Regenerate it only when `src/e_cmap.h` changes:
+
+```sh
+python3 web/gen_cmap.py
+python3 web/gen_cmap.py --check
+```
+
+The binary maps remain canonical; the browser does not maintain another map-data
+source. `web/package.json` supplies ES-module scope for Node-based checks and does
+not add a runtime package-install step. Native Makefile targets and historical
+toolchains do not require any browser tooling.
+
+#### Rendering and controls
+
+The default is key 5, with texturing off. Keys `1`–`5` select the same 32- through
+512-wide maps as the native drivers. Keyboard controls, on-screen buttons, and
+mouse/touch dragging operate the globe; **Reset view** restores the initial view and
+pauses automatic rotation.
+`Esc` pauses rotation and releases dragging without closing the browser.
+
+WebGL retains vertex/index buffers and draws latitude strips with native transforms,
+depth testing, and back-face culling. Flat shading quantizes UV coordinates to Earth
+patches, then looks up each patch's palette index and RGB color. Texture mapping
+normally uses a separate 512 × 256 RGB image and GPU-generated mipmaps, independently
+of the selected globe resolution. There is no display-list toggle.
+
+Missing map data or allocation shortages at startup can select smaller resolutions.
+A failed resolution change preserves an existing globe; **Retry** requests the chosen
+level again. Texture data or allocation failures try smaller images before falling
+back to flat colors with `texture fail`; the OSD reports reduced texture sizes. Toggle
+texture off and on to retry. Unrelated graphics errors are not treated as evidence of
+insufficient memory.
+Context loss suspends drawing while retaining the requested settings, then
+rebuilds resources when the browser restores the context. Errors and recovery
+messages remain visible outside the optional overlay.
+
+The canvas follows its available size, with a capped rendering resolution for large
+or high-density displays. FPS follows `requestAnimationFrame` and browser refresh
+scheduling; it is not directly comparable to native GPU benchmark results.
+
+#### Validation
+
+See the [WebGL checks](tests/README.md#webgl) for palette/data checks and browser
+tests. Browser rendering depends on its graphics implementation and available
+device resources; desktop and mobile environments can differ.
 
 ### OpenGL
 
@@ -702,20 +786,22 @@ Run the baseline checks from the repository root on a supported host:
 python3 tests/run.py
 ```
 
-The [host regression guide](tests/README.md) lists prerequisites, optional driver
+The [host regression guide](tests/README.md) lists prerequisites, optional native driver
 checks, coverage, and result interpretation. These tests compile production code with
 host call recorders and sanitizers. They check data, geometry, API arguments, input,
 and resource handling, but do not establish historical binary ABI compatibility or
 physical graphics behavior. Native validation requires each platform's compiler,
 SDK/runtime, and hardware or suitable emulator; specific limits appear in its driver
 section. Native application builds do not require the Python test runner.
+The [WebGL checks](tests/README.md#webgl) run separately with Node.js and a browser;
+those tools are not native build dependencies.
 
 ## Development notes
 
 ### Configuration and file responsibilities
 
-Makefiles choose the memory model and driver; driver headers choose primitives and
-capabilities. Keep those responsibilities separate:
+Native Makefiles choose the memory model and driver; driver headers choose primitives
+and capabilities. Keep those responsibilities separate:
 
 | Driver | Build defines | Primitive | Additional geometry capabilities |
 | --- | --- | --- | --- |
@@ -726,13 +812,13 @@ capabilities. Keep those responsibilities separate:
 | GDI | `SEG86`, `DRV_GDI` | `QUAD` | `DRV_QUAD_BATCH` |
 | QuickDraw | `SEG68`, `DRV_QD` | `QUAD` | `DRV_QUAD_BATCH` |
 
-All application targets also define `DRV`; Microsoft C builds use `-AH`. The GDI
+All native application targets also define `DRV`; Microsoft C builds use `-AH`. The GDI
 header supplies `GDI` for Windows-specific integration. Primitive/callback-capability
 defines belong in headers, not compiler flags. `TRI` remains a tested reference path.
 `DRV_TRI_COLOR`, `DRV_TRI_RGB`, and `DRV_TRI_UV` expose only implemented callbacks.
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` describes the
-window's runtime mode. All drivers except XGL define `DRV_COLORMAP`, even when they
-can draw to RGB windows.
+window's runtime mode. All native drivers except XGL define `DRV_COLORMAP`, even when
+they can draw to RGB windows.
 
 | Location | Responsibility |
 | --- | --- |
@@ -741,6 +827,7 @@ can draw to RGB windows.
 | `src/drv.c` | Shared allocation/clock services, input, rotation, FPS/OSD, geometry-packet helpers, and Earth-resource traversal. |
 | Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
+| `web/` | Browser frontend, WebGL rendering, and generated palette module; reads canonical `data/` maps. |
 
 Shared geometry helpers include `drv_validate_quadbatch()`,
 `drv_submit_quad_as_batch()`, `drv_expand_tristrip_uv()`, and
@@ -827,7 +914,6 @@ boundaries; texture expansion and globe color sampling share those readers.
 - Shadows.
 - City lights.
 - A one-button benchmark.
-- A WebGL driver, requiring a different language.
 - An IBM PGC or compatible driver; performance may be limiting.
 - Other possible backends: IBM Adapter Interface, VBE/AF, and the Amiga chipset.
 
@@ -836,6 +922,7 @@ boundaries; texture expansion and globe color sampling share those readers.
 ### v0.2 (in development)
 
 - Added Matrox LibShell, Windows GDI, QuickDraw, Sun XGL, and IRIS GL backends.
+- Added a static WebGL 2 browser frontend using the canonical Earth maps and palette.
 - Added native macOS and Solaris OpenGL build targets.
 - Embedded canonical binary Earth maps through bounded C arrays or native resources,
   with disposable build sources and a separate supplied fallback.
