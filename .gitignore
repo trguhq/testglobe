@@ -51,3 +51,9 @@
 /src/testglobe-amiga
 /src/testglobe-amiga.info
 /src/am_link.hunk
+
+# PiStorm3D OpenGL cross-build outputs.
+/testglobe-amiga-opengl
+/src/testglobe-amiga-opengl
+/testglobe-amiga-opengl.info
+/src/testglobe-amiga-opengl.info

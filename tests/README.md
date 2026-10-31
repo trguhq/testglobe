@@ -29,6 +29,7 @@ Additional options may be combined:
 | Option | Additional checks | Extra requirements |
 | --- | --- | --- |
 | [`--ogl-contract`](#opengl) | OpenGL/GLUT calls and software texture pixels | None |
+| [`--amiga-ogl-contract`](#amiga-opengl) | MiniGL submissions and Amiga window/context lifecycle | None |
 | [`--igl-contract`](#iris-gl) | IRIS GL calls and software texture pixels | None |
 | [`--xgl-contract`](#sun-xgl) | XGL calls with real X11 windows and events | X11 development files, Xvfb, and `xvfb-run` |
 | [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
@@ -40,7 +41,7 @@ With all prerequisites installed, run every native group with:
 
 ```sh
 python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
-  --gdi-contract --qd-contract --ami-contract --sdk /path/to/sdk
+  --gdi-contract --qd-contract --ami-contract --amiga-ogl-contract --sdk /path/to/sdk
 ```
 
 Exit status zero means all requested checks passed. `PASS` lines identify completed
@@ -240,6 +241,39 @@ Actual OpenGL rendering and availability of color-index visuals require GUI chec
 with the installed GL implementation. Apple SDK compilation and Cocoa/GLUT event-loop
 behavior require macOS; the host recorder checks callback ordering without implementing
 that event loop.
+
+## Amiga OpenGL
+
+### Command
+
+```sh
+python3 tests/run.py --amiga-ogl-contract
+```
+
+The host recorders need neither VBCC nor the MiniGL SDK. Native cross-compilation
+uses the [Amiga OpenGL build instructions](../README.md#amiga-opengl).
+
+### Coverage
+
+- **MiniGL geometry:** the recorder models one flat color per native submission.
+  Tests compare facet colors, winding, and UVs across all five globe levels, the
+  longest latitude strips, odd-start color runs, and pole triangles. Submissions
+  must remain within the configured native vertex-buffer limit.
+- **Material and caching:** texture creation and failure status, context recreation
+  and reupload, textured display lists, and flat-colored list bypass. Native OSD
+  text must follow presentation so it remains visible.
+- **Amiga integration:** runtime library/dispatch validation, window creation,
+  keyboard and mouse events, resize/recovery, and context/bitmap/window/library
+  ownership. Presentation bounds follow the allocated RTG bitmap even if the
+  window dimensions change before resize handling.
+
+### Native validation
+
+The recorder validates application logic and API arguments, including selected
+PiStorm3D limitations; it does not implement MiniGL or a VideoCore GPU. Compile and
+link with the matched V29/ABI 5 SDK using VBCC separately. Actual PiStorm3D execution
+must verify shared-library calling conventions, rendering, RTG presentation,
+window resize, and GPU resource recovery.
 
 ## IRIS GL
 

@@ -2,7 +2,7 @@
 """Embed demand-loaded Earth resources in an Amiga executable HUNK_DEBUG.
 
 Usage: python3 src/ami_pack.py INPUT DATA_DIRECTORY OUTPUT
-       python3 src/ami_pack.py --icon OUTPUT.info
+       python3 src/ami_pack.py --icon OUTPUT.info [--stack BYTES]
 The OS loader skips this debug record; drv_ami reads its own executable to
 load only the selected map. No external runtime data files are required.
 """
@@ -178,20 +178,22 @@ def packed_executable(executable, directory):
     return executable[:-4] + record + executable[-4:]
 
 
-def workbench_icon():
+def workbench_icon(stack=32768):
     """Original two-plane globe icon in the classic V1 DiskObject format.
 
     Pointer fields are presence flags on disk, not host pointer values. The
     78-byte DiskObject and 20-byte Image use the native 68K word alignment.
-    Workbench uses the requested 32 KiB stack even on OS 1.3, whose VBCC
+    Workbench uses the requested stack even on OS 1.3, whose VBCC
     startup cannot automatically enlarge a Shell's stack.
     """
+    if stack < 4096 or stack > 0x7fffffff or stack % 4:
+        raise ValueError("icon stack must be a multiple of four between 4096 and 2147483647 bytes")
     width, height, depth = 48, 24, 2
     gadget = struct.pack(">I4h3H5IHI", 0, 0, 0, width, height, 4, 0, 1,
                          1, 0, 0, 0, 0, 0, 0)
     disk = (struct.pack(">HH", 0xe310, 1) + gadget +
             struct.pack(">Bx7I", 3, 0, 0, 0x80000000, 0x80000000,
-                        0, 0, 32768))
+                        0, 0, stack))
     image = struct.pack(">5hIBBI", 0, 0, width, height, depth, 1, 3, 0, 0)
     pixels = []
     for y in range(height):
@@ -239,15 +241,18 @@ def write_output(path, contents, executable=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--icon", type=Path, help="write the optional Workbench Tool icon")
+    parser.add_argument("--stack", type=int, help="Workbench icon stack in bytes (default: 32768)")
     parser.add_argument("input", type=Path, nargs="?")
     parser.add_argument("data", type=Path, nargs="?")
     parser.add_argument("output", type=Path, nargs="?")
     args = parser.parse_args()
+    if args.stack is not None and args.icon is None:
+        parser.error("--stack requires --icon")
     try:
         if args.icon is not None:
             if any(value is not None for value in (args.input, args.data, args.output)):
                 parser.error("--icon does not accept executable packing arguments")
-            write_output(args.icon, workbench_icon())
+            write_output(args.icon, workbench_icon(32768 if args.stack is None else args.stack))
             return 0
         if any(value is None for value in (args.input, args.data, args.output)):
             parser.error("packing requires INPUT DATA_DIRECTORY OUTPUT")

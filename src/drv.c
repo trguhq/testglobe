@@ -40,7 +40,7 @@
 #ifdef DRV_MTX
 #include <time.h>
 #include <malloc.h>
-#elif !defined(DRV_AMI) /* POSIX flat-memory drivers */
+#elif !defined(DRV_AMI) && !defined(OGL_AMIGA) /* POSIX flat-memory drivers */
 #include <sys/time.h>
 #endif
 #endif
@@ -439,6 +439,8 @@ double drv_time_now(void)
 {
 #ifdef DRV_AMI
     return ami_time_now();
+#elif defined(OGL_AMIGA)
+    return ogl_ami_time_now();
 #elif defined(GDI) || defined(DRV_QD) || defined(DRV_MTX)
     static unsigned long previous;
     static int initialized;

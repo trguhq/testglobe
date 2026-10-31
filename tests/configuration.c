@@ -61,7 +61,7 @@
 #error Bounded drivers must retain their validated radius limit
 #endif
 #endif
-#if defined(TEST_DRIVER_GDI) || defined(TEST_DRIVER_QD) || defined(TEST_DRIVER_AMI)
+#if defined(TEST_DRIVER_GDI) || defined(TEST_DRIVER_QD) || defined(TEST_DRIVER_AMI) || defined(OGL_AMIGA)
 #ifndef DRV_NO_CONSOLE
 #error Native GUI drivers must suppress console diagnostics
 #endif

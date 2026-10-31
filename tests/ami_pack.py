@@ -114,6 +114,18 @@ def main():
                                 capture_output=True, timeout=10)
         assert result.returncode != 0 and icon.read_bytes() == contents and protected_icon.is_symlink()
 
+        gl_icon = work / "testglobe-amiga-opengl.info"
+        result = subprocess.run([sys.executable, str(PACKER), "--icon", str(gl_icon),
+                                 "--stack", "131072"], capture_output=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        gl_contents = gl_icon.read_bytes()
+        assert struct.unpack_from(">I", gl_contents, 74)[0] == 131072
+        assert gl_contents[:74] == contents[:74] and gl_contents[78:] == contents[78:]
+        for stack in ("0", "4097", "2147483648"):
+            result = subprocess.run([sys.executable, str(PACKER), "--icon", str(gl_icon),
+                                     "--stack", stack], capture_output=True, timeout=10)
+            assert result.returncode != 0 and gl_icon.read_bytes() == gl_contents
+
         call(source, maps, source, False)
         assert source.read_bytes() == executable
         alias = work / "alias"

@@ -130,6 +130,7 @@ struct IntuiMessage {
 #define SMART_REFRESH 0UL
 #define SIMPLE_REFRESH 0x0040UL
 #define REPORTMOUSE 0x0200UL
+#define RMBTRAP 0x00010000UL
 #define NOCAREREFRESH 0x20000UL
 #define CLOSEWINDOW 0x0200UL
 #define NEWSIZE 0x0002UL
@@ -165,9 +166,12 @@ struct IntuiMessage {
 #define SIGBREAKF_CTRL_C (1UL << 12)
 #define RASSIZE(w,h) (((((ULONG)(w) + 15UL) >> 4) << 1) * (ULONG)(h))
 #define SetAfPt(rp,pattern,size) ((rp)->AreaPtrn = (pattern), (rp)->AreaPtSz = (size))
+#define BMF_DISPLAYABLE 2UL
 #define BMF_CLEAR 1UL
 #define BMF_STANDARD 8UL
 #define BMF_MINPLANES 16UL
+#define BMA_HEIGHT 0UL
+#define BMA_WIDTH 8UL
 #define BMA_DEPTH 4UL
 #define BMA_FLAGS 12UL
 
@@ -208,6 +212,8 @@ LONG AreaMove(struct RastPort *, LONG, LONG);
 LONG AreaDraw(struct RastPort *, LONG, LONG);
 LONG AreaEnd(struct RastPort *);
 void WaitBlit(void);
+void LockLayerRom(struct Layer *);
+void UnlockLayerRom(struct Layer *);
 void BltBitMapRastPort(const struct BitMap *, LONG, LONG, struct RastPort *, LONG, LONG, LONG, LONG, ULONG);
 ULONG GetRGB4(struct ColorMap *, LONG);
 void GetRGB32(struct ColorMap *, ULONG, ULONG, ULONG *);

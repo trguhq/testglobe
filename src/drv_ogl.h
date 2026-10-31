@@ -29,7 +29,14 @@
 #define DRV
 #endif
 
+#ifdef OGL_AMIGA
+#define DRV_NAME "OpenGL (PiStorm3D MiniGL)"
+#define DRV_NO_CONSOLE
+extern double ogl_ami_time_now(void);
+extern void ogl_ami_error(char *message);
+#else
 #define DRV_NAME "OpenGL"
+#endif
 #define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, F = FPS, Esc = exit, T = texture mapping, D = display list"
 #define GL_SILENCE_DEPRECATION
 

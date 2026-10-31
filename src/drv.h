@@ -21,6 +21,10 @@
 #ifndef drv_h
 #define drv_h
 
+#if defined(OGL_AMIGA) && !defined(DRV_OGL)
+#error OGL_AMIGA requires the DRV_OGL driver
+#endif
+
 #if (defined(DRV_OGL) + defined(DRV_IGL) + defined(DRV_MTX) + defined(DRV_XGL) + defined(DRV_GDI) + defined(DRV_QD) + defined(DRV_AMI)) > 1
 #error Select only one graphics driver
 #endif

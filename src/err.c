@@ -31,6 +31,8 @@ void error(char *message)
     qd_error(message);
 #elif defined(DRV_AMI)
     ami_error(message);
+#elif defined(OGL_AMIGA)
+    ogl_ami_error(message);
 #else
     fprintf(stderr, "ERROR - %s\n", message);
     exit(1);

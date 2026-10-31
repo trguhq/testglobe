@@ -43,6 +43,28 @@ APPLE_DEFINES = $(OGL_DEFINES)
 APPLE_LDFLAGS = -framework GLUT -framework OpenGL -framework Cocoa
 APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o a_data.o
 
+# PiStorm3D through the shared MiniGL V29 / dispatch ABI 5 interface.
+# MINIGL_ROOT is the SDK checkout containing libraryroot/include; the root
+# include directory in older releases has an incompatible dispatch ABI.
+# The application calls the shared library directly, without a GCC import archive.
+AOGL_CC = vc
+AOGL_CONFIG = +aos68k
+AOGL_CFLAGS = -c99 -O1 -cpu=68020 -fpu=68881
+AOGL_CPPFLAGS =
+MINIGL_ROOT = .
+AOGL_INCLUDES = -I$(MINIGL_ROOT)/libraryroot/include
+AOGL_DEFINES = $(OGL_DEFINES) -DOGL_AMIGA -DNO_SINF -DNO_GENMIPMAP
+AOGL_LDFLAGS =
+AOGL_LIBS = -lm881 -lamiga
+AOGL_PYTHON = python3
+AOGL_OBJECTS = ao_drv.o ao_ogl.o ao_ami.o ao_err.o ao_globe.o ao_main.o ao_tex.o ao_soft.o ao_data.o
+AOGL_HEADERS = $(OGL_HEADERS) $(SRC)/ogl_ami.h
+AOGL_SDK_HEADERS = $(MINIGL_ROOT)/libraryroot/include/proto/minigl.h \
+    $(MINIGL_ROOT)/libraryroot/include/libraries/minigl.h \
+    $(MINIGL_ROOT)/libraryroot/include/libraries/minigl_dispatch.h \
+    $(MINIGL_ROOT)/libraryroot/include/mgl/gl.h \
+    $(MINIGL_ROOT)/libraryroot/include/mgl/context.h
+
 # Sun XGL 3.x / 32-bit SPARC on Solaris 2.6. Select native SDK locations
 # on the make command line if they differ from the Sun installation defaults.
 # x_ objects keep XGL's RGB strip packets separate from OpenGL driver objects.
@@ -282,6 +304,42 @@ a_tex.o: $(SRC)/texture.c $(OGL_HEADERS)
 a_soft.o: $(SRC)/texsoft.c $(OGL_HEADERS)
 	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/texsoft.c -o a_soft.o
 
+# Amiga uses MiniGL for rendering and Intuition for its window and input.
+amiga-opengl: testglobe-amiga-opengl testglobe-amiga-opengl.info
+
+testglobe-amiga-opengl: $(AOGL_OBJECTS) FORCE
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_LDFLAGS) $(AOGL_OBJECTS) $(AOGL_LIBS) -o testglobe-amiga-opengl
+
+testglobe-amiga-opengl.info: $(SRC)/ami_pack.py
+	$(AOGL_PYTHON) $(SRC)/ami_pack.py --icon testglobe-amiga-opengl.info --stack 131072
+
+ao_data.o: e_data.c $(AOGL_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c e_data.c -o ao_data.o
+
+ao_drv.o: $(SRC)/drv.c $(AOGL_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/drv.c -o ao_drv.o
+
+ao_ogl.o: $(SRC)/drv_ogl.c $(AOGL_HEADERS) $(AOGL_SDK_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/drv_ogl.c -o ao_ogl.o
+
+ao_ami.o: $(SRC)/ogl_ami.c $(AOGL_HEADERS) $(AOGL_SDK_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/ogl_ami.c -o ao_ami.o
+
+ao_err.o: $(SRC)/err.c $(AOGL_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/err.c -o ao_err.o
+
+ao_globe.o: $(SRC)/globe.c $(AOGL_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/globe.c -o ao_globe.o
+
+ao_main.o: $(SRC)/main.c $(AOGL_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/main.c -o ao_main.o
+
+ao_tex.o: $(SRC)/texture.c $(AOGL_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/texture.c -o ao_tex.o
+
+ao_soft.o: $(SRC)/texsoft.c $(AOGL_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/texsoft.c -o ao_soft.o
+
 # Keep the traditional empty-rule technique so command-line linker options
 # take effect without make-specific phony-target syntax. Unix outputs differ.
 FORCE:
@@ -502,7 +560,7 @@ clean-quickdraw:
 # Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw clean-amiga clean-earth-data
+clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-amiga-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw clean-amiga clean-earth-data
 	-$(RM) testglobe
 
 clean-opengl:
@@ -537,6 +595,19 @@ clean-apple-opengl:
 	-$(RM) a_tex.o
 	-$(RM) a_soft.o
 	-$(RM) testglobe-opengl
+
+clean-amiga-opengl:
+	-$(RM) ao_data.o
+	-$(RM) ao_drv.o
+	-$(RM) ao_ogl.o
+	-$(RM) ao_ami.o
+	-$(RM) ao_err.o
+	-$(RM) ao_globe.o
+	-$(RM) ao_main.o
+	-$(RM) ao_tex.o
+	-$(RM) ao_soft.o
+	-$(RM) testglobe-amiga-opengl
+	-$(RM) testglobe-amiga-opengl.info
 
 clean-xgl:
 	-$(RM) x_data.o

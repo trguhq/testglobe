@@ -80,6 +80,7 @@ def check_configurations(cc, common):
         ["-DDRV_QD", "-DTEST_DRIVER_QD"],
         ["-DDRV_IGL", "-DTEST_DRIVER_IGL"],
         ["-DDRV_AMI", "-DTEST_DRIVER_AMI"],
+        ["-DDRV_OGL", "-DOGL_AMIGA", "-DTEST_DRIVER_OGL"],
         ["-DDRV_OGL", "-D__APPLE__", "-DTEST_DRIVER_OGL"],
         ["-DDRV_OGL", "-D__BORLANDC__", "-DTEST_DRIVER_OGL"],
     )
@@ -94,6 +95,7 @@ def check_configurations(cc, common):
         (["-DDRV_GDI", "-DFLAT"], "Windows GDI requires the SEG86 memory model"),
         (["-DDRV_QD", "-DFLAT"], "Classic QuickDraw requires the SEG68 memory model"),
         (["-DDRV_AMI", "-DSEG68"], "Amiga requires the FLAT memory model"),
+        (["-DDRV_AMI", "-DOGL_AMIGA"], "OGL_AMIGA requires the DRV_OGL driver"),
         (["-DDRV_OGL", "-DTRI"], "Select exactly one driver primitive"),
     )
     for options, expected in invalid:
@@ -283,6 +285,8 @@ def main():
                         help="Record Classic Macintosh calls with host declarations; not MPW ABI or QuickDraw rendering validation")
     parser.add_argument("--ami-contract", action="store_true",
                         help="Record AmigaOS calls with host declarations; not VBCC ABI or custom-chip rendering validation")
+    parser.add_argument("--amiga-ogl-contract", action="store_true",
+                        help="Record PiStorm3D MiniGL rendering and Amiga window/context calls; not GPU or native ABI validation")
     parser.add_argument("--igl-contract", action="store_true",
                         help="Record IRIS GL calls and check software fallback pixels; not SGI SDK, native rendering or IRIX ABI validation")
     parser.add_argument("--ogl-contract", action="store_true",
@@ -413,6 +417,30 @@ def main():
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_debug")])
             run([str(output / "gdi_debug"), "fpu"])
+        if args.amiga_ogl_contract:
+            amiga_ogl = ["-DFLAT", "-DDRV_OGL", "-DOGL_AMIGA", "-DNO_GENMIPMAP",
+                         "-I" + str(ROOT / "tests/mgl_shim"),
+                         "-I" + str(ROOT / "tests/ami_shim")]
+            check_production_units(cc, common, amiga_ogl, output, "Amiga_OpenGL",
+                ("drv.c", "drv_ogl.c", "ogl_ami.c", "err.c", "globe.c", "main.c",
+                 "texture.c", "texsoft.c"))
+            run(cc + common + amiga_ogl + [str(ROOT / "tests/amiga_ogl.c"),
+                str(ROOT / "src/drv.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/texture.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "src/e_saved.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / "amiga_ogl")])
+            run([str(output / "amiga_ogl")],
+                expected_stderr="OpenGL error: Out of memory!\nOpenGL texture: Cannot build OpenGL texture mipmaps\n")
+            run(cc + common + amiga_ogl + [str(ROOT / "tests/ogl_ami.c"),
+                "-lm", "-o", str(output / "ogl_ami")])
+            for mode in ("normal", "rgb24-in32", "native", "windowfail", "lockfail", "contextfail",
+                         "bitmapfail", "wrong16", "wrong24", "unknownbitmap", "wrongformat",
+                         "rounded", "shortbitmap", "hugebitmap"):
+                run([str(output / "ogl_ami"), mode])
+            for mode in ("missing", "missingcgx", "abi", "futureabi", "shorttable", "nullfunction",
+                         "stub", "wrongbackend", "stack"):
+                run([str(output / "ogl_ami"), mode], expected_returncode=1,
+                    required_output="PASS MiniGL startup rejection:")
         if args.ami_contract:
             ami = ["-DFLAT", "-DDRV_AMI", "-DAMI_RTG=1", "-I" + str(ROOT / "tests/ami_shim")]
             check_production_units(cc, common, ami, output, "Amiga",

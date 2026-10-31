@@ -45,6 +45,7 @@ The browser frontend uses WebGL 2 with the same maps and palette.
 | --- | --- | --- | --- |
 | [WebGL](#webgl) | Modern browsers with WebGL 2 | Key 5: 512 × 256 | Yes |
 | [OpenGL](#opengl) | Linux, Unix and modern macOS | Key 5: 512 × 256 | Yes |
+| [Amiga OpenGL](#amiga-opengl) | AmigaOS 3.x, PiStorm3D / MiniGL | Key 5: 512 × 256 | Yes |
 | [IRIS GL](#iris-gl) | IRIX 4.0, 32-bit MIPS | Key 3: 128 × 64 | Yes |
 | [Sun XGL](#sun-xgl) | Solaris 2.6, 32-bit SPARC | Key 3: 128 × 64 | Yes |
 | [Matrox LibShell](#matrox-libshell) | MS-DOS, PG-641-compatible hardware | Key 1: 32 × 16 | No |
@@ -72,7 +73,7 @@ buffers replace display lists; the `d` control applies only to native OpenGL.
 
 Keys `1`–`5` select maps 32, 64, 128, 256, and 512 pixels wide (`EARTH_32` through
 `EARTH_512`); map height is half the width. The OSD counts quad patches for Matrox,
-GDI, QuickDraw, and Amiga, and triangles for the other drivers. Pole patches count as
+GDI, QuickDraw, and the native Amiga driver, and triangles for the other drivers. Pole patches count as
 quads even when coincident vertices collapse to a triangle for drawing.
 
 Console builds print the globe resolution, vertex count, and triangle or quad count
@@ -165,6 +166,7 @@ and libraries installed:
 | [OpenGL](#opengl) (default) | `make` or `make opengl` | `testglobe-opengl` |
 | [Solaris OpenGL](#solaris-solaris-opengl) | `make solaris-opengl` | `testglobe-opengl` |
 | [Apple OpenGL](#modern-macos-apple-opengl) | `make apple-opengl` | `testglobe-opengl` |
+| [Amiga OpenGL](#amiga-opengl) (VBCC cross-compiler) | `make amiga-opengl` | `testglobe-amiga-opengl` |
 | [IRIS GL](#iris-gl) | `make irisgl` | `testglobe-irisgl` |
 | [Sun XGL](#sun-xgl) | `make xgl` | `testglobe-xgl` |
 | [Matrox LibShell](#matrox-libshell) | `nmake matrox` | `testglob.exe` |
@@ -184,8 +186,9 @@ out-of-tree build, create a build directory, enter it, then run:
 make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src
 ```
 
-Append the desired target, such as `apple-opengl`. OpenGL's three targets share
-`testglobe-opengl`; Matrox and GDI share `testglob.exe`. Selecting a target relinks its
+Append the desired target, such as `apple-opengl`. The three desktop OpenGL targets
+share `testglobe-opengl`; Amiga OpenGL produces `testglobe-amiga-opengl`. Matrox and
+GDI share `testglob.exe`. Selecting a target relinks its
 executable. Driver objects have separate names, so the Unix backends can coexist.
 
 Traditional make does not track compiler-option changes. Clean the affected objects
@@ -198,8 +201,8 @@ before changing the compiler or build flags:
 | `make clean-earth-data` | Generated `e_data.c`/`m_data.c`, converter binaries, and data-generation temporary files. |
 
 Individual targets are `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`,
-`clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, `clean-quickdraw`, and
-`clean-amiga`.
+`clean-amiga-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`,
+`clean-quickdraw`, and `clean-amiga`.
 Under DOS use `nmake` with `RM=del`, for example `nmake clean RM=del`. Cleanup preserves
 the supplied `src/e_saved.c`, canonical binary maps, and recovery `.bak` files.
 
@@ -349,8 +352,9 @@ device resources; desktop and mobile environments can differ.
 
 #### Requirements
 
-OpenGL 1.1, GLU, and GLUT are required, with a legacy or compatibility context. On
-Debian or Ubuntu, install the development libraries with:
+The desktop targets require OpenGL 1.1, GLU, and GLUT, with a legacy or compatibility
+context. [Amiga OpenGL](#amiga-opengl) uses MiniGL and native Amiga windowing instead.
+On Debian or Ubuntu, install the development libraries with:
 
 ```sh
 sudo apt-get install freeglut3-dev
@@ -414,16 +418,87 @@ architecture and SDK defaults.
 The default `APPLE_SYS_FLAGS=-DNO_GENMIPMAP -DGLUT_SILENCE_DEPRECATION` selects GLU
 mipmaps and suppresses GLUT deprecation warnings. Apple builds use `<GLUT/glut.h>`.
 
+<a id="amiga-opengl"></a>
+
+##### Amiga PiStorm3D (`amiga-opengl`)
+
+This target reuses `drv_ogl.c` with the Amiga adapter `ogl_ami.c`. It requires
+AmigaOS 3.x, a PiStorm using Raspberry Pi 4 / CM4 / 4B hardware, RTG graphics with
+`cybergraphics.library` V40 or later (including Picasso96 compatibility), and
+PiStorm3D's shared `minigl.library` V29 with dispatch ABI 5. The build selects a
+68020 instruction set with 68881 floating point, supplied by the PiStorm environment.
+The separate [`amiga` target](#amiga) continues to provide chipset/RTG software rendering.
+
+Use the [MiniGL SDK repository](https://github.com/SteffenHaeuser/MiniGL_Library_68k/)
+`MiniGL_Classic` branch, whose `libraryroot/include` directory contains the current
+shared API headers. The SDK was checked at commit
+[`d950a3a1`](https://github.com/SteffenHaeuser/MiniGL_Library_68k/commit/d950a3a1ed640785a735f7d594298eaf3233b794).
+The root `include` directory on older branches contains ABI 3 headers with different
+GL token values; it is not interchangeable. The application checks the library's
+version, dispatch ABI, and table size before using it. Install the matching
+**PiStorm3D** runtime implementation in `LIBS:minigl.library`; the SDK branch name
+does not select the graphics hardware at runtime.
+
+Cross-compilation needs VBCC's `aos68k` target, vasm/vlink, Amiga NDK headers, a host
+C compiler for the Earth-data converter, and Python 3.8 or later for the icon:
+
+```sh
+git clone --branch MiniGL_Classic --single-branch \
+  https://github.com/SteffenHaeuser/MiniGL_Library_68k.git minigl-sdk
+export VBCC=/path/to/vbcc
+export PATH="$VBCC/bin:$PATH"
+make amiga-opengl MINIGL_ROOT=/path/to/minigl-sdk
+```
+
+The output is `testglobe-amiga-opengl` and its Workbench icon,
+`testglobe-amiga-opengl.info`. Copy both for icon launch. The icon requests a
+128 KiB stack. CLI launches must set the stack explicitly:
+
+```text
+Stack 131072
+testglobe-amiga-opengl
+```
+
+`AOGL_CC`, `AOGL_CONFIG`, `AOGL_CFLAGS`, `AOGL_CPPFLAGS`, `AOGL_INCLUDES`,
+`AOGL_LDFLAGS`, `AOGL_LIBS`, and `AOGL_PYTHON` configure this target. Defaults are
+`vc +aos68k`, `-c99 -O1 -cpu=68020 -fpu=68881`, and `-lm881 -lamiga`.
+C99 mode accommodates the external SDK headers; the shared application sources
+retain their C89 paths. Add NDK include paths through `AOGL_CPPFLAGS` if the VBCC
+configuration does not supply them. `EARTH_CC` selects the host data-converter
+compiler. Earth maps are linked from generated `e_data.c`, as in desktop OpenGL;
+no runtime map files or Amiga Hunk-resource packing are needed.
+
+The adapter opens the shared library directly through its dispatch interface, so
+no GCC import archive, GLUT, X11, or separate GLU library is linked. MiniGL performs
+transforms, clipping, depth/culling, texture mapping, mipmap construction, and display
+lists. Intuition supplies the resizable Workbench window and mouse/keyboard input;
+MiniGL renders through `mglCreateContextFromBitMap` into an application-owned BGRA32
+RTG bitmap. Presentation waits for the GPU and copies within the allocated bitmap
+bounds before native Amiga text draws the OSD. Resizing recreates the bitmap and
+MiniGL context, then restores rendering state and the requested texture.
+
+All five resolutions remain available, with key 5 selected initially, textures off,
+and display lists on. The target uses RGB rendering. Flat strips are split into
+bounded runs of one color because PiStorm3D's flat-shading color applies to an entire
+submission; pole triangles are submitted separately. Textured strips are bounded to
+the native vertex-buffer limit. These subdivisions preserve facet colors, winding,
+and texture seams without changing the shared `TRISTRIP` scene traversal.
+
+PiStorm3D V29 display-list replay does not preserve these flat-color runs. The driver
+therefore bypasses lists for flat-colored frames and reports `dlist fail` while the
+list toggle remains enabled. Textured frames can use display lists because their
+`GL_REPLACE` material does not depend on the replayed vertex colors.
+
 #### Rendering and color
 
-Each interior latitude band uses a triangle strip; both polar caps share one batch of
-nondegenerate triangles. Flat colors, winding, and texture seams match the independent
+Desktop OpenGL sends each interior latitude band as a triangle strip; both polar
+caps share one batch of nondegenerate triangles. Flat colors, winding, and texture seams match the independent
 triangle path. The default globe is key 5. Display lists cache native geometry and
 start enabled; disabling them deletes the cache, while enabling them rebuilds it on
 the next native frame. See [Controls and status](#controls-and-status).
 
-The driver probes RGBA, RGB, and color-index formats with single/double-buffer and
-depth-buffer alternatives. It prefers RGB(A) over color index, then greater total
+On desktop OpenGL, the driver probes RGBA, RGB, and color-index formats with
+single/double-buffer and depth-buffer alternatives. It prefers RGB(A) over color index, then greater total
 RGB-plus-alpha precision before buffering. Requests include 8/8/8/8, 8/8/8, 5/6/5,
 5/5/5, unconstrained RGB(A), and color index with at least eight bits. GLUT probes do
 not enumerate every native visual; older implementations may expose fewer choices.
@@ -451,7 +526,8 @@ Failed lists are not rebuilt every frame or on resolution changes; toggling `d` 
 `t` explicitly permits a retry.
 Diagnostics use `glGetError`, without modern debug extensions.
 
-All three targets default to GLU mipmaps. Omitting `NO_GENMIPMAP` permits an optional
+The desktop targets default to GLU mipmaps; Amiga OpenGL uses MiniGL's GLU-compatible
+mipmap builder. Omitting `NO_GENMIPMAP` permits an optional desktop
 path when FreeGLUT 2.0 or later headers are available: the running context must report
 OpenGL 3.0 or later, `glGenerateMipmap` must resolve at runtime, and the image must fit
 the texture limit. Otherwise the driver uses `gluBuild2DMipmaps`. No post-1.1 OpenGL
@@ -462,6 +538,10 @@ symbol is required at link time, and `GL_GLEXT_PROTOTYPES` is unnecessary.
 See the [OpenGL host checks](tests/README.md#opengl). Physical color-index behavior
 requires an implementation offering that visual. Native Apple SDK compilation and
 rendering require macOS; Solaris builds require its installed graphics libraries.
+See the [Amiga OpenGL host checks](tests/README.md#amiga-opengl) for its MiniGL
+submission and Amiga event tests. VBCC/SDK cross-builds check native compilation;
+PiStorm3D hardware is still needed to validate VideoCore rendering, library ABI
+behavior, and RTG presentation.
 
 ### IRIS GL
 
@@ -945,6 +1025,7 @@ and capabilities. Keep those responsibilities separate:
 | Driver | Build defines | Primitive | Additional geometry capabilities |
 | --- | --- | --- | --- |
 | OpenGL | `FLAT`, `DRV_OGL` | `TRISTRIP` | `DRV_TRI_CAPS`, color/RGB/UV triangle callbacks |
+| Amiga OpenGL | `FLAT`, `DRV_OGL`, `OGL_AMIGA` | `TRISTRIP` | Same callbacks with MiniGL submission limits |
 | IRIS GL | `FLAT`, `DRV_IGL` | `TRISTRIP` | Color/UV triangle callbacks |
 | Sun XGL | `FLAT`, `DRV_XGL` | `TRISTRIP` | RGB/UV strip callbacks |
 | Matrox | `SEG86`, `DRV_MTX` | `QUAD` | Color triangle callbacks |
@@ -965,7 +1046,7 @@ they can draw to RGB windows.
 | `src/globe.c` | Scene ownership, recoverable mesh construction, and plural traversals: `globe_draw_tris()`, `globe_draw_tristrips()`, `globe_draw_quads()`, `globe_draw_quadbatches()`, and OpenGL pole-cap traversal. |
 | `src/drv_*.c` | Singular native callbacks such as `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*`; group color/RGB/UV variants by primitive. |
 | `src/drv.c` | Shared allocation/clock services, input, rotation, FPS/OSD, geometry-packet helpers, and Earth-resource traversal. |
-| Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. |
+| Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. `src/ogl_ami.c`/`.h` provide the OpenGL driver's MiniGL/Amiga integration. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
 | `web/` | Browser frontend, WebGL rendering, and generated palette module; reads canonical `data/` maps. |
 
@@ -986,9 +1067,9 @@ reference stubs. `types.h` provides wide arithmetic aliases for segmented builds
 Root and `src` Makefiles intentionally duplicate rules with different directory
 defaults because historical NMAKE and Solaris make lack a common include syntax.
 Keep both files synchronized. OpenGL uses ordinary `.o` names; Solaris, Apple,
-IRIS GL, and XGL use `s_`, `a_`, `i_`, and `x_` prefixes. DOS uses `.obj`, GDI uses
-`g_*.obj`, QuickDraw uses `q_*.o`, and Amiga uses `am_*.o`. MPW has a separate Makefile
-grammar.
+IRIS GL, XGL, and Amiga OpenGL use `s_`, `a_`, `i_`, `x_`, and `ao_` prefixes.
+DOS uses `.obj`, GDI uses `g_*.obj`, QuickDraw uses `q_*.o`, and Amiga uses `am_*.o`.
+MPW has a separate Makefile grammar.
 
 ### Geometry submission
 
@@ -1005,9 +1086,10 @@ range for LibShell's fixed-point transforms. These limits are driver capabilitie
 than a restriction on every globe.
 
 Triangle strips follow complete interior latitude bands. At key 5, an interior strip
-has 1,026 vertices and 1,024 triangles. OpenGL sends 254 such strips plus one cap batch:
-263,676 submitted vertices for 261,120 triangles, compared with 783,360 vertices for
-independent triangles. IRIS GL and XGL use separate three-vertex cap meshes/strips.
+has 1,026 vertices and 1,024 triangles. Desktop OpenGL sends 254 such strips plus one
+cap batch: 263,676 submitted vertices for 261,120 triangles, compared with 783,360 vertices for
+independent triangles. Amiga OpenGL splits bands for MiniGL's color and buffer
+constraints. IRIS GL and XGL use separate three-vertex cap meshes/strips.
 Flat colors and UVs preserve the independent-triangle topology. Under allocation
 pressure, bounded packets may split a latitude band without changing its facets.
 UVs are generated from grid coordinates for submission instead of retaining a full
@@ -1080,7 +1162,7 @@ boundaries; texture expansion and globe color sampling share those readers.
 
 - Added Matrox LibShell, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga backends.
 - Added a static WebGL 2 browser frontend using the canonical Earth maps and palette.
-- Added native macOS and Solaris OpenGL build targets.
+- Added native macOS, Solaris, and PiStorm3D Amiga OpenGL build targets.
 - Embedded canonical binary Earth maps through bounded C arrays or native resources,
   with disposable build sources and a separate supplied fallback.
 - Switched OpenGL and IRIS GL to latitude strips and GDI/QuickDraw/Amiga to shared-vertex
