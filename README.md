@@ -37,7 +37,8 @@ Browser version: [live WebGL demo](https://testglobe.dev/web/).
 
 Earth maps store 8-bit palette indices. OpenGL and IRIS GL use those indices in either
 RGB(A) or color-index windows; Sun XGL expands them to RGB. Matrox LibShell, Windows
-GDI, and QuickDraw draw through the Earth palette.
+GDI, and QuickDraw draw through the Earth palette. Amiga maps those colors to the
+current Workbench screen's pens.
 The browser frontend uses WebGL 2 with the same maps and palette.
 
 | Driver | Platform | Default globe | Texture toggle |
@@ -49,6 +50,7 @@ The browser frontend uses WebGL 2 with the same maps and palette.
 | [Matrox LibShell](#matrox-libshell) | MS-DOS, PG-641-compatible hardware | Key 1: 32 × 16 | No |
 | [Windows GDI](#windows-gdi) | Windows 3.1, 16-bit | Key 1: 32 × 16 | No |
 | [QuickDraw](#quickdraw) | Classic Macintosh System 7, 68000 | Key 1: 32 × 16 | No |
+| [Amiga](#amiga) | AmigaOS Workbench, 68000 and later, OCS/ECS/AGA | Key 1: 32 × 16 | No |
 
 ## Controls and status
 
@@ -70,15 +72,17 @@ buffers replace display lists; the `d` control applies only to native OpenGL.
 
 Keys `1`–`5` select maps 32, 64, 128, 256, and 512 pixels wide (`EARTH_32` through
 `EARTH_512`); map height is half the width. The OSD counts quad patches for Matrox,
-GDI, and QuickDraw, and triangles for the other drivers. Pole patches count as quads
-even when coincident vertices collapse to a triangle for drawing.
+GDI, QuickDraw, and Amiga, and triangles for the other drivers. Pole patches count as
+quads even when coincident vertices collapse to a triangle for drawing.
 
 Console builds print the globe resolution, vertex count, and triangle or quad count
 after each successful mesh construction. Failed attempts and selecting the current
-resolution do not repeat these messages. GDI and QuickDraw use their native OSD.
+resolution do not repeat these messages. GDI, QuickDraw, and Amiga use their native
+OSD.
 
-Matrox, GDI, and QuickDraw also report polygons retained after software culling.
-The other drivers report totals because native culling supplies no visibility count.
+Matrox, GDI, QuickDraw, and Amiga also report polygons retained after software
+culling. The other drivers report totals because native culling supplies no visibility
+count.
 FPS starts enabled; turning it off leaves rotation timing active. FPS measures the
 interval between completed presentations, including event-loop waits. It is an
 interactive frame rate, not a synchronized GPU throughput benchmark; native swap
@@ -110,6 +114,9 @@ polygons, reduced colors, or manual rotation when those fallbacks are active.
 On displays of 640 × 480 or smaller, GDI and QuickDraw default to a 320 × 240 client
 area; larger displays use 640 × 480. Explicit size requests are preserved, with
 QuickDraw clamping its window to the selected screen.
+GDI, QuickDraw, and Amiga resize the projection to the drawable client area. Narrow
+windows clip the globe rather than stretching it. Amiga also accounts for the
+Workbench display mode's pixel proportions.
 
 ### Resource recovery
 
@@ -163,6 +170,7 @@ and libraries installed:
 | [Matrox LibShell](#matrox-libshell) | `nmake matrox` | `testglob.exe` |
 | [Windows GDI](#windows-gdi) | `nmake gdi` | `testglob.exe` |
 | [QuickDraw](#quickdraw) (MPW bridge) | `make quickdraw` | `TestglobeQD` |
+| [Amiga](#amiga) (VBCC cross-compiler) | `make amiga` | `testglobe-amiga` |
 
 Native MPW users build QuickDraw with `Makefile.mpw` as described in its section. The
 portable `quickdraw` target requires a configured bridge to the MPW tools.
@@ -190,7 +198,8 @@ before changing the compiler or build flags:
 | `make clean-earth-data` | Generated `e_data.c`/`m_data.c`, converter binaries, and data-generation temporary files. |
 
 Individual targets are `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`,
-`clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, and `clean-quickdraw`.
+`clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`, `clean-quickdraw`, and
+`clean-amiga`.
 Under DOS use `nmake` with `RM=del`, for example `nmake clean RM=del`. Cleanup preserves
 the supplied `src/e_saved.c`, canonical binary maps, and recovery `.bak` files.
 
@@ -223,6 +232,7 @@ application resource fork when copying its executable.
 | `web/e_cmap.js` | Browser palette generated from `src/e_cmap.h` by `web/gen_cmap.py`. |
 | `src/earthres.h` | Shared chunk size and native resource IDs. |
 | `src/gdi.rc` / `src/qd.r` | Embed binary chunks as Windows `RCDATA` / Macintosh `EART` resources. |
+| `src/ami_pack.py` / `src/ami_data.c` | Pack Amiga maps into the executable and read selected chunks on demand. |
 
 | Map width | Binary inputs | Total bytes |
 | --- | --- | --- |
@@ -234,11 +244,13 @@ application resource fork when copying its executable.
 
 OpenGL, IRIS GL, Sun XGL, and Matrox compile generated arrays of at most 16 KiB.
 Driver `EARTH_*` defines select the maps included in each executable; Matrox includes
-only the 32- and 64-wide maps. GDI and QuickDraw embed all maps as native resources.
+only the 32- and 64-wide maps. GDI and QuickDraw embed all maps as native resources;
+Amiga stores them in an executable `HUNK_DEBUG` record that the OS loader skips.
 The five maps total 170.5 KiB; Matrox's two maps total 2.5 KiB. Generated and saved
 source files are build copies, not additional runtime map allocations. Compiled-data
-paths borrow bounded read-only map spans. GDI and QuickDraw load selected chunks
-directly into the final owned index buffer; neither retains a second full source map.
+paths borrow bounded read-only map spans. GDI, QuickDraw, and Amiga load only selected
+map chunks into the final owned index buffer. They retain 512 bytes of map indices at
+their EARTH_32 default, plus separate palette, geometry, and display storage.
 
 Make regenerates build source when missing or when an input changes. `EARTH_DATA`
 (Unix) and `MTX_DATA` (DOS) select the input directory, defaulting to `data` beside
@@ -647,10 +659,10 @@ and memory DC normally provide the back buffer. If they cannot be allocated, the
 driver paints directly into the window's paint DC.
 
 Software transforms, perspective projection, clipping, and culling operate on whole
-quads. Shared vertices are transformed once per packet, then retained polygons are
-grouped by palette index for `PolyPolygon` calls of at most 64 polygons. Pole vertices
-collapse to triangles. Visibility relies on the convex globe rather than a depth
-buffer for intersecting geometry. Native Windows messages handle input, resizing,
+quads. Bounded packets reuse adjoining transformed rows and projected corners, then
+retained polygons are grouped by palette index for `PolyPolygon` calls of at most
+64 polygons. Pole vertices collapse to triangles. Visibility relies on the convex
+globe rather than a depth buffer for intersecting geometry. Native Windows messages handle input, resizing,
 palette changes, and window closure.
 Failed `PolyPolygon` submission can fall back to individual `Polygon` calls. Brush
 allocation can reclaim cached brushes or use a stock color. Failure to create the
@@ -722,16 +734,16 @@ native file and passes `QD_DEFINES` (`-d SEG68 -d DRV_QD -d DRV -d NO_SINF`) and
 source directory; `MPW_EXEC`, `QD_MAKEFILE`, `QD_SOURCE`, and `QD_DEFINES` are
 overridable. Native MPW builds need no bridge or modern scripting language. Use
 `Make -f Makefile.mpw clean > QDBuild` and `Execute QDBuild` for native cleanup. The
-portable `clean-quickdraw` target and ordinary `make clean` remove the seven QuickDraw
+portable `clean-quickdraw` target and ordinary `make clean` remove the QuickDraw
 objects and application using `RM`, without requiring MPW tools.
 
 #### Rendering and color
 
 The default globe is key 1, with all five resolutions and no texture mapping. Software
-quad batches share vertex transformations, then clip and cull whole polygons. Pole
-vertices collapse to triangles. QuickDraw fills each retained polygon with `PaintPoly`,
-`FillCPoly`, or `FillPoly`; batching shares geometry work rather than adding a native
-multiple-polygon call. OSD text uses QuickDraw.
+quad batches reuse transformed rows and projected vertices, then clip and cull whole
+polygons. Pole vertices collapse to triangles. QuickDraw fills each retained polygon
+with `PaintPoly`, `FillCPoly`, or `FillPoly`; batching shares geometry work rather
+than adding a native multiple-polygon call. OSD text uses QuickDraw.
 
 The driver chooses the highest currently configured depth among active displays,
 without changing display modes. It supports monochrome and Color QuickDraw: 1-bit
@@ -752,10 +764,11 @@ recheck device depth and bounds, rebuilding display resources when they change.
 
 The baseline 68000 sources are `main.c`, `drv.c`, `err.c`, `globe.c`, `drv_qd.c`, and
 integer-only `soft3d.c`, built with `SEG68` and `DRV_QD`. MPW's SANE floating-point code
-works without a coprocessor. Only `qd_fpu.c` receives `-mc68020 -mc68881`; its
-pointer-and-integer interface and separate `QDFPU` code segment avoid mixing SANE and
-hardware floating-point calling conventions. The driver checks both CPU and FPU before
-calling it. Do not enable direct FPU flags for baseline objects.
+works without a coprocessor. Only `qd_fpu.c` and the shared `soft3fp.c` receive
+`-mc68020 -mc68881`; their pointer-and-integer interface and separate `QDFPU` code
+segment avoid mixing SANE and hardware floating-point calling conventions. The driver
+checks both CPU and FPU before calling them. Do not enable direct FPU flags for
+baseline objects.
 
 Linking uses MPW's startup/runtime, interface, standard C, `Math.o`, and `CSANELib.o`
 libraries. `QD_RUNTIME` defaults to `{Libraries}Runtime.o`; override it and
@@ -777,6 +790,115 @@ and restores them afterward, including after a direct-rendering fallback.
 See the [QuickDraw host checks](tests/README.md#quickdraw). Native MPW builds must
 validate code-resource linkage and SANE/68881 dispatch. Physical depth/palette behavior,
 resource forks, and acceleration require System 7 hardware or a suitable emulator.
+
+### Amiga
+
+#### Requirements
+
+The Amiga driver targets AmigaOS 1.3 or later, a 68000 or later CPU, and a planar
+Workbench screen with 1–8 bitplanes on OCS, ECS, or AGA. It opens a resizable Workbench
+window and shares the desktop's current mode and palette. RTG true-color screens are
+outside this chipset driver's scope.
+
+Cross-compilation requires VBCC's m68k-amigaos compiler, vasm, vlink, the `kick13`
+target runtime, Amiga NDK headers, and Python 3.8 or later on the build host. The SDK and compiler
+are external dependencies. Other targets do not require VBCC or the Amiga packer.
+
+#### Build
+
+Set `VBCC` to the toolchain installation and put its host tools on `PATH`. Install
+the `kick13` target and make the NDK headers available through the target configuration
+or `AMI_CPPFLAGS`. For example, from the repository root:
+
+```sh
+export VBCC=/path/to/vbcc
+export PATH="$VBCC/bin:$PATH"
+make amiga AMI_CPPFLAGS=-I/path/to/NDK/Include/include_h
+```
+
+The build produces `testglobe-amiga` and its classic Workbench tool icon,
+`testglobe-amiga.info`. Copy both to the Amiga for icon launch. The icon requests a
+32 KiB stack; CLI launches must set it explicitly:
+
+```text
+Stack 32768
+testglobe-amiga
+```
+
+The driver checks the available stack before opening the window. Override `AMI_CC`,
+`AMI_CONFIG`, `AMI_CFLAGS`, `AMI_020FLAGS`, `AMI_FPUFLAGS`, `AMI_CPPFLAGS`,
+`AMI_LDFLAGS`, `AMI_LIBS`, or `AMI_PYTHON` for another configured toolchain. Keep
+baseline objects at `-cpu=68000 -fpu=0`; `-rmcfg-amiga-softfloat` and `-lmsoft`
+select IEEE software math without requiring an FPU or a newer OS math library.
+
+The build packs all 13 canonical `data/*.bin` chunks into an executable `HUNK_DEBUG`
+record; no map files are required on the
+Amiga. Keep the packed executable intact: stripping debug records afterward removes
+its maps. Copy the output as binary, preserving its executable protection bit.
+
+The program reads its own executable using the Workbench launch lock or the CLI
+program path. Only the selected map is loaded, in reads of at most 16 KiB. Subsequent
+resolution changes also read the executable, so it must remain accessible while the
+program runs. This avoids keeping all 170.5 KiB of map data in RAM on small systems.
+
+#### Rendering and color
+
+The default globe is key 1, with all five resolutions and no texture mapping.
+Shared software transforms, projection, clipping, and backface rejection prepare
+indexed quad packets. `AreaMove`, `AreaDraw`, and `AreaEnd` fill each retained polygon
+through `graphics.library`. Collapsed pole patches become triangles. Native `Text`
+draws the wrapped OSD, including chipset, CPU/math, colors, and buffering status.
+
+The driver reads the existing Workbench palette and maps Earth indices to available
+pens. Ordered two-pen patterns approximate missing colors at low depths. It does not
+replace desktop or pointer colors. OCS/ECS use the available RGB12 palette precision;
+AGA-capable OS versions expose RGB24 palette entries. Display depth is independent of
+CPU/FPU capability. HAM, EHB, and dual-playfield modes are rejected because they do
+not provide this path's ordinary indexed-pixel semantics.
+
+An optional offscreen planar bitmap presents through `BltBitMapRastPort`. Its planes
+and the area-fill scratch raster use Chip RAM; geometry and other working data use
+ordinary memory. Back-buffer allocation failure selects direct drawing. A missing
+scratch raster pauses filled rendering while leaving controls available to retry.
+Buffered drawing avoids displaying each polygon's construction but does not guarantee
+tear-free presentation. Native input handles dragging, keys, close, activation,
+refresh, and resizing. Projection follows the client area and corrects the display
+mode's pixel proportions.
+
+OCS and hardware that older OS versions cannot identify use conservative window
+limits of 992 × 1024 pixels and require a Workbench bitmap stride of at most
+128 bytes per plane row. Oversized transfers are rejected before drawing. Confirmed
+ECS Agnus or AGA Alice hardware supports larger windows within the coordinate limits.
+
+#### Platform notes
+
+The build defines `FLAT`, `DRV_AMI`, `DRV`, and `NO_SINF`. Amiga uses ordinary data
+pointers; the project's `SEG68` option is specific to the Macintosh memory model.
+Baseline code uses 68000 instructions and IEEE software floating point. Exec CPU/FPU
+flags select the separately compiled enhanced math routines:
+
+| Available hardware | Transform path |
+| --- | --- |
+| 68000/68010 | Shared fixed point |
+| 68020 or later without FPU | 68020 integer transform |
+| 68020 or later with a usable 68881/68882 or integrated FPU | Shared hardware floating point |
+
+The enhanced integer object uses `-cpu=68020`, and the FPU object uses
+`-cpu=68020 -fpu=68881`; all other objects retain the baseline options.
+Pointer-and-integer interfaces preserve the baseline
+calling boundary. The FPU helper uses basic arithmetic and bounded IEEE conversion,
+avoiding transcendental and integer-conversion opcodes unavailable on later FPUs.
+Mesh construction and shared bookkeeping still use the baseline software
+floating-point runtime.
+
+#### Validation
+
+See the [Amiga host checks](tests/README.md#amiga). A cross-build was checked with
+VBCC 0.9h (m68k generator 1.15), vasm 1.9d, vlink 0.17a, NDK 47.5 headers, and the
+`kick13` runtime. Host call recorders and cross-builds do not establish graphics output,
+Workbench behavior, or performance on actual machines. Native testing remains
+necessary for 68000/accelerated CPUs, OCS/ECS/AGA screens, Chip RAM pressure, palette
+patterns, and blitter/window synchronization.
 
 ## Testing and validation
 
@@ -811,6 +933,7 @@ and capabilities. Keep those responsibilities separate:
 | Matrox | `SEG86`, `DRV_MTX` | `QUAD` | Color triangle callbacks |
 | GDI | `SEG86`, `DRV_GDI` | `QUAD` | `DRV_QUAD_BATCH` |
 | QuickDraw | `SEG68`, `DRV_QD` | `QUAD` | `DRV_QUAD_BATCH` |
+| Amiga | `FLAT`, `DRV_AMI` | `QUAD` | `DRV_QUAD_BATCH` |
 
 All native application targets also define `DRV`; Microsoft C builds use `-AH`. The GDI
 header supplies `GDI` for Windows-specific integration. Primitive/callback-capability
@@ -830,7 +953,8 @@ they can draw to RGB windows.
 | `web/` | Browser frontend, WebGL rendering, and generated palette module; reads canonical `data/` maps. |
 
 Shared geometry helpers include `drv_validate_quadbatch()`,
-`drv_submit_quad_as_batch()`, `drv_expand_tristrip_uv()`, and
+`drv_submit_quad_as_batch()`, `drv_submit_quadbatch()`, `drv_quadbatch_context()`,
+`drv_expand_tristrip_uv()`, and
 `drv_split_tristrip_batches()`. Shared input uses `drv_handle_key()`,
 `drv_rotate_drag()`, and `drv_rotate_elapsed()`. Backend resize and texture-loading
 helpers remain private; `drv_render()` and `drv_close()` are common driver entry points.
@@ -846,7 +970,8 @@ Root and `src` Makefiles intentionally duplicate rules with different directory
 defaults because historical NMAKE and Solaris make lack a common include syntax.
 Keep both files synchronized. OpenGL uses ordinary `.o` names; Solaris, Apple,
 IRIS GL, and XGL use `s_`, `a_`, `i_`, and `x_` prefixes. DOS uses `.obj`, GDI uses
-`g_*.obj`, and QuickDraw uses `q_*.o`. MPW has a separate Makefile grammar.
+`g_*.obj`, QuickDraw uses `q_*.o`, and Amiga uses `am_*.o`. MPW has a separate Makefile
+grammar.
 
 ### Geometry submission
 
@@ -857,9 +982,9 @@ or transparent objects.
 
 The default radius remains 1,000. OpenGL, IRIS GL, and XGL accept positive finite
 custom radii without the software drivers' limit; their camera and clipping values
-must still suit the chosen scene. GDI and QuickDraw retain a maximum radius of 1,000
-for their shared fixed-point pipeline. Matrox retains the validated 1,000-unit range
-for LibShell's fixed-point transforms. These limits are driver capabilities rather
+must still suit the chosen scene. GDI, QuickDraw, and Amiga retain a maximum radius of
+1,000 for their shared fixed-point pipeline. Matrox retains the validated 1,000-unit
+range for LibShell's fixed-point transforms. These limits are driver capabilities rather
 than a restriction on every globe.
 
 Triangle strips follow complete interior latitude bands. At key 5, an interior strip
@@ -871,22 +996,37 @@ pressure, bounded packets may split a latitude band without changing its facets.
 UVs are generated from grid coordinates for submission instead of retaining a full
 two-dimensional UV array. XGL expands palette indices only for its current RGB packet.
 
-`DRV_QUAD_BATCH` is a capability of `QUAD`. GDI and QuickDraw use at most 64 quads and
-130 shared vertices per packet, with four indices and one palette byte per quad.
-Each shared vertex is transformed once. GDI groups visible polygons by color for
-`PolyPolygon`; QuickDraw fills them individually. Individual quad submission remains
+`DRV_QUAD_BATCH` is a capability of `QUAD`. GDI, QuickDraw, and Amiga use at most
+64 quads and 130 shared vertices per packet, with four indices and one palette byte
+per quad. Traversal follows latitude bands within bounded longitude tiles. Explicit
+packet sequence and row-continuity metadata allow the preceding bottom row to become
+the next top row without repeating its transforms or cached projections. Direct quad
+calls, new tiles, interrupted streams, and new frames disable reuse. No cache uses
+the address of the reused submission buffer as a persistent vertex identity.
+
+At EARTH_32, this reduces transforms from 1,056 to 561 per frame. An optional packet
+cache also avoids projecting the same corner for neighboring quads. Larger maps repeat
+tile-boundary vertices to keep storage bounded; there is no full transformed-globe
+cache. GDI groups visible polygons by color for `PolyPolygon`; QuickDraw and Amiga
+fill them individually. Individual quad submission remains
 available, including Matrox. XGL has separate `drv_draw_tristrip_flat_rgb()` and
 `drv_draw_tristrip_flat_uv()` callbacks.
 
 ### Shared rendering pipelines
 
-GDI and QuickDraw share `src/soft3d.c`/`.h` for integer IEEE-float decoding, fixed-point
-rotation/transforms, clipping, projection, and back-face rejection. Driver-local caches
-hold transformed packets; projection validates indices against their actual point
-count. GDI also has a floating-point path. QuickDraw's isolated `qd_fpu.c`/`qd_math.h`
-interface preserves the SANE/68881 boundary. Only these two targets link the integer
-pipeline (`g_soft.obj` or `q_soft.o`). Resource-backed indices are loaded into their
-final storage, avoiding an extra full-map allocation during mesh construction.
+GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer IEEE-float decoding,
+fixed-point transforms, projection caches, clipping, and back-face rejection.
+`src/soft3fp.c` provides the corresponding floating-point helpers. Projection validates
+indices against the initialized packet. Whole polygons inside the depth and viewport
+bounds bypass clipping; crossing polygons retain the general path. Backface rejection
+uses the complete rounded polygon, preserving silhouette and collapsed-pole behavior.
+Clearly rejected polygons avoid unnecessary subsequent processing.
+
+Projection caches are optional and bounded to one packet. Their absence retains the
+uncached path. Frame, pose, viewport, and interrupted-stream changes invalidate reuse.
+QuickDraw's `qd_fpu.c`/`qd_math.h` boundary and Amiga's runtime CPU/FPU dispatch keep
+hardware floating-point code separate from baseline 68000 execution. Resource-backed
+indices load directly into their final storage, avoiding an extra full-map allocation.
 
 OpenGL and IRIS GL share `src/texsoft.c`/`.h` for software texturing: homogeneous
 clipping, depth/culling, perspective-correct UVs, repeat sampling, and filtered mipmaps.
@@ -915,19 +1055,20 @@ boundaries; texture expansion and globe color sampling share those readers.
 - City lights.
 - A one-button benchmark.
 - An IBM PGC or compatible driver; performance may be limiting.
-- Other possible backends: IBM Adapter Interface, VBE/AF, and the Amiga chipset.
+- Other possible backends: IBM Adapter Interface and VBE/AF.
 
 ## Version history
 
 ### v0.2 (in development)
 
-- Added Matrox LibShell, Windows GDI, QuickDraw, Sun XGL, and IRIS GL backends.
+- Added Matrox LibShell, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga backends.
 - Added a static WebGL 2 browser frontend using the canonical Earth maps and palette.
 - Added native macOS and Solaris OpenGL build targets.
 - Embedded canonical binary Earth maps through bounded C arrays or native resources,
   with disposable build sources and a separate supplied fallback.
-- Switched OpenGL and IRIS GL to latitude strips and GDI/QuickDraw to shared-vertex
-  quad batches; preserved independent triangle and quad reference paths.
+- Switched OpenGL and IRIS GL to latitude strips and GDI/QuickDraw/Amiga to shared-vertex
+  quad batches with bounded transform/projection reuse; preserved independent triangle
+  and quad reference paths.
 - Standardized driver/traversal APIs and shared rendering, input, and data helpers.
 - Added FPS, automatic rotation, display-list control, and texture-use status.
 - Hardened allocation, file generation, coordinate/packet bounds, input recovery, and

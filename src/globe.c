@@ -621,16 +621,20 @@ void globe_draw_quadbatches(void)
     const unsigned char TG_HUGE *colors;
     int i;
     if (!globe_valid || drv_frame_failed) return;
-    for (i = 0; i < globe_latitude; ++i)
+    /* A narrow longitude tile streams down the globe before advancing
+     * sideways. Its previous lower row becomes the next packet's upper
+     * row, keeping transform/projection reuse bounded by packet capacity
+     * rather than by the full width of a high-resolution globe. */
+    for (first = 0; first < (unsigned int)globe_longitude; first += count)
     {
-        colors = globe_color_row(i);
-        if (colors == NULL) return;
-        top = (unsigned long)i * (globe_longitude + 1UL);
-        bottom = top + globe_longitude + 1UL;
-        for (first = 0; first < (unsigned int)globe_longitude; first += count)
+        count = (unsigned int)globe_longitude - first;
+        if (count > DRV_QUAD_BATCH_MAX) count = DRV_QUAD_BATCH_MAX;
+        for (i = 0; i < globe_latitude; ++i)
         {
-            count = (unsigned int)globe_longitude - first;
-            if (count > DRV_QUAD_BATCH_MAX) count = DRV_QUAD_BATCH_MAX;
+            colors = globe_color_row(i);
+            if (colors == NULL) return;
+            top = (unsigned long)i * (globe_longitude + 1UL);
+            bottom = top + globe_longitude + 1UL;
             for (j = 0; j <= count; ++j)
             {
                 index = 2U * j;
@@ -643,9 +647,9 @@ void globe_draw_quadbatches(void)
                 globe_quad_indices[4U * j + 3U] = index + 2U;
                 globe_quad_colors[j] = colors[first + j];
             }
-            drv_draw_quadbatch_flat_color(2U * (count + 1U), globe_quad_verts,
-                                          count, globe_quad_indices,
-                                          globe_quad_colors);
+            drv_submit_quadbatch(2U * (count + 1U), globe_quad_verts,
+                                   count, globe_quad_indices,
+                                   globe_quad_colors, i != 0);
             if (drv_frame_failed) return;
         }
     }

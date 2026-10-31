@@ -34,12 +34,13 @@ Additional options may be combined:
 | [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
+| [`--ami-contract`](#amiga) | Amiga Workbench window, graphics calls, events, and executable resources | None |
 
 With all prerequisites installed, run every native group with:
 
 ```sh
 python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
-  --gdi-contract --qd-contract --sdk /path/to/sdk
+  --gdi-contract --qd-contract --ami-contract --sdk /path/to/sdk
 ```
 
 Exit status zero means all requested checks passed. `PASS` lines identify completed
@@ -88,6 +89,19 @@ the 16 KiB per-array limit and Matrox's inclusion of only `EARTH_32` and `EARTH_
 `tests/earth_reference.h` reads the binaries for expected colors; the application
 does not use that test-only file I/O.
 
+`tests/ami_pack.py` checks the Amiga packer without an SDK. It compares all embedded
+chunks and resource IDs with the canonical data, preserves loadable hunks and unrelated
+debug records, and verifies that repacking does not duplicate maps. Malformed hunks,
+incorrect map lengths, and input/output aliases must fail without replacing a valid
+output. These checks run in the baseline suite and can also be run directly:
+
+```sh
+python3 tests/ami_pack.py
+```
+
+The generated classic Workbench tool icon is checked for its file structure and
+32 KiB stack request.
+
 ### Geometry and shared interfaces
 
 - OpenGL indexed strips and separate pole triangles, XGL RGB strips, IRIS GL indexed
@@ -96,7 +110,10 @@ does not use that test-only file I/O.
   vertices, packet and UV seams, and texture dispatch where supported.
 - `tests/quad_batches.c` checks individual and batched traversal for GDI and QuickDraw.
   At key 5 it verifies 2,048 packets and 131,072 quad patches, with at most 130 vertices
-  per packet. Driver defaults are checked alongside resolution changes.
+  per packet. Scoped sequence/row metadata must identify adjoining bands, disappear
+  after the callback, and reset on a new tile or interrupted traversal. EARTH_32
+  permits 561 new transforms instead of 1,056. Driver defaults are checked alongside
+  resolution changes.
 - The independent-triangle reference uses `tests/tri_mode.h`. Normal builds select
   `TRI`, `TRISTRIP`, or `QUAD` in driver headers, not through command-line defines.
 - `tests/driver_api.c` checks supported declarations, rejects unsupported callbacks,
@@ -117,8 +134,8 @@ bounds and packing, invalid inputs, key handling, FPS toggling, debug metadata,
 bounded dragging, zero-sized windows, and large elapsed-time rotations. Shared-service
 checks cover allocation bounds, handle release, bounded status messages, empty-scene
 OSD, and completed-presentation timing that includes time between native events.
-Configuration checks cover platform and architecture defaults, conflicting settings, and explicit
-errors for unsupported legacy drivers.
+Configuration checks cover platform and architecture defaults, conflicting settings,
+Amiga's FLAT/no-texture configuration, and explicit errors for unsupported legacy drivers.
 
 `tests/recovery.c` injects failures into each scene-allocation stage in compiled-map
 and resource-backed builds. It checks bounded retries, restoring or reducing the
@@ -348,7 +365,9 @@ python3 tests/run.py --gdi-contract
 - **Geometry and resources:** all resolutions, binary resource contents, large global
   heaps, exact palette bytes, quad topology, independent double-precision projection
   references, clipping, and shared-vertex packets. `PolyPolygon` calls are bounded to
-  64 polygons; lock/unlock/release ownership is checked.
+  64 polygons; lock/unlock/release ownership is checked. Individual and streamed
+  submissions must produce the same polygon/color multiset across poses and resized
+  viewports, including narrow windows that require clipping.
 - **CPU and display:** 80387 selection and fixed-point fallback, including a 286/287
   profile; small-screen defaults, explicit dimensions, foreground/background palettes,
   buffering, and wrapped OSD statistics.
@@ -382,6 +401,8 @@ python3 tests/run.py --qd-contract
 - **Geometry and resources:** all resolutions and the key-1 default, binary resources,
   buffers larger than 64 KiB, palette bytes, quad topology, independent projection
   references, clipping, native polygon/text call arguments, and shared-vertex bounds.
+  Individual and streamed submissions must preserve polygon coordinates/colors at
+  multiple poses and window sizes, including clipped silhouettes and collapsed poles.
   The monochrome-68000 profile rejects Color QuickDraw, Palette Manager, and GWorld
   calls; polygon recording models automatic pen hiding.
 - **CPU and display:** fixed-point/FPU paths and dispatch guards; 1-bit dithering;
@@ -411,6 +432,50 @@ is compiled as ordinary host C for numerical checks; only MPW can verify its ins
 selection and separate code segment. Physical palette mapping and QuickDraw hardware
 acceleration require the target runtime and display.
 
+## Amiga
+
+### Command
+
+```sh
+python3 tests/run.py --ami-contract
+```
+
+The host checks use test-local Amiga declarations and need no SDK or VBCC. A native
+cross-build uses the [Amiga build instructions](../README.md#amiga) separately.
+
+### Coverage
+
+- **Workbench and color:** OS library versions 34/36/39 with OCS/ECS/AGA profiles,
+  window creation, actual client dimensions, native text, and palette-preserving
+  drawing at 1/4/5/8-bit indexed depths. Palette/display queries are version-guarded
+  and HAM is rejected. Native area vertices must remain inside the drawable bitmap;
+  patterns and pen indices must stay within their bounds.
+- **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch,
+  including a reported FPU without a supporting CPU. Cached and uncached drawing
+  must retain polygon coordinates and colors, including projection-cache allocation
+  failure; the default streamed globe requires 561 transforms. Resizing and pixel-aspect
+  changes rebuild projection state; all five resolution keys remain available.
+- **Lifecycle and recovery:** native event input, activation/refresh, close,
+  Chip RAM allocation/release, the 32 KiB stack guard, back-buffer failure selecting
+  direct drawing, scratch-allocation pause/retry, and bounded recovery from area-fill
+  errors. Refresh drawing is deferred outside Intuition's damage-clipping scope;
+  invalid display changes can recover when valid dimensions return.
+- **Executable data:** the production reader opens a real packed Hunk file through
+  CLI, Workbench, program-directory, and old CLI search-path cases. Tests compare
+  selected chunks with canonical bytes, enforce bounded reads, reject malformed
+  footers/directories, recover from short reads, and verify handle/library ownership.
+  The separate baseline packer checks are described under [Earth data](#earth-data).
+
+### Native validation
+
+The recorders check production control flow and arguments, not AmigaOS graphics
+implementation or the custom chips. Enhanced integer/FPU objects compile as ordinary
+host C during these tests, so host results do not prove native opcode selection,
+library-vector ABI, or 68000/FPU dispatch. VBCC/NDK cross-builds provide a separate
+compiler/linker check. Actual Workbench startup, planar fills, palette patterns,
+blitter completion, Chip RAM pressure, and performance still need hardware or a
+suitable emulator on OCS/ECS/AGA and accelerated configurations.
+
 ## Shared software pipelines
 
 ### OpenGL and IRIS GL textures
@@ -431,18 +496,26 @@ direct map-row conversion into packed images/rasters. Allocation-pressure profil
 check smaller texture selection and flat-color recovery after exhausting supported
 sizes; retained OpenGL GLU staging remains covered by the OpenGL 1.1 checks.
 
-### GDI and QuickDraw geometry
+### GDI, QuickDraw, and Amiga geometry
 
-Both driver contracts link the real integer `soft3d.c` module and exercise quad
-batching and Earth-resource traversal. Packets contain at most 64 quads and 130 shared
-vertices, with four indices and one palette byte per quad. `DRV_QUAD_BATCH` remains
-a capability of `QUAD`; individual quad submission is also checked.
+The driver contracts link the real integer `soft3d.c` and floating `soft3fp.c` modules
+and exercise quad batching and Earth-resource traversal. Packets contain at most
+64 quads and 130 shared vertices, with four indices and one palette byte per quad.
+`DRV_QUAD_BATCH` remains a capability of `QUAD`; individual quad submission is also
+checked.
 
 Independent projection cases cover exact coordinates, near/far rejection, collapsed
 poles, triangle projection, and whole-polygon signed-area culling. A polygon whose
 first rounded fan triangle has the opposite orientation must still be classified
 correctly. Large accepted fixed-point rotation angles must match their equivalents
 modulo 360 degrees.
+
+Projection-cache checks compare cached and uncached results, validate adjoining-row
+reuse, and invalidate coordinates after viewport changes. Depth and viewport fast
+paths must retain the existing crossing-polygon fallback and rounded-area culling.
+The optimization does not replace complete polygon orientation with the first fan
+triangle's sign. Invalid indices and coordinates must still be rejected when caching
+is enabled.
 
 Boundary cases clip a triangle spanning 268 million coordinate units to exact
 viewport corners, reject reversed winding, and check full 32,767-pixel viewports.

@@ -40,7 +40,7 @@
 #ifdef DRV_MTX
 #include <time.h>
 #include <malloc.h>
-#else /* FLAT */
+#elif !defined(DRV_AMI) /* POSIX flat-memory drivers */
 #include <sys/time.h>
 #endif
 #endif
@@ -283,6 +283,10 @@ void drv_expand_tristrip_uv(unsigned int count,
 #endif
 
 #ifdef DRV_QUAD_BATCH
+static unsigned long drv_quad_sequence;
+static Drv_quad_context drv_quad_context;
+static const Vertex TG_HUGE *drv_quad_vertices;
+
 int drv_validate_quadbatch(unsigned int vertex_count, unsigned int quad_count,
                             const unsigned int TG_HUGE *indices)
 {
@@ -295,6 +299,47 @@ int drv_validate_quadbatch(unsigned int vertex_count, unsigned int quad_count,
     return TRUE;
 }
 
+int drv_quadbatch_context(unsigned int vertex_count,
+                           const Vertex TG_HUGE *vertices,
+                           Drv_quad_context *context)
+{
+    if (context == NULL) return FALSE;
+    context->sequence = 0UL;
+    context->vertex_count = 0U;
+    context->reuse_row = FALSE;
+    if (drv_quad_context.sequence == 0UL || vertices == NULL ||
+        vertices != drv_quad_vertices ||
+        vertex_count != drv_quad_context.vertex_count)
+        return FALSE;
+    *context = drv_quad_context;
+    return TRUE;
+}
+
+void drv_submit_quadbatch(unsigned int vertex_count,
+                           const Vertex TG_HUGE *vertices,
+                           unsigned int quad_count,
+                           const unsigned int TG_HUGE *indices,
+                           const unsigned char TG_HUGE *colors,
+                           int reuse_row)
+{
+    /* Zero is reserved for direct calls with no stream metadata. A wrap
+     * may discard one reuse opportunity, but can never expose stale data. */
+    ++drv_quad_sequence;
+    if (drv_quad_sequence == 0UL) ++drv_quad_sequence;
+    drv_quad_context.sequence = drv_quad_sequence;
+    drv_quad_context.vertex_count = vertex_count;
+    drv_quad_context.reuse_row = reuse_row && quad_count != 0U &&
+        quad_count <= DRV_QUAD_BATCH_MAX &&
+        vertex_count == 2U * (quad_count + 1U);
+    drv_quad_vertices = vertices;
+    drv_draw_quadbatch_flat_color(vertex_count, vertices, quad_count,
+                                   indices, colors);
+    drv_quad_context.sequence = 0UL;
+    drv_quad_context.vertex_count = 0U;
+    drv_quad_context.reuse_row = FALSE;
+    drv_quad_vertices = NULL;
+}
+
 void drv_submit_quad_as_batch(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
                                Vertex TG_HUGE *third, Vertex TG_HUGE *fourth,
                                unsigned char color)
@@ -304,7 +349,7 @@ void drv_submit_quad_as_batch(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
     if (first == NULL || second == NULL || third == NULL || fourth == NULL) return;
     vertices[0] = *first; vertices[1] = *second;
     vertices[2] = *third; vertices[3] = *fourth;
-    drv_draw_quadbatch_flat_color(4U, vertices, 1U, indices, &color);
+    drv_submit_quadbatch(4U, vertices, 1U, indices, &color, FALSE);
 }
 #endif
 
@@ -392,7 +437,9 @@ void drv_ext_init(void)
  * accumulate unsigned deltas; the POSIX fallback never moves backwards. */
 double drv_time_now(void)
 {
-#if defined(GDI) || defined(DRV_QD) || defined(DRV_MTX)
+#ifdef DRV_AMI
+    return ami_time_now();
+#elif defined(GDI) || defined(DRV_QD) || defined(DRV_MTX)
     static unsigned long previous;
     static int initialized;
     static double elapsed;

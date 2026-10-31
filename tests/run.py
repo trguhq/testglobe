@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Host regressions: geometry, OpenGL, Matrox, XGL, GDI, QuickDraw and IRIS GL.
+"""Host regressions: geometry, OpenGL, Matrox, XGL, GDI, QuickDraw, Amiga and IRIS GL.
 
 No test here emulates Microsoft C's segmented code generation, a Matrox board,
 Sun's native XGL implementation, Windows 3.1 GDI, the Macintosh Toolbox,
-or SGI's native IRIS GL implementation and IRIX ABI.
+AmigaOS graphics and the custom chips, or SGI's native IRIS GL and IRIX ABI.
 """
 import argparse
 import os
@@ -11,7 +11,9 @@ from pathlib import Path
 import shlex
 import shutil
 import stat
+import struct
 import subprocess
+import sys
 import tempfile
 
 
@@ -77,6 +79,7 @@ def check_configurations(cc, common):
         ["-DDRV_MTX", "-DTEST_DRIVER_MTX"],
         ["-DDRV_QD", "-DTEST_DRIVER_QD"],
         ["-DDRV_IGL", "-DTEST_DRIVER_IGL"],
+        ["-DDRV_AMI", "-DTEST_DRIVER_AMI"],
         ["-DDRV_OGL", "-D__APPLE__", "-DTEST_DRIVER_OGL"],
         ["-DDRV_OGL", "-D__BORLANDC__", "-DTEST_DRIVER_OGL"],
     )
@@ -90,6 +93,7 @@ def check_configurations(cc, common):
         (["-DDRV_OGL", "-DDRV_IGL"], "Select only one graphics driver"),
         (["-DDRV_GDI", "-DFLAT"], "Windows GDI requires the SEG86 memory model"),
         (["-DDRV_QD", "-DFLAT"], "Classic QuickDraw requires the SEG68 memory model"),
+        (["-DDRV_AMI", "-DSEG68"], "Amiga requires the FLAT memory model"),
         (["-DDRV_OGL", "-DTRI"], "Select exactly one driver primitive"),
     )
     for options, expected in invalid:
@@ -277,6 +281,8 @@ def main():
                         help="Record Win16 GDI calls with host declarations; not Microsoft C 7 ABI or Windows rendering validation")
     parser.add_argument("--qd-contract", action="store_true",
                         help="Record Classic Macintosh calls with host declarations; not MPW ABI or QuickDraw rendering validation")
+    parser.add_argument("--ami-contract", action="store_true",
+                        help="Record AmigaOS calls with host declarations; not VBCC ABI or custom-chip rendering validation")
     parser.add_argument("--igl-contract", action="store_true",
                         help="Record IRIS GL calls and check software fallback pixels; not SGI SDK, native rendering or IRIX ABI validation")
     parser.add_argument("--ogl-contract", action="store_true",
@@ -292,6 +298,7 @@ def main():
         output = Path(temporary)
         check_configurations(cc, common)
         check_earth_data(cc, common, output)
+        run([sys.executable, str(ROOT / "tests/ami_pack.py")])
         flat = ["-DFLAT", "-DDRV_OGL"]
         tri_mode = ["-include", str(ROOT / "tests/tri_mode.h")]
         api_source = ["-fsyntax-only", str(ROOT / "tests/driver_api.c")]
@@ -302,6 +309,7 @@ def main():
             ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tristrip_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tri_flat_uv", "earth_data_128", "texture_generate")),
             ("GDI", ["-DSEG86", "-DDRV_GDI", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
             ("QuickDraw", ["-DSEG68", "-DDRV_QD"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
+            ("Amiga", ["-DFLAT", "-DDRV_AMI"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
         )
         for driver, options, hidden in api_modes:
             check_driver_api(cc + common + options + api_source, driver,
@@ -373,9 +381,9 @@ def main():
         print("PASS committed mesh diagnostics: startup/recovery print once; no-op and failed attempts are silent; GDI and QuickDraw remain console-free")
         if args.qd_contract:
             check_production_units(cc, common, qd, output, "QuickDraw",
-                ("drv.c", "drv_qd.c", "err.c", "globe.c", "main.c", "qd_fpu.c", "soft3d.c"))
+                ("drv.c", "drv_qd.c", "err.c", "globe.c", "main.c", "qd_fpu.c", "soft3d.c", "soft3fp.c"))
             run(cc + common + qd + [str(ROOT / "tests/qd.c"),
-                str(ROOT / "src/qd_fpu.c"), str(ROOT / "src/soft3d.c"),
+                str(ROOT / "src/qd_fpu.c"), str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "qd")])
@@ -386,11 +394,11 @@ def main():
                 run([str(output / "qd"), mode])
         if args.gdi_contract:
             check_production_units(cc, common, gdi + ["-Wno-cast-function-type"], output, "GDI",
-                ("drv.c", "drv_gdi.c", "err.c", "globe.c", "main.c", "soft3d.c"))
+                ("drv.c", "drv_gdi.c", "err.c", "globe.c", "main.c", "soft3d.c", "soft3fp.c"))
             # Win16 MakeProcInstance requires FARPROC/WNDPROC casts;
             # GCC diagnoses those historical, intentional callback casts.
             run(cc + common + gdi + ["-Wno-cast-function-type", str(ROOT / "tests/gdi.c"),
-                str(ROOT / "src/soft3d.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi")])
             for mode in ("fpu", "fixed", "287", "small640", "small512", "tall640",
@@ -401,10 +409,45 @@ def main():
                     expected_stderr="",
                     required_output="PASS GDI fatal error: modal paint/timer/input dispatch cannot reenter rendering or partial scene state, and cleanup releases all resources")
             run(cc + common + gdi + ["-DDEBUG=1", "-Wno-cast-function-type",
-                str(ROOT / "tests/gdi.c"), str(ROOT / "src/soft3d.c"),
+                str(ROOT / "tests/gdi.c"), str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_debug")])
             run([str(output / "gdi_debug"), "fpu"])
+        if args.ami_contract:
+            ami = ["-DFLAT", "-DDRV_AMI", "-I" + str(ROOT / "tests/ami_shim")]
+            check_production_units(cc, common, ami, output, "Amiga",
+                ("drv.c", "drv_ami.c", "ami_data.c", "err.c", "globe.c", "main.c",
+                 "soft3d.c", "soft3fp.c"))
+            enhanced = output / "ami_020.o"
+            run(cc + common + ami + ["-DSOFT3D_TRANSFORM_020", "-c",
+                str(ROOT / "src/soft3d.c"), "-o", str(enhanced)])
+            run(cc + common + ami + [str(ROOT / "tests/amiga.c"),
+                str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga")])
+            for mode in ("ocs", "mono", "four", "ecs", "aga", "020", "fpu", "040",
+                         "falsefpu", "aspect", "backfail", "scratchfail", "ham", "oversize", "cachefail", "ocswide", "denisewide", "ecswide"):
+                run([str(output / "amiga"), mode])
+            run([str(output / "amiga"), "stack"], expected_returncode=1,
+                required_output="PASS Amiga stack guard:")
+            # A real packed Hunk file exercises the production DOS resource reader.
+            source = output / "amiga-input.hunk"
+            packed = output / "testglobe-amiga"
+            source.write_bytes(struct.pack(">10I", 1011, 0, 1, 0, 0, 1,
+                                           1001, 1, 0x4e754e71, 1010))
+            run([sys.executable, str(ROOT / "src/ami_pack.py"), str(source),
+                 str(ROOT / "data"), str(packed)])
+            run(cc + common + ami + [str(ROOT / "tests/ami_data.c"),
+                "-o", str(output / "ami_data")])
+            for mode in ("cli", "workbench", "programdir", "clipath", "cliname"):
+                run([str(output / "ami_data"), str(packed), mode])
+            original = packed.read_bytes()
+            for offset in (-36, -20, -192):
+                damaged = bytearray(original)
+                damaged[offset] ^= 0xff
+                packed.write_bytes(damaged)
+                run([str(output / "ami_data"), str(packed), "malformed"])
+            packed.write_bytes(original)
         if args.xgl_contract:
             if not shutil.which("xvfb-run"):
                 parser.error("--xgl-contract requires xvfb-run and Xvfb on PATH")

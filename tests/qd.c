@@ -1172,6 +1172,81 @@ static void check_quad_batches(void)
     puts("PASS QuickDraw quad batches: shared indexed vertices, arbitrary order, 64-quad bounds, exact colors and full seams; individual quad callback retained");
 }
 
+/* Compare exact native polygon multisets: packet ordering can change, but
+ * sharing transformed/projected rows must not change a rounded coordinate,
+ * palette index, pole triangle, or clipped silhouette. */
+static int compare_recorded(const void *left, const void *right)
+{
+    const RecordedPolygon *a = (const RecordedPolygon *)left;
+    const RecordedPolygon *b = (const RecordedPolygon *)right;
+    int i;
+    if (a->color != b->color) return a->color < b->color ? -1 : 1;
+    if (a->pattern_black != b->pattern_black)
+        return a->pattern_black < b->pattern_black ? -1 : 1;
+    if (a->count != b->count) return a->count < b->count ? -1 : 1;
+    for (i = 0; i < a->count; ++i) {
+        if (a->points[i].h != b->points[i].h)
+            return a->points[i].h < b->points[i].h ? -1 : 1;
+        if (a->points[i].v != b->points[i].v)
+            return a->points[i].v < b->points[i].v ? -1 : 1;
+    }
+    return 0;
+}
+
+static void check_stream_equivalence(void)
+{
+    static RecordedPolygon individual[512];
+    static const unsigned int widths[4] = { 640U, 320U, 97U, 800U };
+    static const unsigned int heights[4] = { 480U, 240U, 480U, 120U };
+    static const float pitch[4] = { 0.0f, 19.0f, 89.75f, 247.0f };
+    static const float yaw[4] = { 180.0f, 37.0f, 179.5f, 121.0f };
+    unsigned int size, pose, expected, i, old_width, old_height;
+    int old_longitude;
+    float old_x, old_y;
+    GrafPtr saved_port;
+    GDHandle saved_device;
+    int old_fail;
+    old_width = drv_win_width; old_height = drv_win_height;
+    old_longitude = globe_longitude;
+    old_x = drv_rot_x; old_y = drv_rot_y;
+    GetPort(&saved_port);
+    saved_device = has_color ? GetGDevice() : NULL;
+    old_fail = fail_gworld; fail_gworld = TRUE;
+    assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
+    for (size = 0; size < 4U; ++size) {
+        SizeWindow(qd_window, (short)widths[size], (short)heights[size], TRUE);
+        qd_resize((int)widths[size], (int)heights[size]);
+        SetPort((GrafPtr)qd_window);
+        if (has_color) SetGDevice(qd_device);
+        for (pose = 0; pose < 4U; ++pose) {
+            drv_rot_x = pitch[pose]; drv_rot_y = yaw[pose];
+            drv_frame_failed = FALSE;
+            qd_set_transform();
+            recorded_count = 0;
+            globe_draw_quads();
+            assert(!drv_frame_failed && recorded_count <= 512U);
+            expected = recorded_count;
+            qsort(recorded, expected, sizeof(recorded[0]), compare_recorded);
+            memcpy(individual, recorded, expected * sizeof(recorded[0]));
+            /* The previous individual calls must not establish row reuse. */
+            recorded_count = 0;
+            globe_draw_quadbatches();
+            assert(!drv_frame_failed && recorded_count == expected);
+            qsort(recorded, recorded_count, sizeof(recorded[0]), compare_recorded);
+            for (i = 0; i < expected; ++i)
+                assert(compare_recorded(individual + i, recorded + i) == 0);
+        }
+    }
+    drv_rot_x = old_x; drv_rot_y = old_y;
+    assert(globe_set_resolution(old_longitude, -1, GLOBE_RADIUS));
+    fail_gworld = old_fail;
+    SizeWindow(qd_window, (short)old_width, (short)old_height, TRUE);
+    qd_resize((int)old_width, (int)old_height);
+    SetPort(saved_port);
+    if (has_color) SetGDevice(saved_device);
+    puts("PASS QuickDraw optimized stream: exact individual/batched polygon tuples and colors across poses, poles, resize scales and narrow clipped viewports");
+}
+
 static void check_osd_boundaries(void)
 {
     unsigned int old_width, old_height, old_texts;
@@ -1447,6 +1522,7 @@ static int run_contract(void)
     streaming_polygons = FALSE;
     event_key('6', 0); assert(globe_longitude == 512);
     check_quad_batches();
+    check_stream_equivalence();
     check_osd_boundaries();
     check_readiness();
     event_key('2', 0);

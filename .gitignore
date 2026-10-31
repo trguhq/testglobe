@@ -43,3 +43,11 @@
 /e_saved.bak
 /src/e_saved.tmp
 /src/e_saved.bak
+
+# Amiga cross-build outputs.
+/testglobe-amiga
+/testglobe-amiga.info
+/am_link.hunk
+/src/testglobe-amiga
+/src/testglobe-amiga.info
+/src/am_link.hunk

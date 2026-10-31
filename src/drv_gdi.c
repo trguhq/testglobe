@@ -32,7 +32,7 @@
 #error GDI quad batches exceed the transformed vertex cache
 #endif
 
-typedef struct Gdi_float_point { float x, y, z; } Gdi_float_point;
+typedef Soft3d_float_point Gdi_float_point;
 
 static HINSTANCE gdi_instance;
 static int gdi_show;
@@ -72,6 +72,10 @@ static float gdi_float_matrix[3][3];
 static long gdi_fixed_matrix[3][3];
 static Gdi_float_point gdi_float_points[GDI_MAX_VERTICES];
 static Soft3d_fixed_point gdi_fixed_points[GDI_MAX_VERTICES];
+static Soft3d_project_cache TG_HUGE *gdi_project_cache;
+static unsigned long gdi_packet_sequence;
+static unsigned int gdi_packet_count;
+static int gdi_packet_active;
 static POINT gdi_polygons[GDI_MAX_FACETS][GDI_MAX_POLY];
 static int gdi_polygon_counts[GDI_MAX_FACETS];
 static int gdi_color_head[256];
@@ -126,6 +130,11 @@ void drv_release_optional(void)
         return;
     }
     gdi_delete_buffer();
+    drv_free_items(gdi_project_cache);
+    gdi_project_cache = NULL;
+    gdi_packet_active = FALSE;
+    gdi_packet_sequence = 0UL;
+    gdi_packet_count = 0U;
     gdi_release_brushes();
     gdi_dirty = TRUE;
     drv_notice("direct drawing");
@@ -148,6 +157,11 @@ static void gdi_cleanup(void)
 {
     unsigned int i;
     gdi_quiesce();
+    drv_free_items(gdi_project_cache);
+    gdi_project_cache = NULL;
+    gdi_packet_active = FALSE;
+    gdi_packet_sequence = 0UL;
+    gdi_packet_count = 0U;
     if (gdi_window != 0) DestroyWindow(gdi_window);
     gdi_delete_buffer();
     for (i = 0; i < 256; ++i)
@@ -220,6 +234,10 @@ void drv_init(int *argc, char **argv)
                   (flags & (WF_CPU386 | WF_CPU486)) != 0;
     if (atexit(gdi_cleanup) != 0)
         gdi_error("Cannot register Windows GDI cleanup");
+    if (gdi_project_cache == NULL)
+        gdi_project_cache = (Soft3d_project_cache TG_HUGE *)drv_alloc_items(
+            1UL, sizeof(Soft3d_project_cache));
+    soft3d_project_cache_reset(gdi_project_cache);
 }
 
 Drv_result drv_load_earth_chunk(unsigned int id, unsigned long length,
@@ -443,6 +461,10 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 static void gdi_set_transform(void)
 {
     float fsx, fcx, fsy, fcy;
+    gdi_packet_active = FALSE;
+    gdi_packet_sequence = 0UL;
+    gdi_packet_count = 0U;
+    soft3d_project_cache_reset(gdi_project_cache);
     /* R = Rx(user x) Ry(user y) Rx(-90) Rz(-90), followed by z=-3000. */
     if (gdi_has_fpu)
     {
@@ -467,82 +489,28 @@ static void gdi_set_transform(void)
     }
 }
 
-static int gdi_clip_float_z(const Gdi_float_point *in, int count,
-                            Gdi_float_point *out, float plane, int greater)
-{
-    int i, total, a_inside, b_inside;
-    float fraction;
-    Gdi_float_point a, b, point;
-    total = 0;
-    a = in[count - 1];
-    a_inside = greater ? a.z >= plane : a.z <= plane;
-    for (i = 0; i < count; ++i)
-    {
-        b = in[i];
-        b_inside = greater ? b.z >= plane : b.z <= plane;
-        if (a_inside != b_inside)
-        {
-            fraction = (plane - a.z) / (b.z - a.z);
-            point.x = a.x + (b.x - a.x) * fraction;
-            point.y = a.y + (b.y - a.y) * fraction;
-            point.z = plane;
-            if (total >= GDI_MAX_POLY) return 0;
-            out[total++] = point;
-        }
-        if (b_inside)
-        {
-            if (total >= GDI_MAX_POLY) return 0;
-            out[total++] = b;
-        }
-        a = b;
-        a_inside = b_inside;
-    }
-    return total;
-}
-
+/* Raw callers, including clipping fixtures, never borrow packet caches. */
 static int gdi_prepare_polygon(unsigned int point_count,
                                const unsigned int *indices,
                                unsigned int index_count, POINT *destination)
 {
-    Gdi_float_point float_a[GDI_MAX_POLY], float_b[GDI_MAX_POLY];
     Soft3d_screen_point screen[GDI_MAX_POLY];
-    float focal, projected_x, projected_y;
+    Soft3d_project_cache TG_HUGE *cache;
     int i, count;
     if (indices == NULL || destination == NULL ||
         point_count == 0U || point_count > GDI_MAX_VERTICES ||
         (index_count != 3U && index_count != 4U)) return 0;
     for (i = 0; i < (int)index_count; ++i)
         if (indices[i] >= point_count) return 0;
+    cache = gdi_packet_active ? gdi_project_cache : NULL;
     if (gdi_has_fpu)
-    {
-        for (i = 0; i < (int)index_count; ++i)
-            float_a[i] = gdi_float_points[indices[i]];
-        count = gdi_clip_float_z(float_a, (int)index_count, float_b,
-                                 -(float)GLOBE_NEAR_DISTANCE, FALSE);
-        if (count < 3) return 0;
-        count = gdi_clip_float_z(float_b, count, float_a,
-                                 -(float)GLOBE_FAR_DISTANCE, TRUE);
-        if (count < 3) return 0;
-        focal = (float)drv_win_height * (float)GLOBE_FOCAL_SCALE;
-        for (i = 0; i < count; ++i)
-        {
-            projected_x = (float)drv_win_width / 2.0f +
-                           float_a[i].x * focal / -float_a[i].z;
-            projected_y = (float)drv_win_height / 2.0f -
-                           float_a[i].y * focal / -float_a[i].z;
-            /* Bound conversion and the shared integer clipper's deltas,
-             * including nonfinite results from invalid external vertices. */
-            if (!(projected_x >= -134217727.0 && projected_x <= 134217727.0 &&
-                  projected_y >= -134217727.0 && projected_y <= 134217727.0))
-                return 0;
-            screen[i].x = (long)projected_x;
-            screen[i].y = (long)projected_y;
-        }
-    }
+        count = soft3d_float_project_cached(gdi_float_points, point_count,
+                         indices, index_count, drv_win_width, drv_win_height,
+                         SOFT3D_FLOAT_SINGLE, cache, screen);
     else
-        count = soft3d_fixed_project_polygon(gdi_fixed_points, point_count,
-                                             indices, index_count,
-                                             drv_win_width, drv_win_height, screen);
+        count = soft3d_fixed_project_cached(gdi_fixed_points, point_count,
+                         indices, index_count, drv_win_width, drv_win_height,
+                         cache, screen);
     count = soft3d_finish_polygon(screen, count, drv_win_width, drv_win_height);
     for (i = 0; i < count; ++i)
     {
@@ -565,9 +533,9 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                    const unsigned int TG_HUGE *indices,
                                    const unsigned char TG_HUGE *colors)
 {
-    unsigned int i, color, corner, quad_indices[4];
-    int row, facet, total, points, j;
-    float source[3];
+    unsigned int i, color, corner, quad_indices[4], reuse_count;
+    int facet, total, points, j, transformed;
+    Drv_quad_context context;
     HBRUSH previous, brush;
     HDC dc;
     dc = gdi_draw_dc();
@@ -580,31 +548,32 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         drv_abort_frame("quad batch or index is out of range");
         return;
     }
+    reuse_count = 0U;
+    if (drv_quadbatch_context(vertex_count, vertices, &context) &&
+        context.reuse_row && context.sequence == gdi_packet_sequence + 1UL &&
+        vertex_count == gdi_packet_count)
+        reuse_count = vertex_count / 2U;
     if (gdi_has_fpu)
+        transformed = soft3d_float_transform_reuse(gdi_float_matrix,
+                         vertex_count, vertices, gdi_float_points, reuse_count,
+                         SOFT3D_FLOAT_SINGLE);
+    else
+        transformed = soft3d_fixed_transform_reuse(gdi_fixed_matrix,
+                         vertex_count, vertices, gdi_fixed_points, reuse_count);
+    if (!transformed)
     {
-        for (i = 0; i < vertex_count; ++i)
-        {
-            source[0] = vertices[i].x;
-            source[1] = vertices[i].y;
-            source[2] = vertices[i].z;
-            for (row = 0; row < 3; ++row)
-            {
-                float transformed = gdi_float_matrix[row][0] * source[0] +
-                                    gdi_float_matrix[row][1] * source[1] +
-                                    gdi_float_matrix[row][2] * source[2];
-                if (row == 0) gdi_float_points[i].x = transformed;
-                if (row == 1) gdi_float_points[i].y = transformed;
-                if (row == 2) gdi_float_points[i].z = transformed - (float)GLOBE_VIEW_DISTANCE;
-            }
-        }
-    }
-    else if (!soft3d_fixed_transform(gdi_fixed_matrix, vertex_count, vertices,
-                                      gdi_fixed_points))
-    {
+        gdi_packet_sequence = 0UL;
+        gdi_packet_count = 0U;
         gdi_frame_failed = TRUE;
-        drv_abort_frame("fixed-point coordinate is out of range");
+        drv_abort_frame("coordinate is out of range");
         return;
     }
+    if (gdi_project_cache != NULL)
+        (void)soft3d_project_cache_begin(gdi_project_cache, vertex_count,
+                         drv_win_width, drv_win_height, reuse_count);
+    gdi_packet_sequence = context.sequence;
+    gdi_packet_count = vertex_count;
+    gdi_packet_active = TRUE;
     for (color = 0; color < 256; ++color) gdi_color_head[color] = -1;
     for (i = 0; i < quad_count; ++i)
     {
@@ -618,6 +587,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         gdi_color_head[color] = (int)i;
         ++globe_quads_num_vis;
     }
+    gdi_packet_active = FALSE;
     for (color = 0; color < 256; ++color)
     {
         total = points = 0;

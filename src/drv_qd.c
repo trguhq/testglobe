@@ -75,6 +75,10 @@ static unsigned long qd_auto_tick;
 static Rect qd_screen;
 static long qd_fixed_matrix[3][3];
 static Soft3d_fixed_point qd_fixed_points[QD_MAX_VERTICES];
+static Soft3d_project_cache *qd_project_cache;
+static unsigned long qd_packet_sequence;
+static unsigned int qd_packet_count;
+static int qd_packet_active;
 /* A native call may dispatch an event while a packet borrows mesh data.
  * Copy bounded events; process them only at the outer event-loop boundary. */
 #define QD_PENDING_EVENTS 8
@@ -147,6 +151,11 @@ static void qd_dispose_palette(void)
 void drv_release_optional(void)
 {
     qd_finish_render();
+    drv_free_items(qd_project_cache);
+    qd_project_cache = NULL;
+    qd_packet_active = FALSE;
+    qd_packet_sequence = 0UL;
+    qd_packet_count = 0U;
     qd_dispose_buffer();
     if (qd_pattern != NULL) DisposePixPat(qd_pattern);
     qd_pattern = NULL;
@@ -167,6 +176,11 @@ static void qd_cleanup(void)
     qd_pending_mouse = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     qd_finish_render();
+    drv_free_items(qd_project_cache);
+    qd_project_cache = NULL;
+    qd_packet_active = FALSE;
+    qd_packet_sequence = 0UL;
+    qd_packet_count = 0U;
     qd_dispose_buffer();
     if (qd_pattern != NULL) DisposePixPat(qd_pattern);
     qd_pattern = NULL;
@@ -248,6 +262,10 @@ void drv_init(int *argc, char **argv)
     AppendMenu(qd_file_menu, quit_item);
     InsertMenu(qd_file_menu, 0);
     DrawMenuBar();
+    if (qd_project_cache == NULL)
+        qd_project_cache = (Soft3d_project_cache *)drv_alloc_items(
+            1UL, sizeof(Soft3d_project_cache));
+    soft3d_project_cache_reset(qd_project_cache);
     qd_running = TRUE;
     qd_active = TRUE;
 }
@@ -452,6 +470,10 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 
 static void qd_set_transform(void)
 {
+    qd_packet_active = FALSE;
+    qd_packet_sequence = 0UL;
+    qd_packet_count = 0U;
+    soft3d_project_cache_reset(qd_project_cache);
     if (qd_has_fpu)
     {
         if (!qd_fpu_prepare(&drv_rot_x, &drv_rot_y))
@@ -466,14 +488,16 @@ static int qd_prepare_polygon(const unsigned int *indices, unsigned int count,
                                Point *destination)
 {
     Qd_screen_point screen[QD_MAX_POLY];
+    Soft3d_project_cache *cache;
     int i, projected_count;
+    cache = qd_packet_active ? qd_project_cache : NULL;
     if (qd_has_fpu)
-        projected_count = qd_fpu_project_polygon(indices, count,
-                               drv_win_width, drv_win_height, screen);
+        projected_count = qd_fpu_project_cached(indices, count,
+                               drv_win_width, drv_win_height, cache, screen);
     else
-        projected_count = soft3d_fixed_project_polygon(qd_fixed_points, vertex_count,
+        projected_count = soft3d_fixed_project_cached(qd_fixed_points, vertex_count,
                                      indices, count,
-                                     drv_win_width, drv_win_height, screen);
+                                     drv_win_width, drv_win_height, cache, screen);
     projected_count = soft3d_finish_polygon(screen, projected_count,
                                             drv_win_width, drv_win_height);
     for (i = 0; i < projected_count; ++i)
@@ -564,21 +588,41 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                     const unsigned char TG_HUGE *colors)
 {
     Point projected[QD_MAX_POLY];
-    unsigned int i, j, corners[4];
-    int point, total;
+    unsigned int i, j, corners[4], reuse_count;
+    int point, total, transformed;
+    Drv_quad_context context;
     PolyHandle polygon;
     if (!qd_ready || drv_frame_failed || vertex_count == 0 || quad_count == 0 || vertices == NULL ||
         indices == NULL || colors == NULL) return;
     if (!drv_validate_quadbatch(vertex_count, quad_count, indices))
         qd_error("QuickDraw quad batch or vertex index is out of range");
-    if (qd_has_fpu) qd_fpu_transform(vertex_count, vertices);
-    else if (!soft3d_fixed_transform(qd_fixed_matrix, vertex_count, vertices,
-                                      qd_fixed_points))
-        qd_error("QuickDraw fixed path supports radius up to 1000");
+    reuse_count = 0U;
+    if (drv_quadbatch_context(vertex_count, vertices, &context) &&
+        context.reuse_row && context.sequence == qd_packet_sequence + 1UL &&
+        vertex_count == qd_packet_count)
+        reuse_count = vertex_count / 2U;
+    if (qd_has_fpu)
+        transformed = qd_fpu_transform_reuse(vertex_count, vertices, reuse_count);
+    else
+        transformed = soft3d_fixed_transform_reuse(qd_fixed_matrix,
+                             vertex_count, vertices, qd_fixed_points, reuse_count);
+    if (!transformed)
+    {
+        qd_packet_sequence = 0UL;
+        qd_packet_count = 0U;
+        qd_error("QuickDraw coordinate is out of range");
+    }
+    if (qd_project_cache != NULL)
+        (void)soft3d_project_cache_begin(qd_project_cache, vertex_count,
+                             drv_win_width, drv_win_height, reuse_count);
+    qd_packet_sequence = context.sequence;
+    qd_packet_count = vertex_count;
     for (i = 0; i < quad_count; ++i)
     {
         for (j = 0; j < 4U; ++j) corners[j] = indices[i * 4U + j];
+        qd_packet_active = TRUE;
         total = qd_prepare_polygon(corners, 4U, vertex_count, projected);
+        qd_packet_active = FALSE;
         if (total == 0) continue;
         polygon = OpenPoly();
         if (polygon == NULL)

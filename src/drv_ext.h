@@ -164,6 +164,27 @@ extern void drv_expand_tristrip_uv(unsigned int count,
 extern int drv_validate_quadbatch(unsigned int vertex_count,
                                    unsigned int quad_count,
                                    const unsigned int TG_HUGE *indices);
+/* A scoped submission identifies adjacent latitude rows without retaining
+ * pointers to the caller's reused packet storage. A nonzero sequence is
+ * valid only during the matching draw callback. When reuse_row is true,
+ * previous odd vertices become current even vertices. Drivers must also
+ * require consecutive successful sequences, equal packet sizes, and an
+ * unchanged transform/viewport before retaining transformed/projected data. */
+typedef struct Drv_quad_context
+{
+    unsigned long sequence;
+    unsigned int vertex_count;
+    int reuse_row;
+} Drv_quad_context;
+extern int drv_quadbatch_context(unsigned int vertex_count,
+                                  const Vertex TG_HUGE *vertices,
+                                  Drv_quad_context *context);
+extern void drv_submit_quadbatch(unsigned int vertex_count,
+                                  const Vertex TG_HUGE *vertices,
+                                  unsigned int quad_count,
+                                  const unsigned int TG_HUGE *indices,
+                                  const unsigned char TG_HUGE *colors,
+                                  int reuse_row);
 extern void drv_submit_quad_as_batch(Vertex TG_HUGE *first,
                                       Vertex TG_HUGE *second,
                                       Vertex TG_HUGE *third,

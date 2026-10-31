@@ -106,6 +106,169 @@ static void test_soft3d_packet_bounds(void)
                                         indices, 4U, 640, 480, points) == 4);
 }
 
+static void test_soft3d_cached_packets(void)
+{
+    Soft3d_fixed_point camera[6], transformed[6], expected[6];
+    Soft3d_screen_point cached[SOFT3D_MAX_POLY], raw[SOFT3D_MAX_POLY];
+    Soft3d_project_cache cache;
+    Vertex vertices[6];
+    unsigned int first[4], second[4];
+    long matrix[3][3];
+    float rotation_x = 0.0f, rotation_y = 180.0f;
+    unsigned int i, j;
+    int count, raw_count;
+    first[0] = 0U; first[1] = 1U; first[2] = 3U; first[3] = 2U;
+    second[0] = 2U; second[1] = 3U; second[2] = 5U; second[3] = 4U;
+    for (i = 0; i < 6U; ++i)
+    {
+        camera[i].x = ((long)(i / 2U) - 1L) * 1600L;
+        camera[i].y = (i & 1U) == 0U ? 1600L : -1600L;
+        camera[i].z = -16000L;
+    }
+    soft3d_project_cache_reset(&cache);
+    assert(soft3d_project_cache_begin(&cache, 6U, 640U, 480U, 0U));
+    count = soft3d_fixed_project_cached(camera, 6U, first, 4U,
+                                          640U, 480U, &cache, cached);
+    raw_count = soft3d_fixed_project_polygon(camera, 6U, first, 4U,
+                                              640U, 480U, raw);
+    assert(count == raw_count && count == 4);
+    for (i = 0; i < 4U; ++i)
+        assert(cached[i].x == raw[i].x && cached[i].y == raw[i].y);
+    for (i = 0; i < 4U; ++i) assert(cache.valid[i] == 1U);
+    assert(cache.valid[4] == 0U && cache.valid[5] == 0U);
+    assert(soft3d_fixed_project_cached(camera, 6U, second, 4U,
+                                        640U, 480U, &cache, cached) == 4);
+    for (i = 0; i < 6U; ++i) assert(cache.valid[i] == 1U);
+
+    /* Removing the optional cache or calling with a different viewport
+     * must produce the uncached result, without consuming stale pixels. */
+    count = soft3d_fixed_project_cached(camera, 6U, first, 4U,
+                                         320U, 240U, &cache, cached);
+    raw_count = soft3d_fixed_project_polygon(camera, 6U, first, 4U,
+                                              320U, 240U, raw);
+    assert(count == raw_count && count == 4);
+    for (i = 0; i < 4U; ++i)
+        assert(cached[i].x == raw[i].x && cached[i].y == raw[i].y);
+    assert(cache.width == 640U && cache.height == 480U);
+    assert(soft3d_fixed_project_cached(camera, 6U, first, 4U,
+                                        320U, 240U, NULL, cached) == raw_count);
+    for (i = 0; i < 4U; ++i)
+        assert(cached[i].x == raw[i].x && cached[i].y == raw[i].y);
+
+    /* Explicit band continuity retains only the previous bottom row;
+     * changing viewport dimensions invalidates every retained projection. */
+    for (i = 0; i < 3U; ++i) raw[i] = cache.screen[2U * i + 1U];
+    assert(soft3d_project_cache_begin(&cache, 6U, 640U, 480U, 3U));
+    for (i = 0; i < 3U; ++i)
+    {
+        assert(cache.valid[2U * i] == 1U && cache.valid[2U * i + 1U] == 0U);
+        assert(cache.screen[2U * i].x == raw[i].x &&
+               cache.screen[2U * i].y == raw[i].y);
+    }
+    assert(soft3d_project_cache_begin(&cache, 6U, 320U, 240U, 3U));
+    for (i = 0; i < 6U; ++i) assert(cache.valid[i] == 0U);
+    assert(!soft3d_project_cache_begin(&cache, 6U, 320U, 240U, 2U));
+    assert(cache.count == 0U);
+    assert(!soft3d_project_cache_begin(&cache, SOFT3D_MAX_VERTICES + 1U,
+                                       320U, 240U, 0U));
+    assert(!soft3d_project_cache_begin(NULL, 6U, 320U, 240U, 0U));
+
+    /* A packet can end before every vertex has needed a projection. Only
+     * initialized bottom-row entries may survive into the following band. */
+    assert(soft3d_project_cache_begin(&cache, 6U, 640U, 480U, 0U));
+    assert(soft3d_fixed_project_cached(camera, 6U, first, 4U,
+                                        640U, 480U, &cache, cached) == 4);
+    assert(soft3d_project_cache_begin(&cache, 6U, 640U, 480U, 3U));
+    assert(cache.valid[0] == 1U && cache.valid[2] == 1U && cache.valid[4] == 0U);
+    for (i = 1U; i < 6U; i += 2U) assert(cache.valid[i] == 0U);
+
+    /* Reused camera rows match a complete transform exactly. Row validity
+     * is a stream-owner contract, but every new input is still validated. */
+    assert(soft3d_fixed_prepare(matrix, &rotation_x, &rotation_y));
+    for (i = 0; i < 6U; ++i)
+    {
+        vertices[i].x = (float)((int)(i / 2U) - 1) * 100.0f;
+        vertices[i].y = (i & 1U) == 0U ? 100.0f : 0.0f;
+        vertices[i].z = 500.0f;
+    }
+    assert(soft3d_fixed_transform(matrix, 6U, vertices, transformed));
+    for (i = 0; i < 3U; ++i)
+    {
+        vertices[2U * i] = vertices[2U * i + 1U];
+        vertices[2U * i + 1U].y = -100.0f;
+    }
+    assert(soft3d_fixed_transform(matrix, 6U, vertices, expected));
+    assert(soft3d_fixed_transform_reuse(matrix, 6U, vertices, transformed, 3U));
+    for (i = 0; i < 6U; ++i)
+        assert(transformed[i].x == expected[i].x &&
+               transformed[i].y == expected[i].y &&
+               transformed[i].z == expected[i].z);
+    assert(!soft3d_fixed_transform_reuse(matrix, 6U, vertices, transformed, 2U));
+    vertices[0].x = 1001.0f;
+    assert(!soft3d_fixed_transform_reuse(matrix, 6U, vertices, transformed, 3U));
+
+    /* A late bad vertex leaves a partial camera packet. The owner restarts
+     * without row reuse; cache invalidation must also discard earlier pixels. */
+    vertices[0].x = -100.0f;
+    assert(soft3d_fixed_transform(matrix, 6U, vertices, transformed));
+    assert(soft3d_project_cache_begin(&cache, 6U, 640U, 480U, 0U));
+    assert(soft3d_fixed_project_cached(transformed, 6U, first, 4U,
+                                        640U, 480U, &cache, cached) == 4);
+    for (i = 0; i < 3U; ++i)
+    {
+        vertices[2U * i] = vertices[2U * i + 1U];
+        vertices[2U * i + 1U].y = -200.0f;
+    }
+    vertices[5].x = 1001.0f;
+    assert(!soft3d_fixed_transform_reuse(matrix, 6U, vertices, transformed, 3U));
+    vertices[5].x = 100.0f;
+    assert(soft3d_fixed_transform(matrix, 6U, vertices, expected));
+    assert(soft3d_fixed_transform_reuse(matrix, 6U, vertices, transformed, 0U));
+    for (i = 0; i < 6U; ++i)
+        assert(transformed[i].x == expected[i].x &&
+               transformed[i].y == expected[i].y && transformed[i].z == expected[i].z);
+    soft3d_project_cache_reset(&cache);
+    assert(soft3d_project_cache_begin(&cache, 6U, 640U, 480U, 0U));
+    for (i = 0; i < 6U; ++i) assert(cache.valid[i] == 0U);
+    count = soft3d_fixed_project_cached(transformed, 6U, first, 4U,
+                                         640U, 480U, &cache, cached);
+    raw_count = soft3d_fixed_project_polygon(expected, 6U, first, 4U,
+                                              640U, 480U, raw);
+    assert(count == raw_count && count == 4);
+    for (i = 0; i < 4U; ++i)
+        assert(cached[i].x == raw[i].x && cached[i].y == raw[i].y);
+
+    /* A depth-plane intersection bypasses original-vertex projections.
+     * The fallback preserves the complete clipped polygon and its order. */
+    for (i = 0; i < 4U; ++i)
+    {
+        first[i] = i;
+        camera[i].x = i < 2U ? -8L : 8L;
+        camera[i].y = i == 0U || i == 3U ? 8L : -8L;
+        camera[i].z = i == 0U || i == 3U ? -8L : -32L;
+    }
+    assert(soft3d_project_cache_begin(&cache, 4U, 640U, 480U, 0U));
+    count = soft3d_fixed_project_cached(camera, 4U, first, 4U,
+                                         640U, 480U, &cache, cached);
+    raw_count = soft3d_fixed_project_polygon(camera, 4U, first, 4U,
+                                             640U, 480U, raw);
+    assert(count == raw_count && count == 4);
+    for (i = 0; i < (unsigned int)count; ++i)
+        assert(cached[i].x == raw[i].x && cached[i].y == raw[i].y);
+    assert(soft3d_fixed_project_cached(camera, 4U, first, 4U,
+                                        640U, 480U, NULL, cached) == raw_count);
+    for (i = 0; i < (unsigned int)count; ++i)
+        assert(cached[i].x == raw[i].x && cached[i].y == raw[i].y);
+    for (i = 0; i < 4U; ++i) assert(cache.valid[i] == 0U);
+    for (i = 0; i < SOFT3D_MAX_POLY; ++i)
+        cached[i].x = cached[i].y = 123456L;
+    first[3] = 4U;
+    assert(soft3d_fixed_project_cached(camera, 4U, first, 4U,
+                                       640U, 480U, &cache, cached) == 0);
+    for (j = 0; j < SOFT3D_MAX_POLY; ++j)
+        assert(cached[j].x == 123456L && cached[j].y == 123456L);
+}
+
 static void test_soft3d_shared_pipeline(void)
 {
     Soft3d_screen_point points[SOFT3D_MAX_POLY], saved;
@@ -158,5 +321,6 @@ static void test_soft3d_shared_pipeline(void)
     assert(soft3d_finish_polygon(points, 4, 32767, 32767) == 4);
     test_soft3d_quad_projection();
     test_soft3d_packet_bounds();
+    test_soft3d_cached_packets();
 }
 #endif

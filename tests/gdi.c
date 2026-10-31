@@ -919,6 +919,66 @@ static void check_quad_batches(void)
     puts("PASS GDI quad packets: arbitrary shared-vertex indices, exact colors/winding, partial and 64-quad batches, native palette grouping and individual-quad compatibility");
 }
 
+/* Compare exact native polygon multisets: packet ordering can change, but
+ * sharing transformed/projected rows must not change a rounded coordinate,
+ * palette index, pole triangle, or clipped silhouette. */
+static int compare_recorded(const void *left, const void *right)
+{
+    const RecordedPolygon *a = (const RecordedPolygon *)left;
+    const RecordedPolygon *b = (const RecordedPolygon *)right;
+    int i;
+    if (a->color != b->color) return a->color < b->color ? -1 : 1;
+    if (a->count != b->count) return a->count < b->count ? -1 : 1;
+    for (i = 0; i < a->count; ++i) {
+        if (a->points[i].x != b->points[i].x)
+            return a->points[i].x < b->points[i].x ? -1 : 1;
+        if (a->points[i].y != b->points[i].y)
+            return a->points[i].y < b->points[i].y ? -1 : 1;
+    }
+    return 0;
+}
+
+static void check_stream_equivalence(void)
+{
+    static RecordedPolygon individual[512];
+    static const unsigned int widths[4] = { 640U, 320U, 97U, 800U };
+    static const unsigned int heights[4] = { 480U, 240U, 480U, 120U };
+    static const float pitch[4] = { 0.0f, 19.0f, 89.75f, 247.0f };
+    static const float yaw[4] = { 180.0f, 37.0f, 179.5f, 121.0f };
+    unsigned int size, pose, expected, i, old_width, old_height;
+    int old_longitude;
+    float old_x, old_y;
+    old_width = drv_win_width; old_height = drv_win_height;
+    old_longitude = globe_longitude;
+    old_x = drv_rot_x; old_y = drv_rot_y;
+    assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
+    for (size = 0; size < 4U; ++size) {
+        gdi_resize((int)widths[size], (int)heights[size]);
+        for (pose = 0; pose < 4U; ++pose) {
+            drv_rot_x = pitch[pose]; drv_rot_y = yaw[pose];
+            drv_frame_failed = gdi_frame_failed = gdi_restart_frame = FALSE;
+            gdi_set_transform();
+            recorded_count = 0;
+            globe_draw_quads();
+            assert(!drv_frame_failed && recorded_count <= 512U);
+            expected = recorded_count;
+            qsort(recorded, expected, sizeof(recorded[0]), compare_recorded);
+            memcpy(individual, recorded, expected * sizeof(recorded[0]));
+            /* The previous individual calls must not establish row reuse. */
+            recorded_count = 0;
+            globe_draw_quadbatches();
+            assert(!drv_frame_failed && recorded_count == expected);
+            qsort(recorded, recorded_count, sizeof(recorded[0]), compare_recorded);
+            for (i = 0; i < expected; ++i)
+                assert(compare_recorded(individual + i, recorded + i) == 0);
+        }
+    }
+    drv_rot_x = old_x; drv_rot_y = old_y;
+    assert(globe_set_resolution(old_longitude, -1, GLOBE_RADIUS));
+    gdi_resize((int)old_width, (int)old_height);
+    puts("PASS GDI optimized stream: exact individual/batched polygon tuples and colors across poses, poles, resize scales and narrow clipped viewports");
+}
+
 static LPARAM packed_coordinates(int x, int y)
 {
     return (LPARAM)((DWORD)(WORD)x | ((DWORD)(WORD)y << 16));
@@ -1091,6 +1151,7 @@ static int run_contract(void)
     window_callback(main_window, WM_CHAR, '2', 0);
     assert(globe_longitude == 64);
     check_quad_batches();
+    check_stream_equivalence();
     assert(polypolygon_calls > 0 && polygon_calls == 0);
     check_clipping();
     puts("PASS GDI rendering: five Earth resolutions, huge allocations/resources, independent pose checks, bounded palette batches, near/far/screen clipping");

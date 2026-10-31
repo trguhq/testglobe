@@ -107,7 +107,7 @@ GDI_LIBS = llibcew.lib libw.lib
 GDI_LDFLAGS = /NOD /ALIGN:16
 GDI_RCFLAGS = -t
 GDI_DATA = ..\data
-GDI_OBJECTS = g_drv.obj g_gdi.obj g_err.obj g_globe.obj g_main.obj g_soft.obj
+GDI_OBJECTS = g_drv.obj g_gdi.obj g_err.obj g_globe.obj g_main.obj g_soft.obj g_float.obj
 GDI_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_gdi.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
@@ -126,6 +126,28 @@ MPW_EXEC = mpw-make
 QD_MAKEFILE = ../Makefile.mpw
 QD_SOURCE = :
 QD_DEFINES = -d SEG68 -d DRV_QD -d DRV -d NO_SINF
+
+# VBCC cross-build for AmigaOS 1.3 and later. The kick13 runtime and msoft
+# keep startup and baseline floating point usable on an original 68000.
+# Newer NDK headers are needed for version-guarded display/palette queries.
+# Override AMI_CPPFLAGS when those headers are outside the configured path.
+AMI_CC = vc
+AMI_CONFIG = +kick13
+AMI_CFLAGS = -O1 -cpu=68000 -fpu=0 -rmcfg-amiga-softfloat
+AMI_020FLAGS = -O1 -cpu=68020 -fpu=0 -rmcfg-amiga-softfloat
+# Basic FPU arithmetic also runs on 68040/68060; the Amiga projection
+# helper avoids FINTRZ and transcendental opcodes. Keep the pointer-only ABI.
+AMI_FPUFLAGS = -O1 -cpu=68020 -fpu=68881 -rmcfg-amiga-softfloat
+AMI_CPPFLAGS =
+AMI_DEFINES = -DFLAT -DDRV_AMI -DDRV -DNO_SINF
+AMI_LDFLAGS =
+AMI_LIBS = -lmsoft -lamiga
+AMI_PYTHON = python3
+AMI_OBJECTS = am_drv.o am_ami.o am_data.o am_err.o am_globe.o am_main.o am_soft.o am_020.o am_float.o
+AMI_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
+    $(SRC)/drv_ext.h $(SRC)/drv_ami.h $(SRC)/err_ext.h \
+    $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h $(SRC)/e_cmap.h \
+    $(SRC)/earthres.h $(SRC)/soft3d.h
 
 # Binary maps are build inputs only. Keep the helper independent of any SDK.
 # A checked-in src/e_saved.c is available for compilers used outside make.
@@ -415,6 +437,50 @@ g_soft.obj: $(SRC)\soft3d.c $(GDI_HEADERS)
 	@echo -Fog_soft.obj $(SRC)\soft3d.c >> g_soft.rsp
 	$(GDI_CC) @g_soft.rsp
 
+g_float.obj: $(SRC)\soft3fp.c $(GDI_HEADERS)
+	@echo $(GDI_DEFINES) > g_float.rsp
+	@echo $(GDI_CFLAGS) $(GDI_CPPFLAGS) -c >> g_float.rsp
+	@echo -Fog_float.obj $(SRC)\soft3fp.c >> g_float.rsp
+	$(GDI_CC) @g_float.rsp
+
+# Resources are skipped by LoadSeg and read from this executable on demand.
+amiga: testglobe-amiga testglobe-amiga.info
+
+testglobe-amiga: $(AMI_OBJECTS) $(SRC)/ami_pack.py $(EARTH_INPUTS) FORCE
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_LDFLAGS) $(AMI_OBJECTS) $(AMI_LIBS) -o am_link.hunk
+	$(AMI_PYTHON) $(SRC)/ami_pack.py am_link.hunk $(EARTH_DATA) testglobe-amiga
+
+testglobe-amiga.info: $(SRC)/ami_pack.py
+	$(AMI_PYTHON) $(SRC)/ami_pack.py --icon testglobe-amiga.info
+
+am_drv.o: $(SRC)/drv.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/drv.c -o am_drv.o
+
+am_ami.o: $(SRC)/drv_ami.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/drv_ami.c -o am_ami.o
+
+am_data.o: $(SRC)/ami_data.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/ami_data.c -o am_data.o
+
+am_err.o: $(SRC)/err.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/err.c -o am_err.o
+
+am_globe.o: $(SRC)/globe.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/globe.c -o am_globe.o
+
+am_main.o: $(SRC)/main.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/main.c -o am_main.o
+
+am_soft.o: $(SRC)/soft3d.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/soft3d.c -o am_soft.o
+
+# These objects are entered only after Exec CPU/FPU detection.
+am_020.o: $(SRC)/soft3d.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_020FLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -DSOFT3D_TRANSFORM_020 -I$(SRC) -c $(SRC)/soft3d.c -o am_020.o
+
+am_float.o: $(SRC)/soft3fp.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_FPUFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/soft3fp.c -o am_float.o
+
 # Keep the Macintosh object/resource format out of the other builds.
 quickdraw: FORCE
 	$(MPW_EXEC) -f $(QD_MAKEFILE) -d "QD_SRC=$(QD_SOURCE)" -d "QD_DEFINES=$(QD_DEFINES)" quickdraw
@@ -427,12 +493,13 @@ clean-quickdraw:
 	-$(RM) q_main.o
 	-$(RM) q_fpu.o
 	-$(RM) q_soft.o
+	-$(RM) q_float.o
 	-$(RM) TestglobeQD
 
 # Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw clean-earth-data
+clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw clean-amiga clean-earth-data
 	-$(RM) testglobe
 
 clean-opengl:
@@ -513,15 +580,31 @@ clean-gdi:
 	-$(RM) g_globe.obj
 	-$(RM) g_main.obj
 	-$(RM) g_soft.obj
+	-$(RM) g_float.obj
 	-$(RM) g_drv.rsp
 	-$(RM) g_gdi.rsp
 	-$(RM) g_err.rsp
 	-$(RM) g_globe.rsp
 	-$(RM) g_main.rsp
 	-$(RM) g_soft.rsp
+	-$(RM) g_float.rsp
 	-$(RM) g_link.rsp
 	-$(RM) g_earth.res
 	-$(RM) testglob.exe
+
+clean-amiga:
+	-$(RM) am_drv.o
+	-$(RM) am_ami.o
+	-$(RM) am_data.o
+	-$(RM) am_err.o
+	-$(RM) am_globe.o
+	-$(RM) am_main.o
+	-$(RM) am_soft.o
+	-$(RM) am_020.o
+	-$(RM) am_float.o
+	-$(RM) am_link.hunk
+	-$(RM) testglobe-amiga
+	-$(RM) testglobe-amiga.info
 
 # Build copies are disposable; preserve the checked-in e_saved.c and backups.
 clean-earth-data:

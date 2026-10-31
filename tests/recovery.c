@@ -142,6 +142,18 @@ void drv_draw_quadbatch_flat_color(unsigned int count,
     ++callbacks;
     drv_abort_frame("injected submission failure");
 }
+/* This scene-only harness substitutes the submission service; scoped
+ * packet metadata is exercised with production drv.c in quad_batches.c. */
+void drv_submit_quadbatch(unsigned int count,
+                           const Vertex TG_HUGE *vertices,
+                           unsigned int quads,
+                           const unsigned int TG_HUGE *indices,
+                           const unsigned char TG_HUGE *colors,
+                           int reuse_row)
+{
+    assert(!reuse_row);
+    drv_draw_quadbatch_flat_color(count, vertices, quads, indices, colors);
+}
 #endif
 
 static void reset_faults(void)

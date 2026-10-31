@@ -466,9 +466,13 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                    const unsigned char TG_HUGE *colors)
 {
     unsigned int i;
+    Drv_quad_context context;
     assert(vertex_count == 4U && quad_count == 1U);
     assert(vertices != NULL && indices != NULL && colors != NULL);
     assert(colors[0] == 197U);
+    assert(drv_quadbatch_context(vertex_count, vertices, &context));
+    assert(context.sequence != 0UL && context.vertex_count == vertex_count);
+    assert(!context.reuse_row);
     for (i = 0; i < 4U; ++i)
     {
         assert(indices[i] < vertex_count);
@@ -483,6 +487,7 @@ static void test_quad_helpers(void)
 {
     unsigned int i, indices[256];
     Vertex source[7];
+    Drv_quad_context context;
     for (i = 0; i < 64U; ++i)
     {
         indices[4U * i] = 2U * i;
@@ -512,6 +517,9 @@ static void test_quad_helpers(void)
     for (i = 0; i < 4U; ++i) expected_corners[i] = source[2U * i];
     drv_submit_quad_as_batch(source, source + 2, source + 4, source + 6, 197U);
     assert(quad_calls == 1U);
+    assert(!drv_quadbatch_context(4U, source, &context));
+    assert(context.sequence == 0UL && context.vertex_count == 0U && !context.reuse_row);
+    assert(!drv_quadbatch_context(4U, source, NULL));
     drv_submit_quad_as_batch(NULL, source + 2, source + 4, source + 6, 197U);
     drv_submit_quad_as_batch(source, NULL, source + 4, source + 6, 197U);
     drv_submit_quad_as_batch(source, source + 2, NULL, source + 6, 197U);

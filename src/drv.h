@@ -21,7 +21,7 @@
 #ifndef drv_h
 #define drv_h
 
-#if (defined(DRV_OGL) + defined(DRV_IGL) + defined(DRV_MTX) + defined(DRV_XGL) + defined(DRV_GDI) + defined(DRV_QD)) > 1
+#if (defined(DRV_OGL) + defined(DRV_IGL) + defined(DRV_MTX) + defined(DRV_XGL) + defined(DRV_GDI) + defined(DRV_QD) + defined(DRV_AMI)) > 1
 #error Select only one graphics driver
 #endif
 
@@ -46,13 +46,16 @@
 #ifdef DRV_QD
 #include "drv_qd.h"
 #endif
+#ifdef DRV_AMI
+#include "drv_ami.h"
+#endif
 
 #if !defined(DRV_OGL) && !defined(DRV_IGL) && !defined(DRV_MTX) && \
-    !defined(DRV_XGL) && !defined(DRV_GDI) && !defined(DRV_QD)
+    !defined(DRV_XGL) && !defined(DRV_GDI) && !defined(DRV_QD) && !defined(DRV_AMI)
 #error Select a supported graphics driver through its Makefile target or DRV_ define
 #endif
 
-#if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_MTX) || defined(DRV_XGL) || defined(DRV_GDI) || defined(DRV_QD)
+#if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_MTX) || defined(DRV_XGL) || defined(DRV_GDI) || defined(DRV_QD) || defined(DRV_AMI)
 #if (defined(TRI) + defined(QUAD) + defined(TRISTRIP)) != 1
 #error Select exactly one driver primitive: TRI, QUAD, or TRISTRIP
 #endif
