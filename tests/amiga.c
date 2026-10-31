@@ -89,10 +89,39 @@ static void *rasters[32];
 static ULONG raster_sizes[32];
 static unsigned int display_version = 34;
 static unsigned int pixel_x = 1, pixel_y = 1;
+static unsigned int pubscreen_locks, friend_count, friend_calls;
+static struct BitMap friend_bitmap;
+static unsigned int rtg_backend, rtg_depth, rtg_storage_depth;
+static int friend_failure, pubscreen_failure;
+static int rtg_unknown, rtg_both_libraries, rtg_libraries_native;
+static struct Library cgx_library, p96_library;
+#if AMI_RTG
+static int friend_incompatible;
+static unsigned int cgx_calls, p96_calls, span_calls;
+static int coverage_active;
+static unsigned int coverage[64][64];
+static ULONG coverage_rgb;
+static int extreme_active;
+static const Soft3d_screen_point *extreme_polygon;
+static unsigned int extreme_pixels[32767];
+static int test_inside(const Soft3d_screen_point *, unsigned int,
+                       unsigned int, unsigned int);
+#endif
 
 struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
 {
     assert(!event_outstanding);
+    if (strcmp(name, "cybergraphics.library") == 0 ||
+        strcmp(name, "Picasso96API.library") == 0)
+    {
+        int cgx;
+        cgx = strcmp(name, "cybergraphics.library") == 0;
+        assert(display_version >= 39 && version <= 41);
+        if (rtg_unknown || (!rtg_libraries_native && !rtg_both_libraries &&
+            rtg_backend != (unsigned int)(cgx ? 1 : 2))) return NULL;
+        ++library_count;
+        return cgx ? &cgx_library : &p96_library;
+    }
     assert(version <= display_version);
     ++library_count;
     if (strcmp(name, "graphics.library") == 0) return (struct Library *)&graphics_base;
@@ -130,9 +159,22 @@ LONG GetScreenData(APTR out, ULONG size, ULONG kind, struct Screen *screen)
     (void)screen; assert(size == sizeof(desktop) && kind == WBENCHSCREEN);
     memcpy(out, &desktop, sizeof(desktop)); return 1;
 }
+struct Screen *LockPubScreen(CONST_STRPTR name)
+{
+    assert(display_version >= 36);
+    assert(name == NULL || strcmp(name, "Workbench") == 0);
+    if (pubscreen_failure) return NULL;
+    ++pubscreen_locks; return &desktop;
+}
+void UnlockPubScreen(CONST_STRPTR name, struct Screen *screen)
+{
+    assert(name == NULL || strcmp(name, "Workbench") == 0);
+    assert(screen == &desktop && pubscreen_locks != 0); --pubscreen_locks;
+}
 struct Window *OpenWindow(const struct NewWindow *settings)
 {
-    assert(settings->Type == WBENCHSCREEN && settings->Screen == NULL);
+    assert((settings->Type == WBENCHSCREEN && settings->Screen == NULL) ||
+           (settings->Type == PUBLICSCREEN && settings->Screen == &desktop && pubscreen_locks));
     assert((settings->Flags & (WINDOWSIZING | GIMMEZEROZERO | WINDOWCLOSE)) ==
            (WINDOWSIZING | GIMMEZEROZERO | WINDOWCLOSE));
     assert(settings->IDCMPFlags & NEWSIZE);
@@ -156,6 +198,32 @@ void InitBitMap(struct BitMap *bitmap, LONG depth, ULONG width, ULONG height)
 {
     memset(bitmap, 0, sizeof(*bitmap)); bitmap->Depth = (UBYTE)depth;
     bitmap->BytesPerRow = (UWORD)(((width + 15UL) / 16UL) * 2UL); bitmap->Rows = (UWORD)height;
+}
+struct BitMap *AllocBitMap(ULONG width, ULONG height, ULONG depth, ULONG flags,
+                          const struct BitMap *friend_map)
+{
+    assert(display_version >= 39 && rtg_backend != 0);
+    assert(width == drv_win_width && height == drv_win_height);
+    assert(depth == rtg_depth && friend_map == &desktop.BitMap);
+    assert((flags & BMF_CLEAR) && !(flags & BMF_STANDARD));
+    assert(friend_count == 0); ++friend_calls;
+    if (friend_failure) return NULL;
+    memset(&friend_bitmap, 0xa5, sizeof(friend_bitmap));
+    ++friend_count; return &friend_bitmap;
+}
+void FreeBitMap(struct BitMap *bitmap)
+{
+    assert(display_version >= 39 && bitmap == &friend_bitmap && friend_count == 1);
+    assert(!blitter_busy); --friend_count;
+}
+ULONG GetBitMapAttr(const struct BitMap *bitmap, ULONG attribute)
+{
+    assert(display_version >= 39);
+    assert(bitmap == &desktop.BitMap || (bitmap == &friend_bitmap && friend_count));
+    if (attribute == BMA_FLAGS)
+        return rtg_backend != 0 || rtg_unknown ? 0UL : BMF_STANDARD;
+    assert(attribute == BMA_DEPTH);
+    return rtg_backend != 0 || rtg_unknown ? rtg_storage_depth : bitmap->Depth;
 }
 PLANEPTR AllocRaster(ULONG width, ULONG height)
 {
@@ -240,7 +308,9 @@ void WaitBlit(void) { blitter_busy = 0; }
 void BltBitMapRastPort(const struct BitMap *bitmap, LONG sx, LONG sy,
                       struct RastPort *port, LONG dx, LONG dy, LONG width, LONG height, ULONG minterm)
 {
-    assert(bitmap != NULL && bitmap->Depth == desktop.BitMap.Depth && port == &window_port);
+    assert(bitmap != NULL && port == &window_port);
+    if (rtg_backend) assert(bitmap == &friend_bitmap && friend_count == 1);
+    else assert(bitmap->Depth == desktop.BitMap.Depth);
     assert(sx == 0 && sy == 0 && dx == 0 && dy == 0 && minterm == 0xc0UL);
     assert(width == (LONG)drv_win_width && height == (LONG)drv_win_height);
     ++copy_calls; blitter_busy = 1;
@@ -265,6 +335,76 @@ ULONG GetDisplayInfoData(APTR handle, UBYTE *buffer, ULONG length, ULONG tag, UL
     info = (struct DisplayInfo *)buffer; info->Resolution.x = (WORD)pixel_x; info->Resolution.y = (WORD)pixel_y;
     return sizeof(*info);
 }
+#if AMI_RTG
+ULONG ami_cgx_attr(struct Library *base, struct BitMap *bitmap, ULONG attribute)
+{
+    assert(base == &cgx_library && display_version >= 39);
+    assert(bitmap == &desktop.BitMap || (bitmap == &friend_bitmap && friend_count));
+    if (attribute == AMI_CGX_IS)
+        return rtg_backend == 1 &&
+               !(bitmap == &friend_bitmap && friend_incompatible);
+    assert(rtg_backend == 1);
+    if (attribute == AMI_CGX_BYTES) return (rtg_storage_depth + 7U) / 8U;
+    assert(attribute == AMI_CGX_DEPTH); return rtg_depth;
+}
+ULONG ami_p96_attr(struct Library *base, struct BitMap *bitmap, ULONG attribute)
+{
+    assert(base == &p96_library && display_version >= 39);
+    assert(bitmap == &desktop.BitMap || (bitmap == &friend_bitmap && friend_count));
+    if (attribute == AMI_P96_IS)
+        return rtg_backend == 2 && !(bitmap == &friend_bitmap && friend_incompatible);
+    assert(rtg_backend == 2);
+    if (attribute == AMI_P96_DEPTH) return rtg_storage_depth;
+    assert(attribute == AMI_P96_BITS); return rtg_depth;
+}
+static void record_rgb_fill(struct RastPort *port, unsigned int x0, unsigned int y0,
+                            unsigned int x1, unsigned int y1, ULONG argb)
+{
+    unsigned int x, y;
+    assert(rtg_depth > 8 && port != NULL);
+    assert(port->BitMap == &desktop.BitMap ||
+           (port->BitMap == &friend_bitmap && friend_count));
+    assert(x0 <= x1 && y0 <= y1 && x1 < drv_win_width && y1 < drv_win_height);
+    assert((argb & 0xff000000UL) == 0);
+    if (coverage_active)
+    {
+        assert(x1 < 64 && y1 < 64);
+        assert(argb == coverage_rgb);
+        for (y = y0; y <= y1; ++y)
+            for (x = x0; x <= x1; ++x) ++coverage[y][x];
+    }
+    else if (x0 == 0 && y0 == 0 && x1 + 1U == drv_win_width && y1 + 1U == drv_win_height)
+    { assert(argb == 0); ++rect_calls; }
+    else
+    {
+        assert(y0 == y1);
+        if (extreme_active)
+        {
+            for (x = x0; x <= x1; ++x) assert(test_inside(extreme_polygon, 3, x, y0));
+            extreme_pixels[y0] += x1 - x0 + 1U;
+        }
+        rendered_hash = rendered_hash * 33UL + x0 * 32768UL + x1;
+        rendered_hash = rendered_hash * 33UL + y0;
+        rendered_hash = rendered_hash * 33UL + argb;
+        ++span_calls;
+    }
+}
+ULONG ami_cgx_fill(struct Library *base, struct RastPort *port, UWORD x, UWORD y,
+                   UWORD width, UWORD height, ULONG argb)
+{
+    assert(base == &cgx_library && width && height); ++cgx_calls;
+    record_rgb_fill(port, x, y, x + width - 1U, y + height - 1U, argb);
+    /* The real API documents incorrect counts through v41, and clipped window
+     * draws can legitimately write zero. Neither implies a rendering failure. */
+    return 0;
+}
+void ami_p96_fill(struct Library *base, struct RastPort *port, UWORD x0, UWORD y0,
+                  UWORD x1, UWORD y1, ULONG argb)
+{
+    assert(base == &p96_library); ++p96_calls;
+    record_rgb_fill(port, x0, y0, x1, y1, argb);
+}
+#endif
 BOOL AutoRequest(struct Window *window, struct IntuiText *body, struct IntuiText *positive,
                  struct IntuiText *negative, ULONG good, ULONG bad, WORD width, WORD height)
 {
@@ -292,7 +432,8 @@ static void test_render(void)
     baseline_vertices = enhanced_vertices = fpu_vertices = 0;
     drv_render();
     assert(!drv_frame_failed && !ami_rendering && ami_draw_port == NULL);
-    assert(rendered_count == globe_quads_num_vis);
+    if (rtg_depth > 8) rendered_count = globe_quads_num_vis;
+    else assert(rendered_count == globe_quads_num_vis);
 }
 
 static void test_fpu_integer_conversion(void)
@@ -328,6 +469,182 @@ static void test_fatal_cleanup(void)
     puts("PASS Amiga stack guard: insufficient startup stack reports a native error and closes libraries before exit");
 }
 
+#if AMI_RTG
+/* Independent pixel-centre crossing oracle. The production code converts edge
+ * intersections to integer spans; this tests occupancy one sample at a time. */
+static int test_inside(const Soft3d_screen_point *polygon, unsigned int count,
+                       unsigned int x, unsigned int y)
+{
+    unsigned int i, j;
+    double ax, ay, bx, by, sample_x, sample_y, cross;
+    int inside;
+    /* These integer-valued products remain exact in binary64 even at the
+     * native 32767 coordinate limit, independently of host long width. */
+    inside = 0; sample_x = (double)x * 2.0 + 1.0; sample_y = (double)y * 2.0 + 1.0;
+    for (i = 0, j = count - 1U; i < count; j = i++)
+    {
+        ax = (double)polygon[j].x * 2.0; ay = (double)polygon[j].y * 2.0;
+        bx = (double)polygon[i].x * 2.0; by = (double)polygon[i].y * 2.0;
+        if ((ay > sample_y) == (by > sample_y)) continue;
+        cross = (bx - ax) * (sample_y - ay) - (sample_x - ax) * (by - ay);
+        if ((by > ay && cross > 0) || (by < ay && cross < 0)) inside = !inside;
+    }
+    return inside;
+}
+
+static void test_span_coverage(void)
+{
+    static const Soft3d_screen_point shapes[][8] = {
+        {{5,7}, {40,7}, {40,39}, {5,39}},
+        {{5,7}, {40,7}, {40,39}},
+        {{5,7}, {40,39}, {5,39}},
+        {{0,0}, {63,31}, {0,63}},
+        {{31,0}, {32,63}, {30,63}},
+        {{0,11}, {11,0}, {50,0}, {63,13}, {63,51}, {51,63}, {13,63}, {0,50}},
+        {{5,39}, {40,39}, {40,7}, {5,7}},
+        {{0,0}, {63,63}, {62,62}},
+        /* Rounded silhouette quads may become concave. The upper notch must
+         * stay empty instead of joining the outermost crossings. */
+        {{5,5}, {30,30}, {55,5}, {30,55}}
+    };
+    static const unsigned int lengths[] = {4, 3, 3, 3, 3, 8, 4, 3, 4};
+    Soft3d_screen_point polygon[8];
+    unsigned int saved_width, saved_height, shape, x, y, color, expected;
+    saved_width = drv_win_width; saved_height = drv_win_height;
+    drv_win_width = drv_win_height = 64;
+    ami_draw_port = &window_port; coverage_active = 1;
+    for (shape = 0; shape < sizeof(lengths) / sizeof(lengths[0]); ++shape)
+    {
+        memset(coverage, 0, sizeof(coverage));
+        memcpy(polygon, shapes[shape], sizeof(polygon));
+        coverage_rgb = ((ULONG)earth_cmap[17][0] << 16) |
+                       ((ULONG)earth_cmap[17][1] << 8) | earth_cmap[17][2];
+        assert(ami_fill_polygon(polygon, lengths[shape], 17));
+        for (y = 0; y < 64; ++y) for (x = 0; x < 64; ++x)
+            assert(coverage[y][x] == (unsigned int)test_inside(polygon, lengths[shape], x, y));
+    }
+    /* Complementary triangles own the shared diagonal exactly once. */
+    memset(coverage, 0, sizeof(coverage));
+    for (shape = 1; shape <= 2; ++shape)
+    {
+        memcpy(polygon, shapes[shape], sizeof(polygon));
+        assert(ami_fill_polygon(polygon, 3, 17));
+    }
+    for (y = 0; y < 64; ++y) for (x = 0; x < 64; ++x)
+        assert(coverage[y][x] == (unsigned int)(x >= 5 && x < 40 && y >= 7 && y < 39));
+    /* Every globe index is expanded through the canonical RGB colormap. */
+    memcpy(polygon, shapes[1], sizeof(polygon));
+    for (color = 0; color < 256; ++color)
+    {
+        coverage_rgb = ((ULONG)earth_cmap[color][0] << 16) |
+                       ((ULONG)earth_cmap[color][1] << 8) | earth_cmap[color][2];
+        assert(ami_fill_polygon(polygon, 3, (unsigned char)color));
+    }
+    coverage_active = 0;
+    shape = span_calls;
+    polygon[0].x = -1;
+    assert(!ami_fill_polygon(polygon, 3, 17));
+    assert(!ami_fill_polygon(NULL, 3, 17));
+    assert(!ami_fill_polygon(polygon, 2, 17));
+    assert(!ami_fill_polygon(polygon, AMI_MAX_POLY + 1, 17));
+    assert(span_calls == shape);
+    /* Native signed-word endpoints at the largest supported dimensions. */
+    drv_win_width = drv_win_height = 32767;
+    polygon[0].x = polygon[0].y = 0;
+    polygon[1].x = 32766; polygon[1].y = 32765;
+    polygon[2].x = 32765; polygon[2].y = 32766;
+    extreme_active = 1; extreme_polygon = polygon;
+    memset(extreme_pixels, 0, sizeof(extreme_pixels));
+    assert(ami_fill_polygon(polygon, 3, 17));
+    for (y = 0; y < 32767; ++y)
+    {
+        expected = 0;
+        for (x = y > 2 ? y - 2 : 0; x < 32767 && x <= y + 2; ++x)
+            expected += test_inside(polygon, 3, x, y);
+        assert(extreme_pixels[y] == expected);
+    }
+    extreme_active = 0; extreme_polygon = NULL;
+    drv_win_width = saved_width; drv_win_height = saved_height;
+    ami_draw_port = NULL;
+}
+
+static int test_rtg(int argc, char **argv, const char *mode)
+{
+    unsigned long reference_hash, reference_count;
+    unsigned int i, copies, spans, raster_attempts;
+    unsigned char saved_palette[sizeof(desktop_palette)];
+    drv_ext_init(); globe_init(); drv_init(&argc, argv);
+    if (rtg_unknown || rtg_depth == 12 || pubscreen_failure)
+    {
+        assert(!drv_init_window(0, 0, 0, 0)); ami_cleanup();
+        assert(library_count == 0 && window_count == 0 && raster_count == 0);
+        assert(friend_count == 0 && pubscreen_locks == 0);
+        assert(area_calls == 0 && span_calls == 0 && rect_calls == 0);
+        printf("PASS Amiga %s: unsupported RTG screen is rejected before drawing and releases resources\n", mode);
+        return 0;
+    }
+    assert(drv_init_window(0, 0, 0, 0));
+    assert(ami_rtg == (int)rtg_backend && ami_depth == rtg_depth);
+    assert(pubscreen_locks == 0 && ami_aspect_num == ami_aspect_den);
+    assert(!ami_big_blits && !ami_unsafe_bitmap);
+    assert(drv_bits_per_pixel == rtg_storage_depth);
+    assert(drv_colormapped == (rtg_depth <= 8U));
+    assert(drv_colormap_bits == (rtg_depth > 24U ? 24U : rtg_depth));
+    if (rtg_depth > 8) assert(ami_scratch == NULL && raster_calls == 0);
+    else assert(ami_scratch != NULL && raster_count == 1);
+    assert((friend_failure || friend_incompatible) ? friend_count == 0 : friend_count == 1);
+    assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
+    assert(!drv_texture_avail && !drv_texture_enabled);
+    memcpy(saved_palette, desktop_palette, sizeof(saved_palette));
+    test_render();
+    assert(rendered_count > 20 && text_calls > 0 && strstr(osd_text, "quads"));
+    assert(strstr(osd_text, "RTG"));
+    if (rtg_depth > 8)
+    {
+        assert(span_calls > 20 && area_calls == 0);
+        assert(rtg_backend == 1 ? cgx_calls > 0 && p96_calls == 0 : p96_calls > 0 && cgx_calls == 0);
+        test_span_coverage();
+        test_render();
+    }
+    else assert(area_calls > 20 && span_calls == 0);
+    reference_hash = rendered_hash; reference_count = rendered_count;
+    copies = copy_calls; drv_release_optional();
+    assert(friend_count == 0 && ami_project_cache == NULL);
+    test_render(); assert(copy_calls == copies);
+    assert(rendered_hash == reference_hash && rendered_count == reference_count);
+    /* Native OCS dimensions/stride never constrain an identified RTG screen. */
+    window_record.GZZWidth = 1200; window_record.GZZHeight = 1100;
+    ami_event(NEWSIZE, 0, 0, 0);
+    assert(ami_ready && drv_win_width == 1200 && drv_win_height == 1100);
+    test_render(); assert(rendered_count > 20);
+    window_record.GZZWidth = 320; window_record.GZZHeight = 200;
+    ami_event(NEWSIZE, 0, 0, 0); test_render();
+    spans = span_calls; copies = copy_calls;
+    ami_event(REFRESHWINDOW, 0, 0, 0);
+    assert(span_calls == spans && copy_calls == copies && refresh_count == 0);
+    ami_event(ACTIVEWINDOW, 0, 0, 0); test_render();
+    assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
+    raster_attempts = raster_calls;
+    ami_event(MOUSEBUTTONS, SELECTDOWN, 10, 10); ami_event(MOUSEMOVE, 0, 30, 20);
+    ami_event(MOUSEBUTTONS, SELECTUP, 30, 20);
+    ami_keyboard('1'); test_render();
+    assert(!ami_paused);
+    if (rtg_depth > 8) assert(raster_calls == raster_attempts && ami_scratch == NULL);
+    /* Out-of-range coordinates suppress fills before any native call. */
+    copies = copy_calls; spans = span_calls;
+    window_record.GZZWidth = -32768;
+    ami_event(NEWSIZE, 0, 0, 0); drv_render();
+    assert(!ami_ready && span_calls == spans && copy_calls == copies);
+    window_record.GZZWidth = 320; ami_event(NEWSIZE, 0, 0, 0); test_render();
+    for (i = 0; i < 2; ++i) ami_cleanup();
+    assert(library_count == 0 && window_count == 0 && raster_count == 0);
+    assert(friend_count == 0 && pubscreen_locks == 0 && ami_project_cache == NULL);
+    globe_free();
+    printf("PASS Amiga %s: opaque RTG bitmaps, RGB/palette rendering, exact span coverage, direct fallback, resize and cleanup\n", mode);
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     unsigned int i, saved_palette_size, saved_count, level;
@@ -359,8 +676,42 @@ int main(int argc, char **argv)
     if (strcmp(mode, "aspect") == 0) { display_version = 39; pixel_x = 1; pixel_y = 2; }
     if (strcmp(mode, "backfail") == 0) raster_fail_at = 3;
     if (strcmp(mode, "scratchfail") == 0) raster_fail_at = 1;
+    if (strcmp(mode, "nativeunknown") == 0)
+    {
+        display_version = 39; rtg_unknown = 1; rtg_storage_depth = 32;
+        desktop.BitMap.Depth = 1; desktop.BitMap.BytesPerRow = 65535U;
+    }
+#if AMI_RTG
+    if (strncmp(mode, "cgx", 3) == 0 || strncmp(mode, "p96", 3) == 0 ||
+        strncmp(mode, "rtg", 3) == 0)
+    {
+        display_version = 39;
+        rtg_backend = strncmp(mode, "p96", 3) == 0 ? 2U : 1U;
+        rtg_depth = (unsigned int)atoi(mode + 3);
+        if (rtg_depth == 0) rtg_depth = 32;
+        rtg_storage_depth = rtg_depth == 15 ? 16U : rtg_depth;
+        /* P96 reports 24 useful RGB bits in a 32-bit ARGB bitmap. */
+        if (rtg_backend == 2 && rtg_storage_depth == 32) rtg_depth = 24;
+        rtg_unknown = strcmp(mode, "rtgunknown") == 0;
+        rtg_both_libraries = strcmp(mode, "rtgboth") == 0 || strcmp(mode, "p96both") == 0;
+        friend_failure = strcmp(mode, "rtgbackfail") == 0;
+        friend_incompatible = strcmp(mode, "rtgbadfriend") == 0;
+        pubscreen_failure = strcmp(mode, "rtglockfail") == 0;
+        if (strcmp(mode, "rtgbaddepth") == 0) rtg_depth = rtg_storage_depth = 12;
+        if (strcmp(mode, "rtgnative") == 0)
+        { rtg_libraries_native = 1; rtg_backend = rtg_depth = rtg_storage_depth = 0; }
+        else
+        {
+            desktop.Width = 1600; desktop.Height = 1200;
+            /* RTG bitmaps are opaque. These fields deliberately disagree with
+             * actual depth/stride and exceed OCS limits on an OCS motherboard. */
+            desktop.BitMap.Depth = 1; desktop.BitMap.BytesPerRow = 65535U;
+        }
+    }
+#endif
     graphics_base.LibNode.lib_Version = intuition_base.LibNode.lib_Version = (UWORD)display_version;
-    colormap.Count = (UWORD)(1U << desktop.BitMap.Depth); desktop.ViewPort.ColorMap = &colormap;
+    colormap.Count = rtg_backend ? 256U : (UWORD)(1U << desktop.BitMap.Depth);
+    desktop.ViewPort.ColorMap = &colormap;
     desktop.ViewPort.Modes = HIRES; graphics_base.DisplayFlags = PAL;
     if (strcmp(mode, "ham") == 0) desktop.ViewPort.Modes |= HAM;
     for (i = 0; i < colormap.Count; ++i)
@@ -372,8 +723,12 @@ int main(int argc, char **argv)
     memset(desktop_palette[0], 0, 3); memset(desktop_palette[colormap.Count - 1], 255, 3);
     memcpy(saved_palette, desktop_palette, sizeof(desktop_palette)); saved_palette_size = sizeof(desktop_palette);
     InitRastPort(&window_port); window_port.BitMap = &desktop.BitMap; window_messages.mp_SigBit = 4;
+    desktop.RastPort.BitMap = &desktop.BitMap;
+#if AMI_RTG
+    if (rtg_backend) return test_rtg(argc, argv, mode);
+#endif
     drv_ext_init(); globe_init(); drv_init(&argc, argv);
-    if (strcmp(mode, "ham") == 0 || strcmp(mode, "ocswide") == 0 || strcmp(mode, "denisewide") == 0)
+    if (strcmp(mode, "ham") == 0 || strcmp(mode, "ocswide") == 0 || strcmp(mode, "denisewide") == 0 || strcmp(mode, "nativeunknown") == 0)
     {
         assert(!drv_init_window(0, 0, 0, 0)); ami_cleanup();
         assert(library_count == 0 && window_count == 0 && raster_count == 0);

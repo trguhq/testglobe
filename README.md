@@ -38,7 +38,7 @@ Browser version: [live WebGL demo](https://testglobe.dev/web/).
 Earth maps store 8-bit palette indices. OpenGL and IRIS GL use those indices in either
 RGB(A) or color-index windows; Sun XGL expands them to RGB. Matrox LibShell, Windows
 GDI, and QuickDraw draw through the Earth palette. Amiga maps those colors to the
-current Workbench screen's pens.
+current Workbench screen's pens or draws their RGB values on a truecolor RTG screen.
 The browser frontend uses WebGL 2 with the same maps and palette.
 
 | Driver | Platform | Default globe | Texture toggle |
@@ -50,7 +50,7 @@ The browser frontend uses WebGL 2 with the same maps and palette.
 | [Matrox LibShell](#matrox-libshell) | MS-DOS, PG-641-compatible hardware | Key 1: 32 × 16 | No |
 | [Windows GDI](#windows-gdi) | Windows 3.1, 16-bit | Key 1: 32 × 16 | No |
 | [QuickDraw](#quickdraw) | Classic Macintosh System 7, 68000 | Key 1: 32 × 16 | No |
-| [Amiga](#amiga) | AmigaOS Workbench, 68000 and later, OCS/ECS/AGA | Key 1: 32 × 16 | No |
+| [Amiga](#amiga) | AmigaOS Workbench, 68000 and later, OCS/ECS/AGA or RTG | Key 1: 32 × 16 | No |
 
 ## Controls and status
 
@@ -795,10 +795,11 @@ resource forks, and acceleration require System 7 hardware or a suitable emulato
 
 #### Requirements
 
-The Amiga driver targets AmigaOS 1.3 or later, a 68000 or later CPU, and a planar
-Workbench screen with 1–8 bitplanes on OCS, ECS, or AGA. It opens a resizable Workbench
-window and shares the desktop's current mode and palette. RTG true-color screens are
-outside this chipset driver's scope.
+The Amiga driver opens a resizable Workbench window on a 68000 or later CPU.
+The native OCS/ECS/AGA path supports AmigaOS 1.3 or later and planar screens with
+1–8 bitplanes. Optional RTG support uses CyberGraphX or Picasso96 on AmigaOS 3.0 or
+later, supporting 8-bit indexed and 15/16/24/32-bit truecolor desktops. The driver
+uses the existing desktop mode without replacing its palette.
 
 Cross-compilation requires VBCC's m68k-amigaos compiler, vasm, vlink, the `kick13`
 target runtime, Amiga NDK headers, and Python 3.8 or later on the build host. The SDK and compiler
@@ -831,6 +832,12 @@ The driver checks the available stack before opening the window. Override `AMI_C
 baseline objects at `-cpu=68000 -fpu=0`; `-rmcfg-amiga-softfloat` and `-lmsoft`
 select IEEE software math without requiring an FPU or a newer OS math library.
 
+RTG support is included by default (`AMI_RTG=1`). The RTG libraries are opened only
+when available: `cybergraphics.library` V40 or later is preferred, followed by
+`Picasso96API.library` V2 or later. No additional RTG headers or link libraries are
+needed. The same executable retains the native chipset path. To omit RTG support,
+build with `make amiga AMI_RTG=0`. Changing this setting recompiles the driver.
+
 The build packs all 13 canonical `data/*.bin` chunks into an executable `HUNK_DEBUG`
 record; no map files are required on the
 Amiga. Keep the packed executable intact: stripping debug records afterward removes
@@ -845,35 +852,45 @@ program runs. This avoids keeping all 170.5 KiB of map data in RAM on small syst
 
 The default globe is key 1, with all five resolutions and no texture mapping.
 Shared software transforms, projection, clipping, and backface rejection prepare
-indexed quad packets. `AreaMove`, `AreaDraw`, and `AreaEnd` fill each retained polygon
-through `graphics.library`. Collapsed pole patches become triangles. Native `Text`
-draws the wrapped OSD, including chipset, CPU/math, colors, and buffering status.
+indexed quad packets. On indexed screens, `AreaMove`, `AreaDraw`, and `AreaEnd` fill
+each retained polygon through `graphics.library`. Truecolor RTG drawing converts
+the polygons to horizontal spans and submits RGB fills through CyberGraphX's
+`FillPixelArray` or Picasso96's `p96RectFill`; the RTG driver can accelerate these
+fills. Collapsed pole patches become triangles. Native `Text` draws the wrapped OSD,
+including chipset or RTG backend, CPU/math, color depth, and buffering status.
 
-The driver reads the existing Workbench palette and maps Earth indices to available
-pens. Ordered two-pen patterns approximate missing colors at low depths. It does not
-replace desktop or pointer colors. OCS/ECS use the available RGB12 palette precision;
+On indexed screens, the driver reads the Workbench palette and maps Earth indices
+to available pens. Ordered two-pen patterns approximate missing colors at low depths.
+It does not replace desktop or pointer colors. OCS/ECS use the available RGB12 palette precision;
 AGA-capable OS versions expose RGB24 palette entries. Display depth is independent of
 CPU/FPU capability. HAM, EHB, and dual-playfield modes are rejected because they do
-not provide this path's ordinary indexed-pixel semantics.
+not provide the native path's ordinary indexed-pixel semantics. Truecolor RTG uses
+the Earth palette's RGB values directly, with pixel-format conversion handled by
+the RTG library. OSD text uses available desktop pens.
 
-An optional offscreen planar bitmap presents through `BltBitMapRastPort`. Its planes
-and the area-fill scratch raster use Chip RAM; geometry and other working data use
-ordinary memory. Back-buffer allocation failure selects direct drawing. A missing
-scratch raster pauses filled rendering while leaving controls available to retry.
+An optional offscreen bitmap presents through `BltBitMapRastPort`. Native screens
+use planar Chip RAM; RTG screens use a display-compatible bitmap allocated through
+`AllocBitMap`. Indexed area fills also need a Chip RAM scratch raster, while truecolor
+RTG fills do not. Geometry and other working data use ordinary memory. Back-buffer
+allocation failure selects direct drawing. A missing indexed scratch raster pauses
+filled rendering while leaving controls available to retry.
 Buffered drawing avoids displaying each polygon's construction but does not guarantee
 tear-free presentation. Native input handles dragging, keys, close, activation,
 refresh, and resizing. Projection follows the client area and corrects the display
-mode's pixel proportions.
+mode's pixel proportions; RTG uses square pixels.
 
 OCS and hardware that older OS versions cannot identify use conservative window
 limits of 992 × 1024 pixels and require a Workbench bitmap stride of at most
 128 bytes per plane row. Oversized transfers are rejected before drawing. Confirmed
 ECS Agnus or AGA Alice hardware supports larger windows within the coordinate limits.
+These chipset limits do not apply to RTG bitmaps; all paths retain signed-word
+coordinate bounds.
 
 #### Platform notes
 
-The build defines `FLAT`, `DRV_AMI`, `DRV`, and `NO_SINF`. Amiga uses ordinary data
-pointers; the project's `SEG68` option is specific to the Macintosh memory model.
+The build defines `FLAT`, `DRV_AMI`, `DRV`, `NO_SINF`, and `AMI_RTG`. Amiga uses
+ordinary data pointers; the project's `SEG68` option is specific to the Macintosh
+memory model.
 Baseline code uses 68000 instructions and IEEE software floating point. Exec CPU/FPU
 flags select the separately compiled enhanced math routines:
 
@@ -897,8 +914,8 @@ See the [Amiga host checks](tests/README.md#amiga). A cross-build was checked wi
 VBCC 0.9h (m68k generator 1.15), vasm 1.9d, vlink 0.17a, NDK 47.5 headers, and the
 `kick13` runtime. Host call recorders and cross-builds do not establish graphics output,
 Workbench behavior, or performance on actual machines. Native testing remains
-necessary for 68000/accelerated CPUs, OCS/ECS/AGA screens, Chip RAM pressure, palette
-patterns, and blitter/window synchronization.
+necessary for 68000/accelerated CPUs, OCS/ECS/AGA screens, CyberGraphX/Picasso96
+desktops, Chip RAM pressure, palette patterns, and blitter/window synchronization.
 
 ## Testing and validation
 

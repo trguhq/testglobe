@@ -139,7 +139,9 @@ AMI_020FLAGS = -O1 -cpu=68020 -fpu=0 -rmcfg-amiga-softfloat
 # helper avoids FINTRZ and transcendental opcodes. Keep the pointer-only ABI.
 AMI_FPUFLAGS = -O1 -cpu=68020 -fpu=68881 -rmcfg-amiga-softfloat
 AMI_CPPFLAGS =
-AMI_DEFINES = -DFLAT -DDRV_AMI -DDRV -DNO_SINF
+# Optional runtime CyberGraphX/Picasso96 support; 0 builds native chips only.
+AMI_RTG = 1
+AMI_DEFINES = -DFLAT -DDRV_AMI -DDRV -DNO_SINF -DAMI_RTG=$(AMI_RTG)
 AMI_LDFLAGS =
 AMI_LIBS = -lmsoft -lamiga
 AMI_PYTHON = python3
@@ -456,7 +458,8 @@ testglobe-amiga.info: $(SRC)/ami_pack.py
 am_drv.o: $(SRC)/drv.c $(AMI_HEADERS)
 	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/drv.c -o am_drv.o
 
-am_ami.o: $(SRC)/drv_ami.c $(AMI_HEADERS)
+# Recompile when invoked so changing AMI_RTG cannot reuse the other variant.
+am_ami.o: $(SRC)/drv_ami.c $(AMI_HEADERS) FORCE
 	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/drv_ami.c -o am_ami.o
 
 am_data.o: $(SRC)/ami_data.c $(AMI_HEADERS)

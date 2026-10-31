@@ -119,6 +119,7 @@ struct IntuiMessage {
 #define MEMF_FAST 4UL
 #define MEMF_CLEAR 0x10000UL
 #define WBENCHSCREEN 1U
+#define PUBLICSCREEN 2U
 #define CUSTOMSCREEN 15U
 #define WINDOWCLOSE 0x0008UL
 #define WINDOWDRAG 0x0002UL
@@ -164,6 +165,11 @@ struct IntuiMessage {
 #define SIGBREAKF_CTRL_C (1UL << 12)
 #define RASSIZE(w,h) (((((ULONG)(w) + 15UL) >> 4) << 1) * (ULONG)(h))
 #define SetAfPt(rp,pattern,size) ((rp)->AreaPtrn = (pattern), (rp)->AreaPtSz = (size))
+#define BMF_CLEAR 1UL
+#define BMF_STANDARD 8UL
+#define BMF_MINPLANES 16UL
+#define BMA_DEPTH 4UL
+#define BMA_FLAGS 12UL
 
 extern struct ExecBase *SysBase;
 struct Library *OpenLibrary(CONST_STRPTR, ULONG);
@@ -176,11 +182,16 @@ void ReplyMsg(struct Message *);
 ULONG Wait(ULONG);
 void CurrentTime(ULONG *, ULONG *);
 LONG GetScreenData(APTR, ULONG, ULONG, struct Screen *);
+struct Screen *LockPubScreen(CONST_STRPTR);
+void UnlockPubScreen(CONST_STRPTR, struct Screen *);
 struct Window *OpenWindow(const struct NewWindow *);
 void CloseWindow(struct Window *);
 void BeginRefresh(struct Window *);
 void EndRefresh(struct Window *, LONG);
 void InitBitMap(struct BitMap *, LONG, ULONG, ULONG);
+struct BitMap *AllocBitMap(ULONG, ULONG, ULONG, ULONG, const struct BitMap *);
+void FreeBitMap(struct BitMap *);
+ULONG GetBitMapAttr(const struct BitMap *, ULONG);
 PLANEPTR AllocRaster(ULONG, ULONG);
 void FreeRaster(PLANEPTR, ULONG, ULONG);
 void InitRastPort(struct RastPort *);

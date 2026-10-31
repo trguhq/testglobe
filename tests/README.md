@@ -34,7 +34,7 @@ Additional options may be combined:
 | [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
-| [`--ami-contract`](#amiga) | Amiga Workbench window, graphics calls, events, and executable resources | None |
+| [`--ami-contract`](#amiga) | Amiga Workbench window, native/RTG graphics calls, events, and executable resources | None |
 
 With all prerequisites installed, run every native group with:
 
@@ -450,6 +450,11 @@ cross-build uses the [Amiga build instructions](../README.md#amiga) separately.
   drawing at 1/4/5/8-bit indexed depths. Palette/display queries are version-guarded
   and HAM is rejected. Native area vertices must remain inside the drawable bitmap;
   patterns and pen indices must stay within their bounds.
+- **RTG:** optional CyberGraphX/Picasso96 detection, indexed and 15/16/24/32-bit
+  screens, opaque bitmap attributes, RGB span bounds and colors, and native fallback
+  when RTG libraries are absent. The native-only `AMI_RTG=0` build is checked separately.
+  Display-compatible bitmap allocation, direct-drawing fallback, resizing, and cleanup
+  must not depend on native chipset limits or planar bitmap fields.
 - **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch,
   including a reported FPU without a supporting CPU. Cached and uncached drawing
   must retain polygon coordinates and colors, including projection-cache allocation
@@ -469,12 +474,13 @@ cross-build uses the [Amiga build instructions](../README.md#amiga) separately.
 ### Native validation
 
 The recorders check production control flow and arguments, not AmigaOS graphics
-implementation or the custom chips. Enhanced integer/FPU objects compile as ordinary
-host C during these tests, so host results do not prove native opcode selection,
+implementation, RTG drivers, or the custom chips. Enhanced integer/FPU objects compile
+as ordinary host C during these tests, so host results do not prove native opcode selection,
 library-vector ABI, or 68000/FPU dispatch. VBCC/NDK cross-builds provide a separate
 compiler/linker check. Actual Workbench startup, planar fills, palette patterns,
-blitter completion, Chip RAM pressure, and performance still need hardware or a
-suitable emulator on OCS/ECS/AGA and accelerated configurations.
+RTG pixel conversion and acceleration, blitter completion, Chip RAM pressure, and
+performance still need hardware or a suitable emulator on OCS/ECS/AGA and
+CyberGraphX/Picasso96 configurations.
 
 ## Shared software pipelines
 

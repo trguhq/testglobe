@@ -414,7 +414,7 @@ def main():
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_debug")])
             run([str(output / "gdi_debug"), "fpu"])
         if args.ami_contract:
-            ami = ["-DFLAT", "-DDRV_AMI", "-I" + str(ROOT / "tests/ami_shim")]
+            ami = ["-DFLAT", "-DDRV_AMI", "-DAMI_RTG=1", "-I" + str(ROOT / "tests/ami_shim")]
             check_production_units(cc, common, ami, output, "Amiga",
                 ("drv.c", "drv_ami.c", "ami_data.c", "err.c", "globe.c", "main.c",
                  "soft3d.c", "soft3fp.c"))
@@ -426,10 +426,21 @@ def main():
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga")])
             for mode in ("ocs", "mono", "four", "ecs", "aga", "020", "fpu", "040",
-                         "falsefpu", "aspect", "backfail", "scratchfail", "ham", "oversize", "cachefail", "ocswide", "denisewide", "ecswide"):
+                         "falsefpu", "aspect", "backfail", "scratchfail", "ham", "oversize", "cachefail", "ocswide", "denisewide", "ecswide",
+                         "cgx8", "cgx15", "cgx16", "cgx24", "cgx32", "p968", "p9615", "p9616", "p9624", "p9632",
+                         "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative"):
                 run([str(output / "amiga"), mode])
             run([str(output / "amiga"), "stack"], expected_returncode=1,
                 required_output="PASS Amiga stack guard:")
+            native_ami = ["-DAMI_RTG=0" if option == "-DAMI_RTG=1" else option for option in ami]
+            check_production_units(cc, common, native_ami, output, "Amiga_native",
+                ("drv_ami.c",))
+            run(cc + common + native_ami + [str(ROOT / "tests/amiga.c"),
+                str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga_native")])
+            for mode in ("ocs", "aga", "backfail", "ocswide", "nativeunknown"):
+                run([str(output / "amiga_native"), mode])
             # A real packed Hunk file exercises the production DOS resource reader.
             source = output / "amiga-input.hunk"
             packed = output / "testglobe-amiga"

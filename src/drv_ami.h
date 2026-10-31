@@ -14,6 +14,14 @@
 #endif
 #include "soft3d.h"
 
+/* The same executable optionally detects RTG; 0 builds native chipset only. */
+#ifndef AMI_RTG
+#define AMI_RTG 1
+#endif
+#if AMI_RTG != 0 && AMI_RTG != 1
+#error AMI_RTG must be 0 or 1
+#endif
+
 #define DRV_NAME "Amiga"
 #define DRV_HELP "1-5 detail, A rotate, O OSD, F FPS, Esc exit"
 #define DRV_WIN_X 20
