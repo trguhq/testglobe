@@ -45,7 +45,7 @@ The browser frontend uses WebGL 2 with the same maps and palette.
 | --- | --- | --- | --- |
 | [WebGL](#webgl) | Modern browsers with WebGL 2 | Key 5: 512 × 256 | Yes |
 | [OpenGL](#opengl) | Linux, Unix and modern macOS | Key 5: 512 × 256 | Yes |
-| [Amiga OpenGL](#amiga-opengl) | AmigaOS 3.x, PiStorm3D / MiniGL | Key 5: 512 × 256 | Yes |
+| [Amiga OpenGL](#amiga-opengl) | AmigaOS 3.x, 68020/68881, PiStorm3D / MiniGL | Key 5: 512 × 256 | Yes |
 | [IRIS GL](#iris-gl) | IRIX 4.0, 32-bit MIPS | Key 3: 128 × 64 | Yes |
 | [Sun XGL](#sun-xgl) | Solaris 2.6, 32-bit SPARC | Key 3: 128 × 64 | Yes |
 | [Matrox LibShell](#matrox-libshell) | MS-DOS, PG-641-compatible hardware | Key 1: 32 × 16 | No |
