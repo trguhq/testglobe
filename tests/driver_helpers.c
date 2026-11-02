@@ -529,6 +529,141 @@ static void test_quad_helpers(void)
 }
 #endif
 
+#ifdef DRV_PALETTE_DITHER
+/* Enumerate actual pixel averages rather than repeat the matcher's projection
+ * onto a palette segment. The same checks run with flat and SEG86 pointers. */
+static unsigned long palette_error(const unsigned char *rgb,
+                                   const unsigned char *palette,
+                                   unsigned int a, unsigned int b,
+                                   unsigned int mix)
+{
+    unsigned int channel;
+    long difference;
+    unsigned long error;
+    error = 0;
+    for (channel = 0; channel < 3U; ++channel)
+    {
+        difference = 16L * rgb[channel] -
+            (long)(16U - mix) * palette[3U * a + channel] -
+            (long)mix * palette[3U * b + channel];
+        error += (unsigned long)(difference * difference);
+    }
+    assert(error <= 49939200UL);
+    return error;
+}
+
+static unsigned long palette_pair_optimum(const unsigned char *rgb,
+                                          const unsigned char *palette,
+                                          unsigned int a, unsigned int b)
+{
+    unsigned int mix;
+    unsigned long error, best;
+    best = ULONG_MAX;
+    for (mix = 0; mix <= 16U; ++mix)
+    {
+        error = palette_error(rgb, palette, a, b, mix);
+        if (error < best) best = error;
+    }
+    return best;
+}
+
+static void test_palette_helpers(void)
+{
+    static const unsigned int counts[] = {1, 2, 3, 16, 17, 32, 64, 128, 255, 256};
+    static const unsigned char bayer[4][4] = {
+        {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}
+    };
+    struct { unsigned char before; Drv_palette_match value; unsigned char after; } result;
+    unsigned char rgb[3], saved_rgb[3], saved_palette[768];
+    unsigned char *palette;
+    unsigned int test, count, color, a, b, nearest, second, mix, x, y;
+    unsigned long error, best, second_error, actual, optimum;
+    const unsigned short TG_HUGE *pattern;
+    result.before = 0xa5; result.after = 0x5a;
+    for (test = 0; test < sizeof(counts) / sizeof(counts[0]); ++test)
+    {
+        count = counts[test];
+        palette = (unsigned char *)malloc(3U * count);
+        assert(palette != NULL);
+        for (a = 0; a < count; ++a)
+        {
+            palette[3U * a] = (unsigned char)(a * 73U);
+            palette[3U * a + 1U] = (unsigned char)(a * 151U);
+            palette[3U * a + 2U] = (unsigned char)(a * 199U);
+        }
+        if (count > 3U) memcpy(palette + 3U, palette, 3U);
+        memcpy(saved_palette, palette, 3U * count);
+        for (color = 0; color < 256U; ++color)
+        {
+            rgb[0] = (unsigned char)color;
+            rgb[1] = (unsigned char)(color * 97U);
+            rgb[2] = (unsigned char)(color * 53U);
+            if (color < 8U)
+                for (a = 0; a < 3U; ++a)
+                    rgb[a] = (unsigned char)((color & (1U << a)) ? 255U : 0U);
+            memcpy(saved_rgb, rgb, sizeof(rgb));
+            assert(drv_match_palette_color(rgb, palette, count, &result.value));
+            assert(result.value.first < count && result.value.second < count);
+            assert(result.value.solid < count && result.value.mix <= 16U);
+            assert(result.before == 0xa5 && result.after == 0x5a);
+            assert(memcmp(rgb, saved_rgb, sizeof(rgb)) == 0);
+            assert(memcmp(palette, saved_palette, 3U * count) == 0);
+            nearest = second = 0U; best = second_error = ULONG_MAX;
+            for (a = 0; a < count; ++a)
+            {
+                error = palette_error(rgb, palette, a, a, 0U);
+                if (error < best) { second = nearest; second_error = best; nearest = a; best = error; }
+                else if (error < second_error) { second = a; second_error = error; }
+            }
+            assert(result.value.solid == nearest);
+            actual = palette_error(rgb, palette, result.value.first,
+                                   result.value.second, result.value.mix);
+            assert(actual <= palette_pair_optimum(rgb, palette, nearest, second));
+            if (best == 0UL) assert(result.value.mix == 0U && actual == 0UL);
+            if (count <= 16U)
+            {
+                optimum = ULONG_MAX;
+                for (a = 0; a < count; ++a)
+                    for (b = a; b < count; ++b)
+                    {
+                        error = palette_pair_optimum(rgb, palette, a, b);
+                        if (error < optimum) optimum = error;
+                    }
+                assert(actual == optimum);
+            }
+        }
+        memcpy(rgb, palette + 3U * (count - 1U), sizeof(rgb));
+        assert(drv_match_palette_color(rgb, palette, count, &result.value));
+        assert(result.value.mix == 0U);
+        assert(palette_error(rgb, palette, result.value.solid, result.value.solid, 0U) == 0UL);
+        free(palette);
+    }
+    for (test = 0; test < 4U; ++test)
+    {
+        memset(&result.value, 0xff, sizeof(result.value));
+        assert(!drv_match_palette_color(test == 0U ? NULL : rgb,
+                    test == 1U ? NULL : saved_palette,
+                    test == 2U ? 0U : (test == 3U ? 257U : 1U), &result.value));
+        assert(result.value.first == 0U && result.value.second == 0U &&
+               result.value.mix == 0U && result.value.solid == 0U);
+        assert(result.before == 0xa5 && result.after == 0x5a);
+    }
+    assert(!drv_match_palette_color(rgb, saved_palette, 1U, NULL));
+    assert(!drv_match_palette_color(rgb, saved_palette, UINT_MAX, &result.value));
+    for (mix = 0; mix <= 16U; ++mix)
+    {
+        pattern = drv_dither_pattern(mix);
+        assert(pattern != NULL && pattern == drv_dither_pattern(mix));
+        for (y = 0; y < 4U; ++y)
+            for (x = 0; x < 16U; ++x)
+                assert(!!(pattern[y] & (unsigned short)(0x8000U >> x)) ==
+                       (bayer[y][x & 3U] >= mix));
+    }
+    assert(drv_dither_pattern(17U) == NULL && drv_dither_pattern(UINT_MAX) == NULL);
+    puts("PASS shared palette matcher: bounded inputs, 256 entries, exact small-palette mixtures, nearest-solid preservation and all Bayer levels");
+}
+#endif
+
 int main(void)
 {
     test_input();
@@ -545,6 +680,9 @@ int main(void)
 #endif
 #ifdef DRV_QUAD_BATCH
     test_quad_helpers();
+#endif
+#ifdef DRV_PALETTE_DITHER
+    test_palette_helpers();
 #endif
     return 0;
 }

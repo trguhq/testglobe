@@ -71,6 +71,8 @@ static OSErr resource_error;
 static Handle resource_lock_failure;
 static Ptr resource_lock_bytes;
 static unsigned int pattern_calls;
+static unsigned int rgb_pattern_calls, color_fill_calls, solid_fill_calls;
+static RGBColor last_pattern_rgb;
 static unsigned int polygon_calls;
 static int reentry_requested;
 static unsigned int reentry_calls, reentry_width;
@@ -500,7 +502,7 @@ static void record_polygon(PolyHandle poly, unsigned int black, const RGBColor *
         assert(entry->points[i].v >= 0 && entry->points[i].v <= (int)drv_win_height);
     }
 }
-void PaintPoly(PolyHandle p) { assert(has_color); record_polygon(p, 64U, &test_current_colors()->foreground); }
+void PaintPoly(PolyHandle p) { assert(has_color); ++solid_fill_calls; record_polygon(p, 64U, &test_current_colors()->foreground); }
 void FillPoly(PolyHandle p, const Pattern *pattern) { assert(pattern != NULL); record_polygon(p, pattern_bits(pattern->pat), &test_current_colors()->foreground); }
 void PenSize(short h, short v) { assert(h >= 0 && v >= 0); }
 void PenNormal(void) {}
@@ -515,8 +517,8 @@ PixPatHandle NewPixPat(void)
     return (PixPatHandle)NewHandle((Size)sizeof(PixPat));
 }
 void DisposePixPat(PixPatHandle p) { color_api(); assert(pixpat_count > 0); DisposeHandle((Handle)p); --pixpat_count; }
-void MakeRGBPat(PixPatHandle p, const RGBColor *c) { color_api(); assert(p != NULL && c != NULL); test_drawing_device(); (*p)->color = *c; }
-void FillCPoly(PolyHandle p, PixPatHandle pattern) { color_api(); assert(pattern != NULL); record_polygon(p, 64U, &(*pattern)->color); }
+void MakeRGBPat(PixPatHandle p, const RGBColor *c) { color_api(); assert(p != NULL && c != NULL); test_drawing_device(); ++rgb_pattern_calls; last_pattern_rgb = *c; (*p)->color = *c; }
+void FillCPoly(PolyHandle p, PixPatHandle pattern) { color_api(); assert(pattern != NULL); ++color_fill_calls; record_polygon(p, 64U, &(*pattern)->color); }
 void ForeColor(long color)
 {
     RGBColor *foreground;
@@ -1042,6 +1044,94 @@ static void check_fpu_angles(void)
     puts("PASS QuickDraw FPU angles: normalized endpoints accepted, huge/nonfinite/null inputs rejected without loops or reuse of a stale transform");
 }
 
+/* This checks the application's native requests, not QuickDraw's palette
+ * conversion or physical dither output. Native patterns must receive the
+ * original RGB rather than an application-selected palette approximation. */
+static void check_color_submission(void)
+{
+    PolyHandle polygon;
+    GrafPtr saved_port;
+    GDHandle saved_device;
+    Test_port_colors saved_colors;
+    RGBColor *submitted;
+    unsigned int color, fills, patterns, luminance;
+    unsigned char saved_earth[3];
+    ColorTable changed_table, *changed_table_ptr;
+    CTabHandle old_table;
+    GetPort(&saved_port);
+    saved_device = has_color ? GetGDevice() : NULL;
+    SetPort((GrafPtr)qd_window);
+    if (has_color) SetGDevice(qd_device);
+    saved_colors = window_colors;
+    polygon = OpenPoly(); assert(polygon != NULL);
+    MoveTo(10, 10); LineTo(50, 10); LineTo(10, 50); ClosePoly();
+    qd_pattern_color = -1;
+    for (color = 0; color < 256U; ++color)
+    {
+        recorded_count = 0;
+        fills = color_fill_calls;
+        patterns = solid_fill_calls;
+        qd_flat_color(polygon, (unsigned char)color);
+        assert(recorded_count == 1U);
+        if (qd_depth == 1)
+        {
+            luminance = (77U * (unsigned int)earth_cmap[color][0] +
+                         150U * (unsigned int)earth_cmap[color][1] +
+                         29U * (unsigned int)earth_cmap[color][2] + 128U) / 256U;
+            assert(recorded[0].pattern_black == 64U - (luminance + 2U) / 4U);
+            assert(color_fill_calls == fills && solid_fill_calls == patterns);
+            continue;
+        }
+        if (qd_depth <= 8 && !qd_pattern_unavailable)
+        {
+            assert(color_fill_calls == fills + 1U && solid_fill_calls == patterns);
+            submitted = &last_pattern_rgb;
+        }
+        else
+        {
+            assert(color_fill_calls == fills && solid_fill_calls == patterns + 1U);
+            submitted = &window_colors.foreground;
+        }
+        assert(submitted->red == earth_cmap[color][0] * 257U);
+        assert(submitted->green == earth_cmap[color][1] * 257U);
+        assert(submitted->blue == earth_cmap[color][2] * 257U);
+    }
+    if (qd_depth > 1 && qd_depth <= 8 && !qd_pattern_unavailable)
+    {
+        /* A changed device palette still reaches FillCPoly with the same
+         * RGB pattern. The native Toolbox, not this recorder, checks the
+         * table seed and reselects its device colors on that call. */
+        old_table = (**(**qd_device).gdPMap).pmTable;
+        memset(&changed_table, 0, sizeof(changed_table));
+        changed_table_ptr = &changed_table;
+        (**(**qd_device).gdPMap).pmTable = &changed_table_ptr;
+        patterns = rgb_pattern_calls; fills = color_fill_calls;
+        qd_flat_color(polygon, 255);
+        ++changed_table.ctSeed;
+        qd_flat_color(polygon, 255);
+        assert(rgb_pattern_calls == patterns && color_fill_calls == fills + 2U);
+        (**(**qd_device).gdPMap).pmTable = old_table;
+    }
+    if (qd_depth == 1)
+    {
+        memcpy(saved_earth, earth_cmap[0], sizeof(saved_earth));
+        for (color = 0; color < 256U; ++color)
+        {
+            memset(earth_cmap[0], (int)color, 3);
+            recorded_count = 0;
+            qd_flat_color(polygon, 0);
+            assert(recorded[0].pattern_black == 64U - (color + 2U) / 4U);
+        }
+        memcpy(earth_cmap[0], saved_earth, sizeof(saved_earth));
+    }
+    KillPoly(polygon);
+    window_colors = saved_colors;
+    SetPort(saved_port);
+    if (has_color) SetGDevice(saved_device);
+    recorded_count = 0;
+    puts("PASS QuickDraw color submission: all Earth RGB values reach native pattern/solid APIs unchanged; cached patterns reach changed palettes; monochrome retains 64-step luminance");
+}
+
 static void check_buffer_recovery(void)
 {
     Test_port_colors saved_colors;
@@ -1420,8 +1510,11 @@ static void check_recoverable_resources(void)
         assert(handle_count == handles);
         qd_make_buffer();
         recorded_count = 0; osd_text[0] = 0;
+        calls = color_fill_calls;
         drv_render();
         assert(recorded_count != 0 && alert_calls == 0);
+        if (qd_depth > 1 && !qd_pattern_unavailable)
+            assert(qd_pattern != NULL && color_fill_calls > calls);
         if (qd_depth > 1) {
             if (qd_pattern != NULL) DisposePixPat(qd_pattern);
             qd_pattern = NULL;
@@ -1493,6 +1586,7 @@ static int run_contract(void)
     assert(strstr(drv_help, "1-5") != NULL);
     assert(qd_world != NULL || !has_color || fail_gworld || qd_version < gestalt32BitQD);
     check_fpu_angles();
+    check_color_submission();
     drv_osd_enabled = FALSE;
     saved = current_port;
     for (resolution = 0; resolution < 2; ++resolution) {

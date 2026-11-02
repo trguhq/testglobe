@@ -234,6 +234,134 @@ void drv_format_stats(char *buffer)
     buffer[length] = 0;
 }
 
+#ifdef DRV_PALETTE_DITHER
+/* Score the actual 1/16 mixture without rounding its RGB components first.
+ * Each residual is at most 4080; the sum of squares fits a 32-bit long. */
+static unsigned long drv_palette_error(const unsigned char TG_HUGE *rgb,
+                                        const unsigned char TG_HUGE *palette,
+                                        unsigned int a, unsigned int b,
+                                        unsigned int mix)
+{
+    unsigned int channel;
+    long residual;
+    unsigned long error;
+    error = 0;
+    for (channel = 0; channel < 3U; ++channel)
+    {
+        residual = 16L * rgb[channel] -
+                   (16L - (long)mix) * palette[3U * a + channel] -
+                   (long)mix * palette[3U * b + channel];
+        error += (unsigned long)(residual * residual);
+    }
+    return error;
+}
+
+static void drv_palette_pair(const unsigned char TG_HUGE *rgb,
+                              const unsigned char TG_HUGE *palette,
+                              unsigned int a, unsigned int b,
+                              unsigned long *best_error,
+                              unsigned long *best_contrast,
+                              Drv_palette_match *match)
+{
+    unsigned int channel, mix;
+    long numerator, denominator, delta, difference;
+    unsigned long error;
+    numerator = denominator = 0;
+    for (channel = 0; channel < 3U; ++channel)
+    {
+        delta = (long)palette[3U * b + channel] - palette[3U * a + channel];
+        difference = (long)rgb[channel] - palette[3U * a + channel];
+        numerator += delta * difference;
+        denominator += delta * delta;
+    }
+    /* The nearest solid entry already covers endpoints. This also rejects
+     * duplicate entries before division. All products fit signed 32 bits. */
+    if (numerator <= 0 || numerator >= denominator) return;
+    mix = (unsigned int)((numerator * 16L + denominator / 2L) / denominator);
+    if (mix == 0U || mix >= 16U) return;
+    error = drv_palette_error(rgb, palette, a, b, mix);
+    if (error < *best_error ||
+        (error == *best_error && (unsigned long)denominator < *best_contrast))
+    {
+        *best_error = error;
+        *best_contrast = (unsigned long)denominator;
+        match->first = (unsigned char)a;
+        match->second = (unsigned char)b;
+        match->mix = (unsigned char)mix;
+    }
+}
+
+int drv_match_palette_color(const unsigned char TG_HUGE *rgb,
+                             const unsigned char TG_HUGE *palette,
+                             unsigned int count, Drv_palette_match *match)
+{
+    unsigned int a, b, anchor;
+    unsigned long error, candidate, contrast;
+    if (match == NULL) return FALSE;
+    match->first = match->second = match->mix = match->solid = 0;
+    if (rgb == NULL || palette == NULL || count == 0U || count > 256U)
+        return FALSE;
+    error = 0xffffffffUL;
+    anchor = 0;
+    for (a = 0; a < count; ++a)
+    {
+        candidate = drv_palette_error(rgb, palette, a, a, 0U);
+        if (candidate < error) { error = candidate; anchor = a; }
+    }
+    match->first = match->second = match->solid = (unsigned char)anchor;
+    contrast = 0;
+    if (error == 0) return TRUE;
+    if (count <= 16U)
+    {
+        /* Find the best discrete mixture for small palettes. */
+        for (a = 0; a < count; ++a)
+            for (b = a + 1U; b < count; ++b)
+                drv_palette_pair(rgb, palette, a, b, &error, &contrast, match);
+    }
+    else
+    {
+        /* Bound initialization on small CPUs: find the nearest solid's best
+         * partner, then improve the other endpoint. This includes the old
+         * nearest-two pair without searching all 32640 pairs at 256 colors. */
+        for (b = 0; b < count; ++b)
+            drv_palette_pair(rgb, palette, anchor, b, &error, &contrast, match);
+        if (match->mix != 0U)
+        {
+            anchor = match->second;
+            for (a = 0; a < count; ++a)
+                drv_palette_pair(rgb, palette, anchor, a, &error, &contrast, match);
+        }
+    }
+    return TRUE;
+}
+
+const unsigned short TG_HUGE *drv_dither_pattern(unsigned int mix)
+{
+    /* Four rows repeat horizontally across 16 bits. Entry n uses the
+     * second color for n of each 16 pixels; native adapters borrow them. */
+    static const unsigned short patterns[17][4] = {
+        {0xffff, 0xffff, 0xffff, 0xffff},
+        {0x7777, 0xffff, 0xffff, 0xffff},
+        {0x7777, 0xffff, 0xdddd, 0xffff},
+        {0x5555, 0xffff, 0xdddd, 0xffff},
+        {0x5555, 0xffff, 0x5555, 0xffff},
+        {0x5555, 0xbbbb, 0x5555, 0xffff},
+        {0x5555, 0xbbbb, 0x5555, 0xeeee},
+        {0x5555, 0xaaaa, 0x5555, 0xeeee},
+        {0x5555, 0xaaaa, 0x5555, 0xaaaa},
+        {0x1111, 0xaaaa, 0x5555, 0xaaaa},
+        {0x1111, 0xaaaa, 0x4444, 0xaaaa},
+        {0x0000, 0xaaaa, 0x4444, 0xaaaa},
+        {0x0000, 0xaaaa, 0x0000, 0xaaaa},
+        {0x0000, 0x2222, 0x0000, 0xaaaa},
+        {0x0000, 0x2222, 0x0000, 0x8888},
+        {0x0000, 0x0000, 0x0000, 0x8888},
+        {0x0000, 0x0000, 0x0000, 0x0000}
+    };
+    return mix <= 16U ? patterns[mix] : NULL;
+}
+#endif
+
 #if defined(TRISTRIP) && defined(DRV_COLORMAP)
 void drv_split_tristrip_batches(unsigned int count,
                             const Vertex TG_HUGE *vertices,

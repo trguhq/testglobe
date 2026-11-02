@@ -319,7 +319,7 @@ def main():
             check_driver_api(cc + common + options + api_source, driver,
                              hidden + ("drv_fps_history_num",))
         run(cc + common + flat + tri_mode + api_source)
-        run(cc + common + flat + [str(ROOT / "tests/driver_helpers.c"),
+        run(cc + common + flat + ["-DDRV_PALETTE_DITHER", str(ROOT / "tests/driver_helpers.c"),
             str(ROOT / "src/drv.c"), "-lm", "-o", str(output / "flat_helpers")])
         run([str(output / "flat_helpers")])
         run(cc + common + flat + ["-DDEBUG=1", str(ROOT / "tests/driver_helpers.c"),

@@ -42,6 +42,11 @@ static int gdi_registered;
 static char gdi_class_name[40];
 static HPALETTE gdi_palette;
 static HBRUSH gdi_brushes[256];
+static unsigned char gdi_realized_colors[256][3];
+static Drv_palette_match gdi_color_matches[256];
+static int gdi_palette_valid;
+static int gdi_palette_pending;
+static int gdi_pattern_unavailable;
 static HDC gdi_buffer;
 static HBITMAP gdi_bitmap;
 static HBITMAP gdi_previous_bitmap;
@@ -99,6 +104,46 @@ static void gdi_release_brushes(void)
         DeleteObject(gdi_brushes[i]);
         gdi_brushes[i] = 0;
     }
+}
+
+/* Query colors after the Earth palette has been selected and realized on a
+ * window DC. Palette entries which Windows cannot allocate may map to other
+ * system colors; those actual colors, not the requested RGBs, form mixtures.
+ * Do not retain partial query results or stale pattern brushes on failure. */
+static int gdi_refresh_colors(HDC dc)
+{
+    unsigned char colors[256][3];
+    COLORREF rgb;
+    unsigned int i;
+    int changed;
+    gdi_palette_pending = FALSE;
+    for (i = 0; i < 256U; ++i)
+    {
+        rgb = GetNearestColor(dc, PALETTEINDEX(i));
+        if (rgb == CLR_INVALID)
+        {
+            changed = gdi_palette_valid;
+            gdi_palette_valid = FALSE;
+            gdi_release_brushes();
+            return changed;
+        }
+        colors[i][0] = (unsigned char)(rgb & 255UL);
+        colors[i][1] = (unsigned char)((rgb >> 8) & 255UL);
+        colors[i][2] = (unsigned char)((rgb >> 16) & 255UL);
+    }
+    changed = !gdi_palette_valid ||
+              memcmp(colors, gdi_realized_colors, sizeof(colors)) != 0;
+    if (changed)
+    {
+        gdi_release_brushes();
+        memcpy(gdi_realized_colors, colors, sizeof(colors));
+        for (i = 0; i < 256U; ++i)
+            (void)drv_match_palette_color(earth_cmap[i],
+                          &gdi_realized_colors[0][0], 256U, &gdi_color_matches[i]);
+        gdi_pattern_unavailable = FALSE;
+        gdi_palette_valid = TRUE;
+    }
+    return changed;
 }
 
 extern int testglobe_main(int argc, char **argv);
@@ -270,16 +315,71 @@ Drv_result drv_load_earth_chunk(unsigned int id, unsigned long length,
     return DRV_OK;
 }
 
+static HBRUSH gdi_create_brush(unsigned int color)
+{
+    struct Gdi_pattern_dib
+    {
+        BITMAPINFOHEADER header;
+        WORD colors[2];
+        BYTE pixels[32];
+    } FAR *dib;
+    HGLOBAL memory;
+    HBRUSH brush;
+    const unsigned short TG_HUGE *pattern;
+    unsigned int y, solid;
+    Drv_palette_match *match;
+    solid = color;
+    if (gdi_palette_valid)
+    {
+        match = &gdi_color_matches[color];
+        solid = match->solid;
+        if (match->mix != 0U && !gdi_pattern_unavailable)
+        {
+            memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT,
+                                  (DWORD)sizeof(*dib));
+            if (memory != 0)
+            {
+                dib = (struct Gdi_pattern_dib FAR *)GlobalLock(memory);
+                if (dib != NULL)
+                {
+                    dib->header.biSize = sizeof(BITMAPINFOHEADER);
+                    dib->header.biWidth = dib->header.biHeight = 8;
+                    dib->header.biPlanes = dib->header.biBitCount = 1;
+                    dib->header.biCompression = BI_RGB;
+                    dib->header.biSizeImage = sizeof(dib->pixels);
+                    dib->header.biClrUsed = 2;
+                    dib->colors[0] = match->first;
+                    dib->colors[1] = match->second;
+                    pattern = drv_dither_pattern(match->mix);
+                    /* Bottom-up DIB rows are DWORD-aligned. A clear Bayer
+                     * bit selects the second pen, so invert its high byte. */
+                    for (y = 0; y < 8U; ++y)
+                        dib->pixels[(7U - y) * 4U] =
+                            (BYTE)((pattern[y & 3U] >> 8) ^ 255U);
+                    GlobalUnlock(memory);
+                    brush = CreateDIBPatternBrush(memory, DIB_PAL_COLORS);
+                    GlobalFree(memory);
+                    if (brush != 0) return brush;
+                }
+                else GlobalFree(memory);
+            }
+            gdi_pattern_unavailable = TRUE;
+            drv_notice("nearest palette colors");
+        }
+    }
+    return CreateSolidBrush(PALETTEINDEX(solid));
+}
+
 static HBRUSH gdi_brush(unsigned int color)
 {
     unsigned long luminance;
     if (!gdi_brush_reduced && gdi_brushes[color] == 0)
     {
-        gdi_brushes[color] = CreateSolidBrush(PALETTEINDEX(color));
+        gdi_brushes[color] = gdi_create_brush(color);
         if (gdi_brushes[color] == 0)
         {
             gdi_release_brushes();
-            gdi_brushes[color] = CreateSolidBrush(PALETTEINDEX(color));
+            gdi_brushes[color] = gdi_create_brush(color);
             if (gdi_brushes[color] == 0)
             {
                 gdi_brush_reduced = TRUE;
@@ -308,15 +408,27 @@ static UINT gdi_realize_palette(int foreground)
     if (dc == 0) return 0;
     previous = SelectPalette(dc, gdi_palette, !foreground);
     changed = RealizePalette(dc);
+    if (gdi_refresh_colors(dc)) changed = TRUE;
     SelectPalette(dc, previous, TRUE);
     ReleaseDC(gdi_window, dc);
     return changed;
+}
+
+static void gdi_prepare_colors(HDC dc)
+{
+    HPALETTE previous;
+    previous = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
+    if (RealizePalette(dc) != 0) gdi_palette_pending = TRUE;
+    if (gdi_palette_pending && gdi_refresh_colors(dc)) gdi_dirty = TRUE;
+    SelectPalette(dc, previous, TRUE);
 }
 
 static void gdi_make_buffer(void)
 {
     HDC dc;
     gdi_delete_buffer();
+    gdi_release_brushes();
+    gdi_pattern_unavailable = FALSE;
     if (gdi_window == 0 || drv_win_width == 0 || drv_win_height == 0) return;
     dc = GetDC(gdi_window);
     if (dc == 0)
@@ -375,6 +487,9 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     gdi_batch_enabled = TRUE;
     gdi_restart_frame = gdi_frame_failed = gdi_draw_paused = FALSE;
     gdi_brush_reduced = FALSE;
+    gdi_palette_valid = FALSE;
+    gdi_palette_pending = TRUE;
+    gdi_pattern_unavailable = FALSE;
     if (in_x > 0) drv_win_x = (unsigned int)in_x;
     if (in_y > 0) drv_win_y = (unsigned int)in_y;
     dc = GetDC(0);
@@ -690,7 +805,11 @@ static void gdi_render_to(HDC dc)
     gdi_rendering = TRUE;
     gdi_target = dc;
     previous_palette = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
-    if (dc != gdi_buffer) RealizePalette(dc);
+    if (dc != gdi_buffer)
+    {
+        if (RealizePalette(dc) != 0) gdi_palette_pending = TRUE;
+        if (gdi_palette_pending) (void)gdi_refresh_colors(dc);
+    }
     drv_fps_start();
     bounds.left = bounds.top = 0;
     bounds.right = (int)drv_win_width;
@@ -745,6 +864,7 @@ void drv_render(void)
         dc = GetDC(gdi_window);
         if (dc != 0)
         {
+            gdi_prepare_colors(dc);
             if (gdi_buffer != 0)
             {
                 gdi_render_to(gdi_buffer);
@@ -764,7 +884,18 @@ static void gdi_present(HDC dc)
     int copied;
     if (gdi_failed || gdi_buffer == 0) return;
     previous = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
-    RealizePalette(dc);
+    if (RealizePalette(dc) != 0)
+    {
+        gdi_palette_pending = TRUE;
+        /* Another application can change the palette after this buffer was
+         * drawn. Schedule a repaint even when our window is otherwise idle;
+         * the old pixels cannot acquire new two-pen mixtures by realization. */
+        if (gdi_refresh_colors(dc))
+        {
+            gdi_dirty = TRUE;
+            InvalidateRect(gdi_window, NULL, FALSE);
+        }
+    }
     copied = BitBlt(dc, 0, 0, (int)drv_win_width, (int)drv_win_height,
                     gdi_buffer, 0, 0, SRCCOPY);
     SelectPalette(dc, previous, TRUE);
@@ -826,7 +957,8 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
          * mesh or a paint DC. Requeue mutations until those borrows end. */
         switch (message)
         {
-            case WM_CHAR: case WM_SIZE: case WM_CLOSE: case WM_TIMER:
+            case WM_CHAR: case WM_SIZE: case WM_MOVE: case WM_CLOSE: case WM_TIMER:
+            case WM_ACTIVATE: case WM_QUERYNEWPALETTE: case WM_PALETTECHANGED:
             case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP:
             case WM_RBUTTONDOWN: case WM_RBUTTONUP:
                 if (!PostMessage(window, message, wparam, lparam))
@@ -858,6 +990,7 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
             dc = BeginPaint(window, &paint);
             if (gdi_ready)
             {
+                gdi_prepare_colors(dc);
                 if (gdi_buffer != 0)
                 {
                     if (gdi_dirty) gdi_render_to(gdi_buffer);
@@ -907,6 +1040,7 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
             gdi_mouse_metadata_changed();
             return 0;
         case WM_ACTIVATE:
+            gdi_palette_pending = TRUE;
             gdi_palette_foreground = wparam != WA_INACTIVE;
             if (gdi_palette_foreground && gdi_realize_palette(TRUE) != 0)
             {
@@ -915,6 +1049,7 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
             }
             return 0;
         case WM_QUERYNEWPALETTE:
+            gdi_palette_pending = TRUE;
             gdi_palette_foreground = TRUE;
             if (gdi_realize_palette(TRUE) != 0)
             {
@@ -926,12 +1061,19 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
         case WM_PALETTECHANGED:
             if ((HWND)wparam != window)
             {
+                gdi_palette_pending = TRUE;
                 if (gdi_realize_palette(FALSE) != 0)
                 {
                     gdi_dirty = TRUE;
                     InvalidateRect(window, NULL, FALSE);
                 }
             }
+            return 0;
+        case WM_MOVE:
+            /* Native pattern brushes cache an origin for their current DC. */
+            gdi_release_brushes();
+            gdi_dirty = TRUE;
+            InvalidateRect(window, NULL, FALSE);
             return 0;
         case WM_TIMER:
             if (wparam == GDI_TIMER && drv_auto_enabled && gdi_ready &&

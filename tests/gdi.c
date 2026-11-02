@@ -33,6 +33,9 @@ typedef struct {
     int memory_dc;
     unsigned int locks;
     BOOL palette_background;
+    int patterned;
+    WORD pattern_colors[2];
+    BYTE pattern_rows[8];
 } RecordedObject;
 static RecordedObject objects[1024];
 static unsigned int resource_count, allocated_count;
@@ -69,6 +72,10 @@ static unsigned int fatal_dialogs;
 static MSG deferred_messages[8];
 static unsigned int deferred_count;
 static int reenter_render;
+static int custom_realized_palette, fail_color_query;
+static unsigned char realized_palette[256][3];
+static unsigned int color_queries, dib_brush_calls, fail_dib_brushes;
+static unsigned int fail_memory_locks;
 
 static HANDLE object_new(int kind)
 {
@@ -113,6 +120,7 @@ HGLOBAL GlobalAlloc(UINT flags, DWORD bytes)
 LPVOID GlobalLock(HGLOBAL handle)
 {
     assert(objects[handle].kind == OBJ_MEMORY);
+    if (fail_memory_locks) { --fail_memory_locks; return NULL; }
     ++objects[handle].locks;
     return objects[handle].memory;
 }
@@ -447,6 +455,19 @@ UINT RealizePalette(HDC dc)
     return 256;
 }
 BOOL UnrealizeObject(HGDIOBJ object) { assert(object > 0); return 1; }
+COLORREF GetNearestColor(HDC dc, COLORREF color)
+{
+    unsigned int index;
+    const unsigned char *rgb;
+    assert(objects[dc].kind == OBJ_DC && !objects[dc].memory_dc);
+    assert(objects[dc].palette == gdi_palette);
+    assert((color & 0xffffff00UL) == 0x01000000UL);
+    ++color_queries;
+    if (fail_color_query) return CLR_INVALID;
+    index = (unsigned int)(color & 255UL);
+    rgb = custom_realized_palette ? realized_palette[index] : earth_cmap[index];
+    return RGB(rgb[0], rgb[1], rgb[2]);
+}
 HBRUSH CreateSolidBrush(COLORREF color)
 {
     HBRUSH brush;
@@ -454,6 +475,34 @@ HBRUSH CreateSolidBrush(COLORREF color)
     if (fail_brushes != 0U) { --fail_brushes; return 0; }
     brush = object_new(OBJ_BRUSH);
     objects[brush].color = color;
+    return brush;
+}
+
+HBRUSH CreateDIBPatternBrush(HGLOBAL memory, UINT usage)
+{
+    struct Test_pattern_dib { BITMAPINFOHEADER header; WORD colors[2]; BYTE pixels[32]; } *dib;
+    HBRUSH brush;
+    unsigned int y;
+    assert(objects[memory].kind == OBJ_MEMORY && objects[memory].locks == 0);
+    assert(objects[memory].size == sizeof(*dib));
+    dib = objects[memory].memory;
+    assert(usage == DIB_PAL_COLORS && dib->header.biSize == sizeof(BITMAPINFOHEADER));
+    assert(dib->header.biWidth == 8 && dib->header.biHeight == 8);
+    assert(dib->header.biPlanes == 1 && dib->header.biBitCount == 1);
+    assert(dib->header.biCompression == BI_RGB && dib->header.biSizeImage == 32);
+    assert(dib->header.biClrUsed == 2 && dib->colors[0] < 256 && dib->colors[1] < 256);
+    ++dib_brush_calls;
+    if (fail_dib_brushes) { --fail_dib_brushes; return 0; }
+    brush = object_new(OBJ_BRUSH);
+    objects[brush].patterned = TRUE;
+    objects[brush].color = PALETTEINDEX(dib->colors[0]);
+    memcpy(objects[brush].pattern_colors, dib->colors, sizeof(dib->colors));
+    for (y = 0; y < 8U; ++y)
+    {
+        objects[brush].pattern_rows[y] = dib->pixels[(7U - y) * 4U];
+        assert(dib->pixels[y * 4U + 1U] == 0 && dib->pixels[y * 4U + 2U] == 0 &&
+               dib->pixels[y * 4U + 3U] == 0);
+    }
     return brush;
 }
 
@@ -1080,6 +1129,110 @@ static void check_clipping(void)
     test_soft3d_shared_pipeline();
 }
 
+static void check_palette_mixtures(void)
+{
+    static const unsigned char palette[4][3] = {
+        {120, 100, 100}, {100, 120, 100}, {255, 0, 0}, {0, 255, 0}
+    };
+    static const unsigned char bayer[4][4] = {
+        {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}
+    };
+    unsigned char original[3];
+    unsigned int i, x, y, mix, calls, allocations, queued;
+    HBRUSH brush;
+    HDC dc;
+    MSG message;
+    memcpy(original, earth_cmap[17], 3);
+    earth_cmap[17][0] = earth_cmap[17][1] = 127; earth_cmap[17][2] = 0;
+    custom_realized_palette = TRUE;
+    for (i = 0; i < 256U; ++i) memcpy(realized_palette[i], palette[i < 4U ? i : 0U], 3);
+    assert(gdi_realize_palette(TRUE) != 0 && gdi_palette_valid);
+    assert(gdi_color_matches[17].mix == 8U);
+    assert((gdi_color_matches[17].first == 2U && gdi_color_matches[17].second == 3U) ||
+           (gdi_color_matches[17].first == 3U && gdi_color_matches[17].second == 2U));
+    allocations = allocated_count;
+    calls = dib_brush_calls;
+    brush = gdi_brush(17);
+    assert(objects[brush].patterned && dib_brush_calls == calls + 1U);
+    assert(allocated_count == allocations);
+    assert(gdi_brush(17) == brush && dib_brush_calls == calls + 1U);
+    /* Inspect the pattern bytes as native logical pixels: bottom-up storage,
+     * DWORD padding, palette indices, and every quantized coverage level. */
+    for (mix = 1; mix <= 16U; ++mix)
+    {
+        gdi_release_brushes();
+        gdi_color_matches[17].first = 2;
+        gdi_color_matches[17].second = 3;
+        gdi_color_matches[17].mix = (unsigned char)mix;
+        brush = gdi_brush(17);
+        assert(objects[brush].patterned && objects[brush].pattern_colors[0] == 2 &&
+               objects[brush].pattern_colors[1] == 3);
+        for (y = 0; y < 8U; ++y) for (x = 0; x < 8U; ++x)
+            assert(!!(objects[brush].pattern_rows[y] & (0x80U >> x)) ==
+                   (bayer[y & 3U][x & 3U] < mix));
+        assert(allocated_count == allocations);
+    }
+    /* A palette callback inside a drawing call must not delete the selected
+     * pattern or mutate its color mapping until the outer render finishes. */
+    for (i = 0; i < 256U; ++i) memcpy(realized_palette[i], earth_cmap[17], 3);
+    calls = color_queries; queued = deferred_count;
+    gdi_rendering = TRUE; gdi_selected_brush = brush;
+    window_callback(main_window, WM_PALETTECHANGED, 899, 0);
+    assert(deferred_count == queued + 1U && color_queries == calls);
+    assert(gdi_brushes[17] == brush && objects[brush].kind == OBJ_BRUSH);
+    gdi_selected_brush = 0; gdi_rendering = FALSE;
+    message = deferred_messages[queued]; deferred_count = queued;
+    window_callback(message.hwnd, message.message, message.wParam, message.lParam);
+    assert(gdi_brushes[17] == 0 && gdi_color_matches[17].mix == 0U);
+    brush = gdi_brush(17);
+    assert(!objects[brush].patterned && objects[brush].color == PALETTEINDEX(0));
+    /* A late change while presenting an already-rendered buffer must still
+     * schedule a new frame for a static window; unchanged colors must not. */
+    assert(gdi_buffer != 0);
+    for (i = 0; i < 256U; ++i) memcpy(realized_palette[i], palette[i < 4U ? i : 0U], 3);
+    dc = GetDC(main_window);
+    gdi_dirty = FALSE; calls = invalidations;
+    gdi_present(dc);
+    assert(gdi_dirty && invalidations == calls + 1U && gdi_color_matches[17].mix == 8U);
+    gdi_dirty = FALSE; calls = invalidations;
+    gdi_present(dc);
+    assert(!gdi_dirty && invalidations == calls);
+    ReleaseDC(main_window, dc);
+    /* Failed native color queries discard stale mixtures and retain the
+     * original logical-color rendering path, without retaining partial data. */
+    fail_color_query = TRUE;
+    (void)gdi_realize_palette(TRUE);
+    assert(!gdi_palette_valid && gdi_brushes[17] == 0);
+    brush = gdi_brush(17);
+    assert(!objects[brush].patterned && objects[brush].color == PALETTEINDEX(17));
+    fail_color_query = FALSE;
+    for (i = 0; i < 256U; ++i) memcpy(realized_palette[i], palette[i < 4U ? i : 0U], 3);
+    assert(gdi_realize_palette(TRUE) != 0);
+    for (i = 0; i < 3U; ++i)
+    {
+        gdi_release_brushes(); gdi_pattern_unavailable = FALSE;
+        if (i == 0U) fail_dib_brushes = 1;
+        else if (i == 1U) { fail_allocation = 1; allocation_attempts = 0; }
+        else fail_memory_locks = 1;
+        brush = gdi_brush(17);
+        assert(!objects[brush].patterned && gdi_pattern_unavailable && !gdi_brush_reduced);
+        assert(objects[brush].color == PALETTEINDEX(gdi_color_matches[17].solid));
+        assert(allocated_count == allocations && fail_memory_locks == 0);
+        fail_allocation = fail_dib_brushes = 0;
+    }
+    /* Moving/replacing the drawing DC must not reuse a pattern realized at
+     * an obsolete native brush origin. */
+    window_callback(main_window, WM_MOVE, 0, 0);
+    assert(gdi_brushes[17] == 0 && gdi_dirty);
+    memcpy(earth_cmap[17], original, 3);
+    custom_realized_palette = FALSE;
+    assert(gdi_realize_palette(TRUE) != 0 && gdi_palette_valid);
+    for (i = 0; i < 256U; ++i)
+        assert(gdi_color_matches[i].mix == 0U);
+    drv_notice(NULL);
+    puts("PASS GDI palette mixtures: realized colors, logical-index DIB patterns, all coverage levels, deferred palette changes, solid fallbacks and resource ownership");
+}
+
 static int run_contract(void)
 {
     int resolution, pose, i;
@@ -1115,6 +1268,7 @@ static int run_contract(void)
     window_callback(main_window, WM_CHAR, 'F', 0);
     assert(drv_fps_enabled);
     drv_osd_enabled = FALSE;
+    check_palette_mixtures();
     for (resolution = 0; resolution < 2; ++resolution) {
         window_callback(main_window, WM_CHAR, (WPARAM)('1' + resolution), 0);
         assert(globe_longitude == (resolution == 0 ? 32 : 64));

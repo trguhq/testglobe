@@ -741,6 +741,12 @@ on activation; Windows retains its reserved system colors. An 8-bit compatible b
 and memory DC normally provide the back buffer. If they cannot be allocated, the
 driver paints directly into the window's paint DC.
 
+Exact realized palette colors use solid brushes. For other colors, the driver uses
+the same two-color matcher as Amiga, selecting from the colors Windows actually
+realizes and drawing a palette-indexed pattern brush. Palette changes refresh the
+matches and brush cache. If palette queries or pattern allocation fail, drawing
+falls back to a solid palette brush.
+
 Software transforms, perspective projection, clipping, and culling operate on whole
 quads. Bounded packets reuse adjoining transformed rows and projected corners, then
 retained polygons are grouped by palette index for `PolyPolygon` calls of at most
@@ -832,6 +838,10 @@ The driver chooses the highest currently configured depth among active displays,
 without changing display modes. It supports monochrome and Color QuickDraw: 1-bit
 output uses ordered luminance patterns, 4/8-bit output maps Earth RGB colors to the
 device palette, and 16/32-bit output uses native RGB drawing.
+Color QuickDraw receives the original RGB values through `MakeRGBPat`/`FillCPoly`.
+Its native ditherer can combine four palette colors and reconverts patterns when
+the device palette or depth changes. The Amiga two-color matcher is therefore
+unnecessary here; monochrome also retains its finer 64-step luminance patterns.
 Unavailable optional palettes or color patterns fall back to native nearest-color
 drawing. Polygon allocation failures unwind the native drawing scope and release
 optional resources before one retry; repeated failure pauses drawing until input
@@ -1052,12 +1062,14 @@ defines belong in headers, not compiler flags. `TRI` remains a tested reference 
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` describes the
 window's runtime mode. All native drivers except XGL define `DRV_COLORMAP`, even when
 they can draw to RGB windows.
+GDI and Amiga also select `DRV_PALETTE_DITHER` for the shared color matcher and
+ordered patterns; QuickDraw delegates that work to its native color machinery.
 
 | Location | Responsibility |
 | --- | --- |
 | `src/globe.c` | Scene ownership, recoverable mesh construction, and plural traversals: `globe_draw_tris()`, `globe_draw_tristrips()`, `globe_draw_quads()`, `globe_draw_quadbatches()`, and OpenGL pole-cap traversal. |
 | `src/drv_*.c` | Singular native callbacks such as `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*`; group color/RGB/UV variants by primitive. |
-| `src/drv.c` | Shared allocation/clock services, input, rotation, FPS/OSD, geometry-packet helpers, and Earth-resource traversal. |
+| `src/drv.c` | Shared allocation/clock services, input, rotation, FPS/OSD, palette matching, geometry-packet helpers, and Earth-resource traversal. |
 | Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. `src/ogl_ami.c`/`.h` provide the OpenGL driver's MiniGL/Amiga integration. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
 | `web/` | Browser frontend, WebGL rendering, and generated palette module; reads canonical `data/` maps. |

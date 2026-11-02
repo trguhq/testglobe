@@ -542,7 +542,10 @@ static void qd_flat_color(PolyHandle polygon, unsigned char index)
                 MakeRGBPat(qd_pattern, &rgb);
                 qd_pattern_color = index;
             }
-            /* Color QuickDraw dithers this RGB pattern at low pixel depths. */
+            /* Keep the original RGB for Color QuickDraw's device-aware
+             * dither, which can combine four palette colors. QuickDraw
+             * reconverts cached patterns when the device table/depth changes;
+             * preselecting an Amiga-style two-pen pair would restrict it. */
             if (qd_pattern != NULL)
             {
                 FillCPoly(polygon, qd_pattern);

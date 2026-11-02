@@ -69,6 +69,21 @@ extern const char *drv_result_text(Drv_result result);
  * optional caches, but must retain a usable window and requested settings. */
 extern void drv_release_optional(void);
 
+#ifdef DRV_PALETTE_DITHER
+/* Flat RGB bytes, three per palette entry. A mixture uses second in mix/16
+ * pixels and first elsewhere; solid is independently the closest entry. */
+typedef struct Drv_palette_match
+{
+    unsigned char first, second, mix, solid;
+} Drv_palette_match;
+extern int drv_match_palette_color(const unsigned char TG_HUGE *rgb,
+                                    const unsigned char TG_HUGE *palette,
+                                    unsigned int count, Drv_palette_match *match);
+/* Borrow four immutable 16-bit rows of a repeated 4x4 Bayer pattern.
+ * Clear bits select the second color; invalid coverage returns NULL. */
+extern const unsigned short TG_HUGE *drv_dither_pattern(unsigned int mix);
+#endif
+
 
 extern void drv_ext_init(void);
 extern void drv_init(int *argc, char **argv);

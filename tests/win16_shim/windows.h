@@ -76,6 +76,14 @@ typedef struct {
 typedef struct { BYTE peRed, peGreen, peBlue, peFlags; } PALETTEENTRY;
 typedef struct { WORD palVersion, palNumEntries; PALETTEENTRY palPalEntry[1]; } LOGPALETTE;
 typedef LOGPALETTE *LPLOGPALETTE;
+typedef struct {
+    DWORD biSize;
+    LONG biWidth, biHeight;
+    WORD biPlanes, biBitCount;
+    DWORD biCompression, biSizeImage;
+    LONG biXPelsPerMeter, biYPelsPerMeter;
+    DWORD biClrUsed, biClrImportant;
+} BITMAPINFOHEADER;
 
 #define WF_80x87 0x0400UL
 #define WF_CPU286 0x0002UL
@@ -87,6 +95,9 @@ typedef LOGPALETTE *LPLOGPALETTE;
 #define GHND (GMEM_MOVEABLE | GMEM_ZEROINIT)
 #define PC_RESERVED 0x01
 #define PC_NOCOLLAPSE 0x04
+#define BI_RGB 0
+#define DIB_PAL_COLORS 1
+#define CLR_INVALID 0xffffffffUL
 #define RC_PALETTE 0x0100
 #define HORZRES 8
 #define VERTRES 10
@@ -128,6 +139,7 @@ typedef LOGPALETTE *LPLOGPALETTE;
 #define WM_CREATE 0x0001
 #define WM_DESTROY 0x0002
 #define WM_SIZE 0x0005
+#define WM_MOVE 0x0003
 #define WM_ACTIVATE 0x0006
 #define WM_KILLFOCUS 0x0008
 #define WM_PAINT 0x000F
@@ -212,6 +224,8 @@ HPALETTE SelectPalette(HDC, HPALETTE, BOOL);
 UINT RealizePalette(HDC);
 BOOL UnrealizeObject(HGDIOBJ);
 HBRUSH CreateSolidBrush(COLORREF);
+HBRUSH CreateDIBPatternBrush(HGLOBAL, UINT);
+COLORREF GetNearestColor(HDC, COLORREF);
 BOOL Polygon(HDC, const POINT *, int);
 BOOL PolyPolygon(HDC, const POINT *, int *, int);
 BOOL PatBlt(HDC, int, int, int, int, DWORD);

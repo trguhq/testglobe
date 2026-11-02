@@ -105,6 +105,11 @@ The generated classic Workbench tool icon is checked for its file structure and
 
 ### Geometry and shared interfaces
 
+Shared palette helpers are checked in both the flat and segmented helper builds.
+Tests compare small-palette mixtures with an exhaustive reference, require larger
+palettes to improve on or equal the previous nearest-two method, and verify exact
+colors, nearest solid entries, invalid inputs, and all ordered-pattern levels.
+
 - OpenGL indexed strips and separate pole triangles, XGL RGB strips, IRIS GL indexed
   strips, and GDI/QuickDraw quad batches are checked at all five resolutions. Checks
   compare primitive tuples, palette bytes, outward winding, pole geometry, shared
@@ -405,6 +410,10 @@ python3 tests/run.py --gdi-contract
 - **CPU and display:** 80387 selection and fixed-point fallback, including a 286/287
   profile; small-screen defaults, explicit dimensions, foreground/background palettes,
   buffering, and wrapped OSD statistics.
+- **Palette dithering:** realized palette RGBs, exact solid brushes, two-color DIB
+  patterns, cache refreshes after palette changes, and solid fallback when queries
+  or pattern creation fail. Packed DIB layout, logical palette indices, pattern
+  coverage, and GDI/global-memory ownership are checked.
 - **Input and lifecycle:** `WinMain`, common startup, keyboard/mouse/resize messages,
   timer rollover, Escape/window close, and heap/GDI-object ownership.
 - **Recovery:** missing back buffers use direct paint; failed `PolyPolygon` calls
@@ -443,6 +452,10 @@ python3 tests/run.py --qd-contract
   4/8/16/32-bit color; selection among currently configured display depths; old Color
   QuickDraw; small-screen and explicit-size cases; 1×1 viewports and the 32,767-coordinate
   limit. Invalid FPU angles must not leave a stale transformation usable.
+- **Native color selection:** all 256 original Earth RGB values reach Color
+  QuickDraw unchanged. Indexed fills retain native pattern conversion after palette
+  changes and palette-allocation failures; monochrome retains 64 luminance steps.
+  The recorder checks API inputs, not the Toolbox's internal dithered pixels.
 - **Buffering and state:** GWorld allocation/locking failures, direct-rendering fallback,
   and recovery. `CopyBits` must use black/white destination colors and restore the
   previous colors. The recorder gives a GWorld its own device when `noNewDevice` is
