@@ -300,6 +300,8 @@ LONG AreaEnd(struct RastPort *port)
 {
     unsigned int i;
     assert(area_count >= 3 && !(port->Flags & AREAOUTLINE));
+    if (!ami_dither_enabled)
+        assert(port->DrawMode == JAM1 && port->AreaPtrn == NULL);
     for (i = 0; i < area_count; ++i) rendered_hash = rendered_hash * 33UL + (ULONG)(area_x[i] * 32768L + area_y[i]);
     rendered_hash = rendered_hash * 33UL + port->FgPen;
     ++rendered_count; ++area_calls; blitter_busy = 1; return 0;
@@ -434,6 +436,281 @@ static void test_render(void)
     assert(!drv_frame_failed && !ami_rendering && ami_draw_port == NULL);
     if (rtg_depth > 8) rendered_count = globe_quads_num_vis;
     else assert(rendered_count == globe_quads_num_vis);
+}
+
+/* Evaluate actual 4x4 pixel averages independently of the driver's projection
+ * of a target onto a pen-pair segment. Keep the denominator rather than
+ * rounding the mean to bytes: all 17 possible coverage ratios are observable. */
+static unsigned long test_palette_error(unsigned int color, unsigned int a,
+                                        unsigned int b, unsigned int mix)
+{
+    unsigned int channel;
+    long difference;
+    unsigned long error;
+    error = 0;
+    for (channel = 0; channel < 3U; ++channel)
+    {
+        difference = 16L * earth_cmap[color][channel] -
+            (16L - mix) * desktop_palette[a][channel] -
+            (long)mix * desktop_palette[b][channel];
+        error += (unsigned long)(difference * difference);
+    }
+    return error;
+}
+
+static unsigned long test_palette_optimum(unsigned int color)
+{
+    unsigned int a, b, mix;
+    unsigned long error, best;
+    best = ULONG_MAX;
+    for (a = 0; a < colormap.Count; ++a)
+        for (b = a; b < colormap.Count; ++b)
+            for (mix = 0; mix <= 16U; ++mix)
+            {
+                error = test_palette_error(color, a, b, mix);
+                if (error < best) best = error;
+            }
+    return best;
+}
+
+static unsigned long test_palette_previous(unsigned int color)
+{
+    unsigned int a, b, pen, mix;
+    unsigned long error, best;
+    a = b = 0;
+    best = ULONG_MAX;
+    for (pen = 0; pen < colormap.Count; ++pen)
+    {
+        error = test_palette_error(color, pen, pen, 0U);
+        if (error < best) { best = error; a = pen; }
+    }
+    best = ULONG_MAX;
+    for (pen = 0; pen < colormap.Count; ++pen)
+    {
+        if (pen == a) continue;
+        error = test_palette_error(color, pen, pen, 0U);
+        if (error < best) { best = error; b = pen; }
+    }
+    best = ULONG_MAX;
+    for (mix = 0; mix <= 16U; ++mix)
+    {
+        error = test_palette_error(color, a, b, mix);
+        if (error < best) best = error;
+    }
+    return best;
+}
+
+static void test_palette_mapping(int exhaustive)
+{
+    unsigned char before[sizeof(desktop_palette)];
+    unsigned int color;
+    unsigned long actual;
+    memcpy(before, desktop_palette, sizeof(before));
+    ami_palette_valid = FALSE;
+    ami_map_palette();
+    assert(ami_color_count == colormap.Count);
+    assert(memcmp(before, desktop_palette, sizeof(before)) == 0);
+    for (color = 0; color < 256U; ++color)
+    {
+        assert(ami_pen_a[color] < colormap.Count && ami_pen_b[color] < colormap.Count);
+        assert(ami_mix[color] <= 16U);
+        actual = test_palette_error(color, ami_pen_a[color], ami_pen_b[color], ami_mix[color]);
+        if (exhaustive) assert(actual == test_palette_optimum(color));
+        else assert(actual <= test_palette_previous(color));
+    }
+}
+
+static void test_palette_quality(void)
+{
+    static const unsigned int counts[] = {1, 2, 3, 4, 7, 8, 16, 17, 32, 63, 64, 128, 255, 256};
+    static const unsigned int difficult_counts[] = {4, 32, 64, 256};
+    static const unsigned char difficult[4][3] = {
+        {120, 100, 100}, {100, 120, 100}, {255, 0, 0}, {0, 255, 0}
+    };
+    static const unsigned char thresholds[4][4] = {
+        {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}
+    };
+    unsigned char saved_palette[sizeof(desktop_palette)], saved_earth[3];
+    unsigned int saved_count, index, pen, mix, x, y, background;
+    struct RastPort saved_port;
+    unsigned long actual;
+    /* Run once on the AGA fixture so GetRGB32 supplies unquantized RGB bytes.
+     * All temporary colors and mappings are restored before frame checks. */
+    assert(display_version == 39 && ami_depth == 8U && ami_draw_port == NULL);
+    saved_count = colormap.Count;
+    memcpy(saved_palette, desktop_palette, sizeof(saved_palette));
+    memcpy(saved_earth, earth_cmap[0], sizeof(saved_earth));
+    saved_port = window_port;
+    for (index = 0; index < sizeof(counts) / sizeof(counts[0]); ++index)
+    {
+        colormap.Count = (UWORD)counts[index];
+        for (pen = 0; pen < colormap.Count; ++pen)
+        {
+            desktop_palette[pen][0] = (UBYTE)((pen * 73U) & 255U);
+            desktop_palette[pen][1] = (UBYTE)((pen * 151U) & 255U);
+            desktop_palette[pen][2] = (UBYTE)((pen * 199U) & 255U);
+        }
+        if (colormap.Count > 1U) memset(desktop_palette[colormap.Count - 1U], 255, 3);
+        if (colormap.Count >= 4U) memcpy(desktop_palette[1], desktop_palette[0], 3);
+        test_palette_mapping(colormap.Count <= 16U);
+    }
+    /* Neither individually nearest pen belongs to the best red/green pair.
+     * Repeat at the larger desktop sizes to check their bounded search. */
+    earth_cmap[0][0] = earth_cmap[0][1] = 127; earth_cmap[0][2] = 0;
+    for (index = 0; index < sizeof(difficult_counts) / sizeof(difficult_counts[0]); ++index)
+    {
+        colormap.Count = (UWORD)difficult_counts[index];
+        for (pen = 0; pen < colormap.Count; ++pen)
+            memcpy(desktop_palette[pen], difficult[pen < 4U ? pen : 0], 3);
+        test_palette_mapping(index == 0);
+        actual = test_palette_error(0, ami_pen_a[0], ami_pen_b[0], ami_mix[0]);
+        assert(actual == 128UL && actual < test_palette_previous(0));
+        assert(ami_mix[0] == 8U);
+        assert((ami_pen_a[0] == 2U && ami_pen_b[0] == 3U) ||
+               (ami_pen_a[0] == 3U && ami_pen_b[0] == 2U));
+    }
+    /* An exact entry, including duplicates, must stay solid without noise. */
+    colormap.Count = 16;
+    memcpy(desktop_palette[1], earth_cmap[0], 3);
+    memcpy(desktop_palette[5], earth_cmap[0], 3);
+    test_palette_mapping(TRUE);
+    assert(ami_mix[0] == 0U && test_palette_error(0, ami_pen_a[0], ami_pen_a[0], 0U) == 0UL);
+    colormap.Count = 2;
+    memset(desktop_palette[0], 0, 3); memset(desktop_palette[1], 255, 3);
+    for (index = 0; index < 2U; ++index)
+    {
+        memset(earth_cmap[0], index ? 255 : 0, 3);
+        test_palette_mapping(TRUE);
+        assert(ami_mix[0] == 0U && ami_pen_a[0] == index);
+    }
+    /* Test the native draw state and actual bit coverage, not just the
+     * lookup's mixture number. Clear pattern bits select the background pen. */
+    ami_draw_port = &window_port;
+    ami_pen_a[0] = 0; ami_pen_b[0] = 1;
+    for (mix = 0; mix <= 16U; ++mix)
+    {
+        ami_mix[0] = (unsigned char)mix;
+        ami_set_color(0);
+        if (mix == 0U || mix == 16U)
+        {
+            assert(window_port.DrawMode == JAM1 && window_port.AreaPtrn == NULL);
+            assert(window_port.FgPen == (mix == 0U ? 0U : 1U));
+        }
+        else
+        {
+            assert(window_port.DrawMode == JAM2 && window_port.AreaPtSz == 2);
+            assert(window_port.FgPen == 0U && window_port.BgPen == 1U);
+            assert(window_port.AreaPtrn != NULL);
+            background = 0;
+            for (y = 0; y < 4U; ++y)
+                for (x = 0; x < 16U; ++x)
+                {
+                    assert(!!(window_port.AreaPtrn[y] & (UWORD)(0x8000U >> x)) ==
+                           (thresholds[y][x % 4U] >= mix));
+                    if (!(window_port.AreaPtrn[y] & (UWORD)(0x8000U >> x))) ++background;
+                }
+            assert(background == 4U * mix);
+        }
+    }
+    ami_draw_port = NULL; window_port = saved_port;
+    memcpy(earth_cmap[0], saved_earth, sizeof(saved_earth));
+    memcpy(desktop_palette, saved_palette, sizeof(saved_palette));
+    colormap.Count = (UWORD)saved_count;
+    ami_palette_valid = FALSE;
+    ami_map_palette();
+    puts("PASS Amiga palette matching: exhaustive small-palette colors, bounded-search quality, exact/duplicate pens and Bayer coverage");
+}
+
+static void test_osd_contains(const char *expected)
+{
+    char joined[sizeof(osd_text)];
+    unsigned int i, length;
+    length = 0;
+    for (i = 0; osd_text[i] != 0; ++i)
+        if (osd_text[i] != '\n') joined[length++] = osd_text[i];
+    joined[length] = 0;
+    assert(strstr(joined, expected) != NULL);
+}
+
+static void test_solid_palette(void)
+{
+    struct RastPort saved_port;
+    unsigned int color, pen, nearest, channel;
+    long difference;
+    unsigned long error, best;
+    assert(!ami_dither_enabled && ami_draw_port == NULL && ami_depth <= 8U);
+    saved_port = window_port;
+    ami_draw_port = &window_port;
+    for (color = 0; color < 256U; ++color)
+    {
+        nearest = 0; best = ULONG_MAX;
+        for (pen = 0; pen < ami_color_count; ++pen)
+        {
+            error = 0;
+            /* The effective desktop palette includes RGB12 quantization on
+             * older graphics.library versions; compare the colors read. */
+            for (channel = 0; channel < 3U; ++channel)
+            {
+                difference = (long)earth_cmap[color][channel] - ami_palette[pen][channel];
+                error += (unsigned long)(difference * difference);
+            }
+            if (error < best) { best = error; nearest = pen; }
+        }
+        assert(ami_pen_solid[color] == nearest);
+        ami_set_color((unsigned char)color);
+        assert(window_port.FgPen == nearest);
+        assert(window_port.DrawMode == JAM1 && window_port.AreaPtrn == NULL);
+    }
+    window_port = saved_port;
+    ami_draw_port = NULL;
+}
+
+static void test_dither_toggle(void)
+{
+    unsigned char saved_palette[sizeof(desktop_palette)];
+    unsigned int resources, rasters;
+    unsigned long before_hash, before_count, revision;
+    Soft3d_project_cache *cache;
+    assert(ami_dither_enabled && drv_osd_enabled);
+    assert(strstr(drv_help, "D dither") != NULL);
+    test_osd_contains(ami_depth <= 8U ? "dither on" : "dither n/a");
+    resources = resource_calls; rasters = raster_calls;
+    revision = globe_revision; cache = ami_project_cache;
+    before_hash = rendered_hash; before_count = rendered_count;
+    ami_dirty = FALSE; drv_fps_average = 99.0f;
+    ami_event(VANILLAKEY, 'd', 0, 0);
+    assert(!ami_dither_enabled && ami_dirty && drv_fps_average == 0.0f);
+    assert(resource_calls == resources && raster_calls == rasters);
+    assert(globe_revision == revision && ami_project_cache == cache);
+    if (ami_depth <= 8U) test_solid_palette();
+    test_render();
+    assert(rendered_count == before_count);
+    test_osd_contains(ami_depth <= 8U ? "dither off" : "dither n/a");
+    if (ami_depth > 8U) assert(rendered_hash == before_hash);
+    /* A refresh may change Workbench colors while solid matching is active.
+     * Preserve the option while rebuilding the cache from the new palette. */
+    if (ami_depth <= 8U)
+    {
+        memcpy(saved_palette, desktop_palette, sizeof(saved_palette));
+        memset(desktop_palette[0], 255, 3);
+        memset(desktop_palette[colormap.Count - 1U], 0, 3);
+        ami_event(REFRESHWINDOW, 0, 0, 0);
+        assert(!ami_dither_enabled);
+        test_solid_palette();
+        memcpy(desktop_palette, saved_palette, sizeof(saved_palette));
+        ami_event(ACTIVEWINDOW, 0, 0, 0);
+        assert(!ami_dither_enabled);
+        test_solid_palette();
+    }
+    ami_event(NEWSIZE, 0, 0, 0);
+    assert(!ami_dither_enabled);
+    ami_keyboard('2'); assert(!ami_dither_enabled && globe_longitude == 64);
+    ami_keyboard('1'); assert(!ami_dither_enabled && globe_longitude == 32);
+    ami_event(VANILLAKEY, 'D', 0, 0);
+    assert(ami_dither_enabled && ami_dirty);
+    test_render();
+    assert(rendered_hash == before_hash && rendered_count == before_count);
+    test_osd_contains(ami_depth <= 8U ? "dither on" : "dither n/a");
 }
 
 static void test_fpu_integer_conversion(void)
@@ -607,6 +884,7 @@ static int test_rtg(int argc, char **argv, const char *mode)
         test_render();
     }
     else assert(area_calls > 20 && span_calls == 0);
+    test_dither_toggle();
     reference_hash = rendered_hash; reference_count = rendered_count;
     copies = copy_calls; drv_release_optional();
     assert(friend_count == 0 && ami_project_cache == NULL);
@@ -664,10 +942,15 @@ int main(int argc, char **argv)
     desktop.BitMap.BytesPerRow = (UWORD)(((desktop.Width + 15U) / 16U) * 2U);
     desktop.BitMap.Rows = (UWORD)desktop.Height;
     if (strcmp(mode, "mono") == 0) desktop.BitMap.Depth = 1;
+    if (strcmp(mode, "two") == 0) desktop.BitMap.Depth = 2;
+    if (strcmp(mode, "three") == 0) desktop.BitMap.Depth = 3;
     if (strcmp(mode, "four") == 0) desktop.BitMap.Depth = 4;
     if (strcmp(mode, "ecs") == 0) { display_version = 36; graphics_base.ChipRevBits0 = GFXF_HR_AGNUS | GFXF_HR_DENISE; }
-    if (strcmp(mode, "aga") == 0 || strcmp(mode, "fpu") == 0 || strcmp(mode, "020") == 0 || strcmp(mode, "040") == 0)
+    if (strcmp(mode, "aga") == 0 || strcmp(mode, "aga64") == 0 || strcmp(mode, "aga128") == 0 ||
+        strcmp(mode, "fpu") == 0 || strcmp(mode, "020") == 0 || strcmp(mode, "040") == 0)
     { display_version = 39; desktop.BitMap.Depth = 8; graphics_base.ChipRevBits0 = GFXF_AA_ALICE; exec_base.AttnFlags = AFF_68020; }
+    if (strcmp(mode, "aga64") == 0) desktop.BitMap.Depth = 6;
+    if (strcmp(mode, "aga128") == 0) desktop.BitMap.Depth = 7;
     if (strcmp(mode, "denisewide") == 0 || strcmp(mode, "ecswide") == 0)
     { display_version = 39; graphics_base.ChipRevBits0 = strcmp(mode, "ecswide") == 0 ? GFXF_HR_AGNUS : GFXF_HR_DENISE; }
     if (strcmp(mode, "fpu") == 0) exec_base.AttnFlags |= AFF_68881;
@@ -743,6 +1026,7 @@ int main(int argc, char **argv)
     if (fail_cache_allocation) assert(ami_project_cache == NULL);
     assert(ami_cpu == (strcmp(mode, "040") == 0 ? 68040 : (exec_base.AttnFlags & AFF_68020 ? 68020 : 68000)));
     assert(ami_has_fpu == (strcmp(mode, "fpu") == 0 || strcmp(mode, "040") == 0));
+    if (strcmp(mode, "aga") == 0) test_palette_quality();
     assert(globe_set_resolution(32, -1, GLOBE_RADIUS) == TRUE);
     assert(resource_calls == 1 && resource_first == TG_EARTH_32_ID && resource_max == 512);
     assert(!drv_texture_avail && !drv_texture_enabled);
@@ -754,6 +1038,7 @@ int main(int argc, char **argv)
     if (strcmp(mode, "backfail") == 0) assert(ami_back_planes == 0 && raster_count == 1);
     test_render(); assert(rendered_count > 20 && text_calls > 0 && strstr(osd_text, "quads") != NULL);
     assert(baseline_vertices + enhanced_vertices + fpu_vertices == 561);
+    test_dither_toggle();
     reference_hash = rendered_hash; reference_count = rendered_count;
     drv_release_optional(); assert(ami_project_cache == NULL && ami_back_planes == 0);
     test_render(); assert(rendered_hash == reference_hash && rendered_count == reference_count);

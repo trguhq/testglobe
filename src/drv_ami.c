@@ -116,10 +116,33 @@ static const char *ami_chipset = "OCS/ECS";
 static unsigned int ami_aspect_num = 1, ami_aspect_den = 1;
 static unsigned char ami_palette[256][3];
 static unsigned char ami_pen_a[256], ami_pen_b[256], ami_mix[256];
+static unsigned char ami_pen_solid[256];
+static int ami_dither_enabled;
 static unsigned int ami_color_count;
 static int ami_palette_valid;
 static unsigned int ami_black, ami_white;
-static UWORD ami_pattern[4];
+/* Four rows per 4x4 Bayer pattern, repeated across a native 16-bit word.
+ * Entry n selects the background pen in n of each 16 pixels. Keeping these
+ * immutable avoids rebuilding 64 pattern bits for every polygon. */
+static UWORD ami_patterns[17][4] = {
+    {0xffff, 0xffff, 0xffff, 0xffff},
+    {0x7777, 0xffff, 0xffff, 0xffff},
+    {0x7777, 0xffff, 0xdddd, 0xffff},
+    {0x5555, 0xffff, 0xdddd, 0xffff},
+    {0x5555, 0xffff, 0x5555, 0xffff},
+    {0x5555, 0xbbbb, 0x5555, 0xffff},
+    {0x5555, 0xbbbb, 0x5555, 0xeeee},
+    {0x5555, 0xaaaa, 0x5555, 0xeeee},
+    {0x5555, 0xaaaa, 0x5555, 0xaaaa},
+    {0x1111, 0xaaaa, 0x5555, 0xaaaa},
+    {0x1111, 0xaaaa, 0x4444, 0xaaaa},
+    {0x0000, 0xaaaa, 0x4444, 0xaaaa},
+    {0x0000, 0xaaaa, 0x0000, 0xaaaa},
+    {0x0000, 0x2222, 0x0000, 0xaaaa},
+    {0x0000, 0x2222, 0x0000, 0x8888},
+    {0x0000, 0x0000, 0x0000, 0x8888},
+    {0x0000, 0x0000, 0x0000, 0x0000}
+};
 static double ami_auto_time;
 static Soft3d_project_cache *ami_project_cache;
 static unsigned long ami_previous_sequence;
@@ -283,6 +306,7 @@ void drv_init(int *argc, char **argv)
     ami_ready = ami_rendering = ami_paused = FALSE;
     ami_running = ami_active = ami_dirty = TRUE;
     ami_palette_valid = FALSE;
+    ami_dither_enabled = AMI_DITHER_DEFAULT;
     ami_unsafe_bitmap = FALSE;
     if (atexit(ami_cleanup) != 0) ami_error("Cannot register Amiga cleanup");
     IntuitionBase = (struct IntuitionBase *)OpenLibrary("intuition.library", 34UL);
@@ -308,7 +332,7 @@ void drv_init(int *argc, char **argv)
 }
 
 static unsigned int ami_nearest(unsigned int red, unsigned int green,
-                                 unsigned int blue, int excluded)
+                                 unsigned int blue)
 {
     unsigned int pen, best;
     long r, g, b;
@@ -317,7 +341,6 @@ static unsigned int ami_nearest(unsigned int red, unsigned int green,
     best = 0;
     for (pen = 0; pen < ami_color_count; ++pen)
     {
-        if ((int)pen == excluded) continue;
         r = (long)red - ami_palette[pen][0];
         g = (long)green - ami_palette[pen][1];
         b = (long)blue - ami_palette[pen][2];
@@ -327,14 +350,101 @@ static unsigned int ami_nearest(unsigned int red, unsigned int green,
     return best;
 }
 
+/* Score the actual 1/16 mixture without rounding its RGB components first.
+ * Each residual is at most 4080; the sum of squares fits a 32-bit long. */
+static unsigned long ami_color_error(unsigned int color, unsigned int a,
+                                     unsigned int b, unsigned int mix)
+{
+    unsigned int channel;
+    long residual;
+    unsigned long error;
+    error = 0;
+    for (channel = 0; channel < 3U; ++channel)
+    {
+        residual = 16L * earth_cmap[color][channel] -
+                   (16L - (long)mix) * ami_palette[a][channel] -
+                   (long)mix * ami_palette[b][channel];
+        error += (unsigned long)(residual * residual);
+    }
+    return error;
+}
+
+static void ami_match_pair(unsigned int color, unsigned int a, unsigned int b,
+                            unsigned long *best_error, unsigned long *best_contrast)
+{
+    unsigned int channel, mix;
+    long numerator, denominator, delta, difference;
+    unsigned long error;
+    numerator = denominator = 0;
+    for (channel = 0; channel < 3U; ++channel)
+    {
+        delta = (long)ami_palette[b][channel] - ami_palette[a][channel];
+        difference = (long)earth_cmap[color][channel] - ami_palette[a][channel];
+        numerator += delta * difference;
+        denominator += delta * delta;
+    }
+    /* Solid endpoints are already covered by the nearest-pen search.
+     * This also rejects duplicate pens without dividing by zero. */
+    if (numerator <= 0 || numerator >= denominator) return;
+    mix = (unsigned int)((numerator * 16L + denominator / 2L) / denominator);
+    if (mix == 0U || mix >= 16U) return;
+    error = ami_color_error(color, a, b, mix);
+    if (error < *best_error ||
+        (error == *best_error && (unsigned long)denominator < *best_contrast))
+    {
+        *best_error = error;
+        *best_contrast = (unsigned long)denominator;
+        ami_pen_a[color] = (unsigned char)a;
+        ami_pen_b[color] = (unsigned char)b;
+        ami_mix[color] = (unsigned char)mix;
+    }
+}
+
+static void ami_match_color(unsigned int color)
+{
+    unsigned int a, b, anchor;
+    unsigned long error, contrast;
+    anchor = ami_nearest(earth_cmap[color][0], earth_cmap[color][1],
+                         earth_cmap[color][2]);
+    ami_pen_solid[color] = (unsigned char)anchor;
+    ami_pen_a[color] = ami_pen_b[color] = (unsigned char)anchor;
+    ami_mix[color] = 0;
+    error = ami_color_error(color, anchor, anchor, 0U);
+    contrast = 0;
+    if (error == 0) return;
+    if (ami_color_count <= 16U)
+    {
+        /* Small Workbench palettes can afford every pair: this finds the
+         * closest RGB mean attainable with a two-pen 4x4 pattern. */
+        for (a = 0; a < ami_color_count; ++a)
+            for (b = a + 1U; b < ami_color_count; ++b)
+                ami_match_pair(color, a, b, &error, &contrast);
+    }
+    else
+    {
+        /* Keep large-palette startup bounded on a 68000: search every
+         * partner for the nearest pen, then improve the other endpoint.
+         * Two individually nearest pens alone can mix to the wrong hue.
+         * This is at least as accurate as that old pair, without testing
+         * all 32640 pairs for each of the 256 Earth colors. */
+        for (b = 0; b < ami_color_count; ++b)
+            ami_match_pair(color, anchor, b, &error, &contrast);
+        if (ami_mix[color] != 0U)
+        {
+            anchor = ami_pen_b[color];
+            for (a = 0; a < ami_color_count; ++a)
+                ami_match_pair(color, anchor, a, &error, &contrast);
+        }
+    }
+}
+
 static void ami_map_palette(void)
 {
     struct ColorMap *colors;
     ULONG rgb[3], packed;
     unsigned char sample[3];
-    unsigned int color, pen, a, b, channel, count;
+    unsigned int color, pen, channel, count;
     int changed;
-    long numerator, denominator, delta, difference, mix;
     if (ami_window == NULL || ami_depth < 1) return;
     colors = ami_window->WScreen->ViewPort.ColorMap;
     count = ami_depth > AMI_MAX_DEPTH ? 256U : 1U << ami_depth;
@@ -368,27 +478,10 @@ static void ami_map_palette(void)
      * two-pen lookup only when the native values or count actually change. */
     if (changed)
     {
-        ami_black = ami_nearest(0, 0, 0, -1);
-        ami_white = ami_nearest(255, 255, 255, -1);
+        ami_black = ami_nearest(0, 0, 0);
+        ami_white = ami_nearest(255, 255, 255);
         for (color = 0; ami_depth <= 8U && color < 256; ++color)
-        {
-            a = ami_nearest(earth_cmap[color][0], earth_cmap[color][1], earth_cmap[color][2], -1);
-            b = ami_nearest(earth_cmap[color][0], earth_cmap[color][1], earth_cmap[color][2], (int)a);
-            numerator = denominator = 0;
-            for (channel = 0; channel < 3; ++channel)
-            {
-                delta = (long)ami_palette[b][channel] - ami_palette[a][channel];
-                difference = (long)earth_cmap[color][channel] - ami_palette[a][channel];
-                numerator += delta * difference;
-                denominator += delta * delta;
-            }
-            mix = denominator == 0 ? 0 : (numerator * 16L + denominator / 2L) / denominator;
-            if (mix < 0) mix = 0;
-            if (mix > 16) mix = 16;
-            ami_pen_a[color] = (unsigned char)a;
-            ami_pen_b[color] = (unsigned char)b;
-            ami_mix[color] = (unsigned char)mix;
-        }
+            ami_match_color(color);
     }
     ami_palette_valid = TRUE;
     drv_bits_per_pixel = ami_storage_depth;
@@ -692,13 +785,11 @@ failed:
 
 static void ami_set_color(unsigned char color)
 {
-    static const unsigned char bayer[4][4] = {
-        {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}
-    };
-    unsigned int x, y;
-    UWORD row;
-    SetAPen(ami_draw_port, ami_pen_a[color]);
-    if (ami_mix[color] == 0)
+    unsigned int mix;
+    mix = ami_dither_enabled ? ami_mix[color] : 0U;
+    SetAPen(ami_draw_port, !ami_dither_enabled ? ami_pen_solid[color] :
+                           (mix == 16U ? ami_pen_b[color] : ami_pen_a[color]));
+    if (mix == 0U || mix == 16U)
     {
         SetDrMd(ami_draw_port, JAM1);
         SetAfPt(ami_draw_port, NULL, 0);
@@ -706,14 +797,7 @@ static void ami_set_color(unsigned char color)
     }
     SetBPen(ami_draw_port, ami_pen_b[color]);
     SetDrMd(ami_draw_port, JAM2);
-    for (y = 0; y < 4; ++y)
-    {
-        row = 0;
-        for (x = 0; x < 16; ++x)
-            if (bayer[y][x & 3U] >= ami_mix[color]) row |= (UWORD)(0x8000U >> x);
-        ami_pattern[y] = row;
-    }
-    SetAfPt(ami_draw_port, ami_pattern, 2);
+    SetAfPt(ami_draw_port, ami_patterns[mix], 2);
 }
 
 #if AMI_RTG
@@ -940,6 +1024,8 @@ void drv_draw_osd(void)
         sprintf(detail, " %.1f FPS", (double)drv_fps_average);
         drv_append_status(status, sizeof(status), detail);
     }
+    drv_append_status(status, sizeof(status), ami_depth > 8U ? ", dither n/a" :
+                      (ami_dither_enabled ? ", dither on" : ", dither off"));
     baseline = ami_draw_port->TxBaseline + 4;
     baseline = ami_text_lines(status, baseline, TRUE);
     if (ami_rtg)
@@ -1037,7 +1123,12 @@ void drv_close(void)
 static void ami_keyboard(unsigned char key)
 {
     if (key == 27) { drv_close(); return; }
-    if (!drv_handle_key(key)) return;
+    if (key == 'd' || key == 'D')
+    {
+        ami_dither_enabled = !ami_dither_enabled;
+        drv_reset_timing();
+    }
+    else if (!drv_handle_key(key)) return;
     if ((ami_depth <= 8U && ami_scratch == NULL) || !ami_ready) (void)ami_resize();
     else ami_paused = FALSE;
     ami_auto_time = ami_time_now();

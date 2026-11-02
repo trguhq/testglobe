@@ -65,11 +65,12 @@ Letter controls accept either case.
 | `f` | Toggle FPS measurement and its on-screen statistic. |
 | `o` | Toggle the on-screen display (OSD). |
 | `t` | Toggle texture mapping in OpenGL, IRIS GL, Sun XGL, and WebGL. |
-| `d` | Toggle display lists in OpenGL; enabled by default. |
+| `d` | Toggle display lists in OpenGL, or palette dithering in native Amiga; both start enabled. |
 | `Esc` | Exit native applications; in WebGL, pause rotation and release dragging. |
 
 WebGL also provides on-screen controls and a **Reset view** button. Its retained GPU
-buffers replace display lists; the `d` control applies only to native OpenGL.
+buffers replace display lists; the `d` control applies to the native OpenGL and
+Amiga backends.
 
 Keys `1`–`5` select maps 32, 64, 128, 256, and 512 pixels wide (`EARTH_32` through
 `EARTH_512`); map height is half the width. The OSD counts quad patches for Matrox,
@@ -100,6 +101,8 @@ changes restart the sample.
 | `dlist on` | OpenGL successfully uses a display list for the current frame. |
 | `dlist off` | Display lists are disabled. |
 | `dlist fail` | Lists are enabled but unavailable, failed, or bypassed. |
+| `dither on` / `dither off` | Amiga palette dithering is enabled / disabled; off uses the nearest solid palette color. |
+| `dither n/a` | Amiga is drawing directly in RGB on a truecolor RTG screen. |
 | `GWorld on` / `GWorld off` | QuickDraw is drawing through an offscreen GWorld / directly to the window. |
 
 Toggle `t` off and on to retry after a recoverable texture failure. OpenGL software
@@ -940,7 +943,16 @@ fills. Collapsed pole patches become triangles. Native `Text` draws the wrapped 
 including chipset or RTG backend, CPU/math, color depth, and buffering status.
 
 On indexed screens, the driver reads the Workbench palette and maps Earth indices
-to available pens. Ordered two-pen patterns approximate missing colors at low depths.
+to available pens at every supported depth (2 through 256 colors). Ordered two-pen
+patterns approximate missing colors by comparing their mixed RGB values. Palettes
+with up to 16 entries use the closest available pair and 1/16 mixture; larger palettes
+use two bounded searches to improve the mixture without a costly full pair search.
+Exact palette matches stay solid. Mappings are cached until the desktop palette
+changes, and precomputed patterns avoid extra work per polygon.
+Press `D` or `d` to toggle dithering, which starts enabled. With dithering off,
+each polygon uses its nearest solid palette color. Both mappings remain cached,
+so toggling does not rebuild the globe or allocate memory. The OSD reports
+`dither on` or `dither off`, or `dither n/a` on truecolor RTG screens.
 It does not replace desktop or pointer colors. OCS/ECS use the available RGB12 palette precision;
 AGA-capable OS versions expose RGB24 palette entries. Display depth is independent of
 CPU/FPU capability. HAM, EHB, and dual-playfield modes are rejected because they do

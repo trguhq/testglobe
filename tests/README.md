@@ -481,9 +481,16 @@ cross-build uses the [Amiga build instructions](../README.md#amiga) separately.
 
 - **Workbench and color:** OS library versions 34/36/39 with OCS/ECS/AGA profiles,
   window creation, actual client dimensions, native text, and palette-preserving
-  drawing at 1/4/5/8-bit indexed depths. Palette/display queries are version-guarded
+  drawing at all 1- through 8-bit indexed depths. Palette/display queries are version-guarded
   and HAM is rejected. Native area vertices must remain inside the drawable bitmap;
-  patterns and pen indices must stay within their bounds.
+  patterns and pen indices must stay within their bounds. Small-palette mixtures
+  are checked against an exhaustive RGB-error oracle; larger-palette matching must
+  be at least as accurate as the previous nearest-two-pen method. Exact colors,
+  duplicate pens, short palettes, complementary-color mixtures, and all 17 Bayer
+  coverage levels are checked through the production palette and drawing paths.
+  `D`/`d` switches between mixtures and independently verified nearest solid pens;
+  the setting survives palette refreshes, resizing, and resolution changes. Tests
+  check OSD/help, unchanged resource ownership, and unaffected truecolor RTG output.
 - **RTG:** optional CyberGraphX/Picasso96 detection, indexed and 15/16/24/32-bit
   screens, opaque bitmap attributes, RGB span bounds and colors, and native fallback
   when RTG libraries are absent. The native-only `AMI_RTG=0` build is checked separately.

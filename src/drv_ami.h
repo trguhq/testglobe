@@ -23,7 +23,7 @@
 #endif
 
 #define DRV_NAME "Amiga"
-#define DRV_HELP "1-5 detail, A rotate, O OSD, F FPS, Esc exit"
+#define DRV_HELP "1-5 detail, A rotate, O OSD, F FPS, Esc exit, D dither"
 #define DRV_WIN_X 20
 #define DRV_WIN_Y 20
 #define DRV_WIN_WIDTH 640
@@ -34,6 +34,7 @@
 #define DRV_COLORMAP
 #define DRV_EARTH_RESOURCES
 #define DRV_OSD_DEFAULT TRUE
+#define AMI_DITHER_DEFAULT TRUE
 #define DRV_VISIBLE_COUNTS
 #define DRV_DEPTH 5
 #define DRV_COLORMAPDEPTH 5
