@@ -105,7 +105,7 @@ changes restart the sample.
 | `dlist fail` | Lists are enabled but unavailable, failed, or bypassed. |
 | `dither on` / `dither off` | Amiga palette dithering is enabled / disabled; off uses the nearest solid palette color. |
 | `dither n/a` | Amiga is drawing directly in RGB on a truecolor RTG screen. |
-| `soft3d on` / `soft3d off (TI)` | TIGA uses host transforms / the downloadable TI transform module; both use TIGA polygon filling. |
+| `soft3d on` / `soft3d off (TI)` | TIGA uses host transforms / the embedded TI transform module; both use TIGA polygon filling. |
 | `GWorld on` / `GWorld off` | QuickDraw is drawing through an offscreen GWorld / directly to the window. |
 
 Toggle `t` off and on to retry after a recoverable texture failure. OpenGL software
@@ -115,7 +115,8 @@ all silent native texture failures. Their driver sections describe these limits.
 OpenGL places `dlist` after FPS and before texture status, with its `d` help last.
 QuickDraw appends GWorld status after the other statistics. TIGA appends `soft3d`,
 CPU/FPU detection, and buffering status to the top statistics, and places `S` last
-in its help. A failed TI module load leaves `soft3d on` with a recovery notice.
+in its help. Failed TI module extraction or loading leaves `soft3d on` with a
+recovery notice.
 When a smaller texture is active, its width follows the status, for example
 `texture on (128)` or `texture soft (128)`. GDI reports direct drawing, individual
 polygons, reduced colors, or manual rotation when those fallbacks are active.
@@ -178,7 +179,7 @@ and libraries installed:
 | [IRIS GL](#iris-gl) | `make irisgl` | `testglobe-irisgl` |
 | [Sun XGL](#sun-xgl) | `make xgl` | `testglobe-xgl` |
 | [Matrox LibShell](#matrox-libshell) | `nmake matrox` | `testglob.exe` |
-| [TIGA](#tiga) | `nmake tiga` | `testglob.exe`, `tga_gsp.rlm` |
+| [TIGA](#tiga) | `nmake tiga` | `testglob.exe` |
 | [Windows GDI](#windows-gdi) | `nmake gdi` | `testglob.exe` |
 | [QuickDraw](#quickdraw) (MPW bridge) | `make quickdraw` | `TestglobeQD` |
 | [Amiga](#amiga) (VBCC cross-compiler) | `make amiga` | `testglobe-amiga` |
@@ -230,8 +231,8 @@ describe the cache and memory policy.
 ### Earth map data
 
 Each native application embeds its selected Earth maps and needs no external Earth
-data files at runtime. TIGA additionally uses its installed graphics runtime and an
-optional TI transform module, described in its build section. WebGL fetches the same
+data files at runtime. TIGA also embeds its TI transform module in the executable;
+its installed graphics runtime remains a system requirement. WebGL fetches the same
 binary inputs from the static site's `data/` directory. Preserve binary bytes when
 transferring the project; preserve QuickDraw's application resource fork when copying
 its executable.
@@ -737,25 +738,46 @@ code-generation tools on `PATH`, then run:
 nmake tiga TGA_ROOT=C:\TIGA
 ```
 
-This builds `testglob.exe` and `tga_gsp.rlm`. Keep the module beside the executable;
-`S` loads it on demand. The host links `ai.lib`; the TI compiler and linker build the
-module separately from `src/tga_gsp.c` and `src/tga_ext.asm`. `src/tga_cmd.h` defines
-the bounded command format. The module uses TMS34010 instructions, also supported by
-TMS34020, and requires no floating-point coprocessor or TI math runtime.
+Distribute only `testglob.exe`. It contains both Earth maps and the TI transform
+module. The host links `ai.lib`; the TI tools build `tga_gsp.rlm` from
+`src/tga_gsp.c` and `src/tga_ext.asm`, then `src/tga_pack.c` appends it to the host
+executable. `tga_gsp.rlm`, `tga_host.exe`, and the packer are build intermediates.
+The appended bytes remain outside the DOS load image, so software mode retains no
+extra module copy in DOS memory.
 
-To build only the host when the module is already available, or to use software 3D
-without the TI tools:
+The module uses TMS34010 instructions, also supported by TMS34020, and requires no
+floating-point coprocessor or TI math runtime. `src/tga_cmd.h` defines its bounded
+command and embedded-file formats. To build a software-only executable without the
+TI tools or embedded module:
 
 ```text
 nmake tiga TGA_ROOT=C:\TIGA TGA_MODULE=
 ```
 
-`nmake tiga-module` builds the module alone. Override `TGA_CC`, `TGA_CFLAGS`,
+`nmake tiga-module` builds the module alone. Set `TGA_MODULE` to a prebuilt RLM
+path to embed it without rebuilding the TI code. Override `TGA_CC`, `TGA_CFLAGS`,
 `TGA_386FLAGS`, `TGA_CPPFLAGS`, `TGA_LIB`, and `TGA_LDFLAGS` for the host
 installation. `TGA_GSP_CC`, `TGA_GSP_LINK`, `TGA_GSP_CFLAGS`, `TGA_GSP_CPPFLAGS`, and
 `TGA_GSP_LDFLAGS` select the TI tools. Preserve `-AH` and the separate baseline/386
 object settings. The default `TGA_ROOT` is `TIGA` in the root Makefile and `..\TIGA`
-in `src/Makefile`. The executable embeds only the 32- and 64-wide Earth maps.
+in `src/Makefile`. The executable embeds only the 32- and 64-wide Earth maps. A
+software-only build still renders through TIGA; pressing `S` leaves software 3D on.
+
+#### Module loading
+
+When `S` first selects TI transforms, the driver reads the embedded payload from its
+own executable and streams it through a bounded buffer into a uniquely created
+temporary file. It tries `TEMP`, `TMP`, then the current directory. TIGA
+`install_rlm()` requires a filename; the file is normally deleted immediately after
+loading. If deletion fails, its path is retained for another attempt on `S` or exit.
+The resident TI module is reused until released or the application exits. No separate
+module or Earth-data files need to accompany `testglob.exe`.
+
+If the executable cannot be reopened, the payload is missing or corrupt, temporary
+storage is unavailable, or TIGA rejects the module, rendering continues with
+`soft3d on` and an OSD notice. Press `S` to retry. The application does not search for
+a neighboring `tga_gsp.rlm`. The vendor graphics driver, graphics manager, and
+`extprims.rlm` remain part of the installed TIGA environment.
 
 #### Rendering and controls
 
@@ -777,9 +799,9 @@ with collapsed pole patches drawn as triangles.
   Depth-crossing polygons retain the shared host clipping/projection path. Floating
   host transforms and fixed-point TI transforms can differ slightly at rounded edges.
 
-Missing modules, insufficient command capacity, or rejected transform packets restore
-software 3D with an OSD notice. Press `S` to retry. Host/GSP packets contain bounded
-32-bit values rather than host pointers or compiler-dependent structures. A mode with
+Insufficient command capacity or rejected transform packets restore software 3D
+with an OSD notice. Press `S` to retry. Host/GSP packets contain bounded 32-bit values
+rather than host pointers or compiler-dependent structures. A mode with
 two display pages is preferred; completed frames use synchronized page flips, and the
 previous page is not reused until the flip completes. A single-page mode remains
 usable but can flicker and reports its buffering status.
@@ -799,10 +821,11 @@ in the top OSD. No board-specific addresses or registers are accessed by the hos
 
 #### Validation
 
-See the [TIGA host checks](tests/README.md#tiga). The downloadable module was
-compiled and linked with TI TMS340 tools 5.01 under DOSBox, independently of host
-contract tests. Microsoft C 7 host compilation, segmented ABI and communication
-callbacks, TIGA module loading, physical rendering, and page-flip behavior still
+See the [TIGA host checks](tests/README.md#tiga), including executable packing,
+corrupt-payload rejection, temporary-file failures, and cleanup. The downloadable
+module was compiled and linked with TI TMS340 tools 5.01 under DOSBox, independently
+of host contract tests. Microsoft C 7 host compilation, segmented ABI and
+communication callbacks, TIGA module loading, physical rendering, and page-flip behavior still
 require native validation. The interface follows
 [TI's TIGA Interface User's Guide](https://github.com/tms34010guy/tms34010-sdk/blob/main/Docs/SPVU015C%20TIGA%20Interface%20Users%20Guide%20%281990-09%29.pdf)
 (September 1990).
@@ -1175,6 +1198,7 @@ ordered patterns; QuickDraw delegates that work to its native color machinery.
 | `src/drv.c` | Shared allocation/clock services, input, rotation, FPS/OSD, palette matching, geometry-packet helpers, and Earth-resource traversal. |
 | Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. `src/ogl_ami.c`/`.h` provide the OpenGL driver's MiniGL/Amiga integration. |
 | `src/tga_cpu.c` / `src/tga_gsp.c` | DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
+| `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
 | `web/` | Browser frontend, WebGL rendering, and generated palette module; reads canonical `data/` maps. |
 
@@ -1306,6 +1330,7 @@ boundaries; texture expansion and globe color sampling share those readers.
 - Standardized driver/traversal APIs and shared rendering, input, and data helpers.
 - Added FPS, automatic rotation, display-list control, and texture-use status.
 - Added selectable host/TI transforms and DOS CPU/FPU dispatch for TIGA.
+- Embedded the TI transform module for single-executable TIGA distribution.
 - Hardened allocation, file generation, coordinate/packet bounds, input recovery, and
   driver error handling; reduced retained rendering memory.
 - Converted comments to C style and fixed bitmap OSD text in Mesa.

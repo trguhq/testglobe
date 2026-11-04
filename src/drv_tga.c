@@ -4,8 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * All board access goes through the vendor's TIGA communication driver.
- * The optional tga_gsp.rlm performs fixed-point rotation and projection;
+ * The embedded TI module performs fixed-point rotation and projection;
  * host clipping, input and scene ownership remain shared with other drivers.
+ * DOS leaves the appended payload on disk. Extract it only when requested,
+ * since the TIGA loader takes a filename rather than a host memory buffer.
  */
 #include "testglob.h"
 #ifdef DRV_TGA
@@ -13,8 +15,26 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <conio.h>
 #include <dos.h>
+#ifdef _MSC_VER
+#include <io.h>
+#define tga_create(path) _open(path, _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE)
+#define tga_write _write
+#define tga_close _close
+#define TGA_PATH_SEPARATOR '\\'
+#else
+/* The host contract exercises real file I/O as well as recorded TIGA calls. */
+#include <unistd.h>
+#define tga_create(path) open(path, O_CREAT | O_EXCL | O_WRONLY, 0600)
+#define tga_write write
+#define tga_close close
+#define TGA_PATH_SEPARATOR '/'
+#endif
 #include "drv.h"
 #include "drv_ext.h"
 #include "globe.h"
@@ -47,7 +67,10 @@ static unsigned short tga_black, tga_white;
 static unsigned int tga_font_width = 8, tga_font_height = 16;
 static unsigned int tga_packet_vertices;
 static PALET tga_saved_palette[256], tga_palette[256];
-static char tga_module_path[260] = "tga_gsp.rlm";
+static char tga_program_path[260];
+static char tga_temp_path[260];
+static const char *tga_payload_error;
+static unsigned long tga_temp_sequence;
 static unsigned long tga_sequence;
 static unsigned int tga_vertex_count;
 static Soft3d_project_cache tga_cache;
@@ -62,6 +85,175 @@ static union {
 /* Wire fields are 32-bit longs on both Microsoft C and the TI compiler.
  * The packet is far, contiguous and far smaller than a 64 KiB segment. */
 static long tga_packet[TGA_GSP_WORDS(TGA_GSP_MAX_VERTICES)];
+
+/* Keep a resolved name rather than an open descriptor or a resident copy.
+ * Microsoft C 7 supplies the DOS program name through argv[0]; _fullpath
+ * also resolves drive-relative names before the working directory changes. */
+static int tga_absolute_path(char *destination, const char *source)
+{
+    size_t length;
+#ifndef _MSC_VER
+    size_t used;
+#endif
+    if (source == NULL || *source == '\0') return FALSE;
+    length = strlen(source);
+    if (length >= sizeof(tga_program_path)) return FALSE;
+#ifdef _MSC_VER
+    return _fullpath(destination, source, sizeof(tga_program_path)) != NULL;
+#else
+    if (*source == '/')
+    {
+        strcpy(destination, source);
+        return TRUE;
+    }
+    if (getcwd(destination, sizeof(tga_program_path)) == NULL) return FALSE;
+    used = strlen(destination);
+    if (used + 1U + length >= sizeof(tga_program_path)) return FALSE;
+    if (used == 0U || destination[used - 1U] != '/') destination[used++] = '/';
+    strcpy(destination + used, source);
+    return TRUE;
+#endif
+}
+
+static unsigned long tga_payload_u32(const unsigned char *bytes)
+{
+    return (unsigned long)bytes[0] | ((unsigned long)bytes[1] << 8) |
+           ((unsigned long)bytes[2] << 16) | ((unsigned long)bytes[3] << 24);
+}
+
+static unsigned long tga_payload_crc(unsigned long crc,
+                                      const unsigned char *bytes, unsigned int count)
+{
+    unsigned int i, bit;
+    for (i = 0; i < count; ++i)
+    {
+        crc ^= bytes[i];
+        for (bit = 0; bit < 8U; ++bit)
+            crc = (crc >> 1) ^ ((crc & 1UL) != 0UL ? 0xedb88320UL : 0UL);
+    }
+    return crc;
+}
+
+static int tga_remove_temp(void)
+{
+    if (tga_temp_path[0] == '\0') return TRUE;
+    if (remove(tga_temp_path) != 0 && errno != ENOENT) return FALSE;
+    tga_temp_path[0] = '\0';
+    return TRUE;
+}
+
+static int tga_create_temp_at(const char *directory)
+{
+    char candidate[260], absolute[260], name[13];
+    size_t length;
+    unsigned int attempt;
+    int descriptor;
+    if (directory == NULL || *directory == '\0') return -1;
+    length = strlen(directory);
+    if (length >= sizeof(candidate) ||
+        1U + sizeof(name) > sizeof(candidate) - length) return -1;
+    strcpy(candidate, directory);
+    if (length != 0U && candidate[length - 1U] != '/' &&
+        candidate[length - 1U] != '\\' && candidate[length - 1U] != ':')
+        candidate[length++] = TGA_PATH_SEPARATOR;
+    for (attempt = 0; attempt < 256U; ++attempt)
+    {
+        tga_temp_sequence = (tga_temp_sequence + 1UL) & 0x00ffffffUL;
+        sprintf(name, "TG%06lX.RLM", tga_temp_sequence);
+        strcpy(candidate + length, name);
+        if (!tga_absolute_path(absolute, candidate)) return -1;
+        descriptor = tga_create(absolute);
+        if (descriptor >= 0)
+        {
+            strcpy(tga_temp_path, absolute);
+            return descriptor;
+        }
+        if (errno != EEXIST) return -1;
+    }
+    return -1;
+}
+
+static int tga_extract_module(void)
+{
+    FILE *program;
+    unsigned char footer[TGA_RLM_TRAILER_SIZE], header[28], buffer[512];
+    unsigned long offset, length, expected_crc, crc, remaining;
+    unsigned long pages, last_page, image_size, header_size;
+    unsigned int chunk, written;
+    long size;
+    int descriptor = -1, amount, valid = FALSE;
+    tga_payload_error = "soft3d on; embedded TI module missing or damaged";
+    if (!tga_remove_temp())
+    {
+        tga_payload_error = "soft3d on; temporary TI module cleanup failed";
+        return FALSE;
+    }
+    if (tga_program_path[0] == '\0' || (program = fopen(tga_program_path, "rb")) == NULL)
+    {
+        tga_payload_error = "soft3d on; cannot reopen executable for TI module";
+        return FALSE;
+    }
+    if (fseek(program, 0L, SEEK_END) != 0 || (size = ftell(program)) < 0L ||
+        (unsigned long)size > 0x7fffffffUL ||
+        size < 28L + (long)TGA_RLM_TRAILER_SIZE ||
+        fseek(program, size - (long)TGA_RLM_TRAILER_SIZE, SEEK_SET) != 0 ||
+        fread(footer, 1, sizeof(footer), program) != sizeof(footer)) goto done;
+    if (memcmp(footer, TGA_RLM_MAGIC, 8U) != 0 || tga_payload_u32(footer + 20) != 0UL)
+        goto done;
+    offset = tga_payload_u32(footer + 8);
+    length = tga_payload_u32(footer + 12);
+    expected_crc = tga_payload_u32(footer + 16);
+    if (offset < sizeof(header) || offset > (unsigned long)size - TGA_RLM_TRAILER_SIZE ||
+        length == 0UL || length > TGA_RLM_MAX_SIZE ||
+        length != (unsigned long)size - TGA_RLM_TRAILER_SIZE - offset) goto done;
+    if (fseek(program, 0L, SEEK_SET) != 0 ||
+        fread(header, 1, sizeof(header), program) != sizeof(header) ||
+        header[0] != 'M' || header[1] != 'Z') goto done;
+    pages = (unsigned long)header[4] | ((unsigned long)header[5] << 8);
+    last_page = (unsigned long)header[2] | ((unsigned long)header[3] << 8);
+    header_size = ((unsigned long)header[8] | ((unsigned long)header[9] << 8)) * 16UL;
+    if (pages == 0UL || last_page > 511UL) goto done;
+    image_size = (pages - 1UL) * 512UL + (last_page != 0UL ? last_page : 512UL);
+    if (header_size < sizeof(header) || header_size > image_size || image_size > offset)
+        goto done;
+    if (fseek(program, (long)offset, SEEK_SET) != 0) goto done;
+    descriptor = tga_create_temp_at(getenv("TEMP"));
+    if (descriptor < 0) descriptor = tga_create_temp_at(getenv("TMP"));
+    if (descriptor < 0) descriptor = tga_create_temp_at(".");
+    if (descriptor < 0)
+    {
+        tga_payload_error = "soft3d on; no writable directory for temporary TI module";
+        goto done;
+    }
+    crc = 0xffffffffUL;
+    remaining = length;
+    while (remaining != 0UL)
+    {
+        chunk = remaining > sizeof(buffer) ? (unsigned int)sizeof(buffer) : (unsigned int)remaining;
+        if (fread(buffer, 1, chunk, program) != chunk) goto done;
+        crc = tga_payload_crc(crc, buffer, chunk);
+        written = 0;
+        while (written < chunk)
+        {
+            amount = (int)tga_write(descriptor, buffer + written, chunk - written);
+            if (amount < 0 && errno == EINTR) continue;
+            if (amount <= 0 || (unsigned int)amount > chunk - written)
+            {
+                tga_payload_error = "soft3d on; cannot write temporary TI module";
+                goto done;
+            }
+            written += (unsigned int)amount;
+        }
+        remaining -= chunk;
+    }
+    if ((crc ^ 0xffffffffUL) != expected_crc) goto done;
+    valid = TRUE;
+done:
+    if (descriptor >= 0 && tga_close(descriptor) != 0) valid = FALSE;
+    if (fclose(program) != 0) valid = FALSE;
+    if (!valid) (void)tga_remove_temp();
+    return valid;
+}
 
 /* The SDK declares a void callback, but documents a short far return value:
  * zero aborts the failed request, nonzero retries it. Do not retry forever,
@@ -120,6 +312,7 @@ static int tga_wait_page(void)
 static void tga_cleanup(void)
 {
     int i;
+    (void)tga_remove_temp();
     if (!tga_open) return;
     tga_cleaning = TRUE;
     tga_ready = FALSE;
@@ -193,22 +386,12 @@ static int tga_mode_supported(const MODEINFO *mode)
 
 void drv_init(int *argc, char **argv)
 {
-    size_t i, prefix = 0;
     long result;
     (void)argc;
     tga_cpu = tga_cpu_detect();
     tga_has_fpu = tga_cpu_has_fpu();
-    if (argv != NULL && argv[0] != NULL)
-    {
-        for (i = 0; i < sizeof(tga_module_path) && argv[0][i] != '\0'; ++i)
-            if (argv[0][i] == '\\' || argv[0][i] == '/' || argv[0][i] == ':')
-                prefix = i + 1U;
-        if (prefix != 0U && prefix + sizeof("tga_gsp.rlm") <= sizeof(tga_module_path))
-        {
-            memcpy(tga_module_path, argv[0], prefix);
-            strcpy(tga_module_path + prefix, "tga_gsp.rlm");
-        }
-    }
+    if (argv == NULL || !tga_absolute_path(tga_program_path, argv[0])) tga_program_path[0] = '\0';
+    tga_temp_sequence = (unsigned long)clock() & 0x00ffffffUL;
     if (atexit(tga_cleanup) != 0) error("Cannot register TIGA cleanup");
     result = tiga_set(CD_OPEN);
     if (result < 0L) error("Cannot open TIGA 2.x; install the board's TIGACD driver");
@@ -229,6 +412,7 @@ void drv_init(int *argc, char **argv)
      * reads avoid assuming a command buffer large enough for 256 entries. */
     if (tga_config.mode.color_class == 2U && tga_config.mode.palet_size == 256UL)
     {
+        unsigned int i;
         for (i = 0; i < 256U; ++i)
         {
             if (!get_palet_entry((long)i, &tga_saved_palette[i].r,
@@ -612,15 +796,31 @@ static void tga_keyboard(unsigned char key)
     if (key == 27) { drv_close(); return; }
     if (key == 's' || key == 'S')
     {
+        (void)tga_remove_temp();
         if (!tga_soft3d) tga_soft3d = TRUE;
         else if (tga_packet_vertices == 0U)
             drv_notice("soft3d on; TIGA command buffer cannot hold TI transforms");
         else
         {
-            if (tga_module < 0) tga_module = install_rlm(tga_module_path);
-            if (!tga_check()) return;
-            if (tga_module < 0) drv_notice("soft3d on; cannot load tga_gsp.rlm beside the executable");
-            else { tga_soft3d = FALSE; drv_notice(NULL); }
+            if (tga_module < 0)
+            {
+                if (tga_extract_module())
+                {
+                    tga_module = install_rlm(tga_temp_path);
+                    /* Installation is synchronous. The board retains its
+                     * loaded code, so the host file is no longer needed. */
+                    (void)tga_remove_temp();
+                    if (!tga_check()) return;
+                    if (tga_module < 0)
+                        drv_notice("soft3d on; embedded TI module could not load");
+                }
+                else drv_notice(tga_payload_error);
+            }
+            if (tga_module >= 0)
+            {
+                tga_soft3d = FALSE;
+                drv_notice(tga_temp_path[0] == '\0' ? NULL : "TI temporary-file cleanup pending");
+            }
         }
         soft3d_project_cache_reset(&tga_cache);
         tga_sequence = 0;

@@ -71,3 +71,13 @@
 /tga_gsp.asm
 /src/tga_gsp.rlm
 /src/tga_gsp.asm
+
+# TIGA single-executable packaging intermediates and recovery files.
+/tga_host.exe
+/tga_pack.exe
+/testglob.tmp
+/testglob.bak
+/src/tga_host.exe
+/src/tga_pack.exe
+/src/testglob.tmp
+/src/testglob.bak

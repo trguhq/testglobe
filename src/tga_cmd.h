@@ -6,6 +6,15 @@
 #ifndef tga_cmd_h
 #define tga_cmd_h
 
+/* Appended executable payload: eight magic bytes followed by little-endian
+ * 32-bit base-image length, module length, IEEE CRC-32 and a reserved zero.
+ * The DOS MZ image length remains unchanged, so this payload is read from
+ * disk only when TI transforms are requested, not retained in DOS memory.
+ */
+#define TGA_RLM_MAGIC "TGRLM001"
+#define TGA_RLM_TRAILER_SIZE 24U
+#define TGA_RLM_MAX_SIZE 1048576UL
+
 /* A packet consists of 32-bit longs, marshalled by TIGA's _ALTDWORD_PTR.
  * No host pointers, compiler structs, floats or native int widths cross the
  * processor boundary. The first three vertex words contain IEEE binary32

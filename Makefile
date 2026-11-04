@@ -128,7 +128,8 @@ TGA_CPPFLAGS = -I$(TGA_ROOT)\include
 TGA_LIB = $(TGA_ROOT)\libs\ai.lib
 TGA_LDFLAGS = -link /STACK:16384
 # TI tools build the downloadable TMS34010 module, also usable on TMS34020.
-# TGA_MODULE= builds only the host when a module has already been installed.
+# The module is a build input embedded in testglob.exe, not a runtime sidecar.
+# TGA_MODULE= builds a standalone executable with software transforms only.
 TGA_MODULE = tga_gsp.rlm
 TGA_GSP_CC = gspcl
 TGA_GSP_LINK = gsplnk
@@ -481,11 +482,18 @@ main.obj: $(SRC)\main.c $(MTX_HEADERS)
 	$(MTX_CC) @main.rsp
 
 # Relink because the selected DOS/Win16 target shares the 8.3 output name.
-tiga: $(TGA_OBJECTS) $(TGA_LIB) $(TGA_MODULE) FORCE
-	@echo -AH -FPi -Fetestglob.exe > t_link.rsp
+tiga: $(TGA_OBJECTS) $(TGA_LIB) $(TGA_MODULE) tga_pack.exe FORCE
+	@echo -AH -FPi -Fetga_host.exe > t_link.rsp
 	@echo $(TGA_OBJECTS) >> t_link.rsp
 	@echo $(TGA_LIB) $(TGA_LDFLAGS) >> t_link.rsp
 	$(TGA_CC) @t_link.rsp
+	tga_pack.exe tga_host.exe testglob.exe $(TGA_MODULE)
+
+# The packer preserves the MZ load image and publishes the final EXE safely.
+tga_pack.exe: $(SRC)\tga_pack.c $(SRC)\tga_cmd.h
+	@echo $(TGA_CFLAGS) -Fetga_pack.exe > t_pack.rsp
+	@echo $(SRC)\tga_pack.c >> t_pack.rsp
+	$(TGA_CC) @t_pack.rsp
 
 # This module contains portable fixed-point code, not host x86 objects.
 tiga-module: tga_gsp.rlm
@@ -772,6 +780,11 @@ clean-matrox:
 	-$(RM) testglob.exe
 
 clean-tiga:
+	-$(RM) tga_host.exe
+	-$(RM) tga_pack.exe
+	-$(RM) tga_pack.obj
+	-$(RM) t_pack.rsp
+	-$(RM) testglob.tmp
 	-$(RM) tga_gsp.rlm
 	-$(RM) tga_gsp.obj
 	-$(RM) tga_gsp.asm

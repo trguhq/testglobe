@@ -15,15 +15,16 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(command, expected_returncode=0, expected_stderr=None, required_output=None,
-        expected_stdout=None):
+        expected_stdout=None, cwd=ROOT, env=None):
     try:
-        result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True,
+        result = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True,
                                 timeout=60)
     except subprocess.TimeoutExpired:
         raise SystemExit("Timed out: " + shlex.join(str(part) for part in command))
@@ -40,6 +41,87 @@ def run(command, expected_returncode=0, expected_stderr=None, required_output=No
             print(line)
     if result.stderr and expected_stderr is None:
         print(result.stderr, end="")
+
+
+
+def check_tiga_extraction(executable, output):
+    """Exercise real files around the driver; TIGA itself is a call recorder."""
+    profiles = (
+        "default", "single", "nomodule", "smallbuffer", "nomouse", "8086", "386", "486",
+        "fpu", "badmodule", "wrongabi", "badscreen", "nocd", "videoerror", "oldversion",
+        "nomode", "modeerror", "primitivesfail", "pagehang", "syncerror",
+        "nooverlay", "badcrc", "truncated", "oversized", "badoffset", "reserved",
+        "badmagic", "missingexe", "diskfull", "closefail", "notemp", "shortwrite",
+        "removefail", "collision", "movedcwd", "readonlyexe", "fallbacktmp",
+        "longtemp", "moduleioerror",
+    )
+    payload = bytes((index * 73 + 19) & 255 for index in range(1549))
+    image = bytearray(512)
+    image[:2] = b"MZ"
+    struct.pack_into("<HHHH", image, 2, 0, 1, 0, 2)
+    trailer = struct.pack("<8sIIII", b"TGRLM001", len(image), len(payload),
+                          zlib.crc32(payload), 0)
+    for profile in profiles:
+        work = output / ("tiga_" + profile)
+        program = work / "program"
+        temporary = work / "temporary"
+        other = work / "other"
+        program.mkdir(parents=True)
+        temporary.mkdir()
+        other.mkdir()
+        source = program / "testglob.exe"
+        data = bytes(image) + payload + trailer
+        if profile == "nooverlay":
+            data = bytes(image)
+        elif profile == "badcrc":
+            data = bytes(image) + bytes([payload[0] ^ 1]) + payload[1:] + trailer
+        elif profile == "truncated":
+            data = data[:-1]
+        elif profile == "oversized":
+            data = data[:-24] + struct.pack("<8sIIII", b"TGRLM001", len(image),
+                                            1048577, zlib.crc32(payload), 0)
+        elif profile == "badoffset":
+            data = data[:-24] + struct.pack("<8sIIII", b"TGRLM001", 0xffffffff,
+                                            len(payload), zlib.crc32(payload), 0)
+        elif profile == "reserved":
+            data = data[:-4] + struct.pack("<I", 1)
+        elif profile == "badmagic":
+            data = data[:-24] + b"TGRLM002" + data[-16:]
+        if profile != "missingexe":
+            source.write_bytes(data)
+        env = dict(os.environ)
+        env["TEMP"] = env["TMP"] = str(temporary)
+        env["TGA_TEST_OTHER_CWD"] = str(other)
+        cwd = work
+        argument = str(source)
+        if profile == "movedcwd":
+            argument = str(source.relative_to(work))
+        if profile == "notemp":
+            env["TEMP"] = env["TMP"] = "/proc"
+            cwd = Path("/proc")
+        if profile == "fallbacktmp":
+            blocked = work / "not_directory"
+            blocked.write_bytes(b"keep")
+            env["TEMP"] = str(blocked)
+        if profile == "longtemp":
+            env["TEMP"] = "X" * 65530
+        if profile == "readonlyexe":
+            source.chmod(0o444)
+            program.chmod(0o555)
+        try:
+            run([str(executable), profile, argument], cwd=cwd, env=env)
+        finally:
+            if profile == "readonlyexe":
+                program.chmod(0o755)
+                source.chmod(0o644)
+        assert list(temporary.iterdir()) == [], (profile, list(temporary.iterdir()))
+        assert list(other.iterdir()) == [], (profile, list(other.iterdir()))
+        assert sorted(path.name for path in program.iterdir()) == (
+            [] if profile == "missingexe" else ["testglob.exe"])
+        if source.exists():
+            assert source.read_bytes() == data, profile
+        assert not list(work.glob("*.RLM")) and not list(work.glob("*.rlm")), profile
+    print("PASS TIGA embedded module: real-file extraction, exact bytes, changed working directory, read-only distribution, malformed payloads, short writes, exclusive-name collisions and cleanup/fallback")
 
 
 def check_driver_api(command, driver, hidden_symbols):
@@ -346,11 +428,8 @@ def main():
                 str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
                 str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/tga_gsp.c"), str(optimized), "-lm", "-o", str(output / "tiga")])
-            for profile in ("default", "single", "nomodule", "smallbuffer", "nomouse",
-                            "8086", "386", "486", "fpu", "badmodule", "wrongabi", "badscreen",
-                            "nocd", "videoerror", "oldversion", "nomode", "modeerror",
-                            "primitivesfail", "pagehang", "syncerror"):
-                run([str(output / "tiga"), profile])
+            run([sys.executable, str(ROOT / "tests/tiga_pack.py")])
+            check_tiga_extraction(output / "tiga", output)
             run(cc + common + tiga + shim + [str(ROOT / "tests/tiga_module.c"),
                 str(ROOT / "src/tga_gsp.c"), str(ROOT / "src/soft3d.c"),
                 "-lm", "-o", str(output / "tiga_module")])

@@ -9,6 +9,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include "testglob.h"
 #include "drv.h"
 #include "drv_ext.h"
@@ -20,6 +24,10 @@
 
 static void recorded_error(char *message);
 static clock_t recorded_clock(void);
+static int recorded_open(const char *path, int flags, ...);
+static ssize_t recorded_write(int descriptor, const void *buffer, size_t count);
+static int recorded_close(int descriptor);
+static int recorded_remove(const char *path);
 static int recorded_fixed_transform(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
 static int recorded_386_transform(long matrix[3][3], unsigned int count,
@@ -29,6 +37,10 @@ static int recorded_float_transform(float matrix[3][3], unsigned int count,
     unsigned int reuse, int precision);
 #define error recorded_error
 #define clock recorded_clock
+#define open recorded_open
+#define write recorded_write
+#define close recorded_close
+#define remove recorded_remove
 #define soft3d_fixed_transform_reuse recorded_fixed_transform
 #define soft3d_386_transform_reuse recorded_386_transform
 #define soft3d_float_transform_reuse recorded_float_transform
@@ -37,6 +49,10 @@ static int recorded_float_transform(float matrix[3][3], unsigned int count,
 #undef soft3d_386_transform_reuse
 #undef soft3d_float_transform_reuse
 #undef clock
+#undef open
+#undef write
+#undef close
+#undef remove
 #undef error
 
 extern void tga_gsp_transform(unsigned long words, long *packet);
@@ -76,8 +92,113 @@ static int expected_failure;
 static clock_t fake_clock;
 static int advance_clock;
 static void (*sdk_error_handler)();
+static int temp_descriptor = -1;
+static unsigned int temp_creates, temp_writes, temp_removes;
+static char last_temp[1024], collision_path[1024];
+static int collision_created, cleanup_failed;
+
+#define FIXTURE_MODULE_BYTES 1549U
 
 static int is_profile(const char *name) { return strcmp(profile, name) == 0; }
+
+static int unavailable_payload(void)
+{
+    return is_profile("nooverlay") || is_profile("badcrc") ||
+           is_profile("truncated") || is_profile("oversized") ||
+           is_profile("badoffset") || is_profile("reserved") ||
+           is_profile("badmagic") || is_profile("missingexe") ||
+           is_profile("diskfull") || is_profile("closefail") ||
+           is_profile("notemp");
+}
+
+static int recorded_open(const char *path, int flags, ...)
+{
+    va_list arguments;
+    int mode, descriptor;
+    FILE *sentinel;
+    assert(path != NULL && strlen(path) < sizeof(last_temp));
+    assert((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL));
+    va_start(arguments, flags);
+    mode = va_arg(arguments, int);
+    va_end(arguments);
+    if (is_profile("collision") && !collision_created)
+    {
+        sentinel = fopen(path, "wb");
+        assert(sentinel != NULL);
+        assert(fwrite("preserve", 1, 8, sentinel) == 8);
+        assert(fclose(sentinel) == 0);
+        strcpy(collision_path, path);
+        collision_created = 1;
+    }
+    descriptor = open(path, flags, mode);
+    if (descriptor >= 0)
+    {
+        assert(temp_descriptor == -1);
+        temp_descriptor = descriptor;
+        strcpy(last_temp, path);
+        ++temp_creates;
+    }
+    return descriptor;
+}
+
+static ssize_t recorded_write(int descriptor, const void *buffer, size_t count)
+{
+    assert(descriptor == temp_descriptor);
+    ++temp_writes;
+    if (is_profile("diskfull") && temp_writes > 1U)
+    {
+        errno = ENOSPC;
+        return -1;
+    }
+    if ((is_profile("shortwrite") || is_profile("diskfull")) && count > 17U)
+        count = 17U;
+    return write(descriptor, buffer, count);
+}
+
+static int recorded_close(int descriptor)
+{
+    int result;
+    assert(descriptor == temp_descriptor);
+    result = close(descriptor);
+    temp_descriptor = -1;
+    if (is_profile("closefail"))
+    {
+        errno = EIO;
+        return -1;
+    }
+    return result;
+}
+
+static int recorded_remove(const char *path)
+{
+    assert(path != NULL && *path != '\0');
+    ++temp_removes;
+    if (is_profile("removefail") && !cleanup_failed)
+    {
+        cleanup_failed = 1;
+        errno = EACCES;
+        return -1;
+    }
+    return remove(path);
+}
+
+static void check_temp_deleted(void)
+{
+    FILE *stream;
+    if (*last_temp == '\0') return;
+    stream = fopen(last_temp, "rb");
+    if (is_profile("removefail") && temp_removes == 1U)
+    {
+        assert(stream != NULL);
+        assert(fclose(stream) == 0);
+    }
+    else
+    {
+        assert(stream == NULL);
+        assert(errno == ENOENT);
+    }
+    assert(temp_descriptor == -1);
+}
 
 static void recorded_error(char *message)
 {
@@ -247,8 +368,25 @@ short install_primitives(void)
 
 short install_rlm(char *name)
 {
-    assert(primitive_loaded && name != NULL && strstr(name, "tga") != NULL);
+    FILE *module;
+    unsigned int i;
+    short (*callback)(unsigned short, short);
+    assert(primitive_loaded && name != NULL && *name != '\0');
+    assert(*last_temp != '\0' && strcmp(name, last_temp) == 0);
+    module = fopen(name, "rb");
+    assert(module != NULL);
+    for (i = 0; i < FIXTURE_MODULE_BYTES; ++i)
+        assert(fgetc(module) == (int)((i * 73U + 19U) & 255U));
+    assert(fgetc(module) == EOF && !ferror(module));
+    assert(fclose(module) == 0);
     ++module_loads;
+    if (is_profile("moduleioerror"))
+    {
+        assert(sdk_error_handler != NULL);
+        callback = (short (*)(unsigned short, short))sdk_error_handler;
+        assert(callback(0x1234, 2) == 0);
+        return -6;
+    }
     if (module_missing) return -6;
     module_loaded = 1;
     return 0x0200;
@@ -501,7 +639,14 @@ int main(int argc, char **argv)
 {
     unsigned int i, before;
     float rotation_x, rotation_y;
-    if (argc > 1) { assert(argc == 2); profile = argv[1]; }
+    char *application_argv[2];
+    int application_argc = 1;
+    FILE *sentinel;
+    char contents[8];
+    assert(argc == 3);
+    profile = argv[1];
+    application_argv[0] = argv[2];
+    application_argv[1] = NULL;
     initialize_hardware();
     drv_ext_init();
     globe_init();
@@ -510,12 +655,14 @@ int main(int argc, char **argv)
     expected_failure = is_profile("nocd") || is_profile("videoerror") ||
                        is_profile("oldversion") || is_profile("nomode") ||
                        is_profile("modeerror") || is_profile("primitivesfail") ||
-                       is_profile("pagehang") || is_profile("syncerror");
+                       is_profile("pagehang") || is_profile("syncerror") ||
+                       is_profile("moduleioerror");
     advance_clock = is_profile("pagehang");
     if (setjmp(failure_jump) != 0)
     {
         assert(expected_failure && failure[0]);
         tga_cleanup();
+        check_temp_deleted();
         assert(cd_closes == (unsigned int)!is_profile("nocd"));
         assert(!hardware_open);
         globe_free();
@@ -523,9 +670,14 @@ int main(int argc, char **argv)
         printf("PASS TIGA initialization failure: %s restores available state\n", profile);
         return 0;
     }
-    drv_init(&argc, argv);
+    drv_init(&application_argc, application_argv);
+    if (is_profile("movedcwd"))
+    {
+        assert(getenv("TGA_TEST_OTHER_CWD") != NULL);
+        assert(chdir(getenv("TGA_TEST_OTHER_CWD")) == 0);
+    }
     assert(drv_init_window(0, 0, 0, 0));
-    assert(!expected_failure || is_profile("syncerror"));
+    assert(!expected_failure || is_profile("syncerror") || is_profile("moduleioerror"));
     assert(drv_win_width == 640 && drv_win_height == 480);
     assert(mode_queries >= 3 && hardware.current_mode == (is_profile("single") ? 1U : 2U));
     assert(primitive_loads == 1 && palette_reads > 0 && palette_writes > 0);
@@ -539,6 +691,7 @@ int main(int argc, char **argv)
     assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
     render_frame();
     assert(strstr(osd, "soft3d on") != NULL && module_calls == 0);
+    assert(temp_creates == 0 && module_loads == 0);
     if (selected_fpu)
         assert(floating_transforms > 0 && !fixed_transforms && !optimized_transforms);
     else if (selected_cpu >= 386)
@@ -548,11 +701,18 @@ int main(int argc, char **argv)
     software_count = polygon_count;
     memcpy(software_polygons, polygons, polygon_count * sizeof(polygons[0]));
     tga_keyboard('S');
+    check_temp_deleted();
     render_frame();
-    if (module_missing || bad_module || is_profile("wrongabi") || is_profile("badscreen"))
+    if (unavailable_payload() || module_missing || bad_module ||
+        is_profile("wrongabi") || is_profile("badscreen"))
     {
-        assert(tga_soft3d && module_loads > 0);
-        assert(module_missing ? module_calls == 0 : module_calls > 0);
+        assert(tga_soft3d);
+        if (unavailable_payload()) assert(module_loads == 0 && module_calls == 0);
+        else
+        {
+            assert(module_loads > 0);
+            assert(module_missing ? module_calls == 0 : module_calls > 0);
+        }
         assert(strstr(osd, "soft3d on") != NULL);
         assert(polygon_count == software_count);
         assert(memcmp(polygons, software_polygons, polygon_count * sizeof(polygons[0])) == 0);
@@ -578,9 +738,13 @@ int main(int argc, char **argv)
     render_frame();
     software_count = polygon_count;
     memcpy(software_polygons, polygons, polygon_count * sizeof(polygons[0]));
-    if (!module_missing && !bad_module && !is_profile("wrongabi") && !is_profile("badscreen"))
+    if (!unavailable_payload() && !module_missing && !bad_module &&
+        !is_profile("wrongabi") && !is_profile("badscreen"))
     {
+        before = temp_creates;
         tga_keyboard('s');
+        assert(temp_creates == before);
+        check_temp_deleted();
         render_frame();
         if (!selected_fpu)
         {
@@ -601,6 +765,17 @@ int main(int argc, char **argv)
     if (!is_profile("nomouse")) assert(drv_rot_x != rotation_x || drv_rot_y != rotation_y);
     assert(page_polls > 0 || is_profile("single"));
     tga_cleanup();
+    check_temp_deleted();
+    assert(temp_descriptor == -1);
+    if (collision_created)
+    {
+        sentinel = fopen(collision_path, "rb");
+        assert(sentinel != NULL);
+        assert(fread(contents, 1, sizeof(contents), sentinel) == sizeof(contents));
+        assert(memcmp(contents, "preserve", sizeof(contents)) == 0);
+        assert(fclose(sentinel) == 0);
+        assert(remove(collision_path) == 0);
+    }
     assert(cd_opens == 1 && cd_closes == 1 && !hardware_open && !graphics_active);
     assert(memcmp(hardware_palette, original_palette, sizeof(hardware_palette)) == 0);
     globe_free();

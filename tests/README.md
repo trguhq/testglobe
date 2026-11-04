@@ -33,7 +33,7 @@ Additional options may be combined:
 | [`--igl-contract`](#iris-gl) | IRIS GL calls and software texture pixels | None |
 | [`--xgl-contract`](#sun-xgl) | XGL calls with real X11 windows and events | X11 development files, Xvfb, and `xvfb-run` |
 | [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
-| [`--tiga-contract`](#tiga) | TIGA calls, transform-module arithmetic, and recovery | None |
+| [`--tiga-contract`](#tiga) | TIGA calls, embedded-module loading, arithmetic, and recovery | None |
 | [`--tiga-sdk /path/to/sdk`](#tiga) | TIGA checks plus compilation against original SDK declarations | TIGA host headers |
 | [`--tiga-cpu`](#tiga) | DOS CPU-probe instruction and stack checks | Python `unicorn`, GNU `as` and `objcopy` |
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
@@ -403,10 +403,12 @@ and asynchronous timing.
 
 ```sh
 python3 tests/run.py --tiga-contract
+# Or run only the executable packer checks:
+python3 tests/tiga_pack.py
 ```
 
-The driver recorder and module arithmetic tests require no vendor SDK. To also
-compile production units against the original TIGA headers, use:
+The driver recorder, executable packer, and module arithmetic tests require no
+vendor SDK. To also compile production units against the original TIGA headers, use:
 
 ```sh
 python3 tests/run.py --tiga-sdk /path/to/TIGA
@@ -439,13 +441,24 @@ python3 tests/tga_cpu.py
   buffers force bounded packet splitting rather than oversized transfers.
 - **Transforms and controls:** software 3D is the default; `S`/`s` switches the
   actual transform path and OSD status. CPU/FPU profiles check dispatch, with mouse
-  absence and DOS mouse/keyboard input covered independently. Missing modules,
-  incorrect protocol versions, rejected packets, and invalid returned coordinates
-  must restore usable host rendering.
+  absence and DOS mouse/keyboard input covered independently. Missing embedded
+  payloads, incorrect protocol versions, rejected packets, and invalid returned
+  coordinates must restore usable host rendering.
 - **Presentation and failure:** single-page fallback, synchronization before page
   flipping, safe page reuse, page-wait deadlines, communication errors, and cleanup.
   The recorder rejects drawing into a page that is still displayed in double-buffered
   profiles.
+- **Executable packing:** `tests/tiga_pack.py` checks unchanged DOS headers and
+  image bytes, exact module bytes and CRC, 64 KiB boundaries through the 1 MiB
+  payload limit, software-only copying, and repeated builds. Invalid inputs, file
+  aliases, and occupied `.tmp`/`.bak` paths must preserve existing output.
+- **Embedded loading:** independent Python MZ/trailer fixtures feed real driver file
+  I/O. Only the executable remains in the distribution directory, which may be
+  read-only; changing the working directory after startup must still load it. The
+  TIGA recorder verifies exact extracted bytes and deletion after loading or failure.
+  Missing, truncated, or corrupt payloads, invalid bounds, unavailable temporary
+  storage, disk-full and close failures must retain software rendering. Short writes,
+  exclusive-name collisions, and deferred-deletion retries are also covered.
 - **TI arithmetic:** `tests/tiga_module.c` calls the production module entry and
   compares its fixed-point camera coordinates and projections with the host pipeline
   over varied poses, one- and 130-vertex packets, and viewport boundaries. Malformed
