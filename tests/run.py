@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Host regressions: geometry, OpenGL, Matrox, XGL, GDI, QuickDraw, Amiga and IRIS GL.
+"""Host regressions: geometry, OpenGL, Matrox, TIGA, XGL, GDI, QuickDraw, Amiga and IRIS GL.
 
-No test here emulates Microsoft C's segmented code generation, a Matrox board,
+No test here emulates Microsoft C's segmented code generation, a Matrox/TIGA board,
 Sun's native XGL implementation, Windows 3.1 GDI, the Macintosh Toolbox,
 AmigaOS graphics and the custom chips, or SGI's native IRIS GL and IRIX ABI.
 """
@@ -77,6 +77,7 @@ def check_configurations(cc, common):
         ["-Dsparc", "-DTEST_DRIVER_XGL"],
         ["-DDRV_GDI", "-DTEST_DRIVER_GDI"],
         ["-DDRV_MTX", "-DTEST_DRIVER_MTX"],
+        ["-DDRV_TGA", "-DTEST_DRIVER_TGA"],
         ["-DDRV_QD", "-DTEST_DRIVER_QD"],
         ["-DDRV_IGL", "-DTEST_DRIVER_IGL"],
         ["-DDRV_AMI", "-DTEST_DRIVER_AMI"],
@@ -92,6 +93,8 @@ def check_configurations(cc, common):
         (["-DDRV_PHG"], "retained PGC/PHIGS headers have no implemented driver"),
         (["-DDRV_OGL", "-DFLAT", "-DSEG86"], "Choose exactly one memory architecture"),
         (["-DDRV_OGL", "-DDRV_IGL"], "Select only one graphics driver"),
+        (["-DDRV_TGA", "-DDRV_MTX"], "Select only one graphics driver"),
+        (["-DDRV_TGA", "-DFLAT"], "TIGA requires the SEG86 memory model"),
         (["-DDRV_GDI", "-DFLAT"], "Windows GDI requires the SEG86 memory model"),
         (["-DDRV_QD", "-DFLAT"], "Classic QuickDraw requires the SEG68 memory model"),
         (["-DDRV_AMI", "-DSEG68"], "Amiga requires the FLAT memory model"),
@@ -247,7 +250,8 @@ def check_earth_data(cc, common, output):
     empty.mkdir()
     for name, options, chunks in (
             ("all", ["-DFLAT", "-DDRV_OGL"], 13),
-            ("matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], 2)):
+            ("matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], 2),
+            ("tiga", ["-DSEG86", "-DDRV_TGA", "-D_huge="], 2)):
         binary = output / ("earth_" + name)
         obj = output / ("earth_" + name + ".o")
         run(cc + common + options + [str(ROOT / "tests/earth_data.c"),
@@ -270,7 +274,7 @@ def check_earth_data(cc, common, output):
         if len(arrays) != chunks or any(int(row[1], 16) > 16384 for row in arrays):
             raise SystemExit("Embedded map objects exceed 16KiB or include unselected levels")
     print("PASS Earth converter: strict C89, deterministic regeneration, exact-size validation and preservation of existing output on invalid inputs")
-    print("PASS segmented Earth objects: every array is at most 16KiB and Matrox embeds only EARTH_32/EARTH_64")
+    print("PASS segmented Earth objects: every array is at most 16KiB and Matrox/TIGA embed only EARTH_32/EARTH_64")
 
 
 def main():
@@ -281,6 +285,12 @@ def main():
                         help="Record XGL calls using manual-derived declarations and real X11 under Xvfb; not native XGL validation")
     parser.add_argument("--gdi-contract", action="store_true",
                         help="Record Win16 GDI calls with host declarations; not Microsoft C 7 ABI or Windows rendering validation")
+    parser.add_argument("--tiga-contract", action="store_true",
+                        help="Record TIGA 2 calls and execute the TI transform kernel; not Microsoft C ABI, TSR transport or board rendering validation")
+    parser.add_argument("--tiga-sdk", default=os.environ.get("TIGA_SDK"),
+                        help="Also compile the TIGA driver against original TIGA.H, EXTEND.H and TYPEDEFS.H declarations")
+    parser.add_argument("--tiga-cpu", action="store_true",
+                        help="Run the optional real-mode CPU instruction probe checks (requires GNU as/objcopy and Python unicorn)")
     parser.add_argument("--qd-contract", action="store_true",
                         help="Record Classic Macintosh calls with host declarations; not MPW ABI or QuickDraw rendering validation")
     parser.add_argument("--ami-contract", action="store_true",
@@ -311,6 +321,7 @@ def main():
             ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_rgb", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
             ("Sun XGL", ["-DFLAT", "-DDRV_XGL"], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
             ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tristrip_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tri_flat_uv", "earth_data_128", "texture_generate")),
+            ("TIGA", ["-DSEG86", "-DDRV_TGA", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_128", "texture_generate", "drv_resize")),
             ("GDI", ["-DSEG86", "-DDRV_GDI", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
             ("QuickDraw", ["-DSEG68", "-DDRV_QD"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
             ("Amiga", ["-DFLAT", "-DDRV_AMI"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
@@ -318,6 +329,46 @@ def main():
         for driver, options, hidden in api_modes:
             check_driver_api(cc + common + options + api_source, driver,
                              hidden + ("drv_fps_history_num",))
+        if args.tiga_cpu:
+            run([sys.executable, str(ROOT / "tests/tga_cpu.py")])
+            print("PASS TIGA CPU probe: optional emulated instructions preserve FLAGS, registers and stack across 8086/286/386/486 profiles")
+        if args.tiga_contract or args.tiga_sdk:
+            tiga = ["-DSEG86", "-DDRV_TGA", "-D_huge=", "-Dfar=", "-D_cdecl=",
+                    "-Wno-cast-function-type", "-I" + str(ROOT / "tests/dos_shim")]
+            shim = ["-I" + str(ROOT / "tests/tiga_shim")]
+            check_production_units(cc, common, tiga + shim, output, "TIGA",
+                ("drv.c", "drv_tga.c", "err.c", "globe.c", "main.c", "e_saved.c", "soft3d.c", "soft3fp.c"))
+            optimized = output / "tga_386.o"
+            run(cc + common + tiga + shim + ["-DSOFT3D_TRANSFORM_386", "-c",
+                str(ROOT / "src/soft3d.c"), "-o", str(optimized)])
+            run(cc + common + tiga + shim + [str(ROOT / "tests/tiga.c"),
+                str(ROOT / "src/e_saved.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
+                str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
+                str(ROOT / "src/tga_gsp.c"), str(optimized), "-lm", "-o", str(output / "tiga")])
+            for profile in ("default", "single", "nomodule", "smallbuffer", "nomouse",
+                            "8086", "386", "486", "fpu", "badmodule", "wrongabi", "badscreen",
+                            "nocd", "videoerror", "oldversion", "nomode", "modeerror",
+                            "primitivesfail", "pagehang", "syncerror"):
+                run([str(output / "tiga"), profile])
+            run(cc + common + tiga + shim + [str(ROOT / "tests/tiga_module.c"),
+                str(ROOT / "src/tga_gsp.c"), str(ROOT / "src/soft3d.c"),
+                "-lm", "-o", str(output / "tiga_module")])
+            run([str(output / "tiga_module")])
+            if args.tiga_sdk:
+                sdk = Path(args.tiga_sdk)
+                candidates = (sdk, sdk / "include", sdk / "INCLUDE", sdk / "TIGA" / "INCLUDE")
+                headers = next((path for path in candidates if path.is_dir() and
+                    {p.name.lower() for p in path.iterdir()} >= {"tiga.h", "extend.h", "typedefs.h"}), None)
+                if headers is None:
+                    parser.error("TIGA SDK needs TIGA.H, EXTEND.H and TYPEDEFS.H: " + str(sdk))
+                normalized = output / "tiga_sdk"
+                normalized.mkdir()
+                for header in headers.iterdir():
+                    if header.name.lower() in ("tiga.h", "extend.h", "typedefs.h"):
+                        (normalized / header.name.lower()).write_bytes(header.read_bytes().rstrip(b"\r\n\x1a") + b"\n")
+                check_production_units(cc, common, tiga + ["-I" + str(normalized)], output, "TIGA_SDK",
+                    ("drv_tga.c",))
         run(cc + common + flat + tri_mode + api_source)
         run(cc + common + flat + ["-DDRV_PALETTE_DITHER", str(ROOT / "tests/driver_helpers.c"),
             str(ROOT / "src/drv.c"), "-lm", "-o", str(output / "flat_helpers")])

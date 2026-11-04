@@ -74,6 +74,14 @@ extern int soft3d_020_transform_reuse(long matrix[3][3], unsigned int count,
                                       Soft3d_fixed_point *out,
                                       unsigned int reuse_count);
 #endif
+#if defined(DRV_TGA) || defined(SOFT3D_TRANSFORM_386)
+/* Compiled separately with Microsoft C /G3; use only on 386 or later CPUs.
+ * Code/data pointers retain the same 16-bit huge-model ABI as /G0 code. */
+extern int soft3d_386_transform_reuse(long matrix[3][3], unsigned int count,
+                                      const Vertex TG_HUGE *vertices,
+                                      Soft3d_fixed_point *out,
+                                      unsigned int reuse_count);
+#endif
 /* Select a triangle from the point_count initialized packet elements,
  * clip near/far planes, and project into downward-Y screen coordinates.
  * point_count must be between 1 and SOFT3D_MAX_VERTICES. The caller supplies

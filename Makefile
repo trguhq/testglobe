@@ -114,6 +114,35 @@ MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(XGX_ROOT)\XGX1\HEADERS\LIBFN.H \
     $(XGX_ROOT)\XGX1\HEADERS\IOLIB.H
 
+# TIGA 2.0, Microsoft C 7 huge model. The vendor communication driver and
+# graphics manager supply board-specific support; ai.lib uses far code/data.
+# Each t_ object is independent of the other DOS and Windows drivers.
+# Baseline code runs before CPU detection. Only t_386.obj uses 386 opcodes;
+# /FPi retains the DOS emulator runtime for machines without an x87.
+TGA_CC = cl
+TGA_CFLAGS = -AH -G0 -FPi -O -W3
+TGA_386FLAGS = -G3 -DSOFT3D_TRANSFORM_386
+TGA_DEFINES = -DSEG86 -DDRV_TGA -DDRV -DNO_SINF
+TGA_ROOT = TIGA
+TGA_CPPFLAGS = -I$(TGA_ROOT)\include
+TGA_LIB = $(TGA_ROOT)\libs\ai.lib
+TGA_LDFLAGS = -link /STACK:16384
+# TI tools build the downloadable TMS34010 module, also usable on TMS34020.
+# TGA_MODULE= builds only the host when a module has already been installed.
+TGA_MODULE = tga_gsp.rlm
+TGA_GSP_CC = gspcl
+TGA_GSP_LINK = gsplnk
+TGA_GSP_CFLAGS = -c -o -v10
+TGA_GSP_CPPFLAGS = -i$(SRC)
+TGA_GSP_LDFLAGS = -r -cr
+TGA_OBJECTS = t_drv.obj t_tga.obj t_cpu.obj t_err.obj t_globe.obj t_main.obj t_soft.obj t_386.obj t_float.obj t_data.obj
+TGA_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
+    $(SRC)\drv_ext.h $(SRC)\drv_tga.h $(SRC)\err_ext.h \
+    $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
+    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\tga_cpu.h $(SRC)\tga_cmd.h
+TGA_SDK_HEADERS = $(TGA_ROOT)\include\tiga.h \
+    $(TGA_ROOT)\include\extend.h $(TGA_ROOT)\include\typedefs.h
+
 # Native 16-bit Windows 3.1, Microsoft C 7 and the Windows 3.1 SDK.
 # /FPi uses a coprocessor when present and emulates otherwise. Keep /Gw
 # for Windows prologs and /AH for normalized cross-segment mesh pointers.
@@ -207,6 +236,12 @@ m_data.c: $(SRC)\e_bin.c $(SRC)\earthres.h $(MTX_INPUTS)
 	@echo $(SRC)\e_bin.c >> e_bin.rsp
 	$(MTX_CC) @e_bin.rsp
 	e_bin $(MTX_DATA) m_data.c
+
+t_data.c: $(SRC)\e_bin.c $(SRC)\earthres.h $(MTX_INPUTS)
+	@echo -O -W3 -Fee_bin.exe > t_bin.rsp
+	@echo $(SRC)\e_bin.c >> t_bin.rsp
+	$(TGA_CC) @t_bin.rsp
+	e_bin $(MTX_DATA) t_data.c
 
 # Explicitly refresh the checked-in generated source after editing the maps.
 earth-data: $(SRC)/e_bin.c $(SRC)/earthres.h $(EARTH_INPUTS) FORCE
@@ -445,9 +480,98 @@ main.obj: $(SRC)\main.c $(MTX_HEADERS)
 	@echo -Fomain.obj $(SRC)\main.c >> main.rsp
 	$(MTX_CC) @main.rsp
 
+# Relink because the selected DOS/Win16 target shares the 8.3 output name.
+tiga: $(TGA_OBJECTS) $(TGA_LIB) $(TGA_MODULE) FORCE
+	@echo -AH -FPi -Fetestglob.exe > t_link.rsp
+	@echo $(TGA_OBJECTS) >> t_link.rsp
+	@echo $(TGA_LIB) $(TGA_LDFLAGS) >> t_link.rsp
+	$(TGA_CC) @t_link.rsp
+
+# This module contains portable fixed-point code, not host x86 objects.
+tiga-module: tga_gsp.rlm
+
+tga_gsp.rlm: tga_gsp.obj tga_ext.obj
+	$(TGA_GSP_LINK) -o tga_gsp.rlm $(TGA_GSP_LDFLAGS) tga_gsp.obj tga_ext.obj
+
+tga_gsp.obj: $(SRC)\tga_gsp.c $(SRC)\tga_cmd.h
+	$(TGA_GSP_CC) $(TGA_GSP_CFLAGS) $(TGA_GSP_CPPFLAGS) $(SRC)\tga_gsp.c
+
+tga_ext.obj: $(SRC)\tga_ext.asm
+	$(TGA_GSP_CC) -c $(SRC)\tga_ext.asm
+
+t_drv.obj: $(SRC)\drv.c $(TGA_HEADERS)
+	@echo $(TGA_DEFINES) > t_drv.rsp
+	@echo $(TGA_CFLAGS) >> t_drv.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_drv.rsp
+	@echo -Fot_drv.obj $(SRC)\drv.c >> t_drv.rsp
+	$(TGA_CC) @t_drv.rsp
+
+t_tga.obj: $(SRC)\drv_tga.c $(TGA_HEADERS) $(TGA_SDK_HEADERS)
+	@echo $(TGA_DEFINES) > t_tga.rsp
+	@echo $(TGA_CFLAGS) >> t_tga.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_tga.rsp
+	@echo -Fot_tga.obj $(SRC)\drv_tga.c >> t_tga.rsp
+	$(TGA_CC) @t_tga.rsp
+
+t_cpu.obj: $(SRC)\tga_cpu.c $(TGA_HEADERS)
+	@echo $(TGA_DEFINES) > t_cpu.rsp
+	@echo $(TGA_CFLAGS) >> t_cpu.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_cpu.rsp
+	@echo -Fot_cpu.obj $(SRC)\tga_cpu.c >> t_cpu.rsp
+	$(TGA_CC) @t_cpu.rsp
+
+t_err.obj: $(SRC)\err.c $(TGA_HEADERS)
+	@echo $(TGA_DEFINES) > t_err.rsp
+	@echo $(TGA_CFLAGS) >> t_err.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_err.rsp
+	@echo -Fot_err.obj $(SRC)\err.c >> t_err.rsp
+	$(TGA_CC) @t_err.rsp
+
+t_globe.obj: $(SRC)\globe.c $(TGA_HEADERS)
+	@echo $(TGA_DEFINES) > t_globe.rsp
+	@echo $(TGA_CFLAGS) >> t_globe.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_globe.rsp
+	@echo -Fot_globe.obj $(SRC)\globe.c >> t_globe.rsp
+	$(TGA_CC) @t_globe.rsp
+
+t_main.obj: $(SRC)\main.c $(TGA_HEADERS)
+	@echo $(TGA_DEFINES) > t_main.rsp
+	@echo $(TGA_CFLAGS) >> t_main.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_main.rsp
+	@echo -Fot_main.obj $(SRC)\main.c >> t_main.rsp
+	$(TGA_CC) @t_main.rsp
+
+t_soft.obj: $(SRC)\soft3d.c $(TGA_HEADERS)
+	@echo $(TGA_DEFINES) > t_soft.rsp
+	@echo $(TGA_CFLAGS) >> t_soft.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_soft.rsp
+	@echo -Fot_soft.obj $(SRC)\soft3d.c >> t_soft.rsp
+	$(TGA_CC) @t_soft.rsp
+
+t_386.obj: $(SRC)\soft3d.c $(TGA_HEADERS)
+	@echo $(TGA_DEFINES) > t_386.rsp
+	@echo $(TGA_CFLAGS) $(TGA_386FLAGS) >> t_386.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_386.rsp
+	@echo -Fot_386.obj $(SRC)\soft3d.c >> t_386.rsp
+	$(TGA_CC) @t_386.rsp
+
+t_float.obj: $(SRC)\soft3fp.c $(TGA_HEADERS)
+	@echo $(TGA_DEFINES) > t_float.rsp
+	@echo $(TGA_CFLAGS) >> t_float.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_float.rsp
+	@echo -Fot_float.obj $(SRC)\soft3fp.c >> t_float.rsp
+	$(TGA_CC) @t_float.rsp
+
+t_data.obj: t_data.c $(TGA_HEADERS)
+	@echo $(TGA_DEFINES) > t_data.rsp
+	@echo $(TGA_CFLAGS) >> t_data.rsp
+	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_data.rsp
+	@echo -Fot_data.obj t_data.c >> t_data.rsp
+	$(TGA_CC) @t_data.rsp
+
 # Use the 16-bit linker, not the compiler's DOS default startup libraries.
 # RC attaches the Earth data resources and marks protected-mode Windows.
-# Relink the selected backend because GDI and Matrox share testglob.exe.
+# Relink the selected backend because DOS and Win16 targets share testglob.exe.
 gdi: $(GDI_OBJECTS) g_earth.res $(SRC)\gdi.def FORCE
 	@echo $(GDI_OBJECTS) $(GDI_LDFLAGS) > g_link.rsp
 	@echo testglob.exe >> g_link.rsp
@@ -560,7 +684,7 @@ clean-quickdraw:
 # Separate targets can clean one backend; "clean" removes all.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
-clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-amiga-opengl clean-xgl clean-irisgl clean-matrox clean-gdi clean-quickdraw clean-amiga clean-earth-data
+clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-amiga-opengl clean-xgl clean-irisgl clean-matrox clean-tiga clean-gdi clean-quickdraw clean-amiga clean-earth-data
 	-$(RM) testglobe
 
 clean-opengl:
@@ -647,6 +771,37 @@ clean-matrox:
 	-$(RM) link.rsp
 	-$(RM) testglob.exe
 
+clean-tiga:
+	-$(RM) tga_gsp.rlm
+	-$(RM) tga_gsp.obj
+	-$(RM) tga_gsp.asm
+	-$(RM) tga_ext.obj
+	-$(RM) t_drv.obj
+	-$(RM) t_tga.obj
+	-$(RM) t_cpu.obj
+	-$(RM) t_err.obj
+	-$(RM) t_globe.obj
+	-$(RM) t_main.obj
+	-$(RM) t_soft.obj
+	-$(RM) t_386.obj
+	-$(RM) t_float.obj
+	-$(RM) t_data.obj
+	-$(RM) t_drv.rsp
+	-$(RM) t_tga.rsp
+	-$(RM) t_cpu.rsp
+	-$(RM) t_err.rsp
+	-$(RM) t_globe.rsp
+	-$(RM) t_main.rsp
+	-$(RM) t_soft.rsp
+	-$(RM) t_386.rsp
+	-$(RM) t_float.rsp
+	-$(RM) t_data.rsp
+	-$(RM) t_bin.rsp
+	-$(RM) t_link.rsp
+	-$(RM) t_data.c
+	-$(RM) t_data.tmp
+	-$(RM) testglob.exe
+
 clean-gdi:
 	-$(RM) g_drv.obj
 	-$(RM) g_gdi.obj
@@ -684,10 +839,12 @@ clean-amiga:
 clean-earth-data:
 	-$(RM) e_data.c
 	-$(RM) m_data.c
+	-$(RM) t_data.c
 	-$(RM) e_bin
 	-$(RM) e_bin.exe
 	-$(RM) e_bin.obj
 	-$(RM) e_bin.rsp
 	-$(RM) e_data.tmp
 	-$(RM) m_data.tmp
+	-$(RM) t_data.tmp
 	-$(RM) e_saved.tmp

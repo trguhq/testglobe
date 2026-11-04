@@ -19,7 +19,7 @@ int main(int argc, char **argv)
     int width, highest, files;
     (void)argv;
     files = argc == 1;
-#ifdef DRV_MTX
+#if defined(DRV_MTX) || defined(DRV_TGA)
     highest = 64;
 #else
     highest = 512;

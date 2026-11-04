@@ -37,7 +37,7 @@
 #include <Events.h>
 #include <Memory.h>
 #else
-#ifdef DRV_MTX
+#ifdef SEG86 /* DOS; Win16's GDI branch above uses Windows services. */
 #include <time.h>
 #include <malloc.h>
 #elif !defined(DRV_AMI) && !defined(OGL_AMIGA) /* POSIX flat-memory drivers */
@@ -104,7 +104,7 @@ void TG_HUGE *drv_alloc_items(unsigned long count, unsigned int size)
 #elif defined(DRV_QD)
     if (!count || !size || count > 0x7fffffffUL / size) return NULL;
     return (void *)NewPtr((Size)(count * size));
-#elif defined(DRV_MTX)
+#elif defined(SEG86)
     if (!count || !size || count > 0x7fffffffUL / size) return NULL;
     return _halloc((long)count, size);
 #else
@@ -130,7 +130,7 @@ void drv_free_items(void TG_HUGE *memory)
         }
 #elif defined(DRV_QD)
     if (memory != NULL) DisposePtr((Ptr)memory);
-#elif defined(DRV_MTX)
+#elif defined(SEG86)
     if (memory != NULL) _hfree(memory);
 #else
     free(memory);
@@ -569,7 +569,7 @@ double drv_time_now(void)
     return ami_time_now();
 #elif defined(OGL_AMIGA)
     return ogl_ami_time_now();
-#elif defined(GDI) || defined(DRV_QD) || defined(DRV_MTX)
+#elif defined(SEG86) || defined(DRV_QD)
     static unsigned long previous;
     static int initialized;
     static double elapsed;

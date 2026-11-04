@@ -57,3 +57,17 @@
 /src/testglobe-amiga-opengl
 /testglobe-amiga-opengl.info
 /src/testglobe-amiga-opengl.info
+
+# TIGA build-local Earth data.
+/t_data.c
+/t_data.tmp
+/t_data.bak
+/src/t_data.c
+/src/t_data.tmp
+/src/t_data.bak
+
+# TIGA downloadable module and TI compiler intermediate output.
+/tga_gsp.rlm
+/tga_gsp.asm
+/src/tga_gsp.rlm
+/src/tga_gsp.asm

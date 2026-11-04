@@ -33,6 +33,9 @@ Additional options may be combined:
 | [`--igl-contract`](#iris-gl) | IRIS GL calls and software texture pixels | None |
 | [`--xgl-contract`](#sun-xgl) | XGL calls with real X11 windows and events | X11 development files, Xvfb, and `xvfb-run` |
 | [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
+| [`--tiga-contract`](#tiga) | TIGA calls, transform-module arithmetic, and recovery | None |
+| [`--tiga-sdk /path/to/sdk`](#tiga) | TIGA checks plus compilation against original SDK declarations | TIGA host headers |
+| [`--tiga-cpu`](#tiga) | DOS CPU-probe instruction and stack checks | Python `unicorn`, GNU `as` and `objcopy` |
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
 | [`--ami-contract`](#amiga) | Amiga Workbench window, native/RTG graphics calls, events, and executable resources | None |
@@ -41,7 +44,8 @@ With all prerequisites installed, run every native group with:
 
 ```sh
 python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
-  --gdi-contract --qd-contract --ami-contract --amiga-ogl-contract --sdk /path/to/sdk
+  --gdi-contract --qd-contract --ami-contract --amiga-ogl-contract \
+  --tiga-contract --tiga-cpu --tiga-sdk /path/to/tiga --sdk /path/to/matrox
 ```
 
 Exit status zero means all requested checks passed. `PASS` lines identify completed
@@ -61,9 +65,10 @@ translation units. This catches dependencies accidentally supplied by a fixture 
 includes a driver `.c` file. These checks use the same recorder declarations as the
 behavior tests; they do not substitute for compiling with the native SDK and linker.
 
-Most legacy API declarations come from test fixtures; Matrox uses the supplied SDK
-headers. Call recorders check submitted arguments and simulated outcomes. They do
-not implement the original graphics libraries, establish native binary ABIs, or
+Most legacy API declarations come from test fixtures; Matrox and the optional TIGA
+SDK check use supplied vendor headers. Call recorders check submitted arguments and
+simulated outcomes. They do not implement the original graphics libraries, establish
+native binary ABIs, or
 verify hardware rendering. Host integer and pointer widths, byte order, and calling
 conventions remain those of the host, even when segmented-driver keywords are
 removed for compilation. Platform-specific validation requirements appear below.
@@ -86,7 +91,8 @@ generated readers must also fail compilation.
 `tests/earth_data.c` compares every embedded byte with the binary maps and checks
 invalid reads, 16 KiB chunk seams, and 64 KiB boundaries. It also runs from an empty
 directory to verify that runtime map files are unnecessary. Object symbols verify
-the 16 KiB per-array limit and Matrox's inclusion of only `EARTH_32` and `EARTH_64`.
+the 16 KiB per-array limit and inclusion of only `EARTH_32` and `EARTH_64` in Matrox
+and TIGA builds.
 `tests/earth_reference.h` reads the binaries for expected colors; the application
 does not use that test-only file I/O.
 
@@ -391,6 +397,76 @@ word read. The supplied SDK documentation does not establish FIFO count units or
 atomic availability; the installed library and board must validate those assumptions
 and asynchronous timing.
 
+## TIGA
+
+### Commands
+
+```sh
+python3 tests/run.py --tiga-contract
+```
+
+The driver recorder and module arithmetic tests require no vendor SDK. To also
+compile production units against the original TIGA headers, use:
+
+```sh
+python3 tests/run.py --tiga-sdk /path/to/TIGA
+# Or set TIGA_SDK=/path/to/TIGA with --tiga-contract.
+```
+
+The runner accepts headers directly or under `include`, `INCLUDE`, or `TIGA/INCLUDE`.
+It normalizes filename case and DOS EOF bytes in a temporary copy and removes
+segmented pointer keywords for host compilation. Vendor headers are not committed.
+This checks declarations, not the native calling convention.
+
+The separate CPU instruction check needs the optional Python `unicorn` package and
+GNU `as` and `objcopy`:
+
+```sh
+python3 tests/run.py --tiga-cpu
+# Or run only the instruction check:
+python3 tests/tga_cpu.py
+```
+
+### Coverage
+
+- **Mode and palette:** query-based selection of 640 × 480, eight-bit programmable
+  256-color modes, preference for two display pages, exact Earth palette uploads,
+  and restoration of available prior state. Missing drivers, old TIGA versions,
+  invalid modes, and failed primitive-library initialization must clean up safely.
+- **Geometry:** both Earth resolutions, bounded shared-vertex packets, clockwise
+  polygon submission, rounded-polygon fallback, and visibility counts. Host integer
+  and TI-module paths must submit identical coordinates and colors. Small command
+  buffers force bounded packet splitting rather than oversized transfers.
+- **Transforms and controls:** software 3D is the default; `S`/`s` switches the
+  actual transform path and OSD status. CPU/FPU profiles check dispatch, with mouse
+  absence and DOS mouse/keyboard input covered independently. Missing modules,
+  incorrect protocol versions, rejected packets, and invalid returned coordinates
+  must restore usable host rendering.
+- **Presentation and failure:** single-page fallback, synchronization before page
+  flipping, safe page reuse, page-wait deadlines, communication errors, and cleanup.
+  The recorder rejects drawing into a page that is still displayed in double-buffered
+  profiles.
+- **TI arithmetic:** `tests/tiga_module.c` calls the production module entry and
+  compares its fixed-point camera coordinates and projections with the host pipeline
+  over varied poses, one- and 130-vertex packets, and viewport boundaries. Malformed
+  packet fields, out-of-range matrices, and invalid coordinate bits must be rejected.
+
+`tests/tga_cpu.py` assembles the actual inline probe instructions and executes 24
+FLAGS/stack cases. Hooks supply the older processors' FLAGS restrictions, which
+Unicorn does not model directly. Checks cover CPU classification, guarded 386
+instructions, aligned stack accesses, and restoration of registers and flags. They
+do not test the BIOS or x87 probe.
+
+### Native validation
+
+The downloadable module was separately compiled and linked with TI TMS340 tools 5.01
+under DOSBox. This checks TI compilation and linking of the TMS34010 module, not
+execution on a board. Host recorders execute the module as ordinary C;
+they do not implement the TIGA TSR, GSP transport, polygon rasterizer, or display.
+Microsoft C 7 host compilation, huge pointers, callback conventions, real CPU/x87
+behavior, module loading, palette output, and page-flip synchronization still require
+native validation. See the [TIGA build instructions](../README.md#tiga).
+
 ## Windows GDI
 
 ### Command
@@ -556,10 +632,11 @@ direct map-row conversion into packed images/rasters. Allocation-pressure profil
 check smaller texture selection and flat-color recovery after exhausting supported
 sizes; retained OpenGL GLU staging remains covered by the OpenGL 1.1 checks.
 
-### GDI, QuickDraw, and Amiga geometry
+### TIGA, GDI, QuickDraw, and Amiga geometry
 
 The driver contracts link the real integer `soft3d.c` and floating `soft3fp.c` modules
-and exercise quad batching and Earth-resource traversal. Packets contain at most
+and exercise quad batching. TIGA uses compiled Earth maps; the other three drivers
+also exercise Earth-resource traversal. Packets contain at most
 64 quads and 130 shared vertices, with four indices and one palette byte per quad.
 `DRV_QUAD_BATCH` remains a capability of `QUAD`; individual quad submission is also
 checked.

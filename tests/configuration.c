@@ -50,13 +50,30 @@
 #error Matrox selection must use the segmented 8086 architecture
 #endif
 #endif
+#ifdef TEST_DRIVER_TGA
+#if !defined(DRV_TGA) || !defined(SEG86) || defined(FLAT) || defined(SEG68)
+#error TIGA selection must use the segmented 8086 architecture
+#endif
+#if !defined(QUAD) || !defined(DRV_QUAD_BATCH) || !defined(DRV_COLORMAP)
+#error TIGA requires indexed quad batches
+#endif
+#if defined(TEXTURE) || defined(DRV_TEXTURE)
+#error TIGA must not expose texture mapping
+#endif
+#if GLOBE_DEFAULT_LONGITUDE != 32
+#error TIGA must start at the lowest Earth resolution
+#endif
+#if !defined(EARTH_32) || !defined(EARTH_64) || defined(EARTH_128) || defined(EARTH_256) || defined(EARTH_512)
+#error TIGA must retain the two small embedded Earth maps
+#endif
+#endif
 
 #if defined(TEST_DRIVER_OGL) || defined(TEST_DRIVER_IGL) || defined(TEST_DRIVER_XGL)
 #ifdef DRV_MAX_RADIUS
 #error Native floating-point drivers must not inherit a fixed-point radius limit
 #endif
 #endif
-#if defined(TEST_DRIVER_GDI) || defined(TEST_DRIVER_QD) || defined(TEST_DRIVER_MTX) || defined(TEST_DRIVER_AMI)
+#if defined(TEST_DRIVER_GDI) || defined(TEST_DRIVER_QD) || defined(TEST_DRIVER_MTX) || defined(TEST_DRIVER_TGA) || defined(TEST_DRIVER_AMI)
 #if !defined(DRV_MAX_RADIUS) || DRV_MAX_RADIUS != 1000L
 #error Bounded drivers must retain their validated radius limit
 #endif

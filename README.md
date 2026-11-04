@@ -36,8 +36,8 @@ Browser version: [live WebGL demo](https://testglobe.dev/web/).
 ## Current drivers
 
 Earth maps store 8-bit palette indices. OpenGL and IRIS GL use those indices in either
-RGB(A) or color-index windows; Sun XGL expands them to RGB. Matrox LibShell, Windows
-GDI, and QuickDraw draw through the Earth palette. Amiga maps those colors to the
+RGB(A) or color-index windows; Sun XGL expands them to RGB. Matrox LibShell, TIGA,
+Windows GDI, and QuickDraw draw through the Earth palette. Amiga maps those colors to the
 current Workbench screen's pens or draws their RGB values on a truecolor RTG screen.
 The browser frontend uses WebGL 2 with the same maps and palette.
 
@@ -49,6 +49,7 @@ The browser frontend uses WebGL 2 with the same maps and palette.
 | [IRIS GL](#iris-gl) | IRIX 4.0, 32-bit MIPS | Key 3: 128 × 64 | Yes |
 | [Sun XGL](#sun-xgl) | Solaris 2.6, 32-bit SPARC | Key 3: 128 × 64 | Yes |
 | [Matrox LibShell](#matrox-libshell) | MS-DOS, PG-641-compatible hardware | Key 1: 32 × 16 | No |
+| [TIGA](#tiga) | MS-DOS, TIGA 2.x, 640 × 480 indexed color | Key 1: 32 × 16 | No |
 | [Windows GDI](#windows-gdi) | Windows 3.1, 16-bit | Key 1: 32 × 16 | No |
 | [QuickDraw](#quickdraw) | Classic Macintosh System 7, 68000 | Key 1: 32 × 16 | No |
 | [Amiga](#amiga) | AmigaOS Workbench, 68000 and later, OCS/ECS/AGA or RTG | Key 1: 32 × 16 | No |
@@ -59,13 +60,14 @@ Letter controls accept either case.
 
 | Input | Action |
 | --- | --- |
-| `1`–`5` | Select globe resolution; Matrox LibShell supports only `1` and `2`. |
+| `1`–`5` | Select globe resolution; Matrox LibShell and TIGA support only `1` and `2`. |
 | Left mouse drag | Rotate the globe; the WebGL frontend also supports touch dragging. |
 | `a` | Toggle automatic rotation. |
 | `f` | Toggle FPS measurement and its on-screen statistic. |
 | `o` | Toggle the on-screen display (OSD). |
 | `t` | Toggle texture mapping in OpenGL, IRIS GL, Sun XGL, and WebGL. |
 | `d` | Toggle display lists in OpenGL, or palette dithering in native Amiga; both start enabled. |
+| `s` | Switch TIGA between host software 3D (default) and TI-processor transforms. |
 | `Esc` | Exit native applications; in WebGL, pause rotation and release dragging. |
 
 WebGL also provides on-screen controls and a **Reset view** button. Its retained GPU
@@ -74,15 +76,15 @@ Amiga backends.
 
 Keys `1`–`5` select maps 32, 64, 128, 256, and 512 pixels wide (`EARTH_32` through
 `EARTH_512`); map height is half the width. The OSD counts quad patches for Matrox,
-GDI, QuickDraw, and the native Amiga driver, and triangles for the other drivers. Pole patches count as
-quads even when coincident vertices collapse to a triangle for drawing.
+TIGA, GDI, QuickDraw, and the native Amiga driver, and triangles for the other drivers.
+Pole patches count as quads even when their vertices collapse to a triangle.
 
 Console builds print the globe resolution, vertex count, and triangle or quad count
 after each successful mesh construction. Failed attempts and selecting the current
 resolution do not repeat these messages. GDI, QuickDraw, and Amiga use their native
 OSD.
 
-Matrox, GDI, QuickDraw, and Amiga also report polygons retained after software
+Matrox, TIGA, GDI, QuickDraw, and Amiga also report polygons retained after software
 culling. The other drivers report totals because native culling supplies no visibility
 count.
 FPS starts enabled; turning it off leaves rotation timing active. FPS measures the
@@ -103,6 +105,7 @@ changes restart the sample.
 | `dlist fail` | Lists are enabled but unavailable, failed, or bypassed. |
 | `dither on` / `dither off` | Amiga palette dithering is enabled / disabled; off uses the nearest solid palette color. |
 | `dither n/a` | Amiga is drawing directly in RGB on a truecolor RTG screen. |
+| `soft3d on` / `soft3d off (TI)` | TIGA uses host transforms / the downloadable TI transform module; both use TIGA polygon filling. |
 | `GWorld on` / `GWorld off` | QuickDraw is drawing through an offscreen GWorld / directly to the window. |
 
 Toggle `t` off and on to retry after a recoverable texture failure. OpenGL software
@@ -110,7 +113,9 @@ texturing bypasses display lists, so enabled lists report `dlist fail` on that p
 XGL's internal software pipeline still reports `texture on`; IRIS GL cannot detect
 all silent native texture failures. Their driver sections describe these limits.
 OpenGL places `dlist` after FPS and before texture status, with its `d` help last.
-QuickDraw appends GWorld status after the other statistics.
+QuickDraw appends GWorld status after the other statistics. TIGA appends `soft3d`,
+CPU/FPU detection, and buffering status to the top statistics, and places `S` last
+in its help. A failed TI module load leaves `soft3d on` with a recovery notice.
 When a smaller texture is active, its width follows the status, for example
 `texture on (128)` or `texture soft (128)`. GDI reports direct drawing, individual
 polygons, reduced colors, or manual rotation when those fallbacks are active.
@@ -173,6 +178,7 @@ and libraries installed:
 | [IRIS GL](#iris-gl) | `make irisgl` | `testglobe-irisgl` |
 | [Sun XGL](#sun-xgl) | `make xgl` | `testglobe-xgl` |
 | [Matrox LibShell](#matrox-libshell) | `nmake matrox` | `testglob.exe` |
+| [TIGA](#tiga) | `nmake tiga` | `testglob.exe`, `tga_gsp.rlm` |
 | [Windows GDI](#windows-gdi) | `nmake gdi` | `testglob.exe` |
 | [QuickDraw](#quickdraw) (MPW bridge) | `make quickdraw` | `TestglobeQD` |
 | [Amiga](#amiga) (VBCC cross-compiler) | `make amiga` | `testglobe-amiga` |
@@ -190,7 +196,7 @@ make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src
 ```
 
 Append the desired target, such as `apple-opengl`. The three desktop OpenGL targets
-share `testglobe-opengl`; Amiga OpenGL produces `testglobe-amiga-opengl`. Matrox and
+share `testglobe-opengl`; Amiga OpenGL produces `testglobe-amiga-opengl`. Matrox, TIGA, and
 GDI share `testglob.exe`. Selecting a target relinks its
 executable. Driver objects have separate names, so the Unix backends can coexist.
 
@@ -201,10 +207,10 @@ before changing the compiler or build flags:
 | --- | --- |
 | `make clean` | All build objects, generated build sources, temporary files, and application/helper binaries. |
 | `make clean-<target>` | That backend's objects, executable, and backend-specific intermediates. Shared data sources and helpers generally remain. |
-| `make clean-earth-data` | Generated `e_data.c`/`m_data.c`, converter binaries, and data-generation temporary files. |
+| `make clean-earth-data` | Generated `e_data.c`/`m_data.c`/`t_data.c`, converter binaries, and data-generation temporary files. |
 
 Individual targets are `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`,
-`clean-amiga-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-gdi`,
+`clean-amiga-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-tiga`, `clean-gdi`,
 `clean-quickdraw`, and `clean-amiga`.
 Under DOS use `nmake` with `RM=del`, for example `nmake clean RM=del`. Cleanup preserves
 the supplied `src/e_saved.c`, canonical binary maps, and recovery `.bak` files.
@@ -223,16 +229,18 @@ describe the cache and memory policy.
 
 ### Earth map data
 
-Each native application embeds its selected Earth maps and needs no external data
-files at runtime. WebGL fetches the same binary inputs from the static site's `data/`
-directory. Preserve binary bytes when transferring the project; preserve QuickDraw's
-application resource fork when copying its executable.
+Each native application embeds its selected Earth maps and needs no external Earth
+data files at runtime. TIGA additionally uses its installed graphics runtime and an
+optional TI transform module, described in its build section. WebGL fetches the same
+binary inputs from the static site's `data/` directory. Preserve binary bytes when
+transferring the project; preserve QuickDraw's application resource fork when copying
+its executable.
 
 | File | Role |
 | --- | --- |
 | `data/*.bin` | Canonical 8-bit Earth palette indices; edit these to change map data. |
 | `src/e_bin.c` | Build-time converter for Unix and DOS. |
-| `e_data.c` / `m_data.c` | Disposable generated C source in the Unix / DOS build directory. |
+| `e_data.c` / `m_data.c` / `t_data.c` | Disposable generated C source for Unix / Matrox DOS / TIGA DOS builds. |
 | `src/e_saved.c` | Supplied generated copy for manual builds; normal builds generate their own source. |
 | `src/e_cmap.h` | Earth color palette. |
 | `web/e_cmap.js` | Browser palette generated from `src/e_cmap.h` by `web/gen_cmap.py`. |
@@ -248,20 +256,22 @@ application resource fork when copying its executable.
 | 256 | `e256_0.bin`, `e256_1.bin` | 32,768 |
 | 512 | `e512_0.bin` through `e512_7.bin` | 131,072 |
 
-OpenGL, IRIS GL, Sun XGL, and Matrox compile generated arrays of at most 16 KiB.
-Driver `EARTH_*` defines select the maps included in each executable; Matrox includes
-only the 32- and 64-wide maps. GDI and QuickDraw embed all maps as native resources;
-Amiga stores them in an executable `HUNK_DEBUG` record that the OS loader skips.
-The five maps total 170.5 KiB; Matrox's two maps total 2.5 KiB. Generated and saved
-source files are build copies, not additional runtime map allocations. Compiled-data
-paths borrow bounded read-only map spans. GDI, QuickDraw, and Amiga load only selected
-map chunks into the final owned index buffer. They retain 512 bytes of map indices at
-their EARTH_32 default, plus separate palette, geometry, and display storage.
+OpenGL, IRIS GL, Sun XGL, Matrox, and TIGA compile generated arrays of at most 16
+KiB. Driver `EARTH_*` defines select the maps included in each executable; Matrox and
+TIGA include only the 32- and 64-wide maps. GDI and QuickDraw embed all maps as
+native resources; Amiga stores them in an executable `HUNK_DEBUG` record that the OS
+loader skips. The five maps total 170.5 KiB; the two maps in each Matrox/TIGA build
+total 2.5 KiB. Generated and saved source files are build copies, not additional
+runtime map allocations. Compiled-data paths borrow bounded read-only map spans. GDI,
+QuickDraw, and Amiga load only selected map chunks into the final owned index buffer.
+They retain 512 bytes of map indices at their EARTH_32 default, plus separate
+palette, geometry, and display storage.
 
 Make regenerates build source when missing or when an input changes. `EARTH_DATA`
 (Unix) and `MTX_DATA` (DOS) select the input directory, defaulting to `data` beside
 `SRC`. `EARTH_CC` and `EARTH_CFLAGS` select the Unix converter compiler and options;
-DOS uses the Matrox compiler settings.
+DOS uses `MTX_CC` for Matrox and `TGA_CC` for TIGA. Both DOS targets use the
+`MTX_DATA` input-directory setting.
 
 | Task | Command |
 | --- | --- |
@@ -705,6 +715,98 @@ requires Microsoft C 7, `LSCL.LIB`, and the board. Polling assumes a nonblocking
 waiting. The supplied headers do not establish FIFO count units or atomic word
 availability; verify these assumptions against the installed binding and board.
 
+### TIGA
+
+#### Requirements
+
+Use real-mode MS-DOS, Microsoft C 7.0 with its huge-model runtime and NMAKE, and a
+TIGA 2.x installation for the board. This is a full-screen DOS application. The
+vendor's `TIGACD.EXE` communication driver, graphics manager, and standard
+`extprims.rlm` library must be installed and configured. The driver requires a 640 ×
+480 mode with eight valid pixel bits and a programmable 256-color palette. It queries
+mode numbers instead of assuming a particular board. A Microsoft-compatible DOS mouse
+driver enables dragging; keyboard input works without one.
+
+#### Build
+
+Install the SDK's `include` and `libs` directories under `TIGA` at the repository
+root, or pass its DOS installation path. Put Microsoft C and the TI TMS340
+code-generation tools on `PATH`, then run:
+
+```text
+nmake tiga TGA_ROOT=C:\TIGA
+```
+
+This builds `testglob.exe` and `tga_gsp.rlm`. Keep the module beside the executable;
+`S` loads it on demand. The host links `ai.lib`; the TI compiler and linker build the
+module separately from `src/tga_gsp.c` and `src/tga_ext.asm`. `src/tga_cmd.h` defines
+the bounded command format. The module uses TMS34010 instructions, also supported by
+TMS34020, and requires no floating-point coprocessor or TI math runtime.
+
+To build only the host when the module is already available, or to use software 3D
+without the TI tools:
+
+```text
+nmake tiga TGA_ROOT=C:\TIGA TGA_MODULE=
+```
+
+`nmake tiga-module` builds the module alone. Override `TGA_CC`, `TGA_CFLAGS`,
+`TGA_386FLAGS`, `TGA_CPPFLAGS`, `TGA_LIB`, and `TGA_LDFLAGS` for the host
+installation. `TGA_GSP_CC`, `TGA_GSP_LINK`, `TGA_GSP_CFLAGS`, `TGA_GSP_CPPFLAGS`, and
+`TGA_GSP_LDFLAGS` select the TI tools. Preserve `-AH` and the separate baseline/386
+object settings. The default `TGA_ROOT` is `TIGA` in the root Makefile and `..\TIGA`
+in `src/Makefile`. The executable embeds only the 32- and 64-wide Earth maps.
+
+#### Rendering and controls
+
+Key 1 is the default; only keys 1 and 2 are available, with no texture controls. Both
+transform modes use TIGA's `fill_convex()` for indexed polygons, with the general
+polygon fill retained for nonconvex results after rounding. Native bitmap text draws
+the OSD. All 256 palette entries come from `earth_cmap`; the installed TIGA runtime
+adapts them to the board's DAC precision. Quads retain the shared globe traversal,
+with collapsed pole patches drawn as triangles.
+
+`S` or `s` toggles between:
+
+- **`soft3d on` (default):** host rotation, projection, clipping, and culling, using
+  the shared software pipeline. An available x87 selects floating-point transforms;
+  otherwise the 286-compatible or separately compiled 386 integer path is used.
+- **`soft3d off (TI)`:** the downloadable module performs fixed-point rotation,
+  view translation, and ordinary perspective projection on the TMS340 processor.
+  Matrix preparation, clipping, culling, and polygon submission remain on the host.
+  Depth-crossing polygons retain the shared host clipping/projection path. Floating
+  host transforms and fixed-point TI transforms can differ slightly at rounded edges.
+
+Missing modules, insufficient command capacity, or rejected transform packets restore
+software 3D with an OSD notice. Press `S` to retry. Host/GSP packets contain bounded
+32-bit values rather than host pointers or compiler-dependent structures. A mode with
+two display pages is preferred; completed frames use synchronized page flips, and the
+previous page is not reused until the flip completes. A single-page mode remains
+usable but can flicker and reports its buffering status.
+
+#### CPU and platform notes
+
+CPU detection distinguishes 286, 386, and 486-or-later without requiring CPUID. The
+program remains a 16-bit real-mode executable. Baseline objects use `/G0`; only the
+guarded 386 transform object uses `/G3`, and 486-or-later CPUs use that same path.
+`/FPi` retains the Microsoft emulation runtime for startup, mesh generation, and
+other floating-point work when no coprocessor is available.
+
+The x87 probe checks the BIOS equipment flag and uses bounded, no-wait coprocessor
+status reads. An unreported or unavailable coprocessor selects integer transforms.
+Set `NO87=1` to force that choice. CPU/FPU and buffering details accompany `soft3d`
+in the top OSD. No board-specific addresses or registers are accessed by the host.
+
+#### Validation
+
+See the [TIGA host checks](tests/README.md#tiga). The downloadable module was
+compiled and linked with TI TMS340 tools 5.01 under DOSBox, independently of host
+contract tests. Microsoft C 7 host compilation, segmented ABI and communication
+callbacks, TIGA module loading, physical rendering, and page-flip behavior still
+require native validation. The interface follows
+[TI's TIGA Interface User's Guide](https://github.com/tms34010guy/tms34010-sdk/blob/main/Docs/SPVU015C%20TIGA%20Interface%20Users%20Guide%20%281990-09%29.pdf)
+(September 1990).
+
 ### Windows GDI
 
 #### Requirements
@@ -1051,6 +1153,7 @@ and capabilities. Keep those responsibilities separate:
 | IRIS GL | `FLAT`, `DRV_IGL` | `TRISTRIP` | Color/UV triangle callbacks |
 | Sun XGL | `FLAT`, `DRV_XGL` | `TRISTRIP` | RGB/UV strip callbacks |
 | Matrox | `SEG86`, `DRV_MTX` | `QUAD` | Color triangle callbacks |
+| TIGA | `SEG86`, `DRV_TGA` | `QUAD` | `DRV_QUAD_BATCH` |
 | GDI | `SEG86`, `DRV_GDI` | `QUAD` | `DRV_QUAD_BATCH` |
 | QuickDraw | `SEG68`, `DRV_QD` | `QUAD` | `DRV_QUAD_BATCH` |
 | Amiga | `FLAT`, `DRV_AMI` | `QUAD` | `DRV_QUAD_BATCH` |
@@ -1071,6 +1174,7 @@ ordered patterns; QuickDraw delegates that work to its native color machinery.
 | `src/drv_*.c` | Singular native callbacks such as `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*`; group color/RGB/UV variants by primitive. |
 | `src/drv.c` | Shared allocation/clock services, input, rotation, FPS/OSD, palette matching, geometry-packet helpers, and Earth-resource traversal. |
 | Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. `src/ogl_ami.c`/`.h` provide the OpenGL driver's MiniGL/Amiga integration. |
+| `src/tga_cpu.c` / `src/tga_gsp.c` | DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
 | `web/` | Browser frontend, WebGL rendering, and generated palette module; reads canonical `data/` maps. |
 
@@ -1092,7 +1196,8 @@ Root and `src` Makefiles intentionally duplicate rules with different directory
 defaults because historical NMAKE and Solaris make lack a common include syntax.
 Keep both files synchronized. OpenGL uses ordinary `.o` names; Solaris, Apple,
 IRIS GL, XGL, and Amiga OpenGL use `s_`, `a_`, `i_`, `x_`, and `ao_` prefixes.
-DOS uses `.obj`, GDI uses `g_*.obj`, QuickDraw uses `q_*.o`, and Amiga uses `am_*.o`.
+Matrox uses `.obj`, TIGA uses `t_*.obj`, GDI uses `g_*.obj`, QuickDraw uses `q_*.o`,
+and Amiga uses `am_*.o`. TIGA module objects remain separate from x86 host objects.
 MPW has a separate Makefile grammar.
 
 ### Geometry submission
@@ -1104,10 +1209,10 @@ or transparent objects.
 
 The default radius remains 1,000. OpenGL, IRIS GL, and XGL accept positive finite
 custom radii without the software drivers' limit; their camera and clipping values
-must still suit the chosen scene. GDI, QuickDraw, and Amiga retain a maximum radius of
-1,000 for their shared fixed-point pipeline. Matrox retains the validated 1,000-unit
-range for LibShell's fixed-point transforms. These limits are driver capabilities rather
-than a restriction on every globe.
+must still suit the chosen scene. TIGA, GDI, QuickDraw, and Amiga retain a maximum
+radius of 1,000 for their shared fixed-point pipeline. Matrox retains the validated
+1,000-unit range for LibShell's fixed-point transforms. These limits are driver
+capabilities rather than a restriction on every globe.
 
 Triangle strips follow complete interior latitude bands. At key 5, an interior strip
 has 1,026 vertices and 1,024 triangles. Desktop OpenGL sends 254 such strips plus one
@@ -1119,25 +1224,28 @@ pressure, bounded packets may split a latitude band without changing its facets.
 UVs are generated from grid coordinates for submission instead of retaining a full
 two-dimensional UV array. XGL expands palette indices only for its current RGB packet.
 
-`DRV_QUAD_BATCH` is a capability of `QUAD`. GDI, QuickDraw, and Amiga use at most
-64 quads and 130 shared vertices per packet, with four indices and one palette byte
-per quad. Traversal follows latitude bands within bounded longitude tiles. Explicit
-packet sequence and row-continuity metadata allow the preceding bottom row to become
-the next top row without repeating its transforms or cached projections. Direct quad
-calls, new tiles, interrupted streams, and new frames disable reuse. No cache uses
-the address of the reused submission buffer as a persistent vertex identity.
+`DRV_QUAD_BATCH` is a capability of `QUAD`. TIGA, GDI, QuickDraw, and Amiga use at
+most 64 quads and 130 shared vertices per packet, with four indices and one palette
+byte per quad. Traversal follows latitude bands within bounded longitude tiles. In
+the host software paths, explicit packet sequence and row-continuity metadata allow
+the preceding bottom row to become the next top row without repeating its transforms
+or cached projections. Direct quad calls, new tiles, interrupted streams, and new
+frames disable reuse. No cache uses the address of the reused submission buffer as a
+persistent vertex identity.
 
-At EARTH_32, this reduces transforms from 1,056 to 561 per frame. An optional packet
-cache also avoids projecting the same corner for neighboring quads. Larger maps repeat
-tile-boundary vertices to keep storage bounded; there is no full transformed-globe
-cache. GDI groups visible polygons by color for `PolyPolygon`; QuickDraw and Amiga
-fill them individually. Individual quad submission remains
-available, including Matrox. XGL has separate `drv_draw_tristrip_flat_rgb()` and
-`drv_draw_tristrip_flat_uv()` callbacks.
+At EARTH_32, host row reuse reduces transforms from 1,056 to 561 per frame. An
+optional packet cache also avoids projecting the same corner for neighboring quads.
+Larger maps repeat tile-boundary vertices to keep storage bounded; there is no full
+transformed-globe cache. GDI groups visible polygons by color for `PolyPolygon`;
+QuickDraw and Amiga fill them individually, as does TIGA. The TI transform module
+currently processes every submitted packet vertex, without retaining the previous
+row. Transfer costs can make that mode slower than host transforms. Individual quad
+submission remains available, including Matrox. XGL has separate
+`drv_draw_tristrip_flat_rgb()` and `drv_draw_tristrip_flat_uv()` callbacks.
 
 ### Shared rendering pipelines
 
-GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer IEEE-float decoding,
+TIGA, GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer IEEE-float decoding,
 fixed-point transforms, projection caches, clipping, and back-face rejection.
 `src/soft3fp.c` provides the corresponding floating-point helpers. Projection validates
 indices against the initialized packet. Whole polygons inside the depth and viewport
@@ -1145,11 +1253,14 @@ bounds bypass clipping; crossing polygons retain the general path. Backface reje
 uses the complete rounded polygon, preserving silhouette and collapsed-pole behavior.
 Clearly rejected polygons avoid unnecessary subsequent processing.
 
-Projection caches are optional and bounded to one packet. Their absence retains the
-uncached path. Frame, pose, viewport, and interrupted-stream changes invalidate reuse.
-QuickDraw's `qd_fpu.c`/`qd_math.h` boundary and Amiga's runtime CPU/FPU dispatch keep
-hardware floating-point code separate from baseline 68000 execution. Resource-backed
-indices load directly into their final storage, avoiding an extra full-map allocation.
+GDI, QuickDraw, and Amiga projection caches are optional and bounded to one packet;
+their absence retains the uncached path. TIGA uses bounded static packet storage.
+Frame, pose, viewport, and interrupted-stream changes invalidate reuse. QuickDraw's
+`qd_fpu.c`/`qd_math.h` boundary and Amiga's runtime CPU/FPU dispatch keep hardware
+floating-point code separate from baseline 68000 execution. Resource-backed indices
+load directly into their final storage, avoiding an extra full-map allocation. TIGA's
+host path selects the shared integer or floating helpers; its separate TI module uses
+the same fixed-point rounding and validates the command's version and bounds.
 
 OpenGL and IRIS GL share `src/texsoft.c`/`.h` for software texturing: homogeneous
 clipping, depth/culling, perspective-correct UVs, repeat sampling, and filtered mipmaps.
@@ -1184,7 +1295,7 @@ boundaries; texture expansion and globe color sampling share those readers.
 
 ### v0.2 (in development)
 
-- Added Matrox LibShell, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga backends.
+- Added Matrox LibShell, TIGA, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga backends.
 - Added a static WebGL 2 browser frontend using the canonical Earth maps and palette.
 - Added native macOS, Solaris, and PiStorm3D Amiga OpenGL build targets.
 - Embedded canonical binary Earth maps through bounded C arrays or native resources,
@@ -1194,6 +1305,7 @@ boundaries; texture expansion and globe color sampling share those readers.
   and quad reference paths.
 - Standardized driver/traversal APIs and shared rendering, input, and data helpers.
 - Added FPS, automatic rotation, display-list control, and texture-use status.
+- Added selectable host/TI transforms and DOS CPU/FPU dispatch for TIGA.
 - Hardened allocation, file generation, coordinate/packet bounds, input recovery, and
   driver error handling; reduced retained rendering memory.
 - Converted comments to C style and fixed bitmap OSD text in Mesa.

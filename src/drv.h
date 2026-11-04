@@ -25,12 +25,15 @@
 #error OGL_AMIGA requires the DRV_OGL driver
 #endif
 
-#if (defined(DRV_OGL) + defined(DRV_IGL) + defined(DRV_MTX) + defined(DRV_XGL) + defined(DRV_GDI) + defined(DRV_QD) + defined(DRV_AMI)) > 1
+#if (defined(DRV_OGL) + defined(DRV_IGL) + defined(DRV_MTX) + defined(DRV_TGA) + defined(DRV_XGL) + defined(DRV_GDI) + defined(DRV_QD) + defined(DRV_AMI)) > 1
 #error Select only one graphics driver
 #endif
 
 #ifdef DRV_MTX
 #include "drv_mtx.h"
+#endif
+#ifdef DRV_TGA
+#include "drv_tga.h"
 #endif
 #ifdef DRV_OGL
 #include "drv_ogl.h"
@@ -54,12 +57,12 @@
 #include "drv_ami.h"
 #endif
 
-#if !defined(DRV_OGL) && !defined(DRV_IGL) && !defined(DRV_MTX) && \
+#if !defined(DRV_OGL) && !defined(DRV_IGL) && !defined(DRV_MTX) && !defined(DRV_TGA) && \
     !defined(DRV_XGL) && !defined(DRV_GDI) && !defined(DRV_QD) && !defined(DRV_AMI)
 #error Select a supported graphics driver through its Makefile target or DRV_ define
 #endif
 
-#if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_MTX) || defined(DRV_XGL) || defined(DRV_GDI) || defined(DRV_QD) || defined(DRV_AMI)
+#if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_MTX) || defined(DRV_TGA) || defined(DRV_XGL) || defined(DRV_GDI) || defined(DRV_QD) || defined(DRV_AMI)
 #if (defined(TRI) + defined(QUAD) + defined(TRISTRIP)) != 1
 #error Select exactly one driver primitive: TRI, QUAD, or TRISTRIP
 #endif

@@ -19,7 +19,7 @@
 #define SOFT3D_COORD_SCALE 16L
 #define SOFT3D_FOCAL_Q14 GLOBE_FOCAL_Q14
 
-#ifndef SOFT3D_TRANSFORM_020
+#if !defined(SOFT3D_TRANSFORM_020) && !defined(SOFT3D_TRANSFORM_386)
 static const unsigned short soft3d_sine_quadrant[91] = {
     0, 286, 572, 857, 1143, 1428, 1713, 1997, 2280, 2563, 2845, 3126, 3406,
     3686, 3964, 4240, 4516, 4790, 5063, 5334, 5604, 5872, 6138, 6402, 6664, 6924,
@@ -64,7 +64,7 @@ static int soft3d_float_fixed(const float TG_HUGE *value, int fraction_bits,
     return 1;
 }
 
-#ifndef SOFT3D_TRANSFORM_020
+#if !defined(SOFT3D_TRANSFORM_020) && !defined(SOFT3D_TRANSFORM_386)
 static long soft3d_sine(long angle)
 {
     long position, first, second;
@@ -113,6 +113,8 @@ int soft3d_fixed_prepare(long matrix[3][3],
 
 #ifdef SOFT3D_TRANSFORM_020
 int soft3d_020_transform_reuse(long matrix[3][3], unsigned int count,
+#elif defined(SOFT3D_TRANSFORM_386)
+int soft3d_386_transform_reuse(long matrix[3][3], unsigned int count,
 #else
 int soft3d_fixed_transform_reuse(long matrix[3][3], unsigned int count,
 #endif
@@ -162,7 +164,7 @@ int soft3d_fixed_transform_reuse(long matrix[3][3], unsigned int count,
     return 1;
 }
 
-#ifndef SOFT3D_TRANSFORM_020
+#if !defined(SOFT3D_TRANSFORM_020) && !defined(SOFT3D_TRANSFORM_386)
 int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
                             const Vertex TG_HUGE *vertices,
                             Soft3d_fixed_point *out)
@@ -499,4 +501,4 @@ int soft3d_finish_polygon(Soft3d_screen_point *points, int count,
     if (count < 3) return 0;
     return soft3d_finish_inside(points, count);
 }
-#endif /* !SOFT3D_TRANSFORM_020 */
+#endif /* baseline geometry, excluding separately compiled CPU kernels */
