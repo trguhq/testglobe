@@ -87,7 +87,7 @@ static int ogl_ami_dispatch_valid(const MGLDispatchTable *api)
         api->GLShadeModel && api->GLTexCoord2fv && api->GLTexEnvi &&
         api->GLTexImage2D && api->GLTexParameteri && api->GLTranslatef &&
         api->GLVertex3fv && api->GLViewport && api->GLPixelStorei &&
-        api->GLUPerspective && api->GLUBuild2DMipmaps &&
+        api->GLUPerspective &&
         api->GLGenLists && api->GLDeleteLists && api->GLNewList &&
         api->GLEndList && api->GLCallList && api->GLIsList &&
         api->MGLSetState && api->MGLCreateContextFromBitMap &&
@@ -295,7 +295,8 @@ int ogl_ami_resize_context(int width, int height)
      * on every creation and retry, including after a window resize. */
     MiniGLDispatch->mglChooseVertexBufferSize(OGL_AMI_VERTEX_LIMIT);
     MiniGLDispatch->mglChooseZBufferDepth(24);
-    MiniGLDispatch->mglProhibitMipMapping(GL_FALSE);
+    /* Match the shared driver's level-zero bilinear policy. */
+    MiniGLDispatch->mglProhibitMipMapping(GL_TRUE);
     if (mglCreateContextFromBitMap(ogl_ami_bitmap) == NULL)
     {
         FreeBitMap(ogl_ami_bitmap);

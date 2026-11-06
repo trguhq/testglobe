@@ -236,19 +236,24 @@ python3 tests/run.py --ogl-contract
 - **Compatibility and failures:** OpenGL 1.1 declarations and object imports are
   checked. GLUT headers without display-mode availability queries use one RGB,
   double-buffered window request, including old headers without display strings.
-  GLU handles legacy or unsuitable modern-mipmap cases. Allocation,
+  Base-image uploads and bilinear minification require no later GL entry points.
+  Allocation,
   compilation, validation, and execution failures must delete bad lists and draw
   complete immediate geometry without retrying failed caches every frame. Texture
-  creation, binding, mipmap, and transfer failures must release failed state, draw
+  creation, binding, upload, and transfer failures must release failed state, draw
   flat colors, and allow off/on retry.
-  Native and software allocation-pressure profiles select smaller usable images.
+  Native and software allocation-pressure profiles select smaller usable images;
+  non-memory upload errors stop retries. Invalid or undersized texture limits fail
+  without uploading. Both minification and magnification stay bilinear across toggles.
   Failed traversal with OSD disabled and autorotation enabled must show diagnostics
   without self-scheduling another failed frame; explicit input can retry.
 - **Window lifecycle and controls:** early probe and window redraws verify a safe
   display callback before rendering is ready, including Apple's GLUT ordering.
   Checks also cover probe cleanup, final size, FPS toggling, right-button metadata,
   OSD status/help order, and omission of unavailable visibility counts.
-- **Software texturing:** OpenGL presents the rasterizer's index bytes directly;
+- **Software texturing:** OpenGL adopts only the base image and samples it bilinearly,
+  including strongly minified triangles; IRIS GL retains trilinear mipmaps.
+  OpenGL presents the rasterizer's index bytes directly;
   transferred bytes match every framebuffer index, including on 64-bit hosts.
   Nondefault unpack/transfer state must be restored.
   Software texturing bypasses display lists, and both raster-cache policies are

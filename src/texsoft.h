@@ -13,6 +13,15 @@ extern int texsoft_texture(unsigned int width, unsigned int height,
  * The caller must not pass borrowed data or an already-adopted pointer. */
 extern Drv_result texsoft_texture_take(unsigned int width, unsigned int height,
                                       unsigned char *rgb);
+/* Filtering belongs to the texture, independently of the raster's pixel
+ * format. Bilinear retains only level zero; trilinear builds the full pyramid.
+ * Ownership and invalid-input rules match the adoption entry above, which
+ * retains its trilinear behavior. */
+#define TEXSOFT_BILINEAR 0
+#define TEXSOFT_TRILINEAR 1
+extern Drv_result texsoft_texture_take_filtered(unsigned int width,
+                                      unsigned int height,
+                                      unsigned char *rgb, int filter);
 /* The first two formats retain the original numeric-word API. Byte indices
  * let OpenGL present the raster directly without a second transfer buffer. */
 #define TEXSOFT_RGB_WORDS 0

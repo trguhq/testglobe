@@ -86,10 +86,29 @@ int main(void)
 
     base = image(512, 256);
     calls = allocation_calls;
+    assert(texsoft_texture_take_filtered(512, 256, base, TEXSOFT_BILINEAR) == DRV_OK);
+    assert(texsoft_mips[0] == base && texsoft_levels == 1U);
+    assert(allocation_calls == calls && owned_count == 1U);
+    invalid = image(2, 2);
+    assert(texsoft_texture_take_filtered(2, 2, invalid, -1) == DRV_BAD_INPUT);
+    assert(owned_count == 1U && texsoft_mips[0] == base && texsoft_levels == 1U);
+    assert(texsoft_texture_take_filtered(512, 256, NULL, TEXSOFT_BILINEAR) == DRV_BAD_INPUT);
+    assert(owned_count == 1U && texsoft_mips[0] == base);
+    texsoft_free();
+    assert(owned_count == 0);
+    puts("PASS Software base-image ownership: bilinear adopts without copying or allocating unused mip levels, invalid filter consumes only its replacement");
+
+    base = image(512, 256);
+    calls = allocation_calls;
     assert(texsoft_texture_take(512, 256, base) == DRV_OK);
     assert(texsoft_mips[0] == base);
     assert(texsoft_levels == 10 && allocation_calls == calls + 9);
     assert(owned_count == 10);
+    base = image(512, 256);
+    calls = allocation_calls;
+    assert(texsoft_texture_take_filtered(512, 256, base, TEXSOFT_BILINEAR) == DRV_OK);
+    assert(texsoft_mips[0] == base && texsoft_levels == 1U);
+    assert(allocation_calls == calls && owned_count == 1U);
     texsoft_free(); texsoft_free();
     assert(owned_count == 0);
 

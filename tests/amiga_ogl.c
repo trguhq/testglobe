@@ -19,6 +19,7 @@ static unsigned char current_rgb[3];
 static unsigned int batch_vertices_count;
 static int texture_enabled, context_ready, texture_exists, list_exists;
 static GLuint texture_binding;
+static GLint texture_min_filter, texture_mag_filter;
 static unsigned int list_compiling, list_count, list_calls, list_deletes;
 static unsigned int texture_uploads, texture_deletes, presentations, text_calls, redisplays;
 static unsigned int window_creates, window_closes, frame_clears;
@@ -142,7 +143,7 @@ void glGetIntegerv(GLenum query, GLint *value)
 GLboolean glIsEnabled(GLenum cap)
 { assert(cap == GL_TEXTURE_2D); return (GLboolean)texture_enabled; }
 void glEnable(GLenum cap)
-{ if (cap == GL_TEXTURE_2D) texture_enabled = 1; else assert(cap == GL_DEPTH_TEST || cap == GL_CULL_FACE); }
+{ if (cap == GL_TEXTURE_2D) { assert(texture_min_filter == GL_LINEAR && texture_mag_filter == GL_LINEAR); texture_enabled = 1; } else assert(cap == GL_DEPTH_TEST || cap == GL_CULL_FACE); }
 void glDisable(GLenum cap)
 { if (cap == GL_TEXTURE_2D) texture_enabled = 0; else assert(cap == GL_DEPTH_TEST || cap == GL_CULL_FACE); }
 void glClear(GLbitfield mask)
@@ -180,14 +181,32 @@ void glBindTexture(GLenum target, GLuint value)
 { assert(target == GL_TEXTURE_2D && (value == 0 || value == 9)); texture_binding = value; }
 GLboolean glIsTexture(GLuint value) { return (GLboolean)(value == 9 && texture_exists); }
 void glTexParameteri(GLenum target, GLenum name, GLint value)
-{ assert(target == GL_TEXTURE_2D); assert((name == GL_TEXTURE_MIN_FILTER && value == GL_LINEAR_MIPMAP_LINEAR) || (name == GL_TEXTURE_MAG_FILTER && value == GL_LINEAR)); }
+{
+    assert(target == GL_TEXTURE_2D && value == GL_LINEAR);
+    if (name == GL_TEXTURE_MIN_FILTER) texture_min_filter = value;
+    else { assert(name == GL_TEXTURE_MAG_FILTER); texture_mag_filter = value; }
+}
 void glTexEnvi(GLenum target, GLenum name, GLint value)
 { assert(target == GL_TEXTURE_ENV && name == GL_TEXTURE_ENV_MODE && value == GL_REPLACE); }
-GLint gluBuild2DMipmaps(GLenum target, GLint components, GLsizei w, GLsizei h, GLenum format, GLenum type, const GLvoid *pixels)
+void glTexImage2D(GLenum target, GLint level, GLint components, GLsizei w, GLsizei h,
+                   GLint border, GLenum format, GLenum type, const GLvoid *pixels)
 {
+    const unsigned char *rgb;
+    unsigned long i;
+    unsigned int color;
     assert(target == GL_TEXTURE_2D && components == GL_RGB && w == 2 * h && w >= 32 && w <= 512);
-    assert(format == GL_RGB && type == GL_UNSIGNED_BYTE && pixels != NULL);
-    ++texture_uploads; if (fail_texture) pending_error = GL_OUT_OF_MEMORY; return 0;
+    assert(level == 0 && border == 0 && format == GL_RGB && type == GL_UNSIGNED_BYTE && pixels != NULL);
+    assert(texture_min_filter == GL_LINEAR && texture_mag_filter == GL_LINEAR);
+    rgb = (const unsigned char *)pixels;
+    for (i = 0; i < (unsigned long)w * h; ++i)
+    {
+        color = test_earth_data(w)[i];
+        assert(rgb[3UL * i] == earth_cmap[color][0] &&
+               rgb[3UL * i + 1] == earth_cmap[color][1] &&
+               rgb[3UL * i + 2] == earth_cmap[color][2]);
+    }
+    ++texture_uploads;
+    if (fail_texture) pending_error = GL_OUT_OF_MEMORY;
 }
 void glFlush(void) {}
 
@@ -288,6 +307,7 @@ int main(int argc, char **argv)
     assert(strstr(osd, "texture on"));
     ogl_cleanup(); assert(!context_ready && window_closes == 1);
     texture_free(); globe_free();
+    puts("PASS Amiga OpenGL bilinear filtering: exact RGB base image, no unused mipmaps, texture/list toggles and context recreation retain linear minification");
     puts("PASS Amiga OpenGL state: native display lists/textures, failure statuses, resize context recovery, post-present OSD and cleanup");
     return 0;
 }

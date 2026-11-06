@@ -131,6 +131,45 @@ static void minification_and_trilinear(void)
     assert(((value>>16)&255UL)>=31UL&&((value>>16)&255UL)<=33UL);
 }
 
+static void base_level_filter(void)
+{
+    unsigned char checker[48], palette[TEXTURE_PALETTE_BYTES], *adopted;
+    static const unsigned char dark[3]={3,5,22};
+    unsigned int x,y,c;
+    reset_matrices();
+    for(y=0;y<4U;++y)for(x=0;x<4U;++x)for(c=0;c<3U;++c)
+        checker[(y*4U+x)*3U+c]=(unsigned char)(((x+y)&1U)?255:dark[c]);
+    adopted=(unsigned char *)malloc(sizeof(checker));
+    assert(adopted!=NULL);
+    memcpy(adopted,checker,sizeof(checker));
+    assert(texsoft_texture_take_filtered(4,4,adopted,TEXSOFT_BILINEAR)==DRV_OK);
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_RGB_WORDS,NULL));
+    /* The footprint covers the whole repeating image, but each pixel center
+     * selects the dark texel. Base filtering must not introduce the pale mean. */
+    textured_quad(0.125f,0.125f,8.125f,8.125f);
+    all_pixels(2,2,BLACK_PIXEL|3UL|(5UL<<8)|(22UL<<16));
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_RGB_WORDS,NULL));
+    textured_quad(0,0,8,8);
+    /* Halfway between four base texels still performs bilinear blending. */
+    all_pixels(2,2,BLACK_PIXEL|129UL|(130UL<<8)|(139UL<<16));
+    memset(palette,0,sizeof(palette));
+    memcpy(palette+9U*3U,dark,sizeof(dark));
+    palette[17U*3U]=129;palette[17U*3U+1U]=130;palette[17U*3U+2U]=139;
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    textured_quad(0.125f,0.125f,8.125f,8.125f);
+    for(x=0;x<4U;++x)assert(texsoft_index_pixels()[x]==9);
+    /* Changing pixel format must not change filtering; old upload callers
+     * still request the complete trilinear pyramid used by IRIS GL. */
+    assert(texsoft_texture(4,4,checker));
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    textured_quad(0.125f,0.125f,8.125f,8.125f);
+    for(x=0;x<4U;++x)assert(texsoft_index_pixels()[x]==17);
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_RGB_WORDS,NULL));
+    textured_quad(0.125f,0.125f,8.125f,8.125f);
+    all_pixels(2,2,BLACK_PIXEL|129UL|(130UL<<8)|(139UL<<16));
+    puts("PASS Software texture filtering: base bilinear avoids pale coarse-mip colors under heavy minification in RGB and indexed rasters; retained callers remain trilinear");
+}
+
 static void depth_and_culling(void)
 {
     reset_matrices();
@@ -327,6 +366,7 @@ int main(void)
 {
     magnification_and_repeat();
     minification_and_trilinear();
+    base_level_filter();
     depth_and_culling();
     frustum_clipping();
     row_vectors_and_perspective();

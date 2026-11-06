@@ -38,15 +38,6 @@
 #include <GL/glut.h>
 #endif
 
-#if !defined(NO_GENMIPMAP) && defined(FREEGLUT) && defined(FREEGLUT_VERSION_2_0)
-#include <GL/freeglut_ext.h>
-#ifdef APIENTRY
-typedef void (APIENTRY *Ogl_generate_mipmap)(GLenum target);
-#else
-typedef void (*Ogl_generate_mipmap)(GLenum target);
-#endif
-#endif
-
 #ifndef OGL_AMIGA
 /* OpenGL font pointer */
 static void *ogl_font;
@@ -417,14 +408,15 @@ static void ogl_mouse(int button, int state, int x, int y)
     }
 }
 
-/* Drain reported errors before committing native resource state. */
-static int ogl_checkerror(void)
+/* Only a failed image allocation may retry at a smaller size. Mixed errors
+ * remain native failures; other operations retain their usual diagnostics. */
+static Drv_result ogl_collect_errors(int image_allocation)
 {
     const char *error_msg;
     GLenum code;
     unsigned int i;
-    int failed;
-    failed = FALSE;
+    Drv_result result;
+    result = DRV_OK;
     /* A lost context must not trap the application in an endless error loop. */
     for (i = 0; i < 16U; ++i)
     {
@@ -432,7 +424,7 @@ static int ogl_checkerror(void)
         switch(code)
         {
         case GL_NO_ERROR:
-            return failed;
+            return result;
         case GL_INVALID_ENUM:
             error_msg = "Invalid enum";
             break;
@@ -449,6 +441,11 @@ static int ogl_checkerror(void)
             error_msg = "Stack underflow";
             break;
         case GL_OUT_OF_MEMORY:
+            if (image_allocation)
+            {
+                if (result == DRV_OK) result = DRV_NO_MEMORY;
+                continue;
+            }
             error_msg = "Out of memory";
             break;
 #ifdef GL_INVALID_FRAMEBUFFER_OPERATION
@@ -470,10 +467,16 @@ static int ogl_checkerror(void)
             error_msg = "Unknown";
             break;
         }
-        failed = TRUE;
+        result = DRV_NATIVE_FAILED;
         ogl_message(code, error_msg);
     }
-    return failed;
+    return DRV_NATIVE_FAILED;
+}
+
+/* Drain reported errors before committing native resource state. */
+static int ogl_checkerror(void)
+{
+    return ogl_collect_errors(FALSE) != DRV_OK;
 }
 
 /* initialize graphics subsystem */
@@ -816,51 +819,15 @@ static void ogl_resize(int width, int height) {
 #endif
 }
 
-/* GLU is the OpenGL 1.1 path. Newer mipmap generation remains optional:
- * no later GL symbol is required by the headers or the linked GL library. */
-static Drv_result ogl_build_mipmaps(void)
+/* Near the silhouette, isotropic mipmaps average distant land and ice into
+ * narrow ocean footprints, producing pale edge speckles. Bilinear sampling
+ * uses only level zero on every OpenGL 1.1 implementation, including MiniGL.
+ * Upload no unused mip levels and keep allocation retries bounded below. */
+static Drv_result ogl_upload_texture(void)
 {
-    int result, failed;
-#if !defined(NO_GENMIPMAP) && defined(FREEGLUT) && defined(FREEGLUT_VERSION_2_0)
-    const GLubyte *version;
-    unsigned int major, minor;
-    GLint maximum;
-    Ogl_generate_mipmap generate;
-    maximum = 0;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum);
-    if (ogl_checkerror()) return DRV_NATIVE_FAILED;
-    if (maximum > 0 && texture_size <= (unsigned int)maximum &&
-        texture_size / 2U <= (unsigned int)maximum)
-    {
-        version = glGetString(GL_VERSION);
-        failed = ogl_checkerror();
-        if (!failed && version != NULL &&
-            sscanf((const char *)version, "%u.%u", &major, &minor) == 2 &&
-            major >= 3U)
-        {
-            generate = (Ogl_generate_mipmap)glutGetProcAddress("glGenerateMipmap");
-            if (generate != NULL)
-            {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size,
-                              texture_size / 2U, 0, GL_RGB,
-                              GL_UNSIGNED_BYTE, texture_data);
-                if (ogl_checkerror()) return DRV_NATIVE_FAILED;
-                generate(GL_TEXTURE_2D);
-                return ogl_checkerror() ? DRV_NATIVE_FAILED : DRV_OK;
-            }
-        }
-    }
-#endif
-    /* Let GLU scale to the implementation's limit before uploading. */
-    result = gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, texture_size,
-                                texture_size / 2U, GL_RGB,
-                                GL_UNSIGNED_BYTE, texture_data);
-    failed = ogl_checkerror();
-    if (failed) return DRV_NATIVE_FAILED;
-    /* A GLU host allocation failure does not imply a damaged GL context.
-     * Never apply this retry classification to a native GL error. */
-    if (result == GLU_OUT_OF_MEMORY) return DRV_NO_MEMORY;
-    return result == 0 ? DRV_OK : DRV_NATIVE_FAILED;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texture_size,
+                  texture_size / 2U, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data);
+    return ogl_collect_errors(TRUE);
 }
 
 static void ogl_texture_failure(const char *message)
@@ -899,9 +866,13 @@ static int ogl_texture_load(void)
             ogl_texture_failure("Cannot query OpenGL texture capacity");
             return FALSE;
         }
-        /* This query is OpenGL 1.1 compatible. Select an existing source
-         * map before allocating it; GLU can still scale the smallest map. */
-        while (maximum > 0 && size > (unsigned int)maximum && size > 32U)
+        /* Use an existing power-of-two map that fits the OpenGL 1.1 limit. */
+        if (maximum < 32)
+        {
+            ogl_texture_failure("OpenGL texture capacity is below 32 pixels");
+            return FALSE;
+        }
+        while (size > (unsigned int)maximum && size > 32U)
             size /= 2U;
     }
     for (; size >= 32U; size /= 2U)
@@ -919,7 +890,8 @@ retry_image:
         if (ogl_indexed)
         {
             rgb = texture_take_data();
-            result = texsoft_texture_take(size, size / 2U, rgb);
+            result = texsoft_texture_take_filtered(size, size / 2U, rgb,
+                                                   TEXSOFT_BILINEAR);
             if (result == DRV_NO_MEMORY)
             {
                 if (!released)
@@ -937,7 +909,7 @@ retry_image:
             ogl_checkerror();
             glGenTextures(1, &texture_id);
             glBindTexture(GL_TEXTURE_2D, texture_id);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
             if (ogl_checkerror() || texture_id == 0)
@@ -945,7 +917,7 @@ retry_image:
                 ogl_texture_failure("Cannot allocate OpenGL texture");
                 return FALSE;
             }
-            result = ogl_build_mipmaps();
+            result = ogl_upload_texture();
             if (result == DRV_NO_MEMORY)
             {
                 glBindTexture(GL_TEXTURE_2D, 0);
@@ -967,7 +939,7 @@ retry_image:
             }
             if (result != DRV_OK)
             {
-                ogl_texture_failure("Cannot build OpenGL texture mipmaps");
+                ogl_texture_failure("Cannot upload OpenGL texture");
                 return FALSE;
             }
             texture_free();
@@ -1001,7 +973,7 @@ void drv_texture_enable(void)
     if (!ogl_indexed)
     {
         glBindTexture(GL_TEXTURE_2D, texture_id);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glEnable(GL_TEXTURE_2D);
         if (ogl_checkerror())

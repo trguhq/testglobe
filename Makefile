@@ -9,7 +9,7 @@ SRC = src
 CC = cc
 CPPFLAGS =
 CFLAGS = -O
-SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
+SYS_FLAGS = -DNO_SINF
 LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
 # drv_ogl.h selects latitude strips with separately batched pole triangles.
 OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
@@ -26,7 +26,7 @@ OPENWINHOME = /usr/openwin
 SOLARIS_CC = $(CC)
 SOLARIS_CPPFLAGS = -I$(OPENWINHOME)/include
 SOLARIS_CFLAGS = $(CFLAGS)
-SOLARIS_SYS_FLAGS = -DNO_SINF -DNO_GENMIPMAP
+SOLARIS_SYS_FLAGS = -DNO_SINF
 SOLARIS_DEFINES = $(OGL_DEFINES)
 SOLARIS_LDFLAGS = -L$(OPENWINHOME)/lib -R$(OPENWINHOME)/lib \
     -lglut -lGL -lGLU -lX11 -lXmu -lm
@@ -34,11 +34,11 @@ SOLARIS_OBJECTS = s_drv.o s_ogl.o s_err.o s_globe.o s_main.o s_tex.o s_soft.o s_
 
 # Native macOS OpenGL/GLUT from the selected Xcode command line tools.
 # Apple objects stay separate from Unix GL/X11 objects. Apple's legacy
-# OpenGL context uses GLU mipmaps rather than core glGenerateMipmap.
+# OpenGL texturing uses the same bilinear, OpenGL 1.1 path on every target.
 APPLE_CC = $(CC)
 APPLE_CPPFLAGS =
 APPLE_CFLAGS = $(CFLAGS)
-APPLE_SYS_FLAGS = -DNO_GENMIPMAP -DGLUT_SILENCE_DEPRECATION
+APPLE_SYS_FLAGS = -DGLUT_SILENCE_DEPRECATION
 APPLE_DEFINES = $(OGL_DEFINES)
 APPLE_LDFLAGS = -framework GLUT -framework OpenGL -framework Cocoa
 APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o a_data.o
@@ -53,7 +53,7 @@ AOGL_CFLAGS = -c99 -O1 -cpu=68020 -fpu=68881
 AOGL_CPPFLAGS =
 MINIGL_ROOT = .
 AOGL_INCLUDES = -I$(MINIGL_ROOT)/libraryroot/include
-AOGL_DEFINES = $(OGL_DEFINES) -DOGL_AMIGA -DNO_SINF -DNO_GENMIPMAP
+AOGL_DEFINES = $(OGL_DEFINES) -DOGL_AMIGA -DNO_SINF
 AOGL_LDFLAGS =
 AOGL_LIBS = -lm881 -lamiga
 AOGL_PYTHON = python3

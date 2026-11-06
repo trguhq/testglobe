@@ -549,7 +549,7 @@ def main():
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_debug")])
             run([str(output / "gdi_debug"), "fpu"])
         if args.amiga_ogl_contract:
-            amiga_ogl = ["-DFLAT", "-DDRV_OGL", "-DOGL_AMIGA", "-DNO_GENMIPMAP",
+            amiga_ogl = ["-DFLAT", "-DDRV_OGL", "-DOGL_AMIGA",
                          "-I" + str(ROOT / "tests/mgl_shim"),
                          "-I" + str(ROOT / "tests/ami_shim")]
             check_production_units(cc, common, amiga_ogl, output, "Amiga_OpenGL",
@@ -561,10 +561,10 @@ def main():
                 str(ROOT / "src/e_saved.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "amiga_ogl")])
             run([str(output / "amiga_ogl")],
-                expected_stderr="OpenGL error: Out of memory!\nOpenGL texture: Cannot build OpenGL texture mipmaps\n")
+                expected_stderr="OpenGL texture: Insufficient memory for texture; drawing flat colors\n")
             run(cc + common + amiga_ogl + [str(ROOT / "tests/ogl_ami.c"),
                 "-lm", "-o", str(output / "ogl_ami")])
-            for mode in ("normal", "rgb24-in32", "native", "windowfail", "lockfail", "contextfail",
+            for mode in ("normal", "nomipmap", "rgb24-in32", "native", "windowfail", "lockfail", "contextfail",
                          "bitmapfail", "wrong16", "wrong24", "unknownbitmap", "wrongformat",
                          "rounded", "shortbitmap", "hugebitmap"):
                 run([str(output / "ogl_ami"), mode])
@@ -669,15 +669,15 @@ def main():
                                      else "PASS XGL nonrecoverable error:"))
         if args.ogl_contract:
             ogl = ["-DFLAT", "-DDRV_OGL", "-I" + str(ROOT / "tests/ogl_record")]
-            check_production_units(cc, common, ogl + ["-DNO_GENMIPMAP"], output, "OpenGL",
+            check_production_units(cc, common, ogl, output, "OpenGL",
                 ("drv.c", "drv_ogl.c", "err.c", "globe.c", "main.c", "texture.c", "texsoft.c", "e_saved.c"))
             ogl_sources = [str(ROOT / "tests/ogl.c"), str(ROOT / "src/e_saved.c"),
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm"]
-            run(cc + common + ogl + ["-DNO_GENMIPMAP"] + ogl_sources +
+            run(cc + common + ogl + ogl_sources +
                 ["-o", str(output / "ogl")])
-            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "reduced", "softreduced", "glureduced", "framefail"):
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "reduced", "softreduced", "uploadreduced", "framefail"):
                 run([str(output / "ogl"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl"), mode],
@@ -688,12 +688,13 @@ def main():
                     expected_stderr="OpenGL error: Invalid operation!\n" * 6 if mode == "callfail" else "",
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
             texture_failures = {
-                "gluerror": "Insufficient memory for texture; drawing flat colors",
+                "uploadfail": "Insufficient memory for texture; drawing flat colors",
                 "stagefail": "Insufficient memory for texture; drawing flat colors",
-                "softmipfail": "Insufficient memory for texture; drawing flat colors",
                 "softframefail": "Cannot prepare indexed OpenGL texture raster",
                 "softpixelsfail": "Cannot present indexed OpenGL texture raster",
                 "softtransfererror": "Cannot present indexed OpenGL texture raster",
+                "maxzero": "OpenGL texture capacity is below 32 pixels",
+                "maxtiny": "OpenGL texture capacity is below 32 pixels",
             }
             for mode, message in texture_failures.items():
                 run([str(output / "ogl"), mode],
@@ -704,11 +705,9 @@ def main():
                 message = "OpenGL texture data is not loaded" if mode == "unloadedtexture" else "OpenGL texture is not active"
                 run([str(output / "ogl"), mode], expected_stderr="OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL actual texture use:")
-            run(cc + common + ogl + ogl_sources + ["-o", str(output / "ogl_11")])
-            run([str(output / "ogl_11"), "rgba"])
             modern_ogl = ogl + ["-DTEST_OGL_FREEGLUT"]
             run(cc + common + modern_ogl + ogl_sources + ["-o", str(output / "ogl_modern")])
-            for mode in ("rgba", "rgb24", "rgb16", "legacy11", "missingproc", "nullversion", "badversion", "limited", "maxzero"):
+            for mode in ("rgba", "rgb24", "rgb16", "limited"):
                 run([str(output / "ogl_modern"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl_modern"), mode],
@@ -718,22 +717,23 @@ def main():
                 run([str(output / "ogl_modern"), mode],
                     expected_stderr="OpenGL error: Invalid operation!\n" * 6 if mode == "callfail" else "",
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
-            for mode in ("texallocerror", "texuploaderror", "mipmaperror"):
+            for mode in ("texallocerror", "uploadinvalid", "uploadmixed", "uploadmixedreverse"):
                 message = ("Cannot allocate OpenGL texture" if mode == "texallocerror"
-                           else "Cannot build OpenGL texture mipmaps")
+                           else "Cannot upload OpenGL texture")
                 run([str(output / "ogl_modern"), mode],
-                    expected_stderr="OpenGL error: Out of memory!\nOpenGL texture: " + message + "\n",
+                    expected_stderr=("OpenGL error: Out of memory!\n" if mode == "texallocerror" else "OpenGL error: Invalid operation!\n") +
+                                    "OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL recoverable texture failure:")
-            for label, options in (("legacy", ogl), ("optional", modern_ogl)):
+            for label, options in (("legacy", ogl), ("freeglut", modern_ogl)):
                 obj = output / ("ogl_" + label + ".o")
                 run(cc + common + options + ["-c", str(ROOT / "src/drv_ogl.c"), "-o", str(obj)])
                 symbols = subprocess.run(["nm", "-u", str(obj)], text=True, capture_output=True, check=True).stdout
-                if "glGenerateMipmap" in symbols or (label == "legacy" and "glutGetProcAddress" in symbols):
+                if any(name in symbols for name in ("glGenerateMipmap", "gluBuild2DMipmaps", "glutGetProcAddress")):
                     raise SystemExit("OpenGL 1.1 object unexpectedly links a later entry point")
-            print("PASS OpenGL 1.1 object linkage: legacy and optional builds compile with GL 1.1 declarations and never import glGenerateMipmap")
+            print("PASS OpenGL 1.1 object linkage: legacy and FreeGLUT builds use base-level uploads without mipmap or extension entry points")
             for label, define in (("missing_query", "TEST_OGL_NO_MODE_QUERY"),
                                   ("old_glut", "TEST_OGL_OLD_GLUT")):
-                legacy_options = ogl + ["-DNO_GENMIPMAP", "-D" + define]
+                legacy_options = ogl + ["-D" + define]
                 binary = output / ("ogl_" + label)
                 run(cc + common + legacy_options + ogl_sources + ["-o", str(binary)])
                 for mode in ("legacy-glut", "rgb16"):
@@ -747,10 +747,10 @@ def main():
                 if "glutInitDisplayString" in symbols:
                     raise SystemExit("Legacy GLUT object unexpectedly imports display-string probing")
             print("PASS legacy GLUT linkage: API 3 and API 4 without mode queries create a validated window and never import glutInitDisplayString")
-            run(cc + common + ogl + ["-DNO_GENMIPMAP", "-DTEXTURE_CACHE_RASTER=1"] +
+            run(cc + common + ogl + ["-DTEXTURE_CACHE_RASTER=1"] +
                 ogl_sources + ["-o", str(output / "ogl_cached")])
             run([str(output / "ogl_cached"), "indexed"])
-            run(cc + common + ogl + ["-DNO_GENMIPMAP"] + tri_mode + ogl_sources +
+            run(cc + common + ogl + tri_mode + ogl_sources +
                 ["-o", str(output / "ogl_tri")])
             for mode in ("rgba", "indexed"):
                 run([str(output / "ogl_tri"), mode])

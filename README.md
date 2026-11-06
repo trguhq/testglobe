@@ -223,9 +223,9 @@ Under DOS use `nmake` with `RM=del`, for example `nmake clean RM=del`. Cleanup p
 the supplied `src/e_saved.c`, canonical binary maps, and recovery `.bak` files.
 
 Each build section lists its compiler and flag variables. The default Unix
-`SYS_FLAGS=-DNO_SINF -DNO_GENMIPMAP` selects C89 `sin`/`cos` and GLU mipmaps for older
-libraries. Apple OpenGL uses separate `APPLE_SYS_FLAGS` and the modern system math
-library. See [OpenGL platform notes](#opengl-platform-notes) for optional mipmap support.
+`SYS_FLAGS=-DNO_SINF` selects C89 `sin`/`cos` for older libraries. Apple OpenGL uses
+separate `APPLE_SYS_FLAGS` and the modern system math library. All OpenGL targets use
+OpenGL 1.1 texture uploads and bilinear filtering.
 
 `DEBUG` defaults to `0`. After cleaning, use `make opengl CPPFLAGS=-DDEBUG=1` to enable
 pixel-storage and right-button diagnostics. A System 7 single-button mouse has no
@@ -435,8 +435,8 @@ architecture and SDK defaults.
 
 `APPLE_CC` defaults to `CC` (`cc`, normally Apple's Clang); `APPLE_CFLAGS` defaults to
 `CFLAGS`. Override `APPLE_CPPFLAGS`, `APPLE_SYS_FLAGS`, and `APPLE_LDFLAGS` as needed.
-The default `APPLE_SYS_FLAGS=-DNO_GENMIPMAP -DGLUT_SILENCE_DEPRECATION` selects GLU
-mipmaps and suppresses GLUT deprecation warnings. Apple builds use `<GLUT/glut.h>`.
+The default `APPLE_SYS_FLAGS=-DGLUT_SILENCE_DEPRECATION` suppresses GLUT deprecation
+warnings. Apple builds use `<GLUT/glut.h>`.
 
 <a id="amiga-opengl"></a>
 
@@ -490,7 +490,7 @@ no runtime map files or Amiga Hunk-resource packing are needed.
 
 The adapter opens the shared library directly through its dispatch interface, so
 no GCC import archive, GLUT, X11, or separate GLU library is linked. MiniGL performs
-transforms, clipping, depth/culling, texture mapping, mipmap construction, and display
+transforms, clipping, depth/culling, bilinear texture mapping, and display
 lists. Intuition supplies the resizable Workbench window and mouse/keyboard input;
 MiniGL renders through `mglCreateContextFromBitMap` into an application-owned BGRA32
 RTG bitmap. Presentation waits for the GPU and copies within the allocated bitmap
@@ -546,12 +546,13 @@ Failed lists are not rebuilt every frame or on resolution changes; toggling `d` 
 `t` explicitly permits a retry.
 Diagnostics use `glGetError`, without modern debug extensions.
 
-The desktop targets default to GLU mipmaps; Amiga OpenGL uses MiniGL's GLU-compatible
-mipmap builder. Omitting `NO_GENMIPMAP` permits an optional desktop
-path when FreeGLUT 2.0 or later headers are available: the running context must report
-OpenGL 3.0 or later, `glGenerateMipmap` must resolve at runtime, and the image must fit
-the texture limit. Otherwise the driver uses `gluBuild2DMipmaps`. No post-1.1 OpenGL
-symbol is required at link time, and `GL_GLEXT_PROTOTYPES` is unnecessary.
+All OpenGL targets use bilinear minification and magnification, including indexed
+software texturing. Coarse isotropic mipmaps can mix distant land and ice into ocean
+pixels at the silhouette, producing pale speckles; sampling only the base image
+avoids that halo. Very small views can instead show aliasing in fine texture detail.
+Only the selected base image is uploaded or retained, with no unused mipmap chain.
+Uploads use `glTexImage2D`; no post-1.1 OpenGL entry points, extension lookup, or
+`NO_GENMIPMAP` build flag are needed. The five globe resolutions remain available.
 
 #### Validation
 
@@ -1320,17 +1321,18 @@ clipping, depth/culling, perspective-correct UVs, repeat sampling, and filtered 
 They link it as `texsoft.o` and `i_soft.o`; the OpenGL platform variants use their own
 object prefixes. `src/texture.h` sets `TEXTURE_MAX_SIZE=512`,
 `TEXTURE_PALETTE_SIZE=256`, and `TEXTURE_CACHE_RASTER=0` by default. Disabling software
-texturing releases frame/depth buffers while retaining mipmaps. Indexed OpenGL
+texturing releases frame/depth buffers while retaining texture images. Indexed OpenGL
 renders directly into palette bytes for `glDrawPixels`, with no full-frame conversion
 copy. IRIS GL retains its native packed-word representation. Compared with the older
 word raster plus byte copy, OpenGL saves approximately 1.17 MiB on 32-bit hosts or
 2.34 MiB on 64-bit hosts at 640 × 480. Changing dimensions or raster format releases
 obsolete storage before replacement. Same-size staging
 images reuse allocation; changed sizes replace the old image only after completion.
-The software mipmap builder can adopt the generated RGB base image instead of
-copying it. IRIS GL fills its native packed image directly from indexed rows; XGL
-fills its native raster the same way. OpenGL's GLU path retains the complete RGB
-staging image required by that interface. Native libraries may retain their own
+The software texture loader adopts the generated RGB base image instead of copying
+it. OpenGL retains only that bilinear image; IRIS GL also builds lower mip levels for
+trilinear minification. IRIS GL fills its native packed image directly from indexed rows; XGL
+fills its native raster the same way. Native OpenGL uploads the RGB staging image
+and releases it after a successful upload. Native libraries may retain their own
 texture, geometry, and framebuffer storage.
 
 The Earth converter and TIGA packer share build-only file helpers using POSIX

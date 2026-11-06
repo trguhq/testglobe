@@ -149,7 +149,7 @@ void CloseWindow(struct Window *value)
 { assert(value == &window && windows == 1 && current_context == NULL && !outstanding && !bitmap_count); --windows; }
 void mglChooseVertexBufferSize(int count) { assert(count == 256); vertex_setting = count; }
 void mglChooseZBufferDepth(int depth) { assert(depth == 24); depth_setting = depth; }
-void mglProhibitMipMapping(GLboolean value) { assert(value == GL_FALSE); mipmap_setting = 1; }
+void mglProhibitMipMapping(GLboolean value) { assert(value == GL_TRUE); mipmap_setting = 1; }
 struct BitMap *AllocBitMap(ULONG w, ULONG h, ULONG depth, ULONG flags, const struct BitMap *friend_bitmap)
 {
     assert(!bitmap_count && friend_bitmap == &screen.BitMap && depth == 32);
@@ -293,6 +293,7 @@ int main(int argc, char **argv)
     if (!strcmp(profile, "futureabi")) dispatch.abiVersion = 6;
     if (!strcmp(profile, "shorttable")) dispatch.structSize = sizeof(dispatch) - 1;
     if (!strcmp(profile, "nullfunction")) dispatch.GLViewport = NULL;
+    if (!strcmp(profile, "nomipmap")) dispatch.GLUBuild2DMipmaps = NULL;
     if (!strcmp(profile, "stub")) dispatch.backendFlags |= MINIGL_BACKEND_FLAG_STUB;
     if (!strcmp(profile, "wrongbackend")) dispatch.backendFlags = MINIGL_BACKEND_FLAG_CLASSIC;
     if (!strcmp(profile, "stack")) short_stack = 1;

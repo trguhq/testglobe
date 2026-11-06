@@ -67,13 +67,14 @@ static int texsoft_dimensions(unsigned int width, unsigned int height)
            (unsigned long)width * height <= (size_t)-1 / 3U;
 }
 
-Drv_result texsoft_texture_take(unsigned int width, unsigned int height,
-                                  unsigned char *rgb)
+Drv_result texsoft_texture_take_filtered(unsigned int width, unsigned int height,
+                                           unsigned char *rgb, int filter)
 {
     unsigned int level, w, h, x, y, channel, px, py;
     unsigned int sum, dx, dy;
     unsigned long offset;
-    if (rgb == NULL || !texsoft_dimensions(width, height))
+    if (rgb == NULL || !texsoft_dimensions(width, height) ||
+        (filter != TEXSOFT_BILINEAR && filter != TEXSOFT_TRILINEAR))
     {
         free(rgb);
         return DRV_BAD_INPUT;
@@ -110,12 +111,18 @@ Drv_result texsoft_texture_take(unsigned int width, unsigned int height,
                             (unsigned char)((sum + 2U) / 4U);
                     }
         ++texsoft_levels;
-        if (w == 1 && h == 1) return DRV_OK;
+        if (filter == TEXSOFT_BILINEAR || (w == 1 && h == 1)) return DRV_OK;
         if (w > 1) w /= 2U;
         if (h > 1) h /= 2U;
     }
     texsoft_free_mips();
     return DRV_UNAVAILABLE;
+}
+
+Drv_result texsoft_texture_take(unsigned int width, unsigned int height,
+                                  unsigned char *rgb)
+{
+    return texsoft_texture_take_filtered(width, height, rgb, TEXSOFT_TRILINEAR);
 }
 
 int texsoft_texture(unsigned int width, unsigned int height,
@@ -314,15 +321,19 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
     if (bottom < 0) bottom = 0;
     if (right >= (int)texsoft_width) right = (int)texsoft_width - 1;
     if (top >= (int)texsoft_height) top = (int)texsoft_height - 1;
-    dux = ((b->u - a->u) * (c->y - a->y) - (c->u - a->u) * (b->y - a->y)) / area;
-    duy = ((b->x - a->x) * (c->u - a->u) - (c->x - a->x) * (b->u - a->u)) / area;
-    dvx = ((b->v - a->v) * (c->y - a->y) - (c->v - a->v) * (b->y - a->y)) / area;
-    dvy = ((b->x - a->x) * (c->v - a->v) - (c->x - a->x) * (b->v - a->v)) / area;
-    dqx = ((b->q - a->q) * (c->y - a->y) - (c->q - a->q) * (b->y - a->y)) / area;
-    dqy = ((b->x - a->x) * (c->q - a->q) - (c->x - a->x) * (b->q - a->q)) / area;
-    if (!texsoft_finite(dux) || !texsoft_finite(duy) ||
-        !texsoft_finite(dvx) || !texsoft_finite(dvy) ||
-        !texsoft_finite(dqx) || !texsoft_finite(dqy)) return;
+    dux = duy = dvx = dvy = dqx = dqy = 0.0;
+    if (texsoft_levels > 1U)
+    {
+        dux = ((b->u - a->u) * (c->y - a->y) - (c->u - a->u) * (b->y - a->y)) / area;
+        duy = ((b->x - a->x) * (c->u - a->u) - (c->x - a->x) * (b->u - a->u)) / area;
+        dvx = ((b->v - a->v) * (c->y - a->y) - (c->v - a->v) * (b->y - a->y)) / area;
+        dvy = ((b->x - a->x) * (c->v - a->v) - (c->x - a->x) * (b->v - a->v)) / area;
+        dqx = ((b->q - a->q) * (c->y - a->y) - (c->q - a->q) * (b->y - a->y)) / area;
+        dqy = ((b->x - a->x) * (c->q - a->q) - (c->x - a->x) * (b->q - a->q)) / area;
+        if (!texsoft_finite(dux) || !texsoft_finite(duy) ||
+            !texsoft_finite(dvx) || !texsoft_finite(dvy) ||
+            !texsoft_finite(dqx) || !texsoft_finite(dqy)) return;
+    }
     for (y = bottom; y <= top; ++y)
         for (x = left; x <= right; ++x)
         {
@@ -340,20 +351,25 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
             u = (wa * a->u + wb * b->u + wc * c->u) / q;
             v = (wa * a->v + wb * b->v + wc * c->v) / q;
             if (!texsoft_finite(u) || !texsoft_finite(v)) continue;
-            sx = (dux - u * dqx) / q * texsoft_mip_w[0];
-            sy = (dvx - v * dqx) / q * texsoft_mip_h[0];
-            tx = (duy - u * dqy) / q * texsoft_mip_w[0];
-            ty = (dvy - v * dqy) / q * texsoft_mip_h[0];
-            if (!texsoft_finite(sx) || !texsoft_finite(sy) ||
-                !texsoft_finite(tx) || !texsoft_finite(ty)) continue;
-            rho = sx * sx + sy * sy; lod = tx * tx + ty * ty;
-            if (lod > rho) rho = lod;
-            lod = rho > 1.0 ? log(rho) * 0.7213475204444817 : 0.0;
-            /* Infinite squared footprint means maximal minification. It
-             * must select the final mip rather than reach an integer cast. */
-            if (!texsoft_finite(lod)) lod = texsoft_levels - 1U;
-            if (lod > texsoft_levels - 1U) lod = texsoft_levels - 1U;
-            level = (unsigned int)lod; blend = lod - level;
+            level = 0U;
+            blend = 0.0;
+            if (texsoft_levels > 1U)
+            {
+                sx = (dux - u * dqx) / q * texsoft_mip_w[0];
+                sy = (dvx - v * dqx) / q * texsoft_mip_h[0];
+                tx = (duy - u * dqy) / q * texsoft_mip_w[0];
+                ty = (dvy - v * dqy) / q * texsoft_mip_h[0];
+                if (!texsoft_finite(sx) || !texsoft_finite(sy) ||
+                    !texsoft_finite(tx) || !texsoft_finite(ty)) continue;
+                rho = sx * sx + sy * sy; lod = tx * tx + ty * ty;
+                if (lod > rho) rho = lod;
+                lod = rho > 1.0 ? log(rho) * 0.7213475204444817 : 0.0;
+                /* Infinite squared footprint means maximal minification. It
+                 * must select the final mip rather than reach an integer cast. */
+                if (!texsoft_finite(lod)) lod = texsoft_levels - 1U;
+                if (lod > texsoft_levels - 1U) lod = texsoft_levels - 1U;
+                level = (unsigned int)lod; blend = lod - level;
+            }
             texsoft_sample(level, u, v, rgb);
             if (blend > 0 && level + 1U < texsoft_levels)
             {
