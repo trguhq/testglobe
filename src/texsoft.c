@@ -19,9 +19,10 @@ static unsigned int texsoft_mip_w[TEXSOFT_LEVELS];
 static unsigned int texsoft_mip_h[TEXSOFT_LEVELS];
 static unsigned int texsoft_levels, texsoft_width, texsoft_height;
 static unsigned long *texsoft_frame;
+static unsigned char *texsoft_indices;
 static float *texsoft_depth;
 static double texsoft_matrix[4][4];
-static int texsoft_indexed, texsoft_ready;
+static int texsoft_indexed, texsoft_ready, texsoft_format;
 static unsigned char *texsoft_lut;
 static unsigned char texsoft_palette[TEXTURE_PALETTE_BYTES];
 
@@ -33,8 +34,8 @@ static int texsoft_finite(double value)
 
 void texsoft_release_raster(void)
 {
-    free(texsoft_frame); free(texsoft_depth);
-    texsoft_frame = NULL; texsoft_depth = NULL;
+    free(texsoft_frame); free(texsoft_indices); free(texsoft_depth);
+    texsoft_frame = NULL; texsoft_indices = NULL; texsoft_depth = NULL;
     texsoft_width = texsoft_height = 0;
     texsoft_ready = FALSE;
 }
@@ -66,13 +67,14 @@ static int texsoft_dimensions(unsigned int width, unsigned int height)
            (unsigned long)width * height <= (size_t)-1 / 3U;
 }
 
-Drv_result texsoft_texture_take(unsigned int width, unsigned int height,
-                                  unsigned char *rgb)
+Drv_result texsoft_texture_take_filtered(unsigned int width, unsigned int height,
+                                           unsigned char *rgb, int filter)
 {
     unsigned int level, w, h, x, y, channel, px, py;
     unsigned int sum, dx, dy;
     unsigned long offset;
-    if (rgb == NULL || !texsoft_dimensions(width, height))
+    if (rgb == NULL || !texsoft_dimensions(width, height) ||
+        (filter != TEXSOFT_BILINEAR && filter != TEXSOFT_TRILINEAR))
     {
         free(rgb);
         return DRV_BAD_INPUT;
@@ -109,12 +111,18 @@ Drv_result texsoft_texture_take(unsigned int width, unsigned int height,
                             (unsigned char)((sum + 2U) / 4U);
                     }
         ++texsoft_levels;
-        if (w == 1 && h == 1) return DRV_OK;
+        if (filter == TEXSOFT_BILINEAR || (w == 1 && h == 1)) return DRV_OK;
         if (w > 1) w /= 2U;
         if (h > 1) h /= 2U;
     }
     texsoft_free_mips();
     return DRV_UNAVAILABLE;
+}
+
+Drv_result texsoft_texture_take(unsigned int width, unsigned int height,
+                                  unsigned char *rgb)
+{
+    return texsoft_texture_take_filtered(width, height, rgb, TEXSOFT_TRILINEAR);
 }
 
 int texsoft_texture(unsigned int width, unsigned int height,
@@ -160,14 +168,20 @@ static int texsoft_make_lut(const unsigned char *palette)
 
 int texsoft_begin(unsigned int width, unsigned int height,
                     float model[4][4], float projection[4][4],
-                    int indexed, const unsigned char *colormap)
+                    int format, const unsigned char *colormap)
 {
     unsigned long count, pixel;
-    unsigned long *frame;
+    void *frame;
+    size_t stride;
+    int indexed;
     float *depth;
     unsigned int i, j, k;
     double matrix[4][4];
     texsoft_ready = FALSE;
+    if (format != TEXSOFT_RGB_WORDS && format != TEXSOFT_INDEX_WORDS &&
+        format != TEXSOFT_INDEX_BYTES) return 0;
+    indexed = format != TEXSOFT_RGB_WORDS;
+    stride = format == TEXSOFT_INDEX_BYTES ? 1U : sizeof(unsigned long);
     if (width == 0 || height == 0 || width > 32767U || height > 32767U ||
         model == NULL || projection == NULL || texsoft_levels == 0)
         return 0;
@@ -185,24 +199,28 @@ int texsoft_begin(unsigned int width, unsigned int height,
         }
     if (indexed && !texsoft_make_lut(colormap)) return 0;
     count = (unsigned long)width * height;
-    if (count > (size_t)-1 / sizeof(unsigned long) || count > (size_t)-1 / sizeof(float))
+    if (count > (size_t)-1 / stride || count > (size_t)-1 / sizeof(float))
         return 0;
-    if (width != texsoft_width || height != texsoft_height)
+    if (width != texsoft_width || height != texsoft_height || format != texsoft_format)
     {
         /* The old viewport cannot serve this frame. Release it first so
          * low-memory resizes do not retain two complete frame/depth pairs. */
         texsoft_release_raster();
-        frame = (unsigned long *)malloc((size_t)count * sizeof(unsigned long));
+        frame = malloc((size_t)count * stride);
         depth = (float *)malloc((size_t)count * sizeof(float));
         if (frame == NULL || depth == NULL) { free(frame); free(depth); return 0; }
-        texsoft_frame = frame; texsoft_depth = depth;
+        if (format == TEXSOFT_INDEX_BYTES) texsoft_indices = (unsigned char *)frame;
+        else texsoft_frame = (unsigned long *)frame;
+        texsoft_depth = depth;
+        texsoft_format = format;
         texsoft_width = width; texsoft_height = height;
     }
     texsoft_indexed = indexed;
     memcpy(texsoft_matrix, matrix, sizeof(matrix));
     for (pixel = 0; pixel < count; ++pixel)
     {
-        texsoft_frame[pixel] = indexed ? texsoft_lut[0] : 0xff000000UL;
+        if (texsoft_indices != NULL) texsoft_indices[pixel] = texsoft_lut[0];
+        else texsoft_frame[pixel] = indexed ? texsoft_lut[0] : 0xff000000UL;
         texsoft_depth[pixel] = 2.0f;
     }
     texsoft_ready = TRUE;
@@ -303,15 +321,19 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
     if (bottom < 0) bottom = 0;
     if (right >= (int)texsoft_width) right = (int)texsoft_width - 1;
     if (top >= (int)texsoft_height) top = (int)texsoft_height - 1;
-    dux = ((b->u - a->u) * (c->y - a->y) - (c->u - a->u) * (b->y - a->y)) / area;
-    duy = ((b->x - a->x) * (c->u - a->u) - (c->x - a->x) * (b->u - a->u)) / area;
-    dvx = ((b->v - a->v) * (c->y - a->y) - (c->v - a->v) * (b->y - a->y)) / area;
-    dvy = ((b->x - a->x) * (c->v - a->v) - (c->x - a->x) * (b->v - a->v)) / area;
-    dqx = ((b->q - a->q) * (c->y - a->y) - (c->q - a->q) * (b->y - a->y)) / area;
-    dqy = ((b->x - a->x) * (c->q - a->q) - (c->x - a->x) * (b->q - a->q)) / area;
-    if (!texsoft_finite(dux) || !texsoft_finite(duy) ||
-        !texsoft_finite(dvx) || !texsoft_finite(dvy) ||
-        !texsoft_finite(dqx) || !texsoft_finite(dqy)) return;
+    dux = duy = dvx = dvy = dqx = dqy = 0.0;
+    if (texsoft_levels > 1U)
+    {
+        dux = ((b->u - a->u) * (c->y - a->y) - (c->u - a->u) * (b->y - a->y)) / area;
+        duy = ((b->x - a->x) * (c->u - a->u) - (c->x - a->x) * (b->u - a->u)) / area;
+        dvx = ((b->v - a->v) * (c->y - a->y) - (c->v - a->v) * (b->y - a->y)) / area;
+        dvy = ((b->x - a->x) * (c->v - a->v) - (c->x - a->x) * (b->v - a->v)) / area;
+        dqx = ((b->q - a->q) * (c->y - a->y) - (c->q - a->q) * (b->y - a->y)) / area;
+        dqy = ((b->x - a->x) * (c->q - a->q) - (c->x - a->x) * (b->q - a->q)) / area;
+        if (!texsoft_finite(dux) || !texsoft_finite(duy) ||
+            !texsoft_finite(dvx) || !texsoft_finite(dvy) ||
+            !texsoft_finite(dqx) || !texsoft_finite(dqy)) return;
+    }
     for (y = bottom; y <= top; ++y)
         for (x = left; x <= right; ++x)
         {
@@ -329,20 +351,25 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
             u = (wa * a->u + wb * b->u + wc * c->u) / q;
             v = (wa * a->v + wb * b->v + wc * c->v) / q;
             if (!texsoft_finite(u) || !texsoft_finite(v)) continue;
-            sx = (dux - u * dqx) / q * texsoft_mip_w[0];
-            sy = (dvx - v * dqx) / q * texsoft_mip_h[0];
-            tx = (duy - u * dqy) / q * texsoft_mip_w[0];
-            ty = (dvy - v * dqy) / q * texsoft_mip_h[0];
-            if (!texsoft_finite(sx) || !texsoft_finite(sy) ||
-                !texsoft_finite(tx) || !texsoft_finite(ty)) continue;
-            rho = sx * sx + sy * sy; lod = tx * tx + ty * ty;
-            if (lod > rho) rho = lod;
-            lod = rho > 1.0 ? log(rho) * 0.7213475204444817 : 0.0;
-            /* Infinite squared footprint means maximal minification. It
-             * must select the final mip rather than reach an integer cast. */
-            if (!texsoft_finite(lod)) lod = texsoft_levels - 1U;
-            if (lod > texsoft_levels - 1U) lod = texsoft_levels - 1U;
-            level = (unsigned int)lod; blend = lod - level;
+            level = 0U;
+            blend = 0.0;
+            if (texsoft_levels > 1U)
+            {
+                sx = (dux - u * dqx) / q * texsoft_mip_w[0];
+                sy = (dvx - v * dqx) / q * texsoft_mip_h[0];
+                tx = (duy - u * dqy) / q * texsoft_mip_w[0];
+                ty = (dvy - v * dqy) / q * texsoft_mip_h[0];
+                if (!texsoft_finite(sx) || !texsoft_finite(sy) ||
+                    !texsoft_finite(tx) || !texsoft_finite(ty)) continue;
+                rho = sx * sx + sy * sy; lod = tx * tx + ty * ty;
+                if (lod > rho) rho = lod;
+                lod = rho > 1.0 ? log(rho) * 0.7213475204444817 : 0.0;
+                /* Infinite squared footprint means maximal minification. It
+                 * must select the final mip rather than reach an integer cast. */
+                if (!texsoft_finite(lod)) lod = texsoft_levels - 1U;
+                if (lod > texsoft_levels - 1U) lod = texsoft_levels - 1U;
+                level = (unsigned int)lod; blend = lod - level;
+            }
             texsoft_sample(level, u, v, rgb);
             if (blend > 0 && level + 1U < texsoft_levels)
             {
@@ -352,7 +379,10 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
                 rgb[2] += blend * (lower[2] - rgb[2]);
             }
             r = (unsigned int)(rgb[0] + 0.5); g = (unsigned int)(rgb[1] + 0.5); blue = (unsigned int)(rgb[2] + 0.5);
-            texsoft_frame[index] = texsoft_indexed ? texsoft_lut[((r >> 3) << 10) | ((g >> 3) << 5) | (blue >> 3)] :
+            if (texsoft_indices != NULL)
+                texsoft_indices[index] = texsoft_lut[((r >> 3) << 10) | ((g >> 3) << 5) | (blue >> 3)];
+            else
+                texsoft_frame[index] = texsoft_indexed ? texsoft_lut[((r >> 3) << 10) | ((g >> 3) << 5) | (blue >> 3)] :
                                      0xff000000UL | ((unsigned long)blue << 16) | ((unsigned long)g << 8) | r;
             texsoft_depth[index] = (float)z;
         }
@@ -366,7 +396,8 @@ void texsoft_triangle(const Vertex *a, const Vertex *b, const Vertex *c,
     Texsoft_screen screen[TEXSOFT_CLIP];
     double source[4]; int i, j, k, plane, count;
     if (a == NULL || b == NULL || c == NULL || ua == NULL || ub == NULL || uc == NULL ||
-        !texsoft_ready || texsoft_frame == NULL || texsoft_depth == NULL ||
+        !texsoft_ready || (texsoft_frame == NULL && texsoft_indices == NULL) ||
+        texsoft_depth == NULL ||
         texsoft_levels == 0) return;
     vertices[0] = a; vertices[1] = b; vertices[2] = c;
     coords[0] = ua; coords[1] = ub; coords[2] = uc;
@@ -409,4 +440,5 @@ void texsoft_triangle(const Vertex *a, const Vertex *b, const Vertex *c,
 }
 
 unsigned long *texsoft_pixels(void) { return texsoft_frame; }
+unsigned char *texsoft_index_pixels(void) { return texsoft_indices; }
 #endif /* DRV_IGL || DRV_OGL */

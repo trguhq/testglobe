@@ -29,17 +29,23 @@ Additional options may be combined:
 | Option | Additional checks | Extra requirements |
 | --- | --- | --- |
 | [`--ogl-contract`](#opengl) | OpenGL/GLUT calls and software texture pixels | None |
+| [`--amiga-ogl-contract`](#amiga-opengl) | MiniGL submissions and Amiga window/context lifecycle | None |
 | [`--igl-contract`](#iris-gl) | IRIS GL calls and software texture pixels | None |
 | [`--xgl-contract`](#sun-xgl) | XGL calls with real X11 windows and events | X11 development files, Xvfb, and `xvfb-run` |
 | [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
+| [`--tiga-contract`](#tiga) | TIGA calls, embedded-module loading, arithmetic, and recovery | None |
+| [`--tiga-sdk /path/to/sdk`](#tiga) | TIGA checks plus compilation against original SDK declarations | TIGA host headers |
+| [`--tiga-cpu`](#tiga) | DOS CPU-probe instruction and stack checks | Python `unicorn`, GNU `as` and `objcopy` |
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
+| [`--ami-contract`](#amiga) | Amiga Workbench window, native/RTG graphics calls, events, and executable resources | None |
 
 With all prerequisites installed, run every native group with:
 
 ```sh
 python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
-  --gdi-contract --qd-contract --sdk /path/to/sdk
+  --gdi-contract --qd-contract --ami-contract --amiga-ogl-contract \
+  --tiga-contract --tiga-cpu --tiga-sdk /path/to/tiga --sdk /path/to/matrox
 ```
 
 Exit status zero means all requested checks passed. `PASS` lines identify completed
@@ -59,9 +65,10 @@ translation units. This catches dependencies accidentally supplied by a fixture 
 includes a driver `.c` file. These checks use the same recorder declarations as the
 behavior tests; they do not substitute for compiling with the native SDK and linker.
 
-Most legacy API declarations come from test fixtures; Matrox uses the supplied SDK
-headers. Call recorders check submitted arguments and simulated outcomes. They do
-not implement the original graphics libraries, establish native binary ABIs, or
+Most legacy API declarations come from test fixtures; Matrox and the optional TIGA
+SDK check use supplied vendor headers. Call recorders check submitted arguments and
+simulated outcomes. They do not implement the original graphics libraries, establish
+native binary ABIs, or
 verify hardware rendering. Host integer and pointer widths, byte order, and calling
 conventions remain those of the host, even when segmented-driver keywords are
 removed for compilation. Platform-specific validation requirements appear below.
@@ -84,11 +91,30 @@ generated readers must also fail compilation.
 `tests/earth_data.c` compares every embedded byte with the binary maps and checks
 invalid reads, 16 KiB chunk seams, and 64 KiB boundaries. It also runs from an empty
 directory to verify that runtime map files are unnecessary. Object symbols verify
-the 16 KiB per-array limit and Matrox's inclusion of only `EARTH_32` and `EARTH_64`.
+the 16 KiB per-array limit and inclusion of only `EARTH_32` and `EARTH_64` in Matrox
+and TIGA builds.
 `tests/earth_reference.h` reads the binaries for expected colors; the application
 does not use that test-only file I/O.
 
+`tests/ami_pack.py` checks the Amiga packer without an SDK. It compares all embedded
+chunks and resource IDs with the canonical data, preserves loadable hunks and unrelated
+debug records, and verifies that repacking does not duplicate maps. Malformed hunks,
+incorrect map lengths, and input/output aliases must fail without replacing a valid
+output. These checks run in the baseline suite and can also be run directly:
+
+```sh
+python3 tests/ami_pack.py
+```
+
+The generated classic Workbench tool icon is checked for its file structure and
+32 KiB stack request.
+
 ### Geometry and shared interfaces
+
+Shared palette helpers are checked in both the flat and segmented helper builds.
+Tests compare small-palette mixtures with an exhaustive reference, require larger
+palettes to improve on or equal the previous nearest-two method, and verify exact
+colors, nearest solid entries, invalid inputs, and all ordered-pattern levels.
 
 - OpenGL indexed strips and separate pole triangles, XGL RGB strips, IRIS GL indexed
   strips, and GDI/QuickDraw quad batches are checked at all five resolutions. Checks
@@ -96,7 +122,10 @@ does not use that test-only file I/O.
   vertices, packet and UV seams, and texture dispatch where supported.
 - `tests/quad_batches.c` checks individual and batched traversal for GDI and QuickDraw.
   At key 5 it verifies 2,048 packets and 131,072 quad patches, with at most 130 vertices
-  per packet. Driver defaults are checked alongside resolution changes.
+  per packet. Scoped sequence/row metadata must identify adjoining bands, disappear
+  after the callback, and reset on a new tile or interrupted traversal. EARTH_32
+  permits 561 new transforms instead of 1,056. Driver defaults are checked alongside
+  resolution changes.
 - The independent-triangle reference uses `tests/tri_mode.h`. Normal builds select
   `TRI`, `TRISTRIP`, or `QUAD` in driver headers, not through command-line defines.
 - `tests/driver_api.c` checks supported declarations, rejects unsupported callbacks,
@@ -117,8 +146,11 @@ bounds and packing, invalid inputs, key handling, FPS toggling, debug metadata,
 bounded dragging, zero-sized windows, and large elapsed-time rotations. Shared-service
 checks cover allocation bounds, handle release, bounded status messages, empty-scene
 OSD, and completed-presentation timing that includes time between native events.
-Configuration checks cover platform and architecture defaults, conflicting settings, and explicit
-errors for unsupported legacy drivers.
+Elapsed-clock checks include backward adjustments without a long freeze. Quad stream
+helpers validate consecutive successful packets and explicit resets; strip-range
+checks preserve winding independently of native color/UV packing.
+Configuration checks cover platform and architecture defaults, conflicting settings,
+Amiga's FLAT/no-texture configuration, and explicit errors for unsupported legacy drivers.
 
 `tests/recovery.c` injects failures into each scene-allocation stage in compiled-map
 and resource-backed builds. It checks bounded retries, restoring or reducing the
@@ -172,6 +204,8 @@ application build dependencies.
   resolution fallback, competing requests, texture failure and reduction, resize
   retry, retained resources after failed GPU uploads, and context loss/restoration
   when `WEBGL_lose_context` is available.
+  A failed base-level texture upload must be checked before mipmap generation so an
+  out-of-memory error still selects a smaller image without changing globe detail.
 
 ### Validation limits
 
@@ -202,18 +236,26 @@ python3 tests/run.py --ogl-contract
 - **Compatibility and failures:** OpenGL 1.1 declarations and object imports are
   checked. GLUT headers without display-mode availability queries use one RGB,
   double-buffered window request, including old headers without display strings.
-  GLU handles legacy or unsuitable modern-mipmap cases. Allocation,
+  Base-image uploads and bilinear minification require no later GL entry points.
+  Allocation,
   compilation, validation, and execution failures must delete bad lists and draw
   complete immediate geometry without retrying failed caches every frame. Texture
-  creation, binding, mipmap, and transfer failures must release failed state, draw
+  creation, binding, upload, and transfer failures must release failed state, draw
   flat colors, and allow off/on retry.
-  Native and software allocation-pressure profiles select smaller usable images.
+  Native and software allocation-pressure profiles select smaller usable images;
+  non-memory upload errors stop retries. Invalid or undersized texture limits fail
+  without uploading. Both minification and magnification stay bilinear across toggles.
+  Failed traversal with OSD disabled and autorotation enabled must show diagnostics
+  without self-scheduling another failed frame; explicit input can retry.
 - **Window lifecycle and controls:** early probe and window redraws verify a safe
   display callback before rendering is ready, including Apple's GLUT ordering.
   Checks also cover probe cleanup, final size, FPS toggling, right-button metadata,
   OSD status/help order, and omission of unavailable visibility counts.
-- **Software texturing:** transferred bytes match every framebuffer index, including
-  with host 64-bit `unsigned long`. Nondefault unpack/transfer state must be restored.
+- **Software texturing:** OpenGL adopts only the base image and samples it bilinearly,
+  including strongly minified triangles; IRIS GL retains trilinear mipmaps.
+  OpenGL presents the rasterizer's index bytes directly;
+  transferred bytes match every framebuffer index, including on 64-bit hosts.
+  Nondefault unpack/transfer state must be restored.
   Software texturing bypasses display lists, and both raster-cache policies are
   exercised. Numerical pixel checks are described under [Shared software pipelines](#shared-software-pipelines).
 
@@ -223,6 +265,39 @@ Actual OpenGL rendering and availability of color-index visuals require GUI chec
 with the installed GL implementation. Apple SDK compilation and Cocoa/GLUT event-loop
 behavior require macOS; the host recorder checks callback ordering without implementing
 that event loop.
+
+## Amiga OpenGL
+
+### Command
+
+```sh
+python3 tests/run.py --amiga-ogl-contract
+```
+
+The host recorders need neither VBCC nor the MiniGL SDK. Native cross-compilation
+uses the [Amiga OpenGL build instructions](../README.md#amiga-opengl).
+
+### Coverage
+
+- **MiniGL geometry:** the recorder models one flat color per native submission.
+  Tests compare facet colors, winding, and UVs across all five globe levels, the
+  longest latitude strips, odd-start color runs, and pole triangles. Submissions
+  must remain within the configured native vertex-buffer limit.
+- **Material and caching:** texture creation and failure status, context recreation
+  and reupload, textured display lists, and flat-colored list bypass. Native OSD
+  text must follow presentation so it remains visible.
+- **Amiga integration:** runtime library/dispatch validation, window creation,
+  keyboard and mouse events, resize/recovery, and context/bitmap/window/library
+  ownership. Presentation bounds follow the allocated RTG bitmap even if the
+  window dimensions change before resize handling.
+
+### Native validation
+
+The recorder validates application logic and API arguments, including selected
+PiStorm3D limitations; it does not implement MiniGL or a VideoCore GPU. Compile and
+link with the matched V29/ABI 5 SDK using VBCC separately. Actual PiStorm3D execution
+must verify shared-library calling conventions, rendering, RTG presentation,
+window resize, and GPU resource recovery.
 
 ## IRIS GL
 
@@ -248,7 +323,10 @@ python3 tests/run.py --igl-contract
   quit. Missing or reversed mouse samples must neither block nor consume later
   keyboard/window events.
 - **Recovery and status:** unavailable geometry objects fall back to complete direct
-  drawing; cache allocation failure is latched to avoid repeated failed work.
+  drawing; both identifier-allocation and newly compiled-object validation failures
+  are latched to avoid repeated failed work. Previously valid objects that disappear
+  can be rebuilt. Failed traversal forces diagnostics with OSD disabled and suspends
+  automatic retries until input requests another attempt.
   Recoverable texture failures invalidate incompatible caches, draw flat colors,
   preserve the requested toggle, and allow a
   retry. Status checks distinguish API submission from application software rendering.
@@ -288,6 +366,8 @@ uses real X11 windows and events under Xvfb; XGL calls use a host recorder.
 - **Input and cleanup:** X11 keyboard, mouse, resize, Escape, and window-manager close.
   Status checks track current-frame use; XGL's internal software rendering is not
   reported as application software texturing.
+- **OSD layout:** native extent queries with proportional widths and negative bearings,
+  wrapped status/help at small sizes, long unbroken words, and tiny-window guards.
 
 ### Native validation
 
@@ -335,6 +415,93 @@ word read. The supplied SDK documentation does not establish FIFO count units or
 atomic availability; the installed library and board must validate those assumptions
 and asynchronous timing.
 
+## TIGA
+
+### Commands
+
+```sh
+python3 tests/run.py --tiga-contract
+# Or run only the executable packer checks:
+python3 tests/tiga_pack.py
+```
+
+The driver recorder, executable packer, and module arithmetic tests require no
+vendor SDK. To also compile production units against the original TIGA headers, use:
+
+```sh
+python3 tests/run.py --tiga-sdk /path/to/TIGA
+# Or set TIGA_SDK=/path/to/TIGA with --tiga-contract.
+```
+
+The runner accepts headers directly or under `include`, `INCLUDE`, or `TIGA/INCLUDE`.
+It normalizes filename case and DOS EOF bytes in a temporary copy and removes
+segmented pointer keywords for host compilation. Vendor headers are not committed.
+This checks declarations, not the native calling convention.
+
+The separate CPU instruction check needs the optional Python `unicorn` package and
+GNU `as` and `objcopy`:
+
+```sh
+python3 tests/run.py --tiga-cpu
+# Or run only the instruction check:
+python3 tests/tga_cpu.py
+```
+
+### Coverage
+
+- **Mode and palette:** query-based selection of 640 × 480, eight-bit programmable
+  256-color modes, preference for two display pages, exact Earth palette uploads,
+  and restoration of available prior state. Missing drivers, old TIGA versions,
+  invalid modes, and failed primitive-library initialization must clean up safely.
+- **Geometry:** both Earth resolutions, bounded shared-vertex packets, clockwise
+  polygon submission, rounded-polygon fallback, and visibility counts. Host integer
+  and TI-module paths must submit identical coordinates and colors. Small command
+  buffers force bounded packet splitting rather than oversized transfers.
+- **Transforms and controls:** software 3D is the default; `S`/`s` switches the
+  actual transform path and OSD status. CPU/FPU profiles check dispatch, with mouse
+  absence and DOS mouse/keyboard input covered independently. Missing embedded
+  payloads, incorrect protocol versions, rejected packets, and invalid returned
+  coordinates must restore usable host rendering.
+- **Presentation and failure:** single-page fallback, synchronization before page
+  flipping, safe page reuse, page-wait deadlines, communication errors, and cleanup.
+  The recorder rejects drawing into a page that is still displayed in double-buffered
+  profiles.
+- **Executable packing:** `tests/tiga_pack.py` checks unchanged DOS headers and
+  image bytes, exact module bytes and CRC, 64 KiB boundaries through the 1 MiB
+  payload limit, software-only copying, and repeated builds. Invalid inputs, file
+  aliases, and occupied `.tmp`/`.bak` paths must preserve existing output.
+- **Embedded loading:** independent Python MZ/trailer fixtures feed real driver file
+  I/O. Only the executable remains in the distribution directory, which may be
+  read-only; changing the working directory after startup must still load it. The
+  TIGA recorder verifies exact extracted bytes and deletion after loading or failure.
+  Missing, truncated, or corrupt payloads, invalid bounds, unavailable temporary
+  storage, disk-full and close failures must retain software rendering. Short writes,
+  exclusive-name collisions, and deferred-deletion retries are also covered.
+  Loader arguments discard unused exports while preserving the plain extraction path.
+  Checked `flush_module()` failure retains module ownership for reuse or retry; the
+  recorder distinguishes it from the reserved internal deletion API and rejects
+  further board calls after a communication failure.
+- **TI arithmetic:** `tests/tiga_module.c` calls the production module entry and
+  compares its fixed-point camera coordinates and projections with the host pipeline
+  over varied poses, one- and 130-vertex packets, and viewport boundaries. Malformed
+  packet fields, out-of-range matrices, and invalid coordinate bits must be rejected.
+
+`tests/tga_cpu.py` assembles the actual inline probe instructions and executes 24
+FLAGS/stack cases. Hooks supply the older processors' FLAGS restrictions, which
+Unicorn does not model directly. Checks cover CPU classification, guarded 386
+instructions, aligned stack accesses, and restoration of registers and flags. They
+do not test the BIOS or x87 probe.
+
+### Native validation
+
+The downloadable module was separately compiled and linked with TI TMS340 tools 5.01
+under DOSBox. This checks TI compilation and linking of the TMS34010 module, not
+execution on a board. Host recorders execute the module as ordinary C;
+they do not implement the TIGA TSR, GSP transport, polygon rasterizer, or display.
+Microsoft C 7 host compilation, huge pointers, callback conventions, real CPU/x87
+behavior, module loading, palette output, and page-flip synchronization still require
+native validation. See the [TIGA build instructions](../README.md#tiga).
+
 ## Windows GDI
 
 ### Command
@@ -348,10 +515,16 @@ python3 tests/run.py --gdi-contract
 - **Geometry and resources:** all resolutions, binary resource contents, large global
   heaps, exact palette bytes, quad topology, independent double-precision projection
   references, clipping, and shared-vertex packets. `PolyPolygon` calls are bounded to
-  64 polygons; lock/unlock/release ownership is checked.
+  64 polygons; lock/unlock/release ownership is checked. Individual and streamed
+  submissions must produce the same polygon/color multiset across poses and resized
+  viewports, including narrow windows that require clipping.
 - **CPU and display:** 80387 selection and fixed-point fallback, including a 286/287
   profile; small-screen defaults, explicit dimensions, foreground/background palettes,
   buffering, and wrapped OSD statistics.
+- **Palette dithering:** realized palette RGBs, exact solid brushes, two-color DIB
+  patterns, cache refreshes after palette changes, and solid fallback when queries
+  or pattern creation fail. Packed DIB layout, logical palette indices, pattern
+  coverage, and GDI/global-memory ownership are checked.
 - **Input and lifecycle:** `WinMain`, common startup, keyboard/mouse/resize messages,
   timer rollover, Escape/window close, and heap/GDI-object ownership.
 - **Recovery:** missing back buffers use direct paint; failed `PolyPolygon` calls
@@ -382,12 +555,19 @@ python3 tests/run.py --qd-contract
 - **Geometry and resources:** all resolutions and the key-1 default, binary resources,
   buffers larger than 64 KiB, palette bytes, quad topology, independent projection
   references, clipping, native polygon/text call arguments, and shared-vertex bounds.
+  Individual and streamed submissions must preserve polygon coordinates/colors at
+  multiple poses and window sizes, including clipped silhouettes and collapsed poles.
   The monochrome-68000 profile rejects Color QuickDraw, Palette Manager, and GWorld
-  calls; polygon recording models automatic pen hiding.
+  calls. The recorder validates the reusable native polygon record, its bounds,
+  closure, and point coordinates rather than simulating `OpenPoly()` recording.
 - **CPU and display:** fixed-point/FPU paths and dispatch guards; 1-bit dithering;
   4/8/16/32-bit color; selection among currently configured display depths; old Color
   QuickDraw; small-screen and explicit-size cases; 1×1 viewports and the 32,767-coordinate
   limit. Invalid FPU angles must not leave a stale transformation usable.
+- **Native color selection:** all 256 original Earth RGB values reach Color
+  QuickDraw unchanged. Indexed fills retain native pattern conversion after palette
+  changes and palette-allocation failures; monochrome retains 64 luminance steps.
+  The recorder checks API inputs, not the Toolbox's internal dithered pixels.
 - **Buffering and state:** GWorld allocation/locking failures, direct-rendering fallback,
   and recovery. `CopyBits` must use black/white destination colors and restore the
   previous colors. The recorder gives a GWorld its own device when `noNewDevice` is
@@ -396,11 +576,12 @@ python3 tests/run.py --qd-contract
 - **Input and lifecycle:** startup, short drag-poll waits, activation/suspend/resume,
   resize, `TickCount` rollover, animation, window close, Command-Q, and ownership.
   Early drawing and late teardown events must respect readiness guards.
-- **Recovery:** unavailable optional palettes/patterns use native color drawing;
-  native resource reads return typed failures and empty scenes remain interactive.
-  Polygon allocation failures unwind native state before one retry, then pause
-  without repeated allocations. A subsequent key resumes drawing after the fault
-  clears. Every attempt restores ports/devices and releases temporary ownership.
+- **Recovery:** checked polygon allocation and bounded native-scratch preflight
+  failures release optional resources before one retry, then pause without repeated
+  allocations. Reduced pattern scratch permits nearest-color fallback. A subsequent
+  key resumes drawing after the fault clears. Native resource reads return typed
+  failures and empty scenes remain interactive; attempts restore ports/devices and
+  temporary ownership.
 
 ### Native validation
 
@@ -410,6 +591,67 @@ code resources, A5 globals, executable format, and SANE/68881 dispatch. The FPU 
 is compiled as ordinary host C for numerical checks; only MPW can verify its instruction
 selection and separate code segment. Physical palette mapping and QuickDraw hardware
 acceleration require the target runtime and display.
+Native QuickDraw allocation wrappers can invoke system errors, and polygon filling
+can silently skip work after internal allocation failure. The fixture tests checked
+Memory Manager operations and preflight policy; it cannot establish recovery from
+every opaque Toolbox allocation.
+
+## Amiga
+
+### Command
+
+```sh
+python3 tests/run.py --ami-contract
+```
+
+The host checks use test-local Amiga declarations and need no SDK or VBCC. A native
+cross-build uses the [Amiga build instructions](../README.md#amiga) separately.
+
+### Coverage
+
+- **Workbench and color:** OS library versions 34/36/39 with OCS/ECS/AGA profiles,
+  window creation, actual client dimensions, native text, and palette-preserving
+  drawing at all 1- through 8-bit indexed depths. Palette/display queries are version-guarded
+  and HAM is rejected. Native area vertices must remain inside the drawable bitmap;
+  patterns and pen indices must stay within their bounds. Small-palette mixtures
+  are checked against an exhaustive RGB-error oracle; larger-palette matching must
+  be at least as accurate as the previous nearest-two-pen method. Exact colors,
+  duplicate pens, short palettes, complementary-color mixtures, and all 17 Bayer
+  coverage levels are checked through the production palette and drawing paths.
+  `D`/`d` switches between mixtures and independently verified nearest solid pens;
+  the setting survives palette refreshes, resizing, and resolution changes. Tests
+  check OSD/help, unchanged resource ownership, and unaffected truecolor RTG output.
+- **RTG:** optional CyberGraphX/Picasso96 detection, indexed and 15/16/24/32-bit
+  screens, opaque bitmap attributes, RGB span bounds and colors, and native fallback
+  when RTG libraries are absent. The native-only `AMI_RTG=0` build is checked separately.
+  Display-compatible bitmap allocation, direct-drawing fallback, resizing, and cleanup
+  must not depend on native chipset limits or planar bitmap fields.
+- **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch,
+  including a reported FPU without a supporting CPU. Cached and uncached drawing
+  must retain polygon coordinates and colors, including projection-cache allocation
+  failure; the default streamed globe requires 561 transforms. Resizing and pixel-aspect
+  changes rebuild projection state; all five resolution keys remain available.
+- **Lifecycle and recovery:** native event input, activation/refresh, close,
+  Chip RAM allocation/release, the 32 KiB stack guard, back-buffer failure selecting
+  direct drawing, scratch-allocation pause/retry, and bounded recovery from area-fill
+  errors. Refresh drawing is deferred outside Intuition's damage-clipping scope;
+  invalid display changes can recover when valid dimensions return.
+- **Executable data:** the production reader opens a real packed Hunk file through
+  CLI, Workbench, program-directory, and old CLI search-path cases. Tests compare
+  selected chunks with canonical bytes, enforce bounded reads, reject malformed
+  footers/directories, recover from short reads, and verify handle/library ownership.
+  The separate baseline packer checks are described under [Earth data](#earth-data).
+
+### Native validation
+
+The recorders check production control flow and arguments, not AmigaOS graphics
+implementation, RTG drivers, or the custom chips. Enhanced integer/FPU objects compile
+as ordinary host C during these tests, so host results do not prove native opcode selection,
+library-vector ABI, or 68000/FPU dispatch. VBCC/NDK cross-builds provide a separate
+compiler/linker check. Actual Workbench startup, planar fills, palette patterns,
+RTG pixel conversion and acceleration, blitter completion, Chip RAM pressure, and
+performance still need hardware or a suitable emulator on OCS/ECS/AGA and
+CyberGraphX/Picasso96 configurations.
 
 ## Shared software pipelines
 
@@ -422,6 +664,8 @@ filtering, mipmap minification, indexed conversion, and cleanup. Invalid matrice
 vertices, and UVs must be rejected before integer conversion; very large finite
 repeating UVs remain valid. Raster release retains mipmaps and the indexed lookup
 table for re-enabling at a resized viewport.
+Byte-index and native-word outputs must agree pixel for pixel. Tests cover ownership
+and allocation when dimensions or output formats change, including same-size reuse.
 
 The same options run `tests/texture.c`, comparing every expanded RGB texel with the
 Earth palette source at all five resolutions. Checks cover same-size allocation reuse,
@@ -431,18 +675,27 @@ direct map-row conversion into packed images/rasters. Allocation-pressure profil
 check smaller texture selection and flat-color recovery after exhausting supported
 sizes; retained OpenGL GLU staging remains covered by the OpenGL 1.1 checks.
 
-### GDI and QuickDraw geometry
+### TIGA, GDI, QuickDraw, and Amiga geometry
 
-Both driver contracts link the real integer `soft3d.c` module and exercise quad
-batching and Earth-resource traversal. Packets contain at most 64 quads and 130 shared
-vertices, with four indices and one palette byte per quad. `DRV_QUAD_BATCH` remains
-a capability of `QUAD`; individual quad submission is also checked.
+The driver contracts link the real integer `soft3d.c` and floating `soft3fp.c` modules
+and exercise quad batching. TIGA uses compiled Earth maps; the other three drivers
+also exercise Earth-resource traversal. Packets contain at most
+64 quads and 130 shared vertices, with four indices and one palette byte per quad.
+`DRV_QUAD_BATCH` remains a capability of `QUAD`; individual quad submission is also
+checked.
 
 Independent projection cases cover exact coordinates, near/far rejection, collapsed
 poles, triangle projection, and whole-polygon signed-area culling. A polygon whose
 first rounded fan triangle has the opposite orientation must still be classified
 correctly. Large accepted fixed-point rotation angles must match their equivalents
 modulo 360 degrees.
+
+Projection-cache checks compare cached and uncached results, validate adjoining-row
+reuse, and invalidate coordinates after viewport changes. Depth and viewport fast
+paths must retain the existing crossing-polygon fallback and rounded-area culling.
+The optimization does not replace complete polygon orientation with the first fan
+triangle's sign. Invalid indices and coordinates must still be rejected when caching
+is enabled.
 
 Boundary cases clip a triangle spanning 268 million coordinate units to exact
 viewport corners, reject reversed winding, and check full 32,767-pixel viewports.

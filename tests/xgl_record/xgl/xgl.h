@@ -24,6 +24,7 @@ typedef Xgl_sgn32 (*Xgl_error_notify)(Xgl_sys_state);
 typedef double Xgl_matrix_d3d[4][4];
 
 typedef struct { float x, y; } Xgl_pt_f2d;
+typedef struct { float xmin, xmax, ymin, ymax; } Xgl_bounds_f2d;
 typedef struct { float x, y, z; } Xgl_pt_f3d;
 typedef struct { float x, y, z, data[1]; } Xgl_pt_data_f3d;
 typedef struct { double xmin, xmax, ymin, ymax, zmin, zmax; } Xgl_bounds_d3d;
@@ -160,6 +161,8 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets,
                          Xgl_pt_list *points);
 void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
                       Xgl_pt_f3d direction[]);
+void xgl_stroke_text_extent(Xgl_ctx context, void *text,
+                             Xgl_bounds_f2d *bounds, Xgl_pt_f2d *concatenate);
 void xgl_context_new_frame(Xgl_ctx context);
 void xgl_context_post(Xgl_ctx context, Xgl_boolean wait);
 void xgl_context_flush(Xgl_ctx context, int action);

@@ -27,6 +27,7 @@
 #include <Palettes.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stddef.h>
 #include "drv.h"
 #include "drv_ext.h"
 #include "globe.h"
@@ -40,6 +41,14 @@
 #define QD_MAX_VERTICES SOFT3D_MAX_VERTICES
 #define QD_MAX_POLY SOFT3D_MAX_POLY
 #define QD_FILE_MENU 128
+/* These are conservative allocation probes, not promises about opaque
+ * Toolbox storage. A ten-edge fill needs a small edge list; native color
+ * patterns also allocate a PixMap, palette, handles and expanded pixels.
+ * Leave more room for that optional path. Probe once per drawing pass. */
+#define QD_FILL_SCRATCH 4096L
+#define QD_PATTERN_SCRATCH 8192L
+#define QD_POLYGON_BYTES (offsetof(Polygon, polyPoints) + \
+                          (QD_MAX_POLY + 1U) * sizeof(Point))
 #if 2 * (DRV_QUAD_BATCH_MAX + 1) > QD_MAX_VERTICES
 #error QuickDraw quad batches exceed the transformed vertex cache
 #endif
@@ -69,12 +78,17 @@ static int qd_polygon_failed;
 static GrafPtr qd_render_port;
 static GDHandle qd_render_device;
 static PixMapHandle qd_locked_pixels;
+static PolyHandle qd_polygon;
 static PolyHandle qd_pending_polygon;
+static int qd_native_ready;
 static int qd_old_x, qd_old_y;
 static unsigned long qd_auto_tick;
 static Rect qd_screen;
 static long qd_fixed_matrix[3][3];
 static Soft3d_fixed_point qd_fixed_points[QD_MAX_VERTICES];
+static Soft3d_project_cache *qd_project_cache;
+static Drv_quad_stream qd_packet_stream;
+static int qd_packet_active;
 /* A native call may dispatch an event while a packet borrows mesh data.
  * Copy bounded events; process them only at the outer event-loop boundary. */
 #define QD_PENDING_EVENTS 8
@@ -108,10 +122,9 @@ static void qd_pascal(Str255 result, const char *text)
 }
 
 /* Restore the caller's Toolbox state before a modal alert or disposal.
- * A failed color-pattern allocation can also leave a closed polygon live. */
+ * The reusable polygon belongs to the driver, not to a drawing scope. */
 static void qd_finish_render(void)
 {
-    if (qd_pending_polygon != NULL) KillPoly(qd_pending_polygon);
     qd_pending_polygon = NULL;
     if (!qd_rendering) return;
     SetPort(qd_render_port);
@@ -147,6 +160,11 @@ static void qd_dispose_palette(void)
 void drv_release_optional(void)
 {
     qd_finish_render();
+    qd_native_ready = FALSE;
+    drv_free_items(qd_project_cache);
+    qd_project_cache = NULL;
+    qd_packet_active = FALSE;
+    drv_quadstream_reset(&qd_packet_stream);
     qd_dispose_buffer();
     if (qd_pattern != NULL) DisposePixPat(qd_pattern);
     qd_pattern = NULL;
@@ -167,6 +185,13 @@ static void qd_cleanup(void)
     qd_pending_mouse = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     qd_finish_render();
+    if (qd_polygon != NULL) DisposeHandle((Handle)qd_polygon);
+    qd_polygon = NULL;
+    qd_native_ready = FALSE;
+    drv_free_items(qd_project_cache);
+    qd_project_cache = NULL;
+    qd_packet_active = FALSE;
+    drv_quadstream_reset(&qd_packet_stream);
     qd_dispose_buffer();
     if (qd_pattern != NULL) DisposePixPat(qd_pattern);
     qd_pattern = NULL;
@@ -248,6 +273,10 @@ void drv_init(int *argc, char **argv)
     AppendMenu(qd_file_menu, quit_item);
     InsertMenu(qd_file_menu, 0);
     DrawMenuBar();
+    if (qd_project_cache == NULL)
+        qd_project_cache = (Soft3d_project_cache *)drv_alloc_items(
+            1UL, sizeof(Soft3d_project_cache));
+    soft3d_project_cache_reset(qd_project_cache);
     qd_running = TRUE;
     qd_active = TRUE;
 }
@@ -452,6 +481,10 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 
 static void qd_set_transform(void)
 {
+    qd_native_ready = FALSE;
+    qd_packet_active = FALSE;
+    drv_quadstream_reset(&qd_packet_stream);
+    soft3d_project_cache_reset(qd_project_cache);
     if (qd_has_fpu)
     {
         if (!qd_fpu_prepare(&drv_rot_x, &drv_rot_y))
@@ -466,14 +499,16 @@ static int qd_prepare_polygon(const unsigned int *indices, unsigned int count,
                                Point *destination)
 {
     Qd_screen_point screen[QD_MAX_POLY];
+    Soft3d_project_cache *cache;
     int i, projected_count;
+    cache = qd_packet_active ? qd_project_cache : NULL;
     if (qd_has_fpu)
-        projected_count = qd_fpu_project_polygon(indices, count,
-                               drv_win_width, drv_win_height, screen);
+        projected_count = qd_fpu_project_cached(indices, count,
+                               drv_win_width, drv_win_height, cache, screen);
     else
-        projected_count = soft3d_fixed_project_polygon(qd_fixed_points, vertex_count,
+        projected_count = soft3d_fixed_project_cached(qd_fixed_points, vertex_count,
                                      indices, count,
-                                     drv_win_width, drv_win_height, screen);
+                                     drv_win_width, drv_win_height, cache, screen);
     projected_count = soft3d_finish_polygon(screen, projected_count,
                                             drv_win_width, drv_win_height);
     for (i = 0; i < projected_count; ++i)
@@ -482,6 +517,84 @@ static int qd_prepare_polygon(const unsigned int *indices, unsigned int count,
         destination[i].v = (short)screen[i].y;
     }
     return projected_count;
+}
+
+/* OpenPoly grows its handle through fatal QuickDraw allocation wrappers on
+ * classic systems. Build the documented record ourselves using checked
+ * Memory Manager storage, then reuse it without recording or hiding the pen. */
+static PolyHandle qd_make_polygon(const Point *points, int count)
+{
+    Polygon *record;
+    Point *destination;
+    Rect bounds;
+    int i;
+    if (points == NULL || count < 3 || count > QD_MAX_POLY) return NULL;
+    if (qd_polygon == NULL)
+        qd_polygon = (PolyHandle)NewHandle((Size)QD_POLYGON_BYTES);
+    if (qd_polygon == NULL) return NULL;
+    HLock((Handle)qd_polygon);
+    record = *qd_polygon;
+    if (record == NULL)
+    {
+        HUnlock((Handle)qd_polygon);
+        return NULL;
+    }
+    destination = (Point *)((char *)record + offsetof(Polygon, polyPoints));
+    bounds.left = bounds.right = points[0].h;
+    bounds.top = bounds.bottom = points[0].v;
+    for (i = 0; i < count; ++i)
+    {
+        destination[i] = points[i];
+        if (points[i].h < bounds.left) bounds.left = points[i].h;
+        if (points[i].h > bounds.right) bounds.right = points[i].h;
+        if (points[i].v < bounds.top) bounds.top = points[i].v;
+        if (points[i].v > bounds.bottom) bounds.bottom = points[i].v;
+    }
+    destination[count] = points[0];
+    record->polySize = (short)(offsetof(Polygon, polyPoints) +
+                               (count + 1U) * sizeof(Point));
+    record->polyBBox = bounds;
+    HUnlock((Handle)qd_polygon);
+    return qd_polygon;
+}
+
+static int qd_probe_scratch(Size size)
+{
+    Handle probe;
+    probe = NewHandle(size);
+    if (probe == NULL) return FALSE;
+    DisposeHandle(probe);
+    return TRUE;
+}
+
+/* Some Toolbox versions raise SysError on pattern allocation and can
+ * silently skip a fill if their edge allocation fails. Avoid entering
+ * these paths under known heap pressure. Successful preflight cannot
+ * guarantee every internal or patched Toolbox allocation will succeed. */
+static int qd_prepare_native(void)
+{
+    if (qd_native_ready) return TRUE;
+    if (qd_depth > 1 && qd_depth <= 8 && !qd_pattern_unavailable)
+    {
+        if (qd_probe_scratch((Size)QD_PATTERN_SCRATCH))
+        {
+            qd_native_ready = TRUE;
+            return TRUE;
+        }
+        if (qd_pattern != NULL) DisposePixPat(qd_pattern);
+        qd_pattern = NULL;
+        qd_pattern_color = -1;
+        qd_pattern_unavailable = TRUE;
+        drv_notice("QuickDraw uses nearest display colors");
+    }
+    if (!qd_probe_scratch((Size)QD_FILL_SCRATCH))
+    {
+        qd_polygon_failed = TRUE;
+        drv_abort_frame("QuickDraw drawing scratch unavailable");
+        return FALSE;
+    }
+    qd_native_ready = TRUE;
+    return TRUE;
 }
 
 static void qd_flat_color(PolyHandle polygon, unsigned char index)
@@ -518,7 +631,10 @@ static void qd_flat_color(PolyHandle polygon, unsigned char index)
                 MakeRGBPat(qd_pattern, &rgb);
                 qd_pattern_color = index;
             }
-            /* Color QuickDraw dithers this RGB pattern at low pixel depths. */
+            /* Keep the original RGB for Color QuickDraw's device-aware
+             * dither, which can combine four palette colors. QuickDraw
+             * reconverts cached patterns when the device table/depth changes;
+             * preselecting an Amiga-style two-pen pair would restrict it. */
             if (qd_pattern != NULL)
             {
                 FillCPoly(polygon, qd_pattern);
@@ -564,23 +680,39 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                     const unsigned char TG_HUGE *colors)
 {
     Point projected[QD_MAX_POLY];
-    unsigned int i, j, corners[4];
-    int point, total;
+    unsigned int i, j, corners[4], reuse_count;
+    int total, transformed;
+    Drv_quad_context context;
     PolyHandle polygon;
     if (!qd_ready || drv_frame_failed || vertex_count == 0 || quad_count == 0 || vertices == NULL ||
         indices == NULL || colors == NULL) return;
     if (!drv_validate_quadbatch(vertex_count, quad_count, indices))
         qd_error("QuickDraw quad batch or vertex index is out of range");
-    if (qd_has_fpu) qd_fpu_transform(vertex_count, vertices);
-    else if (!soft3d_fixed_transform(qd_fixed_matrix, vertex_count, vertices,
-                                      qd_fixed_points))
-        qd_error("QuickDraw fixed path supports radius up to 1000");
+    if (!qd_prepare_native()) return;
+    reuse_count = drv_quadstream_reuse(&qd_packet_stream, vertex_count,
+                                        vertices, &context);
+    if (qd_has_fpu)
+        transformed = qd_fpu_transform_reuse(vertex_count, vertices, reuse_count);
+    else
+        transformed = soft3d_fixed_transform_reuse(qd_fixed_matrix,
+                             vertex_count, vertices, qd_fixed_points, reuse_count);
+    if (!transformed)
+    {
+        drv_quadstream_reset(&qd_packet_stream);
+        qd_error("QuickDraw coordinate is out of range");
+    }
+    if (qd_project_cache != NULL)
+        (void)soft3d_project_cache_begin(qd_project_cache, vertex_count,
+                             drv_win_width, drv_win_height, reuse_count);
+    drv_quadstream_commit(&qd_packet_stream, &context);
     for (i = 0; i < quad_count; ++i)
     {
         for (j = 0; j < 4U; ++j) corners[j] = indices[i * 4U + j];
+        qd_packet_active = TRUE;
         total = qd_prepare_polygon(corners, 4U, vertex_count, projected);
+        qd_packet_active = FALSE;
         if (total == 0) continue;
-        polygon = OpenPoly();
+        polygon = qd_make_polygon(projected, total);
         if (polygon == NULL)
         {
             qd_polygon_failed = TRUE;
@@ -588,13 +720,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
             return;
         }
         qd_pending_polygon = polygon;
-        MoveTo(projected[0].h, projected[0].v);
-        for (point = 1; point < total; ++point)
-            LineTo(projected[point].h, projected[point].v);
-        LineTo(projected[0].h, projected[0].v);
-        ClosePoly();
         qd_flat_color(polygon, colors[i]);
-        KillPoly(polygon);
         qd_pending_polygon = NULL;
         ++globe_quads_num_vis;
     }
@@ -651,6 +777,8 @@ void drv_draw_osd(void)
     if (qd_depth > 1 && qd_depth <= 8 &&
         (qd_palette_reduced || qd_pattern_unavailable))
         strcat(status, ", color reduced");
+    if (qd_frame_paused)
+        drv_append_status(status, sizeof(status), ", paused; use a control to retry");
     width = (short)(drv_win_width - 16U);
     next_line = qd_osd_text(status, 14, width, TRUE);
     help_baseline = (Int)drv_win_height + 4L -
@@ -737,8 +865,8 @@ static void qd_render_pass(void)
         return;
     }
     if (qd_frame_paused)
-        drv_abort_frame("QuickDraw paused; use a control to retry");
-    if (drv_osd_enabled || !globe_ready() || qd_frame_paused) drv_draw_osd();
+        drv_frame_failed = TRUE; /* Retain the actual failure notice. */
+    if (drv_status_required()) drv_draw_osd();
     if (buffered)
     {
         SetGWorld(old_world, old_device);
@@ -759,7 +887,8 @@ void drv_render(void)
     {
         qd_polygon_failed = FALSE;
         qd_render_pass();
-        if (!qd_polygon_failed) return;
+        if (!drv_frame_failed || qd_frame_paused) return;
+        if (!qd_polygon_failed) break;
         if (attempt == 0) drv_release_optional();
     }
     /* Both complete-frame attempts failed. Keep a usable event loop and
@@ -972,7 +1101,7 @@ void drv_loop(void)
         qd_apply_pending();
         if (!qd_running) break;
         if (WaitNextEvent(everyEvent, &event,
-                           ((drv_auto_enabled && globe_ready() && !qd_frame_paused) ||
+                           ((drv_animation_allowed() && !qd_frame_paused) ||
                             drv_lmouse_pressed || qd_pending_count != 0) ? 1L : 30L, NULL))
             qd_event(&event);
         if (!qd_running) break;
@@ -983,7 +1112,7 @@ void drv_loop(void)
             qd_mouse_move(point.h, point.v);
             if (!Button()) drv_lmouse_pressed = FALSE;
         }
-        if (qd_active && drv_auto_enabled && globe_ready() && !qd_frame_paused)
+        if (qd_active && drv_animation_allowed() && !qd_frame_paused)
         {
             tick = TickCount();
             elapsed = (tick - qd_auto_tick) & 0xffffffffUL;

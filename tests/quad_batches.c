@@ -44,9 +44,14 @@ static unsigned long batch_calls, rendered_quads, cap_quads, triangles;
 static unsigned long individual_calls;
 static int individual_phase;
 static unsigned long submitted_vertices, shared_edges, allocations;
+static unsigned long transformed_vertices, previous_sequence;
+static unsigned long previous_band, abort_after_batches;
 static unsigned long largest_allocation;
 static unsigned int largest_batch, largest_vertices;
+static unsigned int previous_cell, previous_count;
+static Vertex previous_lower[DRV_QUAD_BATCH_MAX + 1U];
 static unsigned char *expected_data;
+static unsigned char *seen_faces;
 static void *memory_blocks[16];
 
 #ifdef DRV_GDI
@@ -209,16 +214,55 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     unsigned long band, index, face, top, bottom;
     unsigned int corners[4];
     const Vertex *a, *b, *c, *d;
+    Drv_quad_context context, invalid;
 
     assert(!individual_phase);
-    band = rendered_quads / globe_longitude;
-    first_cell = (unsigned int)(rendered_quads % globe_longitude);
+    assert(vertices != NULL && indices != NULL && colors != NULL);
+    /* Locate the actual packet in the source mesh, independent of the
+     * traversal's submission order. Either endpoint identifies longitude
+     * even when its other endpoint is a collapsed pole. */
+    for (band = 0UL; band < (unsigned long)globe_latitude; ++band)
+    {
+        top = band * (globe_longitude + 1UL);
+        bottom = top + globe_longitude + 1UL;
+        if (vertices[0].z == globe_verts[top].z &&
+            vertices[1].z == globe_verts[bottom].z) break;
+    }
+    assert(band < (unsigned long)globe_latitude);
+    for (first_cell = 0U; first_cell < (unsigned int)globe_longitude; ++first_cell)
+    {
+        a = globe_verts + top + first_cell;
+        b = globe_verts + bottom + first_cell;
+        if (vertices[0].x == a->x && vertices[0].y == a->y &&
+            vertices[1].x == b->x && vertices[1].y == b->y) break;
+    }
+    assert(first_cell < (unsigned int)globe_longitude);
     remaining = (unsigned int)globe_longitude - first_cell;
     expected_count = remaining < DRV_QUAD_BATCH_MAX ? remaining : DRV_QUAD_BATCH_MAX;
-    assert(band < (unsigned long)globe_latitude);
     assert(quad_count == expected_count && quad_count > 0U && quad_count <= 64U);
     assert(vertex_count == 2U * (quad_count + 1U) && vertex_count <= 130U);
-    assert(vertices != NULL && indices != NULL && colors != NULL);
+    assert(drv_quadbatch_context(vertex_count, vertices, &context));
+    assert(context.sequence != 0UL && context.vertex_count == vertex_count);
+    assert(context.reuse_row == (band != 0UL));
+    assert(!drv_quadbatch_context(vertex_count - 1U, vertices, &invalid));
+    assert(invalid.sequence == 0UL && invalid.vertex_count == 0U && !invalid.reuse_row);
+    assert(!drv_quadbatch_context(vertex_count, vertices + 1, &invalid));
+    if (context.reuse_row)
+    {
+        assert(previous_sequence + 1UL == context.sequence);
+        assert(previous_band + 1UL == band && previous_cell == first_cell);
+        assert(previous_count == quad_count);
+        for (i = 0; i <= quad_count; ++i)
+            same_vertex(previous_lower + i, vertices + 2U * i);
+        transformed_vertices += vertex_count / 2U;
+    }
+    else transformed_vertices += vertex_count;
+    previous_sequence = context.sequence;
+    previous_band = band;
+    previous_cell = first_cell;
+    previous_count = quad_count;
+    for (i = 0; i <= quad_count; ++i)
+        previous_lower[i] = vertices[2U * i + 1U];
     for (i = 0; i < vertex_count; ++i) {
         index = (band + i % 2U) * (globe_longitude + 1UL) + first_cell + i / 2U;
         assert(index < globe_verts_num);
@@ -242,6 +286,8 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         same_vertex(c, globe_verts + bottom + 1UL);
         same_vertex(d, globe_verts + top + 1UL);
         face = band * globe_longitude + first_cell + i;
+        assert(seen_faces[face] == 0U);
+        seen_faces[face] = 1U;
         assert(globe_colors[face].color == expected_data[face]);
         assert(colors[i] == expected_data[face]);
         if (band == 0UL) {
@@ -270,12 +316,15 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     submitted_vertices += vertex_count;
     rendered_quads += quad_count;
     ++batch_calls;
+    if (abort_after_batches != 0UL && batch_calls == abort_after_batches)
+        drv_abort_frame("injected packet failure");
 }
 
 int main(void)
 {
     int i, resolution;
-    unsigned long batches_per_band, previous_batches;
+    unsigned long batches_per_band, previous_batches, face;
+    Drv_quad_context context;
     char stats[128], expected_stats[80];
     drv_ext_init();
     globe_init();
@@ -299,8 +348,24 @@ int main(void)
          * indices; only the mesh, colors and three bounded packets remain. */
         assert(allocations == 5UL);
         assert(sizeof(Color) == 1U);
+        seen_faces = (unsigned char *)calloc((size_t)globe_quads_num, 1U);
+        assert(seen_faces != NULL);
+        if (resolution == 32)
+        {
+            /* A failed frame cannot leave active packet metadata or carry
+             * row reuse into the first packet of a retry. */
+            abort_after_batches = 3UL;
+            globe_draw_quadbatches();
+            assert(batch_calls == 3UL && drv_frame_failed);
+            assert(!drv_quadbatch_context(0U, NULL, &context));
+            assert(context.sequence == 0UL && !context.reuse_row);
+            abort_after_batches = 0UL;
+            drv_frame_failed = FALSE;
+            drv_notice(NULL);
+            memset(seen_faces, 0, (size_t)globe_quads_num);
+        }
         batch_calls = rendered_quads = cap_quads = triangles = 0UL;
-        submitted_vertices = shared_edges = 0UL;
+        submitted_vertices = shared_edges = transformed_vertices = 0UL;
         largest_batch = largest_vertices = 0U;
         globe_draw_quadbatches();
         batches_per_band = ((unsigned long)resolution + DRV_QUAD_BATCH_MAX - 1UL) /
@@ -312,6 +377,14 @@ int main(void)
         assert(triangles == globe_tris_num);
         assert(submitted_vertices == 2UL * rendered_quads + 2UL * batch_calls);
         assert(shared_edges == rendered_quads - batch_calls);
+        assert(transformed_vertices == ((unsigned long)resolution + batches_per_band) *
+                                       (globe_latitude + 1UL));
+        if (resolution == 32) assert(transformed_vertices == 561UL);
+        for (face = 0UL; face < globe_quads_num; ++face) assert(seen_faces[face] == 1U);
+        free(seen_faces);
+        seen_faces = NULL;
+        assert(!drv_quadbatch_context(0U, NULL, &context));
+        assert(context.sequence == 0UL && context.vertex_count == 0U && !context.reuse_row);
         if (resolution == 512) {
             assert(batch_calls == 2048UL && rendered_quads == 131072UL);
             assert(largest_batch == 64U && largest_vertices == 130U);
@@ -340,9 +413,9 @@ int main(void)
     assert(allocations == 0UL);
     assert(largest_allocation > 65535UL);
 #ifdef DRV_GDI
-    puts("PASS GDI quads and quad batches: distinct traversals, five resolutions/default32, exact corners/colors, shared vertices, bounded packets, seams, poles, OSD and huge allocations");
+    puts("PASS GDI quads and quad batches: five resolutions, exact geometry/colors, bounded tiled row reuse, scoped metadata, aborted streams, seams, poles, OSD and huge allocations");
 #else
-    puts("PASS QuickDraw quads and quad batches: distinct traversals, five resolutions/default32, exact corners/colors, shared vertices, bounded packets, seams, poles, OSD and huge allocations");
+    puts("PASS QuickDraw quads and quad batches: five resolutions, exact geometry/colors, bounded tiled row reuse, scoped metadata, aborted streams, seams, poles, OSD and huge allocations");
 #endif
     return 0;
 }

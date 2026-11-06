@@ -13,7 +13,7 @@
 #include "texsoft.h"
 
 static int fail_stage, fail_image, fail_mips, fail_frame, fail_pixels;
-static int fail_capability, fail_object, reduced_texture;
+static int fail_capability, fail_object, fail_object_validation, fail_traversal, reduced_texture;
 static unsigned int object_attempts;
 static void *fixture_malloc(size_t bytes);
 static Drv_result fixture_texture_build(int size);
@@ -290,6 +290,7 @@ void endtmesh(void)
     if(current_object){++object_meshes[current_object];object_vertices[current_object]+=mesh_vertices;}
     else{++drawn_meshes;drawn_vertices+=mesh_vertices;if(texture_bound&&environment_bound)++native_texture_draws;}
     in_mesh=0;
+    if(fail_traversal)drv_abort_frame("injected traversal failure");
 }
 void c3f(float c[3]){current_color=(unsigned long)(c[0]*255.0f+0.5f)|((unsigned long)(c[1]*255.0f+0.5f)<<8)|((unsigned long)(c[2]*255.0f+0.5f)<<16);}
 void c3s(short c[3]){RGBcolor(c[0],c[1],c[2]);}
@@ -354,7 +355,7 @@ void frontbuffer(Boolean enabled){assert(enabled==!double_mode);}
 void backbuffer(Boolean enabled){assert(enabled==double_mode);}
 long genobj(void){++object_attempts;if(fail_object)return -1;assert(next_object<32);return (long)next_object++;}
 void makeobj(long id){assert(id>0&&id<32&&!current_object);current_object=(unsigned long)id;object_exists[id]=1;object_polygons[id]=object_meshes[id]=object_vertices[id]=0;object_textured[id]=texture_bound&&environment_bound;}
-void closeobj(void){assert(current_object);current_object=0;}
+void closeobj(void){assert(current_object);if(fail_object_validation)object_exists[current_object]=0;current_object=0;}
 void callobj(long id){assert(id>0&&id<32&&object_exists[id]);drawn+=object_polygons[id];drawn_meshes+=object_meshes[id];drawn_vertices+=object_vertices[id];if(object_textured[id]&&texture_bound&&environment_bound)++native_texture_draws;}
 void delobj(long id){assert(id>0&&id<32&&object_exists[id]);object_exists[id]=0;}
 Boolean isobj(long id){return id>0&&id<32&&object_exists[id];}
@@ -521,6 +522,32 @@ int main(int argc,char **argv)
     assert(GLOBE_DEFAULT_LONGITUDE==128&&globe_longitude==128);
     if(argc>1&&failure_profile(argv[1])){
         check_texture_failure(argv[1]);
+        return 0;
+    }
+    if(argc>1&&strcmp(argv[1],"framefail")==0){
+        drv_auto_enabled=TRUE;drv_osd_enabled=FALSE;igl_object_blocked=TRUE;
+        fail_traversal=TRUE;old_x=drv_rot_x;old_y=drv_rot_y;
+        for(i=0;i<2;++i){
+            before=text_calls;rotations=0;drv_render();
+            assert(globe_ready()&&drv_frame_failed&&!igl_dirty&&text_calls>before);
+            assert(strstr(recorded_stats,"injected traversal failure")!=NULL);
+            assert(drv_rot_x==old_x&&drv_rot_y==old_y&&!igl_texture_used);
+        }
+        fail_traversal=FALSE;igl_keyboard('a');igl_keyboard('2');
+        assert(!drv_auto_enabled&&igl_dirty);frame();
+        assert(!drv_frame_failed&&!drv_osd_enabled);
+        igl_cleanup();texture_free();globe_free();
+        puts("PASS IRIS GL failed-frame recovery: OSD-off diagnostics, no automatic redraw loop, and explicit input retry");
+        return 0;
+    }
+    if(argc>1&&strcmp(argv[1],"objectreject")==0){
+        fail_object_validation=1;frame();
+        assert(igl_object<0&&igl_object_blocked&&object_attempts==1);
+        before=emitted;frame();
+        assert(object_attempts==1&&emitted>before);
+        igl_keyboard('2');frame();assert(object_attempts==1&&globe_longitude==64);
+        igl_cleanup();texture_free();globe_free();
+        puts("PASS IRIS GL object validation: rejected new objects stay uncached and every frame draws complete direct geometry");
         return 0;
     }
     if(argc>1&&strcmp(argv[1],"cachefail")==0){

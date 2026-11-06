@@ -29,10 +29,14 @@ extern unsigned char* texture_data;
 /* Dimensions remain available after the temporary RGB bytes are released. */
 extern unsigned int texture_size;
 
+/* Retained compatibility entry: calls the fatal application error handler
+ * if texture_build fails. Native drivers use texture_build for recovery. */
 extern void texture_generate(int size);
 /* Allocation/validation failure preserves existing staging. A failed read
  * while reusing staging invalidates and releases its partial contents. */
 extern Drv_result texture_build(int size);
+/* Retained boolean wrapper; returns false without terminating on failure.
+ * It has the same staging ownership and partial-read rules as texture_build. */
 extern int texture_try_generate(int size);
 /* Transfer ownership to the caller; dimensions remain available. */
 extern unsigned char *texture_take_data(void);

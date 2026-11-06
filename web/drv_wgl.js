@@ -49,9 +49,9 @@ function drv_check(gl, operation) {
     if (error !== gl.NO_ERROR) {
         const errors = [];
         let allocationFailure = true;
-        // One failed transaction can set several distinct error flags, for
-        // example an upload and its mipmap generation. Drain those together
-        // so the retained previous scene can still draw on a later call.
+        // One native operation can leave several distinct error flags. Drain
+        // those together so the retained previous scene can draw later;
+        // dependent uploads and mipmap generation are checked separately.
         for (let count = 0; error !== gl.NO_ERROR && count < 8; ++count) {
             errors.push(`0x${error.toString(16)}`);
             if (error !== gl.OUT_OF_MEMORY) allocationFailure = false;
@@ -145,13 +145,20 @@ function drv_texture(gl, width, height, data, indexed, mipmaps) {
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
         gl.texImage2D(gl.TEXTURE_2D, 0, indexed ? gl.R8UI : gl.RGB8, width, height,
             0, indexed ? gl.RED_INTEGER : gl.RGB, gl.UNSIGNED_BYTE, data);
+        // A failed allocation leaves level zero undefined. Check it before
+        // generating mipmaps, whose secondary error would hide OUT_OF_MEMORY
+        // and prevent the application from trying a smaller texture.
+        drv_check(gl, "Upload texture");
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
             mipmaps ? gl.LINEAR_MIPMAP_LINEAR : gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mipmaps ? gl.LINEAR : gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, mipmaps ? gl.REPEAT : gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, mipmaps ? gl.REPEAT : gl.CLAMP_TO_EDGE);
-        if (mipmaps) gl.generateMipmap(gl.TEXTURE_2D);
-        drv_check(gl, "Upload texture");
+        drv_check(gl, "Configure texture");
+        if (mipmaps) {
+            gl.generateMipmap(gl.TEXTURE_2D);
+            drv_check(gl, "Generate texture mipmaps");
+        }
         return texture;
     } catch (error) {
         gl.deleteTexture(texture);

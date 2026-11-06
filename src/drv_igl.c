@@ -663,7 +663,8 @@ void drv_render(void)
         mmode(MPROJECTION); getmatrix(projection);
         mmode(MVIEWING);
         if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
-                              igl_indexed, &earth_cmap[0][0]))
+                              igl_indexed ? TEXSOFT_INDEX_WORDS : TEXSOFT_RGB_WORDS,
+                              &earth_cmap[0][0]))
             igl_texture_failure("Cannot prepare IRIS GL software texture framebuffer");
         else
         {
@@ -709,6 +710,15 @@ void drv_render(void)
                 igl_object_revision = globe_revision;
                 igl_object_textured = drv_texture_active;
                 if (drv_frame_failed) igl_invalidate_object();
+                else if (!isobj(igl_object))
+                {
+                    /* A rejected new object is an allocation/creation failure,
+                     * not an old cache disappearing. Avoid rebuilding it on
+                     * every frame while direct drawing remains usable. */
+                    igl_object = -1;
+                    igl_object_blocked = TRUE;
+                    drv_notice("Geometry cache unavailable; drawing directly");
+                }
             }
         }
         if (igl_object >= 0 && isobj(igl_object)) callobj(igl_object);
@@ -731,12 +741,12 @@ void drv_render(void)
         clear();
         if (igl_has_zbuffer) zclear();
     }
-    if (drv_osd_enabled || !globe_ready()) drv_draw_osd();
+    if (drv_status_required()) drv_draw_osd();
     if (igl_double_buffer) swapbuffers();
     else gflush();
     drv_fps_stop();
     igl_dirty = FALSE;
-    if (drv_auto_enabled && igl_active && globe_ready())
+    if (igl_active && drv_animation_allowed())
     {
         drv_globe_rotate();
         igl_dirty = TRUE;
@@ -863,8 +873,7 @@ void drv_loop(void)
             igl_event(device, value);
         }
         if (!igl_running) break;
-        if (igl_dirty || (drv_auto_enabled && igl_active &&
-                          globe_ready() && !drv_frame_failed)) drv_render();
+        if (igl_dirty || (igl_active && drv_animation_allowed())) drv_render();
         else
         {
             device = qread(&value);

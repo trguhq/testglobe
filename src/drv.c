@@ -37,10 +37,12 @@
 #include <Events.h>
 #include <Memory.h>
 #else
-#ifdef DRV_MTX
+#ifdef SEG86 /* DOS; Win16's GDI branch above uses Windows services. */
 #include <time.h>
 #include <malloc.h>
-#else /* FLAT */
+#include <dos.h>
+#elif !defined(DRV_AMI) && !defined(OGL_AMIGA) /* POSIX flat-memory drivers */
+#include <time.h>
 #include <sys/time.h>
 #endif
 #endif
@@ -104,7 +106,7 @@ void TG_HUGE *drv_alloc_items(unsigned long count, unsigned int size)
 #elif defined(DRV_QD)
     if (!count || !size || count > 0x7fffffffUL / size) return NULL;
     return (void *)NewPtr((Size)(count * size));
-#elif defined(DRV_MTX)
+#elif defined(SEG86)
     if (!count || !size || count > 0x7fffffffUL / size) return NULL;
     return _halloc((long)count, size);
 #else
@@ -130,7 +132,7 @@ void drv_free_items(void TG_HUGE *memory)
         }
 #elif defined(DRV_QD)
     if (memory != NULL) DisposePtr((Ptr)memory);
-#elif defined(DRV_MTX)
+#elif defined(SEG86)
     if (memory != NULL) _hfree(memory);
 #else
     free(memory);
@@ -173,6 +175,16 @@ void drv_abort_frame(const char *message)
 {
     drv_frame_failed = TRUE;
     drv_notice(message);
+}
+
+int drv_status_required(void)
+{
+    return drv_osd_enabled || !globe_ready() || drv_frame_failed;
+}
+
+int drv_animation_allowed(void)
+{
+    return drv_auto_enabled && globe_ready() && !drv_frame_failed;
 }
 
 void drv_format_stats(char *buffer)
@@ -234,6 +246,152 @@ void drv_format_stats(char *buffer)
     buffer[length] = 0;
 }
 
+#ifdef DRV_PALETTE_DITHER
+/* Score the actual 1/16 mixture without rounding its RGB components first.
+ * Each residual is at most 4080; the sum of squares fits a 32-bit long. */
+static unsigned long drv_palette_error(const unsigned char TG_HUGE *rgb,
+                                        const unsigned char TG_HUGE *palette,
+                                        unsigned int a, unsigned int b,
+                                        unsigned int mix)
+{
+    unsigned int channel;
+    long residual;
+    unsigned long error;
+    error = 0;
+    for (channel = 0; channel < 3U; ++channel)
+    {
+        residual = 16L * rgb[channel] -
+                   (16L - (long)mix) * palette[3U * a + channel] -
+                   (long)mix * palette[3U * b + channel];
+        error += (unsigned long)(residual * residual);
+    }
+    return error;
+}
+
+static void drv_palette_pair(const unsigned char TG_HUGE *rgb,
+                              const unsigned char TG_HUGE *palette,
+                              unsigned int a, unsigned int b,
+                              unsigned long *best_error,
+                              unsigned long *best_contrast,
+                              Drv_palette_match *match)
+{
+    unsigned int channel, mix;
+    long numerator, denominator, delta, difference;
+    unsigned long error;
+    numerator = denominator = 0;
+    for (channel = 0; channel < 3U; ++channel)
+    {
+        delta = (long)palette[3U * b + channel] - palette[3U * a + channel];
+        difference = (long)rgb[channel] - palette[3U * a + channel];
+        numerator += delta * difference;
+        denominator += delta * delta;
+    }
+    /* The nearest solid entry already covers endpoints. This also rejects
+     * duplicate entries before division. All products fit signed 32 bits. */
+    if (numerator <= 0 || numerator >= denominator) return;
+    mix = (unsigned int)((numerator * 16L + denominator / 2L) / denominator);
+    if (mix == 0U || mix >= 16U) return;
+    error = drv_palette_error(rgb, palette, a, b, mix);
+    if (error < *best_error ||
+        (error == *best_error && (unsigned long)denominator < *best_contrast))
+    {
+        *best_error = error;
+        *best_contrast = (unsigned long)denominator;
+        match->first = (unsigned char)a;
+        match->second = (unsigned char)b;
+        match->mix = (unsigned char)mix;
+    }
+}
+
+int drv_match_palette_color(const unsigned char TG_HUGE *rgb,
+                             const unsigned char TG_HUGE *palette,
+                             unsigned int count, Drv_palette_match *match)
+{
+    unsigned int a, b, anchor;
+    unsigned long error, candidate, contrast;
+    if (match == NULL) return FALSE;
+    match->first = match->second = match->mix = match->solid = 0;
+    if (rgb == NULL || palette == NULL || count == 0U || count > 256U)
+        return FALSE;
+    error = 0xffffffffUL;
+    anchor = 0;
+    for (a = 0; a < count; ++a)
+    {
+        candidate = drv_palette_error(rgb, palette, a, a, 0U);
+        if (candidate < error) { error = candidate; anchor = a; }
+    }
+    match->first = match->second = match->solid = (unsigned char)anchor;
+    contrast = 0;
+    if (error == 0) return TRUE;
+    if (count <= 16U)
+    {
+        /* Find the best discrete mixture for small palettes. */
+        for (a = 0; a < count; ++a)
+            for (b = a + 1U; b < count; ++b)
+                drv_palette_pair(rgb, palette, a, b, &error, &contrast, match);
+    }
+    else
+    {
+        /* Bound initialization on small CPUs: find the nearest solid's best
+         * partner, then improve the other endpoint. This includes the old
+         * nearest-two pair without searching all 32640 pairs at 256 colors. */
+        for (b = 0; b < count; ++b)
+            drv_palette_pair(rgb, palette, anchor, b, &error, &contrast, match);
+        if (match->mix != 0U)
+        {
+            anchor = match->second;
+            for (a = 0; a < count; ++a)
+                drv_palette_pair(rgb, palette, anchor, a, &error, &contrast, match);
+        }
+    }
+    return TRUE;
+}
+
+const unsigned short TG_HUGE *drv_dither_pattern(unsigned int mix)
+{
+    /* Four rows repeat horizontally across 16 bits. Entry n uses the
+     * second color for n of each 16 pixels; native adapters borrow them. */
+    static const unsigned short patterns[17][4] = {
+        {0xffff, 0xffff, 0xffff, 0xffff},
+        {0x7777, 0xffff, 0xffff, 0xffff},
+        {0x7777, 0xffff, 0xdddd, 0xffff},
+        {0x5555, 0xffff, 0xdddd, 0xffff},
+        {0x5555, 0xffff, 0x5555, 0xffff},
+        {0x5555, 0xbbbb, 0x5555, 0xffff},
+        {0x5555, 0xbbbb, 0x5555, 0xeeee},
+        {0x5555, 0xaaaa, 0x5555, 0xeeee},
+        {0x5555, 0xaaaa, 0x5555, 0xaaaa},
+        {0x1111, 0xaaaa, 0x5555, 0xaaaa},
+        {0x1111, 0xaaaa, 0x4444, 0xaaaa},
+        {0x0000, 0xaaaa, 0x4444, 0xaaaa},
+        {0x0000, 0xaaaa, 0x0000, 0xaaaa},
+        {0x0000, 0x2222, 0x0000, 0xaaaa},
+        {0x0000, 0x2222, 0x0000, 0x8888},
+        {0x0000, 0x0000, 0x0000, 0x8888},
+        {0x0000, 0x0000, 0x0000, 0x0000}
+    };
+    return mix <= 16U ? patterns[mix] : NULL;
+}
+#endif
+
+#ifdef TRISTRIP
+unsigned int drv_tristrip_batch_facets(unsigned int count,
+                                        unsigned int first,
+                                        unsigned int max_facets)
+{
+    unsigned int remaining;
+    if (count < 3U || first >= count - 2U) return 0U;
+    max_facets &= ~1U;
+    if ((first & 1U) != 0U || max_facets < 2U)
+    {
+        drv_abort_frame("Strip batch needs an even start and two facets");
+        return 0U;
+    }
+    remaining = count - 2U - first;
+    return remaining < max_facets ? remaining : max_facets;
+}
+#endif
+
 #if defined(TRISTRIP) && defined(DRV_COLORMAP)
 void drv_split_tristrip_batches(unsigned int count,
                             const Vertex TG_HUGE *vertices,
@@ -244,19 +402,11 @@ void drv_split_tristrip_batches(unsigned int count,
     unsigned int first, facets;
     if (count < 3 || vertices == NULL || facet_colors == NULL || draw_batch == NULL)
         return;
-    /* Every nonfinal batch starts at the strip's original even winding.
-     * Facet i uses vertices i..i+2, so adjoining batches share two vertices. */
-    max_facets &= ~1U;
-    if (max_facets < 2U)
-    {
-        drv_abort_frame("Strip batch must hold at least two facets");
-        return;
-    }
     first = 0;
     while (first < count - 2U && !drv_frame_failed)
     {
-        facets = count - 2U - first;
-        if (facets > max_facets) facets = max_facets;
+        facets = drv_tristrip_batch_facets(count, first, max_facets);
+        if (facets == 0U) return;
         draw_batch(facets + 2U, vertices + first, facet_colors + first);
         first += facets;
     }
@@ -283,6 +433,42 @@ void drv_expand_tristrip_uv(unsigned int count,
 #endif
 
 #ifdef DRV_QUAD_BATCH
+static unsigned long drv_quad_sequence;
+static Drv_quad_context drv_quad_context;
+static const Vertex TG_HUGE *drv_quad_vertices;
+
+void drv_quadstream_reset(Drv_quad_stream *stream)
+{
+    if (stream == NULL) return;
+    stream->sequence = 0UL;
+    stream->vertex_count = 0U;
+}
+
+unsigned int drv_quadstream_reuse(const Drv_quad_stream *stream,
+                                   unsigned int vertex_count,
+                                   const Vertex TG_HUGE *vertices,
+                                   Drv_quad_context *context)
+{
+    if (!drv_quadbatch_context(vertex_count, vertices, context) || stream == NULL)
+        return 0U;
+    return context->reuse_row && stream->sequence != 0UL &&
+           context->sequence == stream->sequence + 1UL &&
+           vertex_count == stream->vertex_count ? vertex_count / 2U : 0U;
+}
+
+void drv_quadstream_commit(Drv_quad_stream *stream,
+                            const Drv_quad_context *context)
+{
+    if (stream == NULL) return;
+    if (context == NULL || context->sequence == 0UL)
+    {
+        drv_quadstream_reset(stream);
+        return;
+    }
+    stream->sequence = context->sequence;
+    stream->vertex_count = context->vertex_count;
+}
+
 int drv_validate_quadbatch(unsigned int vertex_count, unsigned int quad_count,
                             const unsigned int TG_HUGE *indices)
 {
@@ -295,6 +481,47 @@ int drv_validate_quadbatch(unsigned int vertex_count, unsigned int quad_count,
     return TRUE;
 }
 
+int drv_quadbatch_context(unsigned int vertex_count,
+                           const Vertex TG_HUGE *vertices,
+                           Drv_quad_context *context)
+{
+    if (context == NULL) return FALSE;
+    context->sequence = 0UL;
+    context->vertex_count = 0U;
+    context->reuse_row = FALSE;
+    if (drv_quad_context.sequence == 0UL || vertices == NULL ||
+        vertices != drv_quad_vertices ||
+        vertex_count != drv_quad_context.vertex_count)
+        return FALSE;
+    *context = drv_quad_context;
+    return TRUE;
+}
+
+void drv_submit_quadbatch(unsigned int vertex_count,
+                           const Vertex TG_HUGE *vertices,
+                           unsigned int quad_count,
+                           const unsigned int TG_HUGE *indices,
+                           const unsigned char TG_HUGE *colors,
+                           int reuse_row)
+{
+    /* Zero is reserved for direct calls with no stream metadata. A wrap
+     * may discard one reuse opportunity, but can never expose stale data. */
+    ++drv_quad_sequence;
+    if (drv_quad_sequence == 0UL) ++drv_quad_sequence;
+    drv_quad_context.sequence = drv_quad_sequence;
+    drv_quad_context.vertex_count = vertex_count;
+    drv_quad_context.reuse_row = reuse_row && quad_count != 0U &&
+        quad_count <= DRV_QUAD_BATCH_MAX &&
+        vertex_count == 2U * (quad_count + 1U);
+    drv_quad_vertices = vertices;
+    drv_draw_quadbatch_flat_color(vertex_count, vertices, quad_count,
+                                   indices, colors);
+    drv_quad_context.sequence = 0UL;
+    drv_quad_context.vertex_count = 0U;
+    drv_quad_context.reuse_row = FALSE;
+    drv_quad_vertices = NULL;
+}
+
 void drv_submit_quad_as_batch(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
                                Vertex TG_HUGE *third, Vertex TG_HUGE *fourth,
                                unsigned char color)
@@ -304,7 +531,7 @@ void drv_submit_quad_as_batch(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
     if (first == NULL || second == NULL || third == NULL || fourth == NULL) return;
     vertices[0] = *first; vertices[1] = *second;
     vertices[2] = *third; vertices[3] = *fourth;
-    drv_draw_quadbatch_flat_color(4U, vertices, 1U, indices, &color);
+    drv_submit_quadbatch(4U, vertices, 1U, indices, &color, FALSE);
 }
 #endif
 
@@ -388,11 +615,30 @@ void drv_ext_init(void)
     
 }
 
-/* Native clocks are hidden behind one service. Wrapping 32-bit tick clocks
- * accumulate unsigned deltas; the POSIX fallback never moves backwards. */
+double drv_elapsed_time(Drv_clock *clock, double current)
+{
+    double delta;
+    if (clock == NULL) return 0.0;
+    if (!(current >= -DBL_MAX && current <= DBL_MAX)) return clock->elapsed;
+    if (clock->initialized && current >= clock->previous)
+    {
+        delta = current - clock->previous;
+        if (delta <= DBL_MAX - clock->elapsed) clock->elapsed += delta;
+    }
+    clock->previous = current;
+    clock->initialized = TRUE;
+    return clock->elapsed;
+}
+
+/* Native clocks are hidden behind one service. Wrapping tick clocks use
+ * unsigned deltas; adjustable clocks rebase immediately after a backward step. */
 double drv_time_now(void)
 {
-#if defined(GDI) || defined(DRV_QD) || defined(DRV_MTX)
+#ifdef DRV_AMI
+    return ami_time_now();
+#elif defined(OGL_AMIGA)
+    return ogl_ami_time_now();
+#elif defined(SEG86) || defined(DRV_QD)
     static unsigned long previous;
     static int initialized;
     static double elapsed;
@@ -416,13 +662,31 @@ double drv_time_now(void)
     return elapsed;
 #else
     struct timeval sample;
-    static double previous;
+    static Drv_clock clock;
     double current;
-    if (gettimeofday(&sample, NULL) != 0) return previous;
+    /* These libc versions supply clock_gettime without an extra link library.
+     * Historical Unix SDKs keep the gettimeofday fallback and C89 interface. */
+#if defined(CLOCK_MONOTONIC) && ((defined(__GLIBC__) && \
+    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 17))) || \
+    (defined(__APPLE__) && defined(__MACH__)))
+    struct timespec monotonic;
+    static int monotonic_state;
+    if (monotonic_state >= 0)
+    {
+        if (clock_gettime(CLOCK_MONOTONIC, &monotonic) == 0)
+        {
+            monotonic_state = 1;
+            current = (double)monotonic.tv_sec +
+                      (double)monotonic.tv_nsec / 1000000000.0;
+            return drv_elapsed_time(&clock, current);
+        }
+        if (monotonic_state > 0) return clock.elapsed;
+        monotonic_state = -1;
+    }
+#endif
+    if (gettimeofday(&sample, NULL) != 0) return clock.elapsed;
     current = (double)sample.tv_sec + (double)sample.tv_usec / 1000000.0;
-    if (current < previous) return previous;
-    previous = current;
-    return current;
+    return drv_elapsed_time(&clock, current);
 #endif
 }
 
@@ -581,3 +845,43 @@ void drv_globe_rotate(void)
     if (seconds < 0.0) seconds = 0.0;
     drv_rotate_elapsed(seconds);
 }
+
+#if defined(SEG86) && !defined(GDI)
+int drv_dos_mouse_init(void)
+{
+    union REGS regs;
+    drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
+    if (_dos_getvect(0x33) == NULL) return FALSE;
+    memset(&regs, 0, sizeof(regs));
+    int86(0x33, &regs, &regs);
+    if (regs.x.ax != 0xffff) return FALSE;
+    regs.x.ax = 0x0b;
+    int86(0x33, &regs, &regs);
+    return TRUE;
+}
+
+int drv_dos_mouse_poll(int present)
+{
+    union REGS regs;
+    short dx, dy;
+    int right, dirty;
+    if (!present) return FALSE;
+    memset(&regs, 0, sizeof(regs));
+    regs.x.ax = 3;
+    int86(0x33, &regs, &regs);
+    drv_lmouse_pressed = (regs.x.bx & 1) != 0;
+    right = (regs.x.bx & 2) != 0;
+    dirty = right != drv_rmouse_pressed;
+    drv_rmouse_pressed = right;
+    regs.x.ax = 0x0b;
+    int86(0x33, &regs, &regs);
+    dx = (short)regs.x.cx;
+    dy = (short)regs.x.dx;
+    if (drv_lmouse_pressed && (dx != 0 || dy != 0))
+    {
+        drv_rotate_drag((long)dx, (long)dy);
+        dirty = TRUE;
+    }
+    return dirty;
+}
+#endif

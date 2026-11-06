@@ -19,6 +19,7 @@
 #define SOFT3D_COORD_SCALE 16L
 #define SOFT3D_FOCAL_Q14 GLOBE_FOCAL_Q14
 
+#if !defined(SOFT3D_TRANSFORM_020) && !defined(SOFT3D_TRANSFORM_386)
 static const unsigned short soft3d_sine_quadrant[91] = {
     0, 286, 572, 857, 1143, 1428, 1713, 1997, 2280, 2563, 2845, 3126, 3406,
     3686, 3964, 4240, 4516, 4790, 5063, 5334, 5604, 5872, 6138, 6402, 6664, 6924,
@@ -30,6 +31,7 @@ static const unsigned short soft3d_sine_quadrant[91] = {
     16083, 16135, 16182, 16225, 16262, 16294, 16322, 16344, 16362, 16374,
     16382, 16384
 };
+#endif
 
 /* The byte-order probe folds to a constant on both native platforms. */
 static int soft3d_float_fixed(const float TG_HUGE *value, int fraction_bits,
@@ -62,6 +64,7 @@ static int soft3d_float_fixed(const float TG_HUGE *value, int fraction_bits,
     return 1;
 }
 
+#if !defined(SOFT3D_TRANSFORM_020) && !defined(SOFT3D_TRANSFORM_386)
 static long soft3d_sine(long angle)
 {
     long position, first, second;
@@ -106,16 +109,26 @@ int soft3d_fixed_prepare(long matrix[3][3],
     matrix[2][2] = sx;
     return 1;
 }
+#endif
 
-int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
-                            const Vertex TG_HUGE *vertices,
-                            Soft3d_fixed_point *out)
+#ifdef SOFT3D_TRANSFORM_020
+int soft3d_020_transform_reuse(long matrix[3][3], unsigned int count,
+#elif defined(SOFT3D_TRANSFORM_386)
+int soft3d_386_transform_reuse(long matrix[3][3], unsigned int count,
+#else
+int soft3d_fixed_transform_reuse(long matrix[3][3], unsigned int count,
+#endif
+                                 const Vertex TG_HUGE *vertices,
+                                 Soft3d_fixed_point *out,
+                                 unsigned int reuse_count)
 {
     unsigned int i;
     int row;
     long source[3], transformed;
     if (matrix == NULL || vertices == NULL || out == NULL ||
-        count > SOFT3D_MAX_VERTICES)
+        count > SOFT3D_MAX_VERTICES ||
+        (reuse_count != 0U && (count == 0U || (count & 1U) != 0U ||
+                              reuse_count != count / 2U)))
         return 0;
     for (i = 0; i < count; ++i)
     {
@@ -131,6 +144,13 @@ int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
             source[2] < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
             source[2] > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE)
             return 0;
+        /* Validate every incoming coordinate even on the reused row. Only
+         * arithmetic is skipped; malformed vertices cannot hide in a cache. */
+        if (reuse_count != 0U && (i & 1U) == 0U)
+        {
+            out[i] = out[i + 1U];
+            continue;
+        }
         for (row = 0; row < 3; ++row)
         {
             transformed = (matrix[row][0] * source[0] +
@@ -141,6 +161,52 @@ int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
             if (row == 2) out[i].z = transformed - GLOBE_VIEW_DISTANCE * SOFT3D_COORD_SCALE;
         }
     }
+    return 1;
+}
+
+#if !defined(SOFT3D_TRANSFORM_020) && !defined(SOFT3D_TRANSFORM_386)
+int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
+                            const Vertex TG_HUGE *vertices,
+                            Soft3d_fixed_point *out)
+{
+    return soft3d_fixed_transform_reuse(matrix, count, vertices, out, 0U);
+}
+
+void soft3d_project_cache_reset(Soft3d_project_cache TG_HUGE *cache)
+{
+    if (cache != NULL)
+        cache->count = cache->width = cache->height = 0U;
+}
+
+int soft3d_project_cache_begin(Soft3d_project_cache TG_HUGE *cache,
+                               unsigned int count,
+                               unsigned int width, unsigned int height,
+                               unsigned int reuse_count)
+{
+    unsigned int i;
+    int reuse;
+    if (cache == NULL) return 0;
+    if (count == 0U || count > SOFT3D_MAX_VERTICES ||
+        width == 0U || height == 0U || width > 32767U || height > 32767U ||
+        (reuse_count != 0U && ((count & 1U) != 0U || reuse_count != count / 2U)))
+    {
+        soft3d_project_cache_reset(cache);
+        return 0;
+    }
+    reuse = reuse_count != 0U && cache->count == count &&
+            cache->width == width && cache->height == height;
+    for (i = 0; i < count; ++i)
+    {
+        if (reuse && (i & 1U) == 0U)
+        {
+            cache->valid[i] = cache->valid[i + 1U];
+            if (cache->valid[i]) cache->screen[i] = cache->screen[i + 1U];
+        }
+        else cache->valid[i] = 0;
+    }
+    cache->count = count;
+    cache->width = width;
+    cache->height = height;
     return 1;
 }
 
@@ -223,22 +289,40 @@ int soft3d_fixed_project_polygon(const Soft3d_fixed_point *points,
 {
     Soft3d_fixed_point a[SOFT3D_MAX_POLY], b[SOFT3D_MAX_POLY];
     long focal;
+    unsigned int outside, common, flags;
     int i, count;
     if (points == NULL || indices == NULL || out == NULL ||
         point_count == 0U || point_count > SOFT3D_MAX_VERTICES ||
         corners < 3U || corners > 4U ||
         width == 0 || height == 0 || width > 32767U || height > 32767U)
         return 0;
+    /* Validate all indices before copying, then classify depth once. Most
+     * globe packets are entirely inside both planes. Outside polygons can
+     * be rejected without entering either interpolation pass. */
+    for (i = 0; i < (int)corners; ++i)
+        if (indices[i] >= point_count) return 0;
+    outside = 0U;
+    common = 3U;
     for (i = 0; i < (int)corners; ++i)
     {
-        if (indices[i] >= point_count) return 0;
         a[i] = points[indices[i]];
+        flags = 0U;
+        if (a[i].z > -GLOBE_NEAR_DISTANCE * SOFT3D_COORD_SCALE) flags |= 1U;
+        if (a[i].z < -GLOBE_FAR_DISTANCE * SOFT3D_COORD_SCALE) flags |= 2U;
+        outside |= flags;
+        common &= flags;
     }
-    count = soft3d_clip_fixed_z(a, (int)corners, b,
-                               -GLOBE_NEAR_DISTANCE * SOFT3D_COORD_SCALE, FALSE);
-    if (count < 3) return 0;
-    count = soft3d_clip_fixed_z(b, count, a, -GLOBE_FAR_DISTANCE * SOFT3D_COORD_SCALE, TRUE);
-    if (count < 3) return 0;
+    if (common != 0U) return 0;
+    count = (int)corners;
+    if (outside != 0U)
+    {
+        count = soft3d_clip_fixed_z(a, count, b,
+                                   -GLOBE_NEAR_DISTANCE * SOFT3D_COORD_SCALE, FALSE);
+        if (count < 3) return 0;
+        count = soft3d_clip_fixed_z(b, count, a,
+                                   -GLOBE_FAR_DISTANCE * SOFT3D_COORD_SCALE, TRUE);
+        if (count < 3) return 0;
+    }
     focal = (long)height * SOFT3D_FOCAL_Q14 / SOFT3D_Q14;
     for (i = 0; i < count; ++i)
     {
@@ -246,6 +330,53 @@ int soft3d_fixed_project_polygon(const Soft3d_fixed_point *points,
         out[i].y = (long)height / 2L - a[i].y * focal / -a[i].z;
     }
     return count;
+}
+
+int soft3d_fixed_project_cached(const Soft3d_fixed_point *points,
+                                 unsigned int point_count,
+                                 const unsigned int TG_HUGE *indices,
+                                 unsigned int corners, unsigned int width,
+                                 unsigned int height,
+                                 Soft3d_project_cache TG_HUGE *cache,
+                                 Soft3d_screen_point *out)
+{
+    unsigned int i, index;
+    long focal;
+    if (points == NULL || indices == NULL || out == NULL ||
+        point_count == 0U || point_count > SOFT3D_MAX_VERTICES ||
+        corners < 3U || corners > 4U || width == 0U || height == 0U ||
+        width > 32767U || height > 32767U) return 0;
+    for (i = 0; i < corners; ++i)
+        if (indices[i] >= point_count) return 0;
+    if (cache == NULL || cache->count != point_count ||
+        cache->width != width || cache->height != height)
+        return soft3d_fixed_project_polygon(points, point_count, indices,
+                                             corners, width, height, out);
+    /* Clipping generates new intersection vertices. Preserve the original
+     * polygon path, ordering, and integer rounding for every crossing. */
+    for (i = 0; i < corners; ++i)
+    {
+        index = indices[i];
+        if (points[index].z > -GLOBE_NEAR_DISTANCE * SOFT3D_COORD_SCALE ||
+            points[index].z < -GLOBE_FAR_DISTANCE * SOFT3D_COORD_SCALE)
+            return soft3d_fixed_project_polygon(points, point_count, indices,
+                                                 corners, width, height, out);
+    }
+    focal = (long)height * SOFT3D_FOCAL_Q14 / SOFT3D_Q14;
+    for (i = 0; i < corners; ++i)
+    {
+        index = indices[i];
+        if (!cache->valid[index])
+        {
+            cache->screen[index].x = (long)width / 2L +
+                                    points[index].x * focal / -points[index].z;
+            cache->screen[index].y = (long)height / 2L -
+                                    points[index].y * focal / -points[index].z;
+            cache->valid[index] = 1;
+        }
+        out[i] = cache->screen[index];
+    }
+    return (int)corners;
 }
 
 static int soft3d_clip_screen(const Soft3d_screen_point *in, int count,
@@ -285,24 +416,11 @@ static int soft3d_clip_screen(const Soft3d_screen_point *in, int count,
     return total;
 }
 
-int soft3d_finish_polygon(Soft3d_screen_point *points, int count,
-                           unsigned int width, unsigned int height)
+static int soft3d_finish_inside(Soft3d_screen_point *points, int count)
 {
-    Soft3d_screen_point clipped[SOFT3D_MAX_POLY];
     long area, area_high;
     unsigned long area_low, previous;
     int i, total;
-    if (points == NULL || count < 3 || count > SOFT3D_MAX_POLY ||
-        width == 0 || height == 0 || width > 32767U || height > 32767U)
-        return 0;
-    count = soft3d_clip_screen(points, count, clipped, 0, 0, TRUE);
-    if (count < 3) return 0;
-    count = soft3d_clip_screen(clipped, count, points, 0, (long)width, FALSE);
-    if (count < 3) return 0;
-    count = soft3d_clip_screen(points, count, clipped, 1, 0, TRUE);
-    if (count < 3) return 0;
-    count = soft3d_clip_screen(clipped, count, points, 1, (long)height, FALSE);
-    if (count < 3) return 0;
     /* Pole patches and clipped edges can have coincident corners. Submit
      * their actual polygon, retaining triangles at either collapsed pole. */
     total = 0;
@@ -339,3 +457,48 @@ int soft3d_finish_polygon(Soft3d_screen_point *points, int count,
     }
     return area_high < 0 ? count : 0;
 }
+
+int soft3d_finish_polygon(Soft3d_screen_point *points, int count,
+                           unsigned int width, unsigned int height)
+{
+    Soft3d_screen_point clipped[SOFT3D_MAX_POLY];
+    unsigned int outside, common, flags;
+    int i;
+    if (points == NULL || count < 3 || count > SOFT3D_MAX_POLY ||
+        width == 0U || height == 0U || width > 32767U || height > 32767U)
+        return 0;
+    outside = 0U;
+    common = 15U;
+    for (i = 0; i < count; ++i)
+    {
+        /* Match the floating drivers' conversion bounds. These also bound
+         * every subtraction used by the integer intersection routine. */
+        if (points[i].x < -134217727L || points[i].x > 134217727L ||
+            points[i].y < -134217727L || points[i].y > 134217727L)
+            return 0;
+        flags = 0U;
+        if (points[i].x < 0L) flags |= 1U;
+        if (points[i].x > (long)width) flags |= 2U;
+        if (points[i].y < 0L) flags |= 4U;
+        if (points[i].y > (long)height) flags |= 8U;
+        outside |= flags;
+        common &= flags;
+    }
+    if (common != 0U) return 0;
+    /* Reject wholly-inside back faces before the general clipping path.
+     * The complete rounded polygon area is exact here, including pole
+     * duplicates and silhouette quads whose fan triangles have mixed signs.
+     * Crossing polygons retain clipping before culling: rounding generated
+     * intersections can otherwise change their visibility. */
+    if (outside == 0U) return soft3d_finish_inside(points, count);
+    count = soft3d_clip_screen(points, count, clipped, 0, 0, TRUE);
+    if (count < 3) return 0;
+    count = soft3d_clip_screen(clipped, count, points, 0, (long)width, FALSE);
+    if (count < 3) return 0;
+    count = soft3d_clip_screen(points, count, clipped, 1, 0, TRUE);
+    if (count < 3) return 0;
+    count = soft3d_clip_screen(clipped, count, points, 1, (long)height, FALSE);
+    if (count < 3) return 0;
+    return soft3d_finish_inside(points, count);
+}
+#endif /* baseline geometry, excluding separately compiled CPU kernels */

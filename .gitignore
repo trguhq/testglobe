@@ -43,3 +43,41 @@
 /e_saved.bak
 /src/e_saved.tmp
 /src/e_saved.bak
+
+# Amiga cross-build outputs.
+/testglobe-amiga
+/testglobe-amiga.info
+/am_link.hunk
+/src/testglobe-amiga
+/src/testglobe-amiga.info
+/src/am_link.hunk
+
+# PiStorm3D OpenGL cross-build outputs.
+/testglobe-amiga-opengl
+/src/testglobe-amiga-opengl
+/testglobe-amiga-opengl.info
+/src/testglobe-amiga-opengl.info
+
+# TIGA build-local Earth data.
+/t_data.c
+/t_data.tmp
+/t_data.bak
+/src/t_data.c
+/src/t_data.tmp
+/src/t_data.bak
+
+# TIGA downloadable module and TI compiler intermediate output.
+/tga_gsp.rlm
+/tga_gsp.asm
+/src/tga_gsp.rlm
+/src/tga_gsp.asm
+
+# TIGA single-executable packaging intermediates and recovery files.
+/tga_host.exe
+/tga_pack.exe
+/testglob.tmp
+/testglob.bak
+/src/tga_host.exe
+/src/tga_pack.exe
+/src/testglob.tmp
+/src/testglob.bak

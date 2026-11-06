@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Host regressions: geometry, OpenGL, Matrox, XGL, GDI, QuickDraw and IRIS GL.
+"""Host regressions: geometry, OpenGL, Matrox, TIGA, XGL, GDI, QuickDraw, Amiga and IRIS GL.
 
-No test here emulates Microsoft C's segmented code generation, a Matrox board,
+No test here emulates Microsoft C's segmented code generation, a Matrox/TIGA board,
 Sun's native XGL implementation, Windows 3.1 GDI, the Macintosh Toolbox,
-or SGI's native IRIS GL implementation and IRIX ABI.
+AmigaOS graphics and the custom chips, or SGI's native IRIS GL and IRIX ABI.
 """
 import argparse
 import os
@@ -11,17 +11,20 @@ from pathlib import Path
 import shlex
 import shutil
 import stat
+import struct
 import subprocess
+import sys
 import tempfile
+import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(command, expected_returncode=0, expected_stderr=None, required_output=None,
-        expected_stdout=None):
+        expected_stdout=None, cwd=ROOT, env=None):
     try:
-        result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True,
+        result = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True,
                                 timeout=60)
     except subprocess.TimeoutExpired:
         raise SystemExit("Timed out: " + shlex.join(str(part) for part in command))
@@ -38,6 +41,87 @@ def run(command, expected_returncode=0, expected_stderr=None, required_output=No
             print(line)
     if result.stderr and expected_stderr is None:
         print(result.stderr, end="")
+
+
+
+def check_tiga_extraction(executable, output):
+    """Exercise real files around the driver; TIGA itself is a call recorder."""
+    profiles = (
+        "default", "single", "nomodule", "smallbuffer", "nomouse", "8086", "386", "486",
+        "fpu", "badmodule", "wrongabi", "badscreen", "nocd", "videoerror", "oldversion",
+        "nomode", "modeerror", "primitivesfail", "pagehang", "syncerror",
+        "nooverlay", "badcrc", "truncated", "oversized", "badoffset", "reserved",
+        "badmagic", "missingexe", "diskfull", "closefail", "notemp", "shortwrite",
+        "removefail", "collision", "movedcwd", "readonlyexe", "fallbacktmp",
+        "longtemp", "moduleioerror", "flushioerror",
+    )
+    payload = bytes((index * 73 + 19) & 255 for index in range(1549))
+    image = bytearray(512)
+    image[:2] = b"MZ"
+    struct.pack_into("<HHHH", image, 2, 0, 1, 0, 2)
+    trailer = struct.pack("<8sIIII", b"TGRLM001", len(image), len(payload),
+                          zlib.crc32(payload), 0)
+    for profile in profiles:
+        work = output / ("tiga_" + profile)
+        program = work / "program"
+        temporary = work / "temporary"
+        other = work / "other"
+        program.mkdir(parents=True)
+        temporary.mkdir()
+        other.mkdir()
+        source = program / "testglob.exe"
+        data = bytes(image) + payload + trailer
+        if profile == "nooverlay":
+            data = bytes(image)
+        elif profile == "badcrc":
+            data = bytes(image) + bytes([payload[0] ^ 1]) + payload[1:] + trailer
+        elif profile == "truncated":
+            data = data[:-1]
+        elif profile == "oversized":
+            data = data[:-24] + struct.pack("<8sIIII", b"TGRLM001", len(image),
+                                            1048577, zlib.crc32(payload), 0)
+        elif profile == "badoffset":
+            data = data[:-24] + struct.pack("<8sIIII", b"TGRLM001", 0xffffffff,
+                                            len(payload), zlib.crc32(payload), 0)
+        elif profile == "reserved":
+            data = data[:-4] + struct.pack("<I", 1)
+        elif profile == "badmagic":
+            data = data[:-24] + b"TGRLM002" + data[-16:]
+        if profile != "missingexe":
+            source.write_bytes(data)
+        env = dict(os.environ)
+        env["TEMP"] = env["TMP"] = str(temporary)
+        env["TGA_TEST_OTHER_CWD"] = str(other)
+        cwd = work
+        argument = str(source)
+        if profile == "movedcwd":
+            argument = str(source.relative_to(work))
+        if profile == "notemp":
+            env["TEMP"] = env["TMP"] = "/proc"
+            cwd = Path("/proc")
+        if profile == "fallbacktmp":
+            blocked = work / "not_directory"
+            blocked.write_bytes(b"keep")
+            env["TEMP"] = str(blocked)
+        if profile == "longtemp":
+            env["TEMP"] = "X" * 65530
+        if profile == "readonlyexe":
+            source.chmod(0o444)
+            program.chmod(0o555)
+        try:
+            run([str(executable), profile, argument], cwd=cwd, env=env)
+        finally:
+            if profile == "readonlyexe":
+                program.chmod(0o755)
+                source.chmod(0o644)
+        assert list(temporary.iterdir()) == [], (profile, list(temporary.iterdir()))
+        assert list(other.iterdir()) == [], (profile, list(other.iterdir()))
+        assert sorted(path.name for path in program.iterdir()) == (
+            [] if profile == "missingexe" else ["testglob.exe"])
+        if source.exists():
+            assert source.read_bytes() == data, profile
+        assert not list(work.glob("*.RLM")) and not list(work.glob("*.rlm")), profile
+    print("PASS TIGA embedded module: real-file extraction, exact bytes, changed working directory, read-only distribution, malformed payloads, short writes, exclusive-name collisions and cleanup/fallback")
 
 
 def check_driver_api(command, driver, hidden_symbols):
@@ -75,8 +159,11 @@ def check_configurations(cc, common):
         ["-Dsparc", "-DTEST_DRIVER_XGL"],
         ["-DDRV_GDI", "-DTEST_DRIVER_GDI"],
         ["-DDRV_MTX", "-DTEST_DRIVER_MTX"],
+        ["-DDRV_TGA", "-DTEST_DRIVER_TGA"],
         ["-DDRV_QD", "-DTEST_DRIVER_QD"],
         ["-DDRV_IGL", "-DTEST_DRIVER_IGL"],
+        ["-DDRV_AMI", "-DTEST_DRIVER_AMI"],
+        ["-DDRV_OGL", "-DOGL_AMIGA", "-DTEST_DRIVER_OGL"],
         ["-DDRV_OGL", "-D__APPLE__", "-DTEST_DRIVER_OGL"],
         ["-DDRV_OGL", "-D__BORLANDC__", "-DTEST_DRIVER_OGL"],
     )
@@ -88,8 +175,12 @@ def check_configurations(cc, common):
         (["-DDRV_PHG"], "retained PGC/PHIGS headers have no implemented driver"),
         (["-DDRV_OGL", "-DFLAT", "-DSEG86"], "Choose exactly one memory architecture"),
         (["-DDRV_OGL", "-DDRV_IGL"], "Select only one graphics driver"),
+        (["-DDRV_TGA", "-DDRV_MTX"], "Select only one graphics driver"),
+        (["-DDRV_TGA", "-DFLAT"], "TIGA requires the SEG86 memory model"),
         (["-DDRV_GDI", "-DFLAT"], "Windows GDI requires the SEG86 memory model"),
         (["-DDRV_QD", "-DFLAT"], "Classic QuickDraw requires the SEG68 memory model"),
+        (["-DDRV_AMI", "-DSEG68"], "Amiga requires the FLAT memory model"),
+        (["-DDRV_AMI", "-DOGL_AMIGA"], "OGL_AMIGA requires the DRV_OGL driver"),
         (["-DDRV_OGL", "-DTRI"], "Select exactly one driver primitive"),
     )
     for options, expected in invalid:
@@ -209,6 +300,7 @@ def check_earth_data(cc, common, output):
     if result.returncode == 0 or "Regenerate Earth data" not in result.stderr:
         raise SystemExit("Stale generated data accepted a changed chunk format")
     shutil.copyfile(ROOT / "src/e_bin.c", mismatch / "e_bin.c")
+    shutil.copyfile(ROOT / "src/buildio.h", mismatch / "buildio.h")
     run(cc + common + [str(mismatch / "e_bin.c"), "-o", str(mismatch / "e_bin")])
     rejected = mismatch / "output.c"
     rejected.write_text("preserve previous generated source\n")
@@ -241,7 +333,8 @@ def check_earth_data(cc, common, output):
     empty.mkdir()
     for name, options, chunks in (
             ("all", ["-DFLAT", "-DDRV_OGL"], 13),
-            ("matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], 2)):
+            ("matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], 2),
+            ("tiga", ["-DSEG86", "-DDRV_TGA", "-D_huge="], 2)):
         binary = output / ("earth_" + name)
         obj = output / ("earth_" + name + ".o")
         run(cc + common + options + [str(ROOT / "tests/earth_data.c"),
@@ -264,7 +357,7 @@ def check_earth_data(cc, common, output):
         if len(arrays) != chunks or any(int(row[1], 16) > 16384 for row in arrays):
             raise SystemExit("Embedded map objects exceed 16KiB or include unselected levels")
     print("PASS Earth converter: strict C89, deterministic regeneration, exact-size validation and preservation of existing output on invalid inputs")
-    print("PASS segmented Earth objects: every array is at most 16KiB and Matrox embeds only EARTH_32/EARTH_64")
+    print("PASS segmented Earth objects: every array is at most 16KiB and Matrox/TIGA embed only EARTH_32/EARTH_64")
 
 
 def main():
@@ -275,8 +368,18 @@ def main():
                         help="Record XGL calls using manual-derived declarations and real X11 under Xvfb; not native XGL validation")
     parser.add_argument("--gdi-contract", action="store_true",
                         help="Record Win16 GDI calls with host declarations; not Microsoft C 7 ABI or Windows rendering validation")
+    parser.add_argument("--tiga-contract", action="store_true",
+                        help="Record TIGA 2 calls and execute the TI transform kernel; not Microsoft C ABI, TSR transport or board rendering validation")
+    parser.add_argument("--tiga-sdk", default=os.environ.get("TIGA_SDK"),
+                        help="Also compile the TIGA driver against original TIGA.H, EXTEND.H and TYPEDEFS.H declarations")
+    parser.add_argument("--tiga-cpu", action="store_true",
+                        help="Run the optional real-mode CPU instruction probe checks (requires GNU as/objcopy and Python unicorn)")
     parser.add_argument("--qd-contract", action="store_true",
                         help="Record Classic Macintosh calls with host declarations; not MPW ABI or QuickDraw rendering validation")
+    parser.add_argument("--ami-contract", action="store_true",
+                        help="Record AmigaOS calls with host declarations; not VBCC ABI or custom-chip rendering validation")
+    parser.add_argument("--amiga-ogl-contract", action="store_true",
+                        help="Record PiStorm3D MiniGL rendering and Amiga window/context calls; not GPU or native ABI validation")
     parser.add_argument("--igl-contract", action="store_true",
                         help="Record IRIS GL calls and check software fallback pixels; not SGI SDK, native rendering or IRIX ABI validation")
     parser.add_argument("--ogl-contract", action="store_true",
@@ -292,6 +395,7 @@ def main():
         output = Path(temporary)
         check_configurations(cc, common)
         check_earth_data(cc, common, output)
+        run([sys.executable, str(ROOT / "tests/ami_pack.py")])
         flat = ["-DFLAT", "-DDRV_OGL"]
         tri_mode = ["-include", str(ROOT / "tests/tri_mode.h")]
         api_source = ["-fsyntax-only", str(ROOT / "tests/driver_api.c")]
@@ -300,14 +404,53 @@ def main():
             ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_rgb", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
             ("Sun XGL", ["-DFLAT", "-DDRV_XGL"], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
             ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tristrip_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tri_flat_uv", "earth_data_128", "texture_generate")),
+            ("TIGA", ["-DSEG86", "-DDRV_TGA", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_128", "texture_generate", "drv_resize")),
             ("GDI", ["-DSEG86", "-DDRV_GDI", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
             ("QuickDraw", ["-DSEG68", "-DDRV_QD"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
+            ("Amiga", ["-DFLAT", "-DDRV_AMI"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
         )
         for driver, options, hidden in api_modes:
             check_driver_api(cc + common + options + api_source, driver,
                              hidden + ("drv_fps_history_num",))
+        if args.tiga_cpu:
+            run([sys.executable, str(ROOT / "tests/tga_cpu.py")])
+            print("PASS TIGA CPU probe: optional emulated instructions preserve FLAGS, registers and stack across 8086/286/386/486 profiles")
+        if args.tiga_contract or args.tiga_sdk:
+            tiga = ["-DSEG86", "-DDRV_TGA", "-D_huge=", "-Dfar=", "-D_cdecl=",
+                    "-Wno-cast-function-type", "-I" + str(ROOT / "tests/dos_shim")]
+            shim = ["-I" + str(ROOT / "tests/tiga_shim")]
+            check_production_units(cc, common, tiga + shim, output, "TIGA",
+                ("drv.c", "drv_tga.c", "err.c", "globe.c", "main.c", "e_saved.c", "soft3d.c", "soft3fp.c"))
+            optimized = output / "tga_386.o"
+            run(cc + common + tiga + shim + ["-DSOFT3D_TRANSFORM_386", "-c",
+                str(ROOT / "src/soft3d.c"), "-o", str(optimized)])
+            run(cc + common + tiga + shim + [str(ROOT / "tests/tiga.c"),
+                str(ROOT / "src/e_saved.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
+                str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
+                str(ROOT / "src/tga_gsp.c"), str(optimized), "-lm", "-o", str(output / "tiga")])
+            run([sys.executable, str(ROOT / "tests/tiga_pack.py")])
+            check_tiga_extraction(output / "tiga", output)
+            run(cc + common + tiga + shim + [str(ROOT / "tests/tiga_module.c"),
+                str(ROOT / "src/tga_gsp.c"), str(ROOT / "src/soft3d.c"),
+                "-lm", "-o", str(output / "tiga_module")])
+            run([str(output / "tiga_module")])
+            if args.tiga_sdk:
+                sdk = Path(args.tiga_sdk)
+                candidates = (sdk, sdk / "include", sdk / "INCLUDE", sdk / "TIGA" / "INCLUDE")
+                headers = next((path for path in candidates if path.is_dir() and
+                    {p.name.lower() for p in path.iterdir()} >= {"tiga.h", "extend.h", "typedefs.h"}), None)
+                if headers is None:
+                    parser.error("TIGA SDK needs TIGA.H, EXTEND.H and TYPEDEFS.H: " + str(sdk))
+                normalized = output / "tiga_sdk"
+                normalized.mkdir()
+                for header in headers.iterdir():
+                    if header.name.lower() in ("tiga.h", "extend.h", "typedefs.h"):
+                        (normalized / header.name.lower()).write_bytes(header.read_bytes().rstrip(b"\r\n\x1a") + b"\n")
+                check_production_units(cc, common, tiga + ["-I" + str(normalized)], output, "TIGA_SDK",
+                    ("drv_tga.c",))
         run(cc + common + flat + tri_mode + api_source)
-        run(cc + common + flat + [str(ROOT / "tests/driver_helpers.c"),
+        run(cc + common + flat + ["-DDRV_PALETTE_DITHER", str(ROOT / "tests/driver_helpers.c"),
             str(ROOT / "src/drv.c"), "-lm", "-o", str(output / "flat_helpers")])
         run([str(output / "flat_helpers")])
         run(cc + common + flat + ["-DDEBUG=1", str(ROOT / "tests/driver_helpers.c"),
@@ -373,9 +516,9 @@ def main():
         print("PASS committed mesh diagnostics: startup/recovery print once; no-op and failed attempts are silent; GDI and QuickDraw remain console-free")
         if args.qd_contract:
             check_production_units(cc, common, qd, output, "QuickDraw",
-                ("drv.c", "drv_qd.c", "err.c", "globe.c", "main.c", "qd_fpu.c", "soft3d.c"))
+                ("drv.c", "drv_qd.c", "err.c", "globe.c", "main.c", "qd_fpu.c", "soft3d.c", "soft3fp.c"))
             run(cc + common + qd + [str(ROOT / "tests/qd.c"),
-                str(ROOT / "src/qd_fpu.c"), str(ROOT / "src/soft3d.c"),
+                str(ROOT / "src/qd_fpu.c"), str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "qd")])
@@ -386,11 +529,11 @@ def main():
                 run([str(output / "qd"), mode])
         if args.gdi_contract:
             check_production_units(cc, common, gdi + ["-Wno-cast-function-type"], output, "GDI",
-                ("drv.c", "drv_gdi.c", "err.c", "globe.c", "main.c", "soft3d.c"))
+                ("drv.c", "drv_gdi.c", "err.c", "globe.c", "main.c", "soft3d.c", "soft3fp.c"))
             # Win16 MakeProcInstance requires FARPROC/WNDPROC casts;
             # GCC diagnoses those historical, intentional callback casts.
             run(cc + common + gdi + ["-Wno-cast-function-type", str(ROOT / "tests/gdi.c"),
-                str(ROOT / "src/soft3d.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi")])
             for mode in ("fpu", "fixed", "287", "small640", "small512", "tall640",
@@ -401,10 +544,80 @@ def main():
                     expected_stderr="",
                     required_output="PASS GDI fatal error: modal paint/timer/input dispatch cannot reenter rendering or partial scene state, and cleanup releases all resources")
             run(cc + common + gdi + ["-DDEBUG=1", "-Wno-cast-function-type",
-                str(ROOT / "tests/gdi.c"), str(ROOT / "src/soft3d.c"),
+                str(ROOT / "tests/gdi.c"), str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "gdi_debug")])
             run([str(output / "gdi_debug"), "fpu"])
+        if args.amiga_ogl_contract:
+            amiga_ogl = ["-DFLAT", "-DDRV_OGL", "-DOGL_AMIGA",
+                         "-I" + str(ROOT / "tests/mgl_shim"),
+                         "-I" + str(ROOT / "tests/ami_shim")]
+            check_production_units(cc, common, amiga_ogl, output, "Amiga_OpenGL",
+                ("drv.c", "drv_ogl.c", "ogl_ami.c", "err.c", "globe.c", "main.c",
+                 "texture.c", "texsoft.c"))
+            run(cc + common + amiga_ogl + [str(ROOT / "tests/amiga_ogl.c"),
+                str(ROOT / "src/drv.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/texture.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "src/e_saved.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / "amiga_ogl")])
+            run([str(output / "amiga_ogl")],
+                expected_stderr="OpenGL texture: Insufficient memory for texture; drawing flat colors\n")
+            run(cc + common + amiga_ogl + [str(ROOT / "tests/ogl_ami.c"),
+                "-lm", "-o", str(output / "ogl_ami")])
+            for mode in ("normal", "nomipmap", "rgb24-in32", "native", "windowfail", "lockfail", "contextfail",
+                         "bitmapfail", "wrong16", "wrong24", "unknownbitmap", "wrongformat",
+                         "rounded", "shortbitmap", "hugebitmap"):
+                run([str(output / "ogl_ami"), mode])
+            for mode in ("missing", "missingcgx", "abi", "futureabi", "shorttable", "nullfunction",
+                         "stub", "wrongbackend", "stack"):
+                run([str(output / "ogl_ami"), mode], expected_returncode=1,
+                    required_output="PASS MiniGL startup rejection:")
+        if args.ami_contract:
+            ami = ["-DFLAT", "-DDRV_AMI", "-DAMI_RTG=1", "-I" + str(ROOT / "tests/ami_shim")]
+            check_production_units(cc, common, ami, output, "Amiga",
+                ("drv.c", "drv_ami.c", "ami_data.c", "err.c", "globe.c", "main.c",
+                 "soft3d.c", "soft3fp.c"))
+            enhanced = output / "ami_020.o"
+            run(cc + common + ami + ["-DSOFT3D_TRANSFORM_020", "-c",
+                str(ROOT / "src/soft3d.c"), "-o", str(enhanced)])
+            run(cc + common + ami + [str(ROOT / "tests/amiga.c"),
+                str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga")])
+            for mode in ("ocs", "mono", "two", "three", "four", "ecs", "aga", "aga64", "aga128", "020", "fpu", "040",
+                         "falsefpu", "aspect", "backfail", "scratchfail", "ham", "oversize", "cachefail", "ocswide", "denisewide", "ecswide",
+                         "cgx8", "cgx15", "cgx16", "cgx24", "cgx32", "p968", "p9615", "p9616", "p9624", "p9632",
+                         "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative"):
+                run([str(output / "amiga"), mode])
+            run([str(output / "amiga"), "stack"], expected_returncode=1,
+                required_output="PASS Amiga stack guard:")
+            native_ami = ["-DAMI_RTG=0" if option == "-DAMI_RTG=1" else option for option in ami]
+            check_production_units(cc, common, native_ami, output, "Amiga_native",
+                ("drv_ami.c",))
+            run(cc + common + native_ami + [str(ROOT / "tests/amiga.c"),
+                str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga_native")])
+            for mode in ("ocs", "mono", "two", "three", "four", "aga", "aga64", "aga128", "backfail", "ocswide", "nativeunknown"):
+                run([str(output / "amiga_native"), mode])
+            # A real packed Hunk file exercises the production DOS resource reader.
+            source = output / "amiga-input.hunk"
+            packed = output / "testglobe-amiga"
+            source.write_bytes(struct.pack(">10I", 1011, 0, 1, 0, 0, 1,
+                                           1001, 1, 0x4e754e71, 1010))
+            run([sys.executable, str(ROOT / "src/ami_pack.py"), str(source),
+                 str(ROOT / "data"), str(packed)])
+            run(cc + common + ami + [str(ROOT / "tests/ami_data.c"),
+                "-o", str(output / "ami_data")])
+            for mode in ("cli", "workbench", "programdir", "clipath", "cliname"):
+                run([str(output / "ami_data"), str(packed), mode])
+            original = packed.read_bytes()
+            for offset in (-36, -20, -192):
+                damaged = bytearray(original)
+                damaged[offset] ^= 0xff
+                packed.write_bytes(damaged)
+                run([str(output / "ami_data"), str(packed), "malformed"])
+            packed.write_bytes(original)
         if args.xgl_contract:
             if not shutil.which("xvfb-run"):
                 parser.error("--xgl-contract requires xvfb-run and Xvfb on PATH")
@@ -456,15 +669,15 @@ def main():
                                      else "PASS XGL nonrecoverable error:"))
         if args.ogl_contract:
             ogl = ["-DFLAT", "-DDRV_OGL", "-I" + str(ROOT / "tests/ogl_record")]
-            check_production_units(cc, common, ogl + ["-DNO_GENMIPMAP"], output, "OpenGL",
+            check_production_units(cc, common, ogl, output, "OpenGL",
                 ("drv.c", "drv_ogl.c", "err.c", "globe.c", "main.c", "texture.c", "texsoft.c", "e_saved.c"))
             ogl_sources = [str(ROOT / "tests/ogl.c"), str(ROOT / "src/e_saved.c"),
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm"]
-            run(cc + common + ogl + ["-DNO_GENMIPMAP"] + ogl_sources +
+            run(cc + common + ogl + ogl_sources +
                 ["-o", str(output / "ogl")])
-            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "reduced", "softreduced", "glureduced"):
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "reduced", "softreduced", "uploadreduced", "framefail"):
                 run([str(output / "ogl"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl"), mode],
@@ -475,12 +688,13 @@ def main():
                     expected_stderr="OpenGL error: Invalid operation!\n" * 6 if mode == "callfail" else "",
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
             texture_failures = {
-                "gluerror": "Insufficient memory for texture; drawing flat colors",
+                "uploadfail": "Insufficient memory for texture; drawing flat colors",
                 "stagefail": "Insufficient memory for texture; drawing flat colors",
-                "softmipfail": "Insufficient memory for texture; drawing flat colors",
                 "softframefail": "Cannot prepare indexed OpenGL texture raster",
-                "softtransferallocfail": "Cannot present indexed OpenGL texture raster",
+                "softpixelsfail": "Cannot present indexed OpenGL texture raster",
                 "softtransfererror": "Cannot present indexed OpenGL texture raster",
+                "maxzero": "OpenGL texture capacity is below 32 pixels",
+                "maxtiny": "OpenGL texture capacity is below 32 pixels",
             }
             for mode, message in texture_failures.items():
                 run([str(output / "ogl"), mode],
@@ -491,11 +705,9 @@ def main():
                 message = "OpenGL texture data is not loaded" if mode == "unloadedtexture" else "OpenGL texture is not active"
                 run([str(output / "ogl"), mode], expected_stderr="OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL actual texture use:")
-            run(cc + common + ogl + ogl_sources + ["-o", str(output / "ogl_11")])
-            run([str(output / "ogl_11"), "rgba"])
             modern_ogl = ogl + ["-DTEST_OGL_FREEGLUT"]
             run(cc + common + modern_ogl + ogl_sources + ["-o", str(output / "ogl_modern")])
-            for mode in ("rgba", "rgb24", "rgb16", "legacy11", "missingproc", "nullversion", "badversion", "limited", "maxzero"):
+            for mode in ("rgba", "rgb24", "rgb16", "limited"):
                 run([str(output / "ogl_modern"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl_modern"), mode],
@@ -505,22 +717,23 @@ def main():
                 run([str(output / "ogl_modern"), mode],
                     expected_stderr="OpenGL error: Invalid operation!\n" * 6 if mode == "callfail" else "",
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
-            for mode in ("texallocerror", "texuploaderror", "mipmaperror"):
+            for mode in ("texallocerror", "uploadinvalid", "uploadmixed", "uploadmixedreverse"):
                 message = ("Cannot allocate OpenGL texture" if mode == "texallocerror"
-                           else "Cannot build OpenGL texture mipmaps")
+                           else "Cannot upload OpenGL texture")
                 run([str(output / "ogl_modern"), mode],
-                    expected_stderr="OpenGL error: Out of memory!\nOpenGL texture: " + message + "\n",
+                    expected_stderr=("OpenGL error: Out of memory!\n" if mode == "texallocerror" else "OpenGL error: Invalid operation!\n") +
+                                    "OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL recoverable texture failure:")
-            for label, options in (("legacy", ogl), ("optional", modern_ogl)):
+            for label, options in (("legacy", ogl), ("freeglut", modern_ogl)):
                 obj = output / ("ogl_" + label + ".o")
                 run(cc + common + options + ["-c", str(ROOT / "src/drv_ogl.c"), "-o", str(obj)])
                 symbols = subprocess.run(["nm", "-u", str(obj)], text=True, capture_output=True, check=True).stdout
-                if "glGenerateMipmap" in symbols or (label == "legacy" and "glutGetProcAddress" in symbols):
+                if any(name in symbols for name in ("glGenerateMipmap", "gluBuild2DMipmaps", "glutGetProcAddress")):
                     raise SystemExit("OpenGL 1.1 object unexpectedly links a later entry point")
-            print("PASS OpenGL 1.1 object linkage: legacy and optional builds compile with GL 1.1 declarations and never import glGenerateMipmap")
+            print("PASS OpenGL 1.1 object linkage: legacy and FreeGLUT builds use base-level uploads without mipmap or extension entry points")
             for label, define in (("missing_query", "TEST_OGL_NO_MODE_QUERY"),
                                   ("old_glut", "TEST_OGL_OLD_GLUT")):
-                legacy_options = ogl + ["-DNO_GENMIPMAP", "-D" + define]
+                legacy_options = ogl + ["-D" + define]
                 binary = output / ("ogl_" + label)
                 run(cc + common + legacy_options + ogl_sources + ["-o", str(binary)])
                 for mode in ("legacy-glut", "rgb16"):
@@ -534,10 +747,10 @@ def main():
                 if "glutInitDisplayString" in symbols:
                     raise SystemExit("Legacy GLUT object unexpectedly imports display-string probing")
             print("PASS legacy GLUT linkage: API 3 and API 4 without mode queries create a validated window and never import glutInitDisplayString")
-            run(cc + common + ogl + ["-DNO_GENMIPMAP", "-DTEXTURE_CACHE_RASTER=1"] +
+            run(cc + common + ogl + ["-DTEXTURE_CACHE_RASTER=1"] +
                 ogl_sources + ["-o", str(output / "ogl_cached")])
             run([str(output / "ogl_cached"), "indexed"])
-            run(cc + common + ogl + ["-DNO_GENMIPMAP"] + tri_mode + ogl_sources +
+            run(cc + common + ogl + tri_mode + ogl_sources +
                 ["-o", str(output / "ogl_tri")])
             for mode in ("rgba", "indexed"):
                 run([str(output / "ogl_tri"), mode])
@@ -550,7 +763,7 @@ def main():
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl")])
             for mode in ("double", "single", "indexed", "indexed-single", "noz", "software", "unknown", "affine", "winquit", "winshut",
-                         "rgba", "rgba-single", "rgb-single", "unknown-alpha", "cachefail", "reduced", "softreduced"):
+                         "rgba", "rgba-single", "rgb-single", "unknown-alpha", "cachefail", "reduced", "softreduced", "framefail", "objectreject"):
                 run([str(output / "igl"), mode])
             igl_texture_failures = {
                 "stagefail": "Insufficient memory for texture; drawing flat colors",

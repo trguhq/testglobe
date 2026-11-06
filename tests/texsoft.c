@@ -1,5 +1,5 @@
 /* Analytical pixel contracts for the shared software texture fallback.
- * Numeric raster words are tested; the host's unsigned-long ABI is not IRIX. */
+ * Word and byte rasters are tested; the host's unsigned-long ABI is not IRIX. */
 #include <assert.h>
 #include <float.h>
 #include <stdio.h>
@@ -131,6 +131,45 @@ static void minification_and_trilinear(void)
     assert(((value>>16)&255UL)>=31UL&&((value>>16)&255UL)<=33UL);
 }
 
+static void base_level_filter(void)
+{
+    unsigned char checker[48], palette[TEXTURE_PALETTE_BYTES], *adopted;
+    static const unsigned char dark[3]={3,5,22};
+    unsigned int x,y,c;
+    reset_matrices();
+    for(y=0;y<4U;++y)for(x=0;x<4U;++x)for(c=0;c<3U;++c)
+        checker[(y*4U+x)*3U+c]=(unsigned char)(((x+y)&1U)?255:dark[c]);
+    adopted=(unsigned char *)malloc(sizeof(checker));
+    assert(adopted!=NULL);
+    memcpy(adopted,checker,sizeof(checker));
+    assert(texsoft_texture_take_filtered(4,4,adopted,TEXSOFT_BILINEAR)==DRV_OK);
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_RGB_WORDS,NULL));
+    /* The footprint covers the whole repeating image, but each pixel center
+     * selects the dark texel. Base filtering must not introduce the pale mean. */
+    textured_quad(0.125f,0.125f,8.125f,8.125f);
+    all_pixels(2,2,BLACK_PIXEL|3UL|(5UL<<8)|(22UL<<16));
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_RGB_WORDS,NULL));
+    textured_quad(0,0,8,8);
+    /* Halfway between four base texels still performs bilinear blending. */
+    all_pixels(2,2,BLACK_PIXEL|129UL|(130UL<<8)|(139UL<<16));
+    memset(palette,0,sizeof(palette));
+    memcpy(palette+9U*3U,dark,sizeof(dark));
+    palette[17U*3U]=129;palette[17U*3U+1U]=130;palette[17U*3U+2U]=139;
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    textured_quad(0.125f,0.125f,8.125f,8.125f);
+    for(x=0;x<4U;++x)assert(texsoft_index_pixels()[x]==9);
+    /* Changing pixel format must not change filtering; old upload callers
+     * still request the complete trilinear pyramid used by IRIS GL. */
+    assert(texsoft_texture(4,4,checker));
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    textured_quad(0.125f,0.125f,8.125f,8.125f);
+    for(x=0;x<4U;++x)assert(texsoft_index_pixels()[x]==17);
+    assert(texsoft_begin(2,2,model,projection,TEXSOFT_RGB_WORDS,NULL));
+    textured_quad(0.125f,0.125f,8.125f,8.125f);
+    all_pixels(2,2,BLACK_PIXEL|129UL|(130UL<<8)|(139UL<<16));
+    puts("PASS Software texture filtering: base bilinear avoids pale coarse-mip colors under heavy minification in RGB and indexed rasters; retained callers remain trilinear");
+}
+
 static void depth_and_culling(void)
 {
     reset_matrices();
@@ -221,7 +260,9 @@ static void row_vectors_and_perspective(void)
 
 static void indexed_and_lifetimes(void)
 {
-    unsigned char palette[TEXTURE_PALETTE_BYTES];
+    unsigned char palette[TEXTURE_PALETTE_BYTES], expected[35];
+    unsigned int i;
+    unsigned char *indices;
     static const unsigned char green[3]={0,255,0};
     reset_matrices();
     memset(palette,0,sizeof(palette));
@@ -234,10 +275,28 @@ static void indexed_and_lifetimes(void)
     assert(texsoft_begin(5,7,model,projection,1,palette));
     solid_quad(-1,-1,1,1,0,0,0,0);
     all_pixels(5,7,17UL);
+    /* The byte and IRIX-word layouts must produce identical palette values,
+     * including depth/culling and a format change at unchanged dimensions. */
+    for(i=0;i<35U;++i)expected[i]=(unsigned char)texsoft_pixels()[i];
+    assert(texsoft_begin(5,7,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    assert(texsoft_pixels()==NULL&&texsoft_index_pixels()!=NULL);
+    indices=texsoft_index_pixels();
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    assert(memcmp(indices,expected,sizeof(expected))==0);
+    assert(texsoft_begin(5,7,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    assert(texsoft_index_pixels()==indices);
+    solid_quad(-1,-1,1,1,0,0,0,1);
+    for(i=0;i<35U;++i)assert(indices[i]==0);
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    assert(memcmp(indices,expected,sizeof(expected))==0);
+    assert(texsoft_begin(3,4,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    for(i=0;i<12U;++i)assert(texsoft_index_pixels()[i]==17);
+    assert(!texsoft_begin(3,4,model,projection,3,palette));
     /* Releasing a disabled texture's viewport must preserve its image and
      * palette lookup, so re-enable needs neither source RGB nor new mips. */
     texsoft_release_raster();texsoft_release_raster();
-    assert(texsoft_pixels()==NULL);
+    assert(texsoft_pixels()==NULL&&texsoft_index_pixels()==NULL);
     solid_quad(-1,-1,1,1,0,0,0,0);
     assert(texsoft_begin(3,4,model,projection,1,palette));
     solid_quad(-1,-1,1,1,0,0,0,0);
@@ -245,13 +304,14 @@ static void indexed_and_lifetimes(void)
     assert(texsoft_begin(5,7,model,projection,0,NULL));
     solid_quad(-1,-1,1,1,0,0,0,0);
     all_pixels(5,7,GREEN_PIXEL);
+    assert(texsoft_index_pixels()==NULL);
     assert(!texsoft_begin(5,7,model,projection,1,NULL));
     assert(!texsoft_texture(3,1,green));
     assert(!texsoft_texture(0,1,green));
     assert(!texsoft_texture(1,1,NULL));
     assert(!texsoft_begin(0,7,model,projection,0,NULL));
     texsoft_free();texsoft_free();
-    assert(texsoft_pixels()==NULL);
+    assert(texsoft_pixels()==NULL&&texsoft_index_pixels()==NULL);
     assert(!texsoft_begin(1,1,model,projection,0,NULL));
 }
 
@@ -306,12 +366,14 @@ int main(void)
 {
     magnification_and_repeat();
     minification_and_trilinear();
+    base_level_filter();
     depth_and_culling();
     frustum_clipping();
     row_vectors_and_perspective();
     indexed_and_lifetimes();
     invalid_numeric_inputs();
     puts("PASS Shared software texture pixels: bilinear/repeat, trilinear/mipmaps, perspective-correct UVs and row-vector matrices");
+    puts("PASS Shared software raster formats: byte indices equal native words, no OpenGL transfer copy, same-size format replacement and cached-size reuse");
     puts("PASS Shared software visibility/lifetimes: clipping, depth, culling, palette rebuilds, raster release/reuse and invalid numeric input guards");
     return 0;
 }

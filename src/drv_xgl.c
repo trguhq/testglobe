@@ -718,7 +718,7 @@ static void xgl_submit_tristrip(unsigned int count, const Vertex *vertices,
 static void xgl_draw_tristrip(unsigned int count, const Vertex *vertices,
                                const Color_RGB *facet_colors, const Coord *coords)
 {
-    unsigned int capacity, first, facets, maximum;
+    unsigned int capacity, first, facets;
     Xgl_pt_f3d *plain;
     Xgl_color_facet *colors;
     float *texture_points;
@@ -741,14 +741,10 @@ static void xgl_draw_tristrip(unsigned int count, const Vertex *vertices,
         colors = xgl_strip_facets;
         texture_points = xgl_strip_texture_points;
     }
-    /* Nonfinal pieces contain an even number of facets, retaining the
-     * strip's original winding and its final two vertices in the next piece. */
-    maximum = (capacity - 2U) & ~1U;
     first = 0;
-    while (first < count - 2U)
+    while ((facets = drv_tristrip_batch_facets(count, first,
+                                               capacity - 2U)) != 0U)
     {
-        facets = count - 2U - first;
-        if (facets > maximum) facets = maximum;
         xgl_submit_tristrip(facets + 2U, vertices + first,
                              facet_colors == NULL ? NULL : facet_colors + first,
                              coords == NULL ? NULL : coords + first,
@@ -790,11 +786,74 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
     xgl_draw_tristrip(count, vertices, NULL, coords);
 }
 
+/* Measure native stroke-font extents, including bearings, rather than
+ * assuming that every glyph occupies the same number of pixels. The bounded
+ * local line also handles help strings longer than the statistics buffer. */
+static unsigned int xgl_osd_text(const char *text, float baseline, float width,
+                                  float line_height, int draw)
+{
+    char line[160];
+    Xgl_bounds_f2d bounds, fitted;
+    Xgl_pt_f2d concatenate, position;
+    unsigned int count, fit, space, lines, low, high, middle;
+    lines = 0;
+    while (*text != '\0')
+    {
+        for (count = 0; text[count] != '\0' && count < sizeof(line) - 1U; ++count)
+            line[count] = text[count];
+        fit = space = 0;
+        low = 1U;
+        high = count;
+        /* Binary search keeps per-frame font queries bounded even when a
+         * long status wraps across several lines. */
+        while (low <= high)
+        {
+            middle = low + (high - low) / 2U;
+            line[middle] = '\0';
+            xgl_stroke_text_extent(xgl_overlay, line, &bounds, &concatenate);
+            xgl_checkerrors();
+            line[middle] = text[middle];
+            if (bounds.xmax - bounds.xmin <= width)
+            {
+                fit = middle;
+                low = middle + 1U;
+            }
+            else high = middle - 1U;
+        }
+        /* Even one glyph does not fit. Avoid drawing outside the window or
+         * repeatedly reconsidering the same character in a tiny drawable. */
+        if (fit == 0U) return lines;
+        for (count = 0; count < fit; ++count)
+            if (text[count] == ' ') space = count;
+        if (text[fit] != '\0' && space > 0U) fit = space;
+        line[fit] = '\0';
+        xgl_stroke_text_extent(xgl_overlay, line, &fitted, &concatenate);
+        xgl_checkerrors();
+        if (draw && baseline - fitted.ymax >= 0.0f &&
+            baseline - fitted.ymin < (float)drv_win_height)
+        {
+            position.x = 10.0f - fitted.xmin;
+            position.y = baseline;
+            xgl_stroke_text(xgl_overlay, line, &position, NULL);
+            xgl_checkerrors();
+        }
+        ++lines;
+        baseline += line_height;
+        text += fit;
+        while (*text == ' ') ++text;
+    }
+    return lines;
+}
+
 void drv_draw_osd(void)
 {
-    Xgl_pt_f2d position;
+    Xgl_bounds_f2d bounds;
+    Xgl_pt_f2d concatenate;
+    float width, line_height, baseline, help_baseline;
+    unsigned int status_lines, help_lines;
     char status[160];
     char texture_status[40];
+    if (drv_win_width <= 20U || drv_win_height <= 20U) return;
     drv_format_stats(status);
     if (xgl_texture_used && texture_size != TEXTURE_DEFAULT_SIZE)
         sprintf(texture_status, ", texture on (%u)", texture_size);
@@ -802,18 +861,23 @@ void drv_draw_osd(void)
         strcpy(texture_status, !drv_texture_enabled ? ", texture off" :
                     (xgl_texture_used ? ", texture on" : ", texture fail"));
     drv_append_status(status, sizeof(status), texture_status);
-    position.x = 10.0f;
-    position.y = 18.0f;
-    xgl_stroke_text(xgl_overlay, status, &position, NULL);
+    xgl_stroke_text_extent(xgl_overlay, "Mg", &bounds, &concatenate);
     xgl_checkerrors();
-    position.y = (float)drv_win_height - 10.0f;
-    xgl_stroke_text(xgl_overlay, drv_help, &position, NULL);
-    xgl_checkerrors();
+    line_height = bounds.ymax - bounds.ymin + 4.0f;
+    if (!(line_height >= 4.0f && line_height < (float)drv_win_height)) return;
+    width = (float)drv_win_width - 20.0f;
+    baseline = line_height + 2.0f;
+    status_lines = xgl_osd_text(status, baseline, width, line_height, TRUE);
+    help_lines = xgl_osd_text(drv_help, 0.0f, width, line_height, FALSE);
+    help_baseline = (float)drv_win_height - 10.0f -
+                    (float)(help_lines > 0U ? help_lines - 1U : 0U) * line_height;
+    if (help_lines != 0U && help_baseline >= baseline + status_lines * line_height)
+        (void)xgl_osd_text(drv_help, help_baseline, width, line_height, TRUE);
 }
 
 static int xgl_animating(void)
 {
-    return drv_auto_enabled && globe_ready() && !drv_frame_failed;
+    return drv_animation_allowed();
 }
 
 void drv_render(void)
@@ -877,7 +941,7 @@ void drv_render(void)
         xgl_context_new_frame(xgl_context);
         xgl_checkerrors();
     }
-    if (drv_osd_enabled || !scene || drv_frame_failed) drv_draw_osd();
+    if (drv_status_required()) drv_draw_osd();
     xgl_context_flush(xgl_overlay, XGL_FLUSH_SYNCHRONIZE);
     xgl_checkerrors();
     if (xgl_double_buffer)

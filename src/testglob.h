@@ -39,7 +39,7 @@
 
 /* Fallbacks for legacy build settings; the Makefile selects the driver. */
 #if !defined(DRV_OGL) && !defined(DRV_IGL) && !defined(DRV_XGL) && \
-    !defined(DRV_MTX) && !defined(DRV_GDI) && !defined(DRV_QD) && \
+    !defined(DRV_MTX) && !defined(DRV_TGA) && !defined(DRV_GDI) && !defined(DRV_QD) && !defined(DRV_AMI) && \
     !defined(DRV_PGC) && !defined(DRV_PHG)
 #if defined(__APPLE__) && defined(__MACH__)
 #define DRV_OGL
@@ -52,7 +52,7 @@
 
 /* Infer memory architecture only after the driver has been selected. */
 #if !defined(FLAT) && !defined(SEG86) && !defined(SEG68)
-#if defined(DRV_MTX) || defined(DRV_GDI)
+#if defined(DRV_MTX) || defined(DRV_TGA) || defined(DRV_GDI)
 #define SEG86
 #elif defined(DRV_QD)
 #define SEG68
@@ -65,14 +65,14 @@
 #endif
 /* The selected driver header chooses TRI, QUAD, or TRISTRIP. */
 #if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_XGL) || \
-    defined(DRV_MTX) || defined(DRV_GDI) || defined(DRV_QD)
+    defined(DRV_MTX) || defined(DRV_TGA) || defined(DRV_GDI) || defined(DRV_QD) || defined(DRV_AMI)
 #ifndef DRV
 #define DRV
 #endif
 #endif
 
-/* Historical Microsoft and MPW runtimes predate C99 sinf/cosf. */
-#if defined(SEG86) || defined(SEG68)
+/* Historical Microsoft, MPW and Amiga runtimes predate C99 sinf/cosf. */
+#if defined(SEG86) || defined(SEG68) || defined(DRV_AMI)
 #ifndef NO_SINF
 #define NO_SINF
 #endif

@@ -64,6 +64,8 @@ static int fail_lock;
 static int failure_profile;
 static int fail_polygon;
 static int fail_pattern;
+static int fail_scratch;
+static unsigned int scratch_calls;
 static int fail_color_table;
 static int fail_palette;
 static int fail_resource;
@@ -71,6 +73,8 @@ static OSErr resource_error;
 static Handle resource_lock_failure;
 static Ptr resource_lock_bytes;
 static unsigned int pattern_calls;
+static unsigned int rgb_pattern_calls, color_fill_calls, solid_fill_calls;
+static RGBColor last_pattern_rgb;
 static unsigned int polygon_calls;
 static int reentry_requested;
 static unsigned int reentry_calls, reentry_width;
@@ -78,7 +82,7 @@ static short find_part = inGoAway;
 static unsigned long ticks;
 static unsigned int window_calls, color_calls, world_calls, copy_calls;
 static unsigned int palette_calls, text_calls, alert_calls;
-static unsigned int ptr_count, handle_count, poly_count, menu_count;
+static unsigned int ptr_count, handle_count, menu_count;
 static unsigned int world_count, palette_count, window_count;
 static void *memory_blocks[64];
 static void *handle_blocks[64];
@@ -88,9 +92,6 @@ static PaletteHandle window_palette;
 typedef struct { RGBColor foreground, background; } Test_port_colors;
 static Test_port_colors desktop_colors, window_colors, world_colors;
 static Point pen;
-static PolyHandle recording_poly;
-static Point pending_points[16];
-static int pending_count;
 static int pen_hidden;
 static unsigned int pixpat_count;
 static unsigned int recorded_count;
@@ -176,6 +177,18 @@ Handle NewHandle(Size size)
     unsigned int i;
     Handle handle;
     assert(size > 0);
+    if (size == (Size)QD_POLYGON_BYTES) {
+        ++polygon_calls;
+        if (fail_polygon) {
+            if (fail_polygon == 2) fail_polygon = 0;
+            return NULL;
+        }
+    }
+    if (size == (Size)QD_PATTERN_SCRATCH || size == (Size)QD_FILL_SCRATCH) {
+        ++scratch_calls;
+        if (fail_scratch || (fail_pattern && size == (Size)QD_PATTERN_SCRATCH))
+            return NULL;
+    }
     if (fail_color_table && size == (Size)(sizeof(ColorTable) +
                                           255L * sizeof(ColorSpec))) return NULL;
     handle = (Handle)malloc(sizeof(Ptr));
@@ -413,35 +426,14 @@ void GetClip(RgnHandle r) { assert(r != NULL); }
 void SetClip(RgnHandle r) { assert(r != NULL); }
 void EraseRect(const Rect *r) { assert(r != NULL && current_port != NULL); }
 void PaintRect(const Rect *r) { assert(r != NULL && current_port != NULL); }
-PolyHandle OpenPoly(void)
-{
-    assert(recording_poly == NULL && !pen_hidden);
-    ++polygon_calls;
-    if (fail_polygon) {
-        if (fail_polygon == 2) fail_polygon = 0;
-        return NULL;
-    }
-    pen_hidden = TRUE;
-    recording_poly = (PolyHandle)NewHandle((Size)(sizeof(Polygon) + 12 * sizeof(Point)));
-    pending_count = 0; ++poly_count;
-    return recording_poly;
-}
-void ClosePoly(void) { assert(recording_poly != NULL && pending_count >= 3 && pen_hidden); recording_poly = NULL; pen_hidden = FALSE; }
-void KillPoly(PolyHandle p) { assert(p != NULL && poly_count > 0); DisposeHandle((Handle)p); --poly_count; }
-void MoveTo(short h, short v)
-{
-    pen.h = h; pen.v = v;
-    if (recording_poly != NULL) {
-        assert(pending_count < 12); pending_points[pending_count++] = pen;
-    }
-}
-void LineTo(short h, short v)
-{
-    pen.h = h; pen.v = v;
-    if (recording_poly != NULL) {
-        assert(pending_count < 12); pending_points[pending_count++] = pen;
-    }
-}
+/* Native OpenPoly/NewPixPat may invoke SysError on exhaustion. The
+ * production renderer must use checked polygon storage and preflight the
+ * optional pattern path, not depend on these calls returning NULL. */
+PolyHandle OpenPoly(void) { assert(!"Production must not record polygons"); return NULL; }
+void ClosePoly(void) { assert(!"Production must not record polygons"); }
+void KillPoly(PolyHandle p) { (void)p; assert(!"Reusable polygons use DisposeHandle"); }
+void MoveTo(short h, short v) { pen.h = h; pen.v = v; }
+void LineTo(short h, short v) { pen.h = h; pen.v = v; }
 static void record_polygon(PolyHandle poly, unsigned int black, const RGBColor *color)
 {
     RecordedPolygon *entry;
@@ -451,7 +443,25 @@ static void record_polygon(PolyHandle poly, unsigned int black, const RGBColor *
     unsigned int width;
     int longitude, osd;
     int i, count;
-    assert(poly != NULL && current_port != NULL);
+    Point *points;
+    Rect bounds;
+    assert(poly != NULL && *poly != NULL && current_port != NULL && !pen_hidden);
+    assert(GetHandleSize((Handle)poly) == (Size)QD_POLYGON_BYTES);
+    assert((**poly).polySize >= (short)(offsetof(Polygon, polyPoints) + 4U * sizeof(Point)));
+    assert((**poly).polySize <= (short)QD_POLYGON_BYTES);
+    assert(((**poly).polySize - offsetof(Polygon, polyPoints)) % sizeof(Point) == 0);
+    count = (int)(((**poly).polySize - offsetof(Polygon, polyPoints)) / sizeof(Point)) - 1;
+    points = (Point *)((char *)*poly + offsetof(Polygon, polyPoints));
+    assert(points[count].h == points[0].h && points[count].v == points[0].v);
+    bounds.left = bounds.right = points[0].h;
+    bounds.top = bounds.bottom = points[0].v;
+    for (i = 0; i < count; ++i) {
+        if (points[i].h < bounds.left) bounds.left = points[i].h;
+        if (points[i].h > bounds.right) bounds.right = points[i].h;
+        if (points[i].v < bounds.top) bounds.top = points[i].v;
+        if (points[i].v > bounds.bottom) bounds.bottom = points[i].v;
+    }
+    assert(memcmp(&bounds, &(**poly).polyBBox, sizeof(bounds)) == 0);
     if (reentry_requested) {
         reentry_requested = FALSE; ++reentry_calls;
         assert(qd_rendering);
@@ -471,21 +481,18 @@ static void record_polygon(PolyHandle poly, unsigned int black, const RGBColor *
         assert(globe_longitude == longitude && drv_win_width == width);
         assert(drv_osd_enabled == osd && qd_rendering);
     }
-    count = pending_count;
-    if (count > 3 && pending_points[count - 1].h == pending_points[0].h &&
-        pending_points[count - 1].v == pending_points[0].v) --count;
     assert(count >= 3 && count <= 10);
     for (i = 0; i < count; ++i) {
-        assert(pending_points[i].h != pending_points[(i + 1) % count].h ||
-               pending_points[i].v != pending_points[(i + 1) % count].v);
+        assert(points[i].h != points[(i + 1) % count].h ||
+               points[i].v != points[(i + 1) % count].v);
     }
     if (streaming_polygons) {
         long area = 0;
         for (i = 0; i < count; ++i) {
-            assert(pending_points[i].h >= 0 && pending_points[i].h <= (int)drv_win_width);
-            assert(pending_points[i].v >= 0 && pending_points[i].v <= (int)drv_win_height);
-            area += (long)pending_points[i].h * pending_points[(i + 1) % count].v -
-                    (long)pending_points[i].v * pending_points[(i + 1) % count].h;
+            assert(points[i].h >= 0 && points[i].h <= (int)drv_win_width);
+            assert(points[i].v >= 0 && points[i].v <= (int)drv_win_height);
+            area += (long)points[i].h * points[(i + 1) % count].v -
+                    (long)points[i].v * points[(i + 1) % count].h;
         }
         assert(area < 0);
         ++recorded_count;
@@ -495,12 +502,12 @@ static void record_polygon(PolyHandle poly, unsigned int black, const RGBColor *
     entry = recorded + recorded_count++;
     entry->count = count; entry->color = rgb_value(color); entry->pattern_black = black;
     for (i = 0; i < count; ++i) {
-        entry->points[i] = pending_points[i];
+        entry->points[i] = points[i];
         assert(entry->points[i].h >= 0 && entry->points[i].h <= (int)drv_win_width);
         assert(entry->points[i].v >= 0 && entry->points[i].v <= (int)drv_win_height);
     }
 }
-void PaintPoly(PolyHandle p) { assert(has_color); record_polygon(p, 64U, &test_current_colors()->foreground); }
+void PaintPoly(PolyHandle p) { assert(has_color); ++solid_fill_calls; record_polygon(p, 64U, &test_current_colors()->foreground); }
 void FillPoly(PolyHandle p, const Pattern *pattern) { assert(pattern != NULL); record_polygon(p, pattern_bits(pattern->pat), &test_current_colors()->foreground); }
 void PenSize(short h, short v) { assert(h >= 0 && v >= 0); }
 void PenNormal(void) {}
@@ -510,13 +517,13 @@ PixPatHandle NewPixPat(void)
 {
     color_api();
     ++pattern_calls;
-    if (fail_pattern) return NULL;
+    assert(!fail_pattern);
     ++pixpat_count;
     return (PixPatHandle)NewHandle((Size)sizeof(PixPat));
 }
 void DisposePixPat(PixPatHandle p) { color_api(); assert(pixpat_count > 0); DisposeHandle((Handle)p); --pixpat_count; }
-void MakeRGBPat(PixPatHandle p, const RGBColor *c) { color_api(); assert(p != NULL && c != NULL); test_drawing_device(); (*p)->color = *c; }
-void FillCPoly(PolyHandle p, PixPatHandle pattern) { color_api(); assert(pattern != NULL); record_polygon(p, 64U, &(*pattern)->color); }
+void MakeRGBPat(PixPatHandle p, const RGBColor *c) { color_api(); assert(p != NULL && c != NULL); test_drawing_device(); ++rgb_pattern_calls; last_pattern_rgb = *c; (*p)->color = *c; }
+void FillCPoly(PolyHandle p, PixPatHandle pattern) { color_api(); assert(pattern != NULL); ++color_fill_calls; record_polygon(p, 64U, &(*pattern)->color); }
 void ForeColor(long color)
 {
     RGBColor *foreground;
@@ -721,7 +728,7 @@ short StopAlert(short id, void *filter)
     assert(id == 128 && filter == NULL); ++alert_calls;
     assert(!qd_ready && !qd_running && !qd_active && !qd_rendering);
     assert(!world_locked && qd_locked_pixels == NULL && qd_pending_polygon == NULL);
-    assert(poly_count == 0 && recording_poly == NULL && !pen_hidden);
+    assert(!pen_hidden);
     previous_texts = text_calls;
     memset(&event, 0, sizeof(event));
     event.what = updateEvt; event.message = (long)qd_window;
@@ -1042,6 +1049,128 @@ static void check_fpu_angles(void)
     puts("PASS QuickDraw FPU angles: normalized endpoints accepted, huge/nonfinite/null inputs rejected without loops or reuse of a stale transform");
 }
 
+/* This checks the application's native requests, not QuickDraw's palette
+ * conversion or physical dither output. Native patterns must receive the
+ * original RGB rather than an application-selected palette approximation. */
+static void check_color_submission(void)
+{
+    PolyHandle polygon;
+    Point triangle[3];
+    GrafPtr saved_port;
+    GDHandle saved_device;
+    Test_port_colors saved_colors;
+    RGBColor *submitted;
+    unsigned int color, fills, patterns, luminance;
+    unsigned char saved_earth[3];
+    ColorTable changed_table, *changed_table_ptr;
+    CTabHandle old_table;
+    GetPort(&saved_port);
+    saved_device = has_color ? GetGDevice() : NULL;
+    SetPort((GrafPtr)qd_window);
+    if (has_color) SetGDevice(qd_device);
+    saved_colors = window_colors;
+    triangle[0].h = triangle[0].v = 10;
+    triangle[1].h = 50; triangle[1].v = 10;
+    triangle[2].h = 10; triangle[2].v = 50;
+    polygon = qd_make_polygon(triangle, 3); assert(polygon != NULL);
+    assert(qd_prepare_native());
+    qd_pattern_color = -1;
+    for (color = 0; color < 256U; ++color)
+    {
+        recorded_count = 0;
+        fills = color_fill_calls;
+        patterns = solid_fill_calls;
+        qd_flat_color(polygon, (unsigned char)color);
+        assert(recorded_count == 1U);
+        if (qd_depth == 1)
+        {
+            luminance = (77U * (unsigned int)earth_cmap[color][0] +
+                         150U * (unsigned int)earth_cmap[color][1] +
+                         29U * (unsigned int)earth_cmap[color][2] + 128U) / 256U;
+            assert(recorded[0].pattern_black == 64U - (luminance + 2U) / 4U);
+            assert(color_fill_calls == fills && solid_fill_calls == patterns);
+            continue;
+        }
+        if (qd_depth <= 8 && !qd_pattern_unavailable)
+        {
+            assert(color_fill_calls == fills + 1U && solid_fill_calls == patterns);
+            submitted = &last_pattern_rgb;
+        }
+        else
+        {
+            assert(color_fill_calls == fills && solid_fill_calls == patterns + 1U);
+            submitted = &window_colors.foreground;
+        }
+        assert(submitted->red == earth_cmap[color][0] * 257U);
+        assert(submitted->green == earth_cmap[color][1] * 257U);
+        assert(submitted->blue == earth_cmap[color][2] * 257U);
+    }
+    if (qd_depth > 1 && qd_depth <= 8 && !qd_pattern_unavailable)
+    {
+        /* A changed device palette still reaches FillCPoly with the same
+         * RGB pattern. The native Toolbox, not this recorder, checks the
+         * table seed and reselects its device colors on that call. */
+        old_table = (**(**qd_device).gdPMap).pmTable;
+        memset(&changed_table, 0, sizeof(changed_table));
+        changed_table_ptr = &changed_table;
+        (**(**qd_device).gdPMap).pmTable = &changed_table_ptr;
+        patterns = rgb_pattern_calls; fills = color_fill_calls;
+        qd_flat_color(polygon, 255);
+        ++changed_table.ctSeed;
+        qd_flat_color(polygon, 255);
+        assert(rgb_pattern_calls == patterns && color_fill_calls == fills + 2U);
+        (**(**qd_device).gdPMap).pmTable = old_table;
+    }
+    if (qd_depth == 1)
+    {
+        memcpy(saved_earth, earth_cmap[0], sizeof(saved_earth));
+        for (color = 0; color < 256U; ++color)
+        {
+            memset(earth_cmap[0], (int)color, 3);
+            recorded_count = 0;
+            qd_flat_color(polygon, 0);
+            assert(recorded[0].pattern_black == 64U - (color + 2U) / 4U);
+        }
+        memcpy(earth_cmap[0], saved_earth, sizeof(saved_earth));
+    }
+    window_colors = saved_colors;
+    SetPort(saved_port);
+    if (has_color) SetGDevice(saved_device);
+    recorded_count = 0;
+    puts("PASS QuickDraw color submission: all Earth RGB values reach native pattern/solid APIs unchanged; cached patterns reach changed palettes; monochrome retains 64-step luminance");
+}
+
+static void check_reusable_polygon(void)
+{
+    Point points[QD_MAX_POLY];
+    Point *stored;
+    PolyHandle handle;
+    unsigned int allocations;
+    int i;
+    for (i = 0; i < QD_MAX_POLY; ++i)
+    {
+        points[i].h = (short)(10 + i * 3);
+        points[i].v = (short)(40 - i * 2);
+    }
+    handle = qd_make_polygon(points, QD_MAX_POLY);
+    assert(handle != NULL && GetHandleSize((Handle)handle) == (Size)QD_POLYGON_BYTES);
+    assert((**handle).polySize == (short)QD_POLYGON_BYTES);
+    assert((**handle).polyBBox.left == 10 && (**handle).polyBBox.right == 37);
+    assert((**handle).polyBBox.top == 22 && (**handle).polyBBox.bottom == 40);
+    stored = (Point *)((char *)*handle + offsetof(Polygon, polyPoints));
+    assert(memcmp(stored, points, sizeof(points)) == 0);
+    assert(memcmp(stored + QD_MAX_POLY, points, sizeof(Point)) == 0);
+    allocations = polygon_calls;
+    for (i = 0; i < 100; ++i) assert(qd_make_polygon(points, 3) == handle);
+    assert(polygon_calls == allocations && !pen_hidden);
+    assert((**handle).polySize == (short)(offsetof(Polygon, polyPoints) + 4U * sizeof(Point)));
+    assert(qd_make_polygon(NULL, 3) == NULL);
+    assert(qd_make_polygon(points, 2) == NULL);
+    assert(qd_make_polygon(points, QD_MAX_POLY + 1) == NULL);
+    assert(polygon_calls == allocations);
+    puts("PASS QuickDraw reusable polygon: checked bounded native record, exact bounds and closure, no per-facet allocation or pen recording, invalid counts rejected");
+}
+
 static void check_buffer_recovery(void)
 {
     Test_port_colors saved_colors;
@@ -1170,6 +1299,81 @@ static void check_quad_batches(void)
     SizeWindow(qd_window, (short)old_width, (short)old_height, TRUE);
     qd_resize((int)old_width, (int)old_height);
     puts("PASS QuickDraw quad batches: shared indexed vertices, arbitrary order, 64-quad bounds, exact colors and full seams; individual quad callback retained");
+}
+
+/* Compare exact native polygon multisets: packet ordering can change, but
+ * sharing transformed/projected rows must not change a rounded coordinate,
+ * palette index, pole triangle, or clipped silhouette. */
+static int compare_recorded(const void *left, const void *right)
+{
+    const RecordedPolygon *a = (const RecordedPolygon *)left;
+    const RecordedPolygon *b = (const RecordedPolygon *)right;
+    int i;
+    if (a->color != b->color) return a->color < b->color ? -1 : 1;
+    if (a->pattern_black != b->pattern_black)
+        return a->pattern_black < b->pattern_black ? -1 : 1;
+    if (a->count != b->count) return a->count < b->count ? -1 : 1;
+    for (i = 0; i < a->count; ++i) {
+        if (a->points[i].h != b->points[i].h)
+            return a->points[i].h < b->points[i].h ? -1 : 1;
+        if (a->points[i].v != b->points[i].v)
+            return a->points[i].v < b->points[i].v ? -1 : 1;
+    }
+    return 0;
+}
+
+static void check_stream_equivalence(void)
+{
+    static RecordedPolygon individual[512];
+    static const unsigned int widths[4] = { 640U, 320U, 97U, 800U };
+    static const unsigned int heights[4] = { 480U, 240U, 480U, 120U };
+    static const float pitch[4] = { 0.0f, 19.0f, 89.75f, 247.0f };
+    static const float yaw[4] = { 180.0f, 37.0f, 179.5f, 121.0f };
+    unsigned int size, pose, expected, i, old_width, old_height;
+    int old_longitude;
+    float old_x, old_y;
+    GrafPtr saved_port;
+    GDHandle saved_device;
+    int old_fail;
+    old_width = drv_win_width; old_height = drv_win_height;
+    old_longitude = globe_longitude;
+    old_x = drv_rot_x; old_y = drv_rot_y;
+    GetPort(&saved_port);
+    saved_device = has_color ? GetGDevice() : NULL;
+    old_fail = fail_gworld; fail_gworld = TRUE;
+    assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
+    for (size = 0; size < 4U; ++size) {
+        SizeWindow(qd_window, (short)widths[size], (short)heights[size], TRUE);
+        qd_resize((int)widths[size], (int)heights[size]);
+        SetPort((GrafPtr)qd_window);
+        if (has_color) SetGDevice(qd_device);
+        for (pose = 0; pose < 4U; ++pose) {
+            drv_rot_x = pitch[pose]; drv_rot_y = yaw[pose];
+            drv_frame_failed = FALSE;
+            qd_set_transform();
+            recorded_count = 0;
+            globe_draw_quads();
+            assert(!drv_frame_failed && recorded_count <= 512U);
+            expected = recorded_count;
+            qsort(recorded, expected, sizeof(recorded[0]), compare_recorded);
+            memcpy(individual, recorded, expected * sizeof(recorded[0]));
+            /* The previous individual calls must not establish row reuse. */
+            recorded_count = 0;
+            globe_draw_quadbatches();
+            assert(!drv_frame_failed && recorded_count == expected);
+            qsort(recorded, recorded_count, sizeof(recorded[0]), compare_recorded);
+            for (i = 0; i < expected; ++i)
+                assert(compare_recorded(individual + i, recorded + i) == 0);
+        }
+    }
+    drv_rot_x = old_x; drv_rot_y = old_y;
+    assert(globe_set_resolution(old_longitude, -1, GLOBE_RADIUS));
+    fail_gworld = old_fail;
+    SizeWindow(qd_window, (short)old_width, (short)old_height, TRUE);
+    qd_resize((int)old_width, (int)old_height);
+    SetPort(saved_port);
+    if (has_color) SetGDevice(saved_device);
+    puts("PASS QuickDraw optimized stream: exact individual/batched polygon tuples and colors across poses, poles, resize scales and narrow clipped viewports");
 }
 
 static void check_osd_boundaries(void)
@@ -1311,7 +1515,7 @@ static void check_recoverable_resources(void)
 {
     unsigned char bytes[512];
     unsigned int handles, texts, calls;
-    int old_osd, i;
+    int old_osd, old_auto, i;
     Drv_result expected;
     GrafPtr saved_port;
     GDHandle saved_device;
@@ -1345,8 +1549,11 @@ static void check_recoverable_resources(void)
         assert(handle_count == handles);
         qd_make_buffer();
         recorded_count = 0; osd_text[0] = 0;
+        calls = color_fill_calls;
         drv_render();
         assert(recorded_count != 0 && alert_calls == 0);
+        if (qd_depth > 1 && !qd_pattern_unavailable)
+            assert(qd_pattern != NULL && color_fill_calls > calls);
         if (qd_depth > 1) {
             if (qd_pattern != NULL) DisposePixPat(qd_pattern);
             qd_pattern = NULL;
@@ -1356,20 +1563,47 @@ static void check_recoverable_resources(void)
             recorded_count = 0; osd_text[0] = 0;
             drv_render();
             assert(recorded_count != 0 && qd_pattern_unavailable);
-            assert(pattern_calls == calls + 1U && qd_pattern == NULL);
+            assert(pattern_calls == calls && qd_pattern == NULL);
             recorded_count = 0; osd_text[0] = 0;
             drv_render();
-            assert(recorded_count != 0 && pattern_calls == calls + 1U);
+            assert(recorded_count != 0 && pattern_calls == calls);
             fail_pattern = FALSE;
         }
     }
+    DisposeHandle((Handle)qd_polygon); qd_polygon = NULL;
     fail_polygon = 2;
     calls = polygon_calls;
     recorded_count = 0; osd_text[0] = 0;
     drv_render();
     assert(recorded_count != 0 && !qd_frame_paused && !drv_frame_failed);
-    assert(polygon_calls > calls + 1U && !world_locked && !qd_rendering);
+    assert(polygon_calls == calls + 2U && !world_locked && !qd_rendering);
     assert(current_port == saved_port && current_device == saved_device);
+    old_osd = drv_osd_enabled;
+    old_auto = drv_auto_enabled;
+    drv_osd_enabled = FALSE;
+    drv_auto_enabled = TRUE;
+    fail_scratch = TRUE;
+    calls = scratch_calls;
+    recorded_count = 0; osd_text[0] = 0;
+    drv_render();
+    assert(qd_frame_paused && drv_frame_failed && !drv_auto_enabled);
+    assert(recorded_count == 0 && scratch_calls == calls + 2U);
+    assert(strstr(osd_text, "scratch unavailable") != NULL);
+    assert(strstr(osd_text, "paused") != NULL);
+    assert(current_port == saved_port && current_device == saved_device);
+    assert(!world_locked && !qd_rendering && alert_calls == 0);
+    drv_render();
+    assert(scratch_calls == calls + 2U);
+    fail_scratch = FALSE;
+    qd_keyboard('1');
+    recorded_count = 0; osd_text[0] = 0;
+    calls = scratch_calls;
+    drv_render();
+    assert(!qd_frame_paused && !drv_frame_failed && recorded_count != 0);
+    assert(scratch_calls == calls + 1U); /* Once per pass, not per polygon. */
+    drv_osd_enabled = old_osd;
+    drv_auto_enabled = old_auto;
+    puts("PASS QuickDraw native scratch: bounded preflight avoids known low-memory fills, forces diagnostic OSD and pauses after two attempts; input retries and one probe serves each pass");
     drv_release_optional();
     assert(qd_world == NULL && qd_pattern == NULL && qd_palette == NULL);
     assert(qd_colors == NULL && !world_locked && !qd_rendering);
@@ -1418,6 +1652,8 @@ static int run_contract(void)
     assert(strstr(drv_help, "1-5") != NULL);
     assert(qd_world != NULL || !has_color || fail_gworld || qd_version < gestalt32BitQD);
     check_fpu_angles();
+    check_reusable_polygon();
+    check_color_submission();
     drv_osd_enabled = FALSE;
     saved = current_port;
     for (resolution = 0; resolution < 2; ++resolution) {
@@ -1447,6 +1683,7 @@ static int run_contract(void)
     streaming_polygons = FALSE;
     event_key('6', 0); assert(globe_longitude == 512);
     check_quad_batches();
+    check_stream_equivalence();
     check_osd_boundaries();
     check_readiness();
     event_key('2', 0);
@@ -1582,7 +1819,7 @@ int main(int argc, char **argv)
     /* The process-level owner releases scene storage after native cleanup. */
     globe_free();
     assert(contract_started && window_live == NULL);
-    assert(ptr_count == 0 && handle_count == 0 && poly_count == 0 && menu_count == 0);
+    assert(ptr_count == 0 && handle_count == 0 && menu_count == 0);
     assert(world_count == 0 && palette_count == 0 && window_count == 0 && !world_locked);
     assert(pixpat_count == 0 && !pen_hidden);
     assert(alert_calls == 0);

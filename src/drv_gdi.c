@@ -32,7 +32,7 @@
 #error GDI quad batches exceed the transformed vertex cache
 #endif
 
-typedef struct Gdi_float_point { float x, y, z; } Gdi_float_point;
+typedef Soft3d_float_point Gdi_float_point;
 
 static HINSTANCE gdi_instance;
 static int gdi_show;
@@ -42,6 +42,11 @@ static int gdi_registered;
 static char gdi_class_name[40];
 static HPALETTE gdi_palette;
 static HBRUSH gdi_brushes[256];
+static unsigned char gdi_realized_colors[256][3];
+static Drv_palette_match gdi_color_matches[256];
+static int gdi_palette_valid;
+static int gdi_palette_pending;
+static int gdi_pattern_unavailable;
 static HDC gdi_buffer;
 static HBITMAP gdi_bitmap;
 static HBITMAP gdi_previous_bitmap;
@@ -72,6 +77,9 @@ static float gdi_float_matrix[3][3];
 static long gdi_fixed_matrix[3][3];
 static Gdi_float_point gdi_float_points[GDI_MAX_VERTICES];
 static Soft3d_fixed_point gdi_fixed_points[GDI_MAX_VERTICES];
+static Soft3d_project_cache TG_HUGE *gdi_project_cache;
+static Drv_quad_stream gdi_stream;
+static int gdi_packet_active;
 static POINT gdi_polygons[GDI_MAX_FACETS][GDI_MAX_POLY];
 static int gdi_polygon_counts[GDI_MAX_FACETS];
 static int gdi_color_head[256];
@@ -95,6 +103,46 @@ static void gdi_release_brushes(void)
         DeleteObject(gdi_brushes[i]);
         gdi_brushes[i] = 0;
     }
+}
+
+/* Query colors after the Earth palette has been selected and realized on a
+ * window DC. Palette entries which Windows cannot allocate may map to other
+ * system colors; those actual colors, not the requested RGBs, form mixtures.
+ * Do not retain partial query results or stale pattern brushes on failure. */
+static int gdi_refresh_colors(HDC dc)
+{
+    unsigned char colors[256][3];
+    COLORREF rgb;
+    unsigned int i;
+    int changed;
+    gdi_palette_pending = FALSE;
+    for (i = 0; i < 256U; ++i)
+    {
+        rgb = GetNearestColor(dc, PALETTEINDEX(i));
+        if (rgb == CLR_INVALID)
+        {
+            changed = gdi_palette_valid;
+            gdi_palette_valid = FALSE;
+            gdi_release_brushes();
+            return changed;
+        }
+        colors[i][0] = (unsigned char)(rgb & 255UL);
+        colors[i][1] = (unsigned char)((rgb >> 8) & 255UL);
+        colors[i][2] = (unsigned char)((rgb >> 16) & 255UL);
+    }
+    changed = !gdi_palette_valid ||
+              memcmp(colors, gdi_realized_colors, sizeof(colors)) != 0;
+    if (changed)
+    {
+        gdi_release_brushes();
+        memcpy(gdi_realized_colors, colors, sizeof(colors));
+        for (i = 0; i < 256U; ++i)
+            (void)drv_match_palette_color(earth_cmap[i],
+                          &gdi_realized_colors[0][0], 256U, &gdi_color_matches[i]);
+        gdi_pattern_unavailable = FALSE;
+        gdi_palette_valid = TRUE;
+    }
+    return changed;
 }
 
 extern int testglobe_main(int argc, char **argv);
@@ -126,6 +174,10 @@ void drv_release_optional(void)
         return;
     }
     gdi_delete_buffer();
+    drv_free_items(gdi_project_cache);
+    gdi_project_cache = NULL;
+    gdi_packet_active = FALSE;
+    drv_quadstream_reset(&gdi_stream);
     gdi_release_brushes();
     gdi_dirty = TRUE;
     drv_notice("direct drawing");
@@ -148,6 +200,10 @@ static void gdi_cleanup(void)
 {
     unsigned int i;
     gdi_quiesce();
+    drv_free_items(gdi_project_cache);
+    gdi_project_cache = NULL;
+    gdi_packet_active = FALSE;
+    drv_quadstream_reset(&gdi_stream);
     if (gdi_window != 0) DestroyWindow(gdi_window);
     gdi_delete_buffer();
     for (i = 0; i < 256; ++i)
@@ -220,6 +276,10 @@ void drv_init(int *argc, char **argv)
                   (flags & (WF_CPU386 | WF_CPU486)) != 0;
     if (atexit(gdi_cleanup) != 0)
         gdi_error("Cannot register Windows GDI cleanup");
+    if (gdi_project_cache == NULL)
+        gdi_project_cache = (Soft3d_project_cache TG_HUGE *)drv_alloc_items(
+            1UL, sizeof(Soft3d_project_cache));
+    soft3d_project_cache_reset(gdi_project_cache);
 }
 
 Drv_result drv_load_earth_chunk(unsigned int id, unsigned long length,
@@ -252,16 +312,71 @@ Drv_result drv_load_earth_chunk(unsigned int id, unsigned long length,
     return DRV_OK;
 }
 
+static HBRUSH gdi_create_brush(unsigned int color)
+{
+    struct Gdi_pattern_dib
+    {
+        BITMAPINFOHEADER header;
+        WORD colors[2];
+        BYTE pixels[32];
+    } FAR *dib;
+    HGLOBAL memory;
+    HBRUSH brush;
+    const unsigned short TG_HUGE *pattern;
+    unsigned int y, solid;
+    Drv_palette_match *match;
+    solid = color;
+    if (gdi_palette_valid)
+    {
+        match = &gdi_color_matches[color];
+        solid = match->solid;
+        if (match->mix != 0U && !gdi_pattern_unavailable)
+        {
+            memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT,
+                                  (DWORD)sizeof(*dib));
+            if (memory != 0)
+            {
+                dib = (struct Gdi_pattern_dib FAR *)GlobalLock(memory);
+                if (dib != NULL)
+                {
+                    dib->header.biSize = sizeof(BITMAPINFOHEADER);
+                    dib->header.biWidth = dib->header.biHeight = 8;
+                    dib->header.biPlanes = dib->header.biBitCount = 1;
+                    dib->header.biCompression = BI_RGB;
+                    dib->header.biSizeImage = sizeof(dib->pixels);
+                    dib->header.biClrUsed = 2;
+                    dib->colors[0] = match->first;
+                    dib->colors[1] = match->second;
+                    pattern = drv_dither_pattern(match->mix);
+                    /* Bottom-up DIB rows are DWORD-aligned. A clear Bayer
+                     * bit selects the second pen, so invert its high byte. */
+                    for (y = 0; y < 8U; ++y)
+                        dib->pixels[(7U - y) * 4U] =
+                            (BYTE)((pattern[y & 3U] >> 8) ^ 255U);
+                    GlobalUnlock(memory);
+                    brush = CreateDIBPatternBrush(memory, DIB_PAL_COLORS);
+                    GlobalFree(memory);
+                    if (brush != 0) return brush;
+                }
+                else GlobalFree(memory);
+            }
+            gdi_pattern_unavailable = TRUE;
+            drv_notice("nearest palette colors");
+        }
+    }
+    return CreateSolidBrush(PALETTEINDEX(solid));
+}
+
 static HBRUSH gdi_brush(unsigned int color)
 {
     unsigned long luminance;
     if (!gdi_brush_reduced && gdi_brushes[color] == 0)
     {
-        gdi_brushes[color] = CreateSolidBrush(PALETTEINDEX(color));
+        gdi_brushes[color] = gdi_create_brush(color);
         if (gdi_brushes[color] == 0)
         {
             gdi_release_brushes();
-            gdi_brushes[color] = CreateSolidBrush(PALETTEINDEX(color));
+            gdi_brushes[color] = gdi_create_brush(color);
             if (gdi_brushes[color] == 0)
             {
                 gdi_brush_reduced = TRUE;
@@ -290,15 +405,27 @@ static UINT gdi_realize_palette(int foreground)
     if (dc == 0) return 0;
     previous = SelectPalette(dc, gdi_palette, !foreground);
     changed = RealizePalette(dc);
+    if (gdi_refresh_colors(dc)) changed = TRUE;
     SelectPalette(dc, previous, TRUE);
     ReleaseDC(gdi_window, dc);
     return changed;
+}
+
+static void gdi_prepare_colors(HDC dc)
+{
+    HPALETTE previous;
+    previous = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
+    if (RealizePalette(dc) != 0) gdi_palette_pending = TRUE;
+    if (gdi_palette_pending && gdi_refresh_colors(dc)) gdi_dirty = TRUE;
+    SelectPalette(dc, previous, TRUE);
 }
 
 static void gdi_make_buffer(void)
 {
     HDC dc;
     gdi_delete_buffer();
+    gdi_release_brushes();
+    gdi_pattern_unavailable = FALSE;
     if (gdi_window == 0 || drv_win_width == 0 || drv_win_height == 0) return;
     dc = GetDC(gdi_window);
     if (dc == 0)
@@ -357,6 +484,9 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     gdi_batch_enabled = TRUE;
     gdi_restart_frame = gdi_frame_failed = gdi_draw_paused = FALSE;
     gdi_brush_reduced = FALSE;
+    gdi_palette_valid = FALSE;
+    gdi_palette_pending = TRUE;
+    gdi_pattern_unavailable = FALSE;
     if (in_x > 0) drv_win_x = (unsigned int)in_x;
     if (in_y > 0) drv_win_y = (unsigned int)in_y;
     dc = GetDC(0);
@@ -443,6 +573,9 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 static void gdi_set_transform(void)
 {
     float fsx, fcx, fsy, fcy;
+    gdi_packet_active = FALSE;
+    drv_quadstream_reset(&gdi_stream);
+    soft3d_project_cache_reset(gdi_project_cache);
     /* R = Rx(user x) Ry(user y) Rx(-90) Rz(-90), followed by z=-3000. */
     if (gdi_has_fpu)
     {
@@ -467,82 +600,28 @@ static void gdi_set_transform(void)
     }
 }
 
-static int gdi_clip_float_z(const Gdi_float_point *in, int count,
-                            Gdi_float_point *out, float plane, int greater)
-{
-    int i, total, a_inside, b_inside;
-    float fraction;
-    Gdi_float_point a, b, point;
-    total = 0;
-    a = in[count - 1];
-    a_inside = greater ? a.z >= plane : a.z <= plane;
-    for (i = 0; i < count; ++i)
-    {
-        b = in[i];
-        b_inside = greater ? b.z >= plane : b.z <= plane;
-        if (a_inside != b_inside)
-        {
-            fraction = (plane - a.z) / (b.z - a.z);
-            point.x = a.x + (b.x - a.x) * fraction;
-            point.y = a.y + (b.y - a.y) * fraction;
-            point.z = plane;
-            if (total >= GDI_MAX_POLY) return 0;
-            out[total++] = point;
-        }
-        if (b_inside)
-        {
-            if (total >= GDI_MAX_POLY) return 0;
-            out[total++] = b;
-        }
-        a = b;
-        a_inside = b_inside;
-    }
-    return total;
-}
-
+/* Raw callers, including clipping fixtures, never borrow packet caches. */
 static int gdi_prepare_polygon(unsigned int point_count,
                                const unsigned int *indices,
                                unsigned int index_count, POINT *destination)
 {
-    Gdi_float_point float_a[GDI_MAX_POLY], float_b[GDI_MAX_POLY];
     Soft3d_screen_point screen[GDI_MAX_POLY];
-    float focal, projected_x, projected_y;
+    Soft3d_project_cache TG_HUGE *cache;
     int i, count;
     if (indices == NULL || destination == NULL ||
         point_count == 0U || point_count > GDI_MAX_VERTICES ||
         (index_count != 3U && index_count != 4U)) return 0;
     for (i = 0; i < (int)index_count; ++i)
         if (indices[i] >= point_count) return 0;
+    cache = gdi_packet_active ? gdi_project_cache : NULL;
     if (gdi_has_fpu)
-    {
-        for (i = 0; i < (int)index_count; ++i)
-            float_a[i] = gdi_float_points[indices[i]];
-        count = gdi_clip_float_z(float_a, (int)index_count, float_b,
-                                 -(float)GLOBE_NEAR_DISTANCE, FALSE);
-        if (count < 3) return 0;
-        count = gdi_clip_float_z(float_b, count, float_a,
-                                 -(float)GLOBE_FAR_DISTANCE, TRUE);
-        if (count < 3) return 0;
-        focal = (float)drv_win_height * (float)GLOBE_FOCAL_SCALE;
-        for (i = 0; i < count; ++i)
-        {
-            projected_x = (float)drv_win_width / 2.0f +
-                           float_a[i].x * focal / -float_a[i].z;
-            projected_y = (float)drv_win_height / 2.0f -
-                           float_a[i].y * focal / -float_a[i].z;
-            /* Bound conversion and the shared integer clipper's deltas,
-             * including nonfinite results from invalid external vertices. */
-            if (!(projected_x >= -134217727.0 && projected_x <= 134217727.0 &&
-                  projected_y >= -134217727.0 && projected_y <= 134217727.0))
-                return 0;
-            screen[i].x = (long)projected_x;
-            screen[i].y = (long)projected_y;
-        }
-    }
+        count = soft3d_float_project_cached(gdi_float_points, point_count,
+                         indices, index_count, drv_win_width, drv_win_height,
+                         SOFT3D_FLOAT_SINGLE, cache, screen);
     else
-        count = soft3d_fixed_project_polygon(gdi_fixed_points, point_count,
-                                             indices, index_count,
-                                             drv_win_width, drv_win_height, screen);
+        count = soft3d_fixed_project_cached(gdi_fixed_points, point_count,
+                         indices, index_count, drv_win_width, drv_win_height,
+                         cache, screen);
     count = soft3d_finish_polygon(screen, count, drv_win_width, drv_win_height);
     for (i = 0; i < count; ++i)
     {
@@ -565,9 +644,9 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                    const unsigned int TG_HUGE *indices,
                                    const unsigned char TG_HUGE *colors)
 {
-    unsigned int i, color, corner, quad_indices[4];
-    int row, facet, total, points, j;
-    float source[3];
+    unsigned int i, color, corner, quad_indices[4], reuse_count;
+    int facet, total, points, j, transformed;
+    Drv_quad_context context;
     HBRUSH previous, brush;
     HDC dc;
     dc = gdi_draw_dc();
@@ -580,31 +659,27 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         drv_abort_frame("quad batch or index is out of range");
         return;
     }
+    reuse_count = drv_quadstream_reuse(&gdi_stream, vertex_count,
+                                      vertices, &context);
     if (gdi_has_fpu)
+        transformed = soft3d_float_transform_reuse(gdi_float_matrix,
+                         vertex_count, vertices, gdi_float_points, reuse_count,
+                         SOFT3D_FLOAT_SINGLE);
+    else
+        transformed = soft3d_fixed_transform_reuse(gdi_fixed_matrix,
+                         vertex_count, vertices, gdi_fixed_points, reuse_count);
+    if (!transformed)
     {
-        for (i = 0; i < vertex_count; ++i)
-        {
-            source[0] = vertices[i].x;
-            source[1] = vertices[i].y;
-            source[2] = vertices[i].z;
-            for (row = 0; row < 3; ++row)
-            {
-                float transformed = gdi_float_matrix[row][0] * source[0] +
-                                    gdi_float_matrix[row][1] * source[1] +
-                                    gdi_float_matrix[row][2] * source[2];
-                if (row == 0) gdi_float_points[i].x = transformed;
-                if (row == 1) gdi_float_points[i].y = transformed;
-                if (row == 2) gdi_float_points[i].z = transformed - (float)GLOBE_VIEW_DISTANCE;
-            }
-        }
-    }
-    else if (!soft3d_fixed_transform(gdi_fixed_matrix, vertex_count, vertices,
-                                      gdi_fixed_points))
-    {
+        drv_quadstream_reset(&gdi_stream);
         gdi_frame_failed = TRUE;
-        drv_abort_frame("fixed-point coordinate is out of range");
+        drv_abort_frame("coordinate is out of range");
         return;
     }
+    if (gdi_project_cache != NULL)
+        (void)soft3d_project_cache_begin(gdi_project_cache, vertex_count,
+                         drv_win_width, drv_win_height, reuse_count);
+    drv_quadstream_commit(&gdi_stream, &context);
+    gdi_packet_active = TRUE;
     for (color = 0; color < 256; ++color) gdi_color_head[color] = -1;
     for (i = 0; i < quad_count; ++i)
     {
@@ -618,6 +693,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         gdi_color_head[color] = (int)i;
         ++globe_quads_num_vis;
     }
+    gdi_packet_active = FALSE;
     for (color = 0; color < 256; ++color)
     {
         total = points = 0;
@@ -720,7 +796,11 @@ static void gdi_render_to(HDC dc)
     gdi_rendering = TRUE;
     gdi_target = dc;
     previous_palette = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
-    if (dc != gdi_buffer) RealizePalette(dc);
+    if (dc != gdi_buffer)
+    {
+        if (RealizePalette(dc) != 0) gdi_palette_pending = TRUE;
+        if (gdi_palette_pending) (void)gdi_refresh_colors(dc);
+    }
     drv_fps_start();
     bounds.left = bounds.top = 0;
     bounds.right = (int)drv_win_width;
@@ -775,6 +855,7 @@ void drv_render(void)
         dc = GetDC(gdi_window);
         if (dc != 0)
         {
+            gdi_prepare_colors(dc);
             if (gdi_buffer != 0)
             {
                 gdi_render_to(gdi_buffer);
@@ -794,7 +875,18 @@ static void gdi_present(HDC dc)
     int copied;
     if (gdi_failed || gdi_buffer == 0) return;
     previous = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
-    RealizePalette(dc);
+    if (RealizePalette(dc) != 0)
+    {
+        gdi_palette_pending = TRUE;
+        /* Another application can change the palette after this buffer was
+         * drawn. Schedule a repaint even when our window is otherwise idle;
+         * the old pixels cannot acquire new two-pen mixtures by realization. */
+        if (gdi_refresh_colors(dc))
+        {
+            gdi_dirty = TRUE;
+            InvalidateRect(gdi_window, NULL, FALSE);
+        }
+    }
     copied = BitBlt(dc, 0, 0, (int)drv_win_width, (int)drv_win_height,
                     gdi_buffer, 0, 0, SRCCOPY);
     SelectPalette(dc, previous, TRUE);
@@ -856,7 +948,8 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
          * mesh or a paint DC. Requeue mutations until those borrows end. */
         switch (message)
         {
-            case WM_CHAR: case WM_SIZE: case WM_CLOSE: case WM_TIMER:
+            case WM_CHAR: case WM_SIZE: case WM_MOVE: case WM_CLOSE: case WM_TIMER:
+            case WM_ACTIVATE: case WM_QUERYNEWPALETTE: case WM_PALETTECHANGED:
             case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP:
             case WM_RBUTTONDOWN: case WM_RBUTTONUP:
                 if (!PostMessage(window, message, wparam, lparam))
@@ -888,6 +981,7 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
             dc = BeginPaint(window, &paint);
             if (gdi_ready)
             {
+                gdi_prepare_colors(dc);
                 if (gdi_buffer != 0)
                 {
                     if (gdi_dirty) gdi_render_to(gdi_buffer);
@@ -937,6 +1031,7 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
             gdi_mouse_metadata_changed();
             return 0;
         case WM_ACTIVATE:
+            gdi_palette_pending = TRUE;
             gdi_palette_foreground = wparam != WA_INACTIVE;
             if (gdi_palette_foreground && gdi_realize_palette(TRUE) != 0)
             {
@@ -945,6 +1040,7 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
             }
             return 0;
         case WM_QUERYNEWPALETTE:
+            gdi_palette_pending = TRUE;
             gdi_palette_foreground = TRUE;
             if (gdi_realize_palette(TRUE) != 0)
             {
@@ -956,12 +1052,19 @@ LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
         case WM_PALETTECHANGED:
             if ((HWND)wparam != window)
             {
+                gdi_palette_pending = TRUE;
                 if (gdi_realize_palette(FALSE) != 0)
                 {
                     gdi_dirty = TRUE;
                     InvalidateRect(window, NULL, FALSE);
                 }
             }
+            return 0;
+        case WM_MOVE:
+            /* Native pattern brushes cache an origin for their current DC. */
+            gdi_release_brushes();
+            gdi_dirty = TRUE;
+            InvalidateRect(window, NULL, FALSE);
             return 0;
         case WM_TIMER:
             if (wparam == GDI_TIMER && drv_auto_enabled && gdi_ready &&
