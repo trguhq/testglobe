@@ -78,8 +78,7 @@ static long gdi_fixed_matrix[3][3];
 static Gdi_float_point gdi_float_points[GDI_MAX_VERTICES];
 static Soft3d_fixed_point gdi_fixed_points[GDI_MAX_VERTICES];
 static Soft3d_project_cache TG_HUGE *gdi_project_cache;
-static unsigned long gdi_packet_sequence;
-static unsigned int gdi_packet_count;
+static Drv_quad_stream gdi_stream;
 static int gdi_packet_active;
 static POINT gdi_polygons[GDI_MAX_FACETS][GDI_MAX_POLY];
 static int gdi_polygon_counts[GDI_MAX_FACETS];
@@ -178,8 +177,7 @@ void drv_release_optional(void)
     drv_free_items(gdi_project_cache);
     gdi_project_cache = NULL;
     gdi_packet_active = FALSE;
-    gdi_packet_sequence = 0UL;
-    gdi_packet_count = 0U;
+    drv_quadstream_reset(&gdi_stream);
     gdi_release_brushes();
     gdi_dirty = TRUE;
     drv_notice("direct drawing");
@@ -205,8 +203,7 @@ static void gdi_cleanup(void)
     drv_free_items(gdi_project_cache);
     gdi_project_cache = NULL;
     gdi_packet_active = FALSE;
-    gdi_packet_sequence = 0UL;
-    gdi_packet_count = 0U;
+    drv_quadstream_reset(&gdi_stream);
     if (gdi_window != 0) DestroyWindow(gdi_window);
     gdi_delete_buffer();
     for (i = 0; i < 256; ++i)
@@ -577,8 +574,7 @@ static void gdi_set_transform(void)
 {
     float fsx, fcx, fsy, fcy;
     gdi_packet_active = FALSE;
-    gdi_packet_sequence = 0UL;
-    gdi_packet_count = 0U;
+    drv_quadstream_reset(&gdi_stream);
     soft3d_project_cache_reset(gdi_project_cache);
     /* R = Rx(user x) Ry(user y) Rx(-90) Rz(-90), followed by z=-3000. */
     if (gdi_has_fpu)
@@ -663,11 +659,8 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         drv_abort_frame("quad batch or index is out of range");
         return;
     }
-    reuse_count = 0U;
-    if (drv_quadbatch_context(vertex_count, vertices, &context) &&
-        context.reuse_row && context.sequence == gdi_packet_sequence + 1UL &&
-        vertex_count == gdi_packet_count)
-        reuse_count = vertex_count / 2U;
+    reuse_count = drv_quadstream_reuse(&gdi_stream, vertex_count,
+                                      vertices, &context);
     if (gdi_has_fpu)
         transformed = soft3d_float_transform_reuse(gdi_float_matrix,
                          vertex_count, vertices, gdi_float_points, reuse_count,
@@ -677,8 +670,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                          vertex_count, vertices, gdi_fixed_points, reuse_count);
     if (!transformed)
     {
-        gdi_packet_sequence = 0UL;
-        gdi_packet_count = 0U;
+        drv_quadstream_reset(&gdi_stream);
         gdi_frame_failed = TRUE;
         drv_abort_frame("coordinate is out of range");
         return;
@@ -686,8 +678,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     if (gdi_project_cache != NULL)
         (void)soft3d_project_cache_begin(gdi_project_cache, vertex_count,
                          drv_win_width, drv_win_height, reuse_count);
-    gdi_packet_sequence = context.sequence;
-    gdi_packet_count = vertex_count;
+    drv_quadstream_commit(&gdi_stream, &context);
     gdi_packet_active = TRUE;
     for (color = 0; color < 256; ++color) gdi_color_head[color] = -1;
     for (i = 0; i < quad_count; ++i)

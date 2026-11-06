@@ -58,10 +58,21 @@ extern int drv_frame_failed;
 extern void TG_HUGE *drv_alloc_items(unsigned long count, unsigned int size);
 extern void drv_free_items(void TG_HUGE *memory);
 extern double drv_time_now(void);
+/* Zero-initialize each clock. Backward samples rebase without subtracting
+ * elapsed time, so subsequent progress resumes immediately. */
+typedef struct Drv_clock
+{
+    double previous, elapsed;
+    int initialized;
+} Drv_clock;
+extern double drv_elapsed_time(Drv_clock *clock, double current);
 extern void drv_reset_timing(void);
 extern void drv_notice(const char *message);
 extern const char *drv_get_notice(void);
 extern void drv_abort_frame(const char *message);
+/* Native visibility/activation and bounded retries remain driver policy. */
+extern int drv_status_required(void);
+extern int drv_animation_allowed(void);
 extern void drv_append_status(char *buffer, unsigned int capacity,
                                const char *message);
 extern const char *drv_result_text(Drv_result result);
@@ -151,6 +162,13 @@ extern void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
 #endif
 
 /* Shared submission utilities; native drawing remains in each driver. */
+#ifdef TRISTRIP
+/* first is the even starting facet/vertex offset. Nonfinal packets contain
+ * an even number of facets, overlapping two vertices with the next packet. */
+extern unsigned int drv_tristrip_batch_facets(unsigned int count,
+                                               unsigned int first,
+                                               unsigned int max_facets);
+#endif
 #if defined(TRISTRIP) && defined(DRV_COLORMAP)
 typedef void (*Drv_strip_batch)(unsigned int count,
                                 const Vertex TG_HUGE *vertices,
@@ -191,6 +209,20 @@ typedef struct Drv_quad_context
     unsigned int vertex_count;
     int reuse_row;
 } Drv_quad_context;
+typedef struct Drv_quad_stream
+{
+    unsigned long sequence;
+    unsigned int vertex_count;
+} Drv_quad_stream;
+/* Reset on each frame/transform change or failed packet. Reuse initializes
+ * context even for a direct call; commit only after a successful transform. */
+extern void drv_quadstream_reset(Drv_quad_stream *stream);
+extern unsigned int drv_quadstream_reuse(const Drv_quad_stream *stream,
+                                          unsigned int vertex_count,
+                                          const Vertex TG_HUGE *vertices,
+                                          Drv_quad_context *context);
+extern void drv_quadstream_commit(Drv_quad_stream *stream,
+                                   const Drv_quad_context *context);
 extern int drv_quadbatch_context(unsigned int vertex_count,
                                   const Vertex TG_HUGE *vertices,
                                   Drv_quad_context *context);
@@ -228,5 +260,11 @@ extern int drv_handle_key(unsigned char key);
 extern void drv_rotate_drag(long dx, long dy);
 extern void drv_rotate_elapsed(double seconds);
 extern void drv_globe_rotate(void);
+#if defined(SEG86) && !defined(GDI)
+/* INT 33h relative motion works independently of the accelerator's screen.
+ * Poll drains motion even with no button down; true means redraw is needed. */
+extern int drv_dos_mouse_init(void);
+extern int drv_dos_mouse_poll(int present);
+#endif
 
 #endif /* drv_ext_h */

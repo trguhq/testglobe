@@ -74,6 +74,8 @@ static PALET original_palette[256], hardware_palette[256];
 static unsigned int allocations, palette_reads, palette_writes;
 static unsigned int cd_opens, cd_closes, mode_queries, mode_sets;
 static unsigned int primitive_loads, module_loads, module_calls, module_unloads;
+static unsigned int module_flushes;
+static int fail_flush;
 static unsigned int syncs, page_flips, page_polls, pending_flip;
 static short display_page, drawing_page, pending_display;
 static unsigned int current_color;
@@ -370,10 +372,17 @@ short install_rlm(char *name)
 {
     FILE *module;
     unsigned int i;
+    size_t length;
     short (*callback)(unsigned short, short);
     assert(primitive_loaded && name != NULL && *name != '\0');
-    assert(*last_temp != '\0' && strcmp(name, last_temp) == 0);
-    module = fopen(name, "rb");
+    assert(*last_temp != '\0');
+    length = strlen(last_temp);
+    assert(strlen(name) == length + 3U &&
+           memcmp(name, last_temp, length) == 0 &&
+           strcmp(name + length, " %f") == 0);
+    /* The loader flag must never become part of the extracted filename. */
+    assert(strcmp(tga_temp_path, last_temp) == 0);
+    module = fopen(last_temp, "rb");
     assert(module != NULL);
     for (i = 0; i < FIXTURE_MODULE_BYTES; ++i)
         assert(fgetc(module) == (int)((i * 73U + 19U) & 255U));
@@ -394,13 +403,33 @@ short install_rlm(char *name)
 
 long del_module(short module)
 {
-    assert(module == 0x0200 && module_loaded);
-    module_loaded = 0;
-    ++module_unloads;
-    return 0;
+    (void)module;
+    assert(!"Applications must use flush_module, not internal del_module");
+    return -1;
 }
 
-short flush_module(short module) { return (short)del_module(module); }
+short flush_module(short module)
+{
+    short (*callback)(unsigned short, short);
+    assert(hardware_open && module == 0x0200 && module_loaded);
+    ++module_flushes;
+    if (is_profile("flushioerror"))
+    {
+        assert(sdk_error_handler != NULL);
+        callback = (short (*)(unsigned short, short))sdk_error_handler;
+        assert(callback(0x1234, 2) == 0);
+        return 0;
+    }
+    if (fail_flush > 0)
+    {
+        --fail_flush;
+        return 0; /* A locked module retains its code and identifier. */
+    }
+    module_loaded = 0;
+    ++module_unloads;
+    return 1;
+}
+
 short uninstall_module(short module) { return (short)del_module(module); }
 void install_usererror(void (*handler)()) { sdk_error_handler = handler; }
 void set_timeout(short seconds) { assert(seconds > 0); }
@@ -656,12 +685,16 @@ int main(int argc, char **argv)
                        is_profile("oldversion") || is_profile("nomode") ||
                        is_profile("modeerror") || is_profile("primitivesfail") ||
                        is_profile("pagehang") || is_profile("syncerror") ||
-                       is_profile("moduleioerror");
+                       is_profile("moduleioerror") || is_profile("flushioerror");
     advance_clock = is_profile("pagehang");
     if (setjmp(failure_jump) != 0)
     {
         assert(expected_failure && failure[0]);
+        if (is_profile("flushioerror"))
+            assert(tga_module == 0x0200 && module_loaded && module_flushes == 1U);
         tga_cleanup();
+        if (is_profile("flushioerror"))
+            assert(module_flushes == 1U && module_unloads == 0U);
         check_temp_deleted();
         assert(cd_closes == (unsigned int)!is_profile("nocd"));
         assert(!hardware_open);
@@ -677,7 +710,8 @@ int main(int argc, char **argv)
         assert(chdir(getenv("TGA_TEST_OTHER_CWD")) == 0);
     }
     assert(drv_init_window(0, 0, 0, 0));
-    assert(!expected_failure || is_profile("syncerror") || is_profile("moduleioerror"));
+    assert(!expected_failure || is_profile("syncerror") ||
+           is_profile("moduleioerror") || is_profile("flushioerror"));
     assert(drv_win_width == 640 && drv_win_height == 480);
     assert(mode_queries >= 3 && hardware.current_mode == (is_profile("single") ? 1U : 2U));
     assert(primitive_loads == 1 && palette_reads > 0 && palette_writes > 0);
@@ -752,6 +786,36 @@ int main(int argc, char **argv)
             assert(memcmp(polygons, software_polygons, polygon_count * sizeof(polygons[0])) == 0);
         }
         tga_keyboard('s');
+    }
+    if (is_profile("default"))
+    {
+        assert(tga_soft3d && tga_module == 0x0200 && module_loaded);
+        before = module_loads;
+        fail_flush = 1;
+        drv_release_optional();
+        assert(tga_soft3d && tga_module == 0x0200 && module_loaded);
+        assert(module_flushes == 1U && module_unloads == 0U);
+        assert(strstr(drv_get_notice(), "release failed") != NULL);
+        render_frame();
+        assert(strstr(osd, "soft3d on") != NULL);
+        tga_keyboard('s');
+        assert(!tga_soft3d && module_loads == before);
+        render_frame();
+        drv_release_optional();
+        assert(tga_soft3d && tga_module == -1 && !module_loaded);
+        assert(module_flushes == 2U && module_unloads == 1U);
+        assert(strstr(drv_get_notice(), "module released") != NULL);
+        tga_keyboard('s');
+        check_temp_deleted();
+        assert(!tga_soft3d && module_loads == before + 1U && module_loaded);
+        render_frame();
+        tga_keyboard('s');
+        puts("PASS TIGA module release: documented flush result, retained failed-release ownership, host fallback, reuse and reload without export symbols");
+    }
+    if (is_profile("flushioerror"))
+    {
+        drv_release_optional();
+        assert(!"Module release communication failure must stop native calls");
     }
     for (i = '3'; i <= '5'; ++i) tga_keyboard((unsigned char)i);
     tga_keyboard('t');

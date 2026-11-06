@@ -1,5 +1,5 @@
 /* Analytical pixel contracts for the shared software texture fallback.
- * Numeric raster words are tested; the host's unsigned-long ABI is not IRIX. */
+ * Word and byte rasters are tested; the host's unsigned-long ABI is not IRIX. */
 #include <assert.h>
 #include <float.h>
 #include <stdio.h>
@@ -221,7 +221,9 @@ static void row_vectors_and_perspective(void)
 
 static void indexed_and_lifetimes(void)
 {
-    unsigned char palette[TEXTURE_PALETTE_BYTES];
+    unsigned char palette[TEXTURE_PALETTE_BYTES], expected[35];
+    unsigned int i;
+    unsigned char *indices;
     static const unsigned char green[3]={0,255,0};
     reset_matrices();
     memset(palette,0,sizeof(palette));
@@ -234,10 +236,28 @@ static void indexed_and_lifetimes(void)
     assert(texsoft_begin(5,7,model,projection,1,palette));
     solid_quad(-1,-1,1,1,0,0,0,0);
     all_pixels(5,7,17UL);
+    /* The byte and IRIX-word layouts must produce identical palette values,
+     * including depth/culling and a format change at unchanged dimensions. */
+    for(i=0;i<35U;++i)expected[i]=(unsigned char)texsoft_pixels()[i];
+    assert(texsoft_begin(5,7,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    assert(texsoft_pixels()==NULL&&texsoft_index_pixels()!=NULL);
+    indices=texsoft_index_pixels();
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    assert(memcmp(indices,expected,sizeof(expected))==0);
+    assert(texsoft_begin(5,7,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    assert(texsoft_index_pixels()==indices);
+    solid_quad(-1,-1,1,1,0,0,0,1);
+    for(i=0;i<35U;++i)assert(indices[i]==0);
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    assert(memcmp(indices,expected,sizeof(expected))==0);
+    assert(texsoft_begin(3,4,model,projection,TEXSOFT_INDEX_BYTES,palette));
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    for(i=0;i<12U;++i)assert(texsoft_index_pixels()[i]==17);
+    assert(!texsoft_begin(3,4,model,projection,3,palette));
     /* Releasing a disabled texture's viewport must preserve its image and
      * palette lookup, so re-enable needs neither source RGB nor new mips. */
     texsoft_release_raster();texsoft_release_raster();
-    assert(texsoft_pixels()==NULL);
+    assert(texsoft_pixels()==NULL&&texsoft_index_pixels()==NULL);
     solid_quad(-1,-1,1,1,0,0,0,0);
     assert(texsoft_begin(3,4,model,projection,1,palette));
     solid_quad(-1,-1,1,1,0,0,0,0);
@@ -245,13 +265,14 @@ static void indexed_and_lifetimes(void)
     assert(texsoft_begin(5,7,model,projection,0,NULL));
     solid_quad(-1,-1,1,1,0,0,0,0);
     all_pixels(5,7,GREEN_PIXEL);
+    assert(texsoft_index_pixels()==NULL);
     assert(!texsoft_begin(5,7,model,projection,1,NULL));
     assert(!texsoft_texture(3,1,green));
     assert(!texsoft_texture(0,1,green));
     assert(!texsoft_texture(1,1,NULL));
     assert(!texsoft_begin(0,7,model,projection,0,NULL));
     texsoft_free();texsoft_free();
-    assert(texsoft_pixels()==NULL);
+    assert(texsoft_pixels()==NULL&&texsoft_index_pixels()==NULL);
     assert(!texsoft_begin(1,1,model,projection,0,NULL));
 }
 
@@ -312,6 +333,7 @@ int main(void)
     indexed_and_lifetimes();
     invalid_numeric_inputs();
     puts("PASS Shared software texture pixels: bilinear/repeat, trilinear/mipmaps, perspective-correct UVs and row-vector matrices");
+    puts("PASS Shared software raster formats: byte indices equal native words, no OpenGL transfer copy, same-size format replacement and cached-size reuse");
     puts("PASS Shared software visibility/lifetimes: clipping, depth, culling, palette rebuilds, raster release/reuse and invalid numeric input guards");
     return 0;
 }

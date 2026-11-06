@@ -32,6 +32,8 @@ static Xgl_object objects;
 static unsigned int allocated_objects, close_calls, memory_destroys;
 static unsigned int mipmap_creates, tmap_creates, mipmap_builds;
 static unsigned int resize_calls, posts, clear_calls, buffer_switches, text_calls;
+static char osd_text[1024];
+static unsigned int extent_calls;
 static unsigned long frame_bands, frame_facets;
 static int single_buffer, tests_complete;
 static const char *profile;
@@ -527,31 +529,66 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     if (inject("abortscene")) drv_abort_frame("Injected scene traversal failure");
 }
 
+void xgl_stroke_text_extent(Xgl_ctx context, void *text,
+                             Xgl_bounds_f2d *bounds, Xgl_pt_f2d *concatenate)
+{
+    const char *character;
+    float width;
+    assert(!native_stopped);
+    assert(context == xgl_overlay && text != NULL && bounds != NULL &&
+           concatenate != NULL);
+    /* Proportional metrics and a negative bearing catch fixed-width guesses
+     * and placement that ignores the returned bounding box. */
+    width = 0.0f;
+    for (character = (const char *)text; *character != '\0'; ++character)
+        width += *character == 'W' ? 9.0f :
+                  (*character == 'i' || *character == ' ' ? 3.0f : 6.0f);
+    bounds->xmin = -1.0f;
+    bounds->xmax = width - 1.0f;
+    bounds->ymin = -2.0f;
+    bounds->ymax = 10.0f;
+    concatenate->x = width;
+    concatenate->y = 0.0f;
+    ++extent_calls;
+}
+
+static void check_osd(void)
+{
+    char expected[80];
+    if (osd_text[0] == '\0') return;
+    sprintf(expected, "%lu triangles", globe_tris_num);
+    if (strstr(osd_text, expected) == osd_text) {
+        assert((strstr(osd_text, "frames per second") != NULL) ==
+               (drv_fps_enabled != 0));
+        assert(strstr(osd_text, "quads") == NULL);
+        assert(strstr(osd_text, "visible") == NULL);
+        assert(strstr(osd_text, !drv_texture_enabled ? ", texture off" :
+                      (frame_texture_facets != 0 && frame_flush_ok ?
+                       ", texture on" : ", texture fail")) != NULL);
+    } else if (!globe_ready()) {
+        assert(strstr(osd_text, "No globe:") == osd_text);
+        assert(strstr(osd_text, "retry") != NULL);
+    }
+    assert(strstr(osd_text, "T = texture mapping") != NULL);
+}
+
 void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
                       Xgl_pt_f3d direction[])
 {
-    Xgl_pt_f2d *point;
-    char expected[80];
+    Xgl_pt_f2d *point, concatenate;
+    Xgl_bounds_f2d bounds;
     assert(!native_stopped);
     assert(context == xgl_overlay && direction == NULL);
     if (inject("fatalosd")) { native_error(TRUE); return; }
     point = (Xgl_pt_f2d *)position;
-    assert(point->x >= 0 && point->x < drv_win_width);
-    assert(point->y >= 0 && point->y < drv_win_height);
-    sprintf(expected, "%lu triangles", globe_tris_num);
-    if (strstr((char *)text, expected) == (char *)text) {
-        assert((strstr((char *)text, "frames per second") != NULL) ==
-               (drv_fps_enabled != 0));
-        assert(strstr((char *)text, "quads") == NULL);
-        assert(strstr((char *)text, "visible") == NULL);
-        assert(strstr((char *)text, "texture mapping") == NULL);
-        assert(strstr((char *)text, !drv_texture_enabled ? ", texture off" :
-                      (frame_texture_facets != 0 && frame_flush_ok ?
-                       ", texture on" : ", texture fail")) != NULL);
-    } else if (!globe_ready() && point->y == 18.0f) {
-        assert(strstr((char *)text, "No globe:") == (char *)text);
-        assert(strstr((char *)text, "retry") != NULL);
-    } else assert(strstr((char *)text, "T = texture mapping") != NULL);
+    xgl_stroke_text_extent(context, text, &bounds, &concatenate);
+    assert(point->x + bounds.xmin >= 0 &&
+           point->x + bounds.xmax < drv_win_width);
+    assert(point->y - bounds.ymax >= 0 &&
+           point->y - bounds.ymin < drv_win_height);
+    assert(strlen(osd_text) + strlen((char *)text) + 2U < sizeof(osd_text));
+    if (osd_text[0] != '\0') strcat(osd_text, " ");
+    strcat(osd_text, (char *)text);
     ++text_calls;
 }
 
@@ -565,6 +602,7 @@ void xgl_context_new_frame(Xgl_ctx context)
         ++clear_calls;
         frame_bands = frame_facets = frame_texture_facets = 0;
         frame_flush_ok = FALSE;
+        osd_text[0] = '\0';
     } else {
         assert(context == xgl_overlay && !single_buffer);
         assert(action == XGL_CTX_NEW_FRAME_SWITCH_BUFFER);
@@ -601,7 +639,8 @@ static void check_render(void)
     drv_render();
     assert(frame_bands >= (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
     assert(frame_facets == globe_tris_num);
-    assert(text_calls == before_text + (drv_osd_enabled ? 2U : 0U));
+    assert(drv_osd_enabled ? text_calls >= before_text + 2U : text_calls == before_text);
+    check_osd();
     assert(clear_calls >= before_clear + 1U && clear_calls <= before_clear + 2U);
     assert(xgl_texture_used == (frame_texture_facets != 0 && frame_flush_ok));
     assert(buffer_switches == before_switches + (single_buffer ? 0U : 1U));
@@ -793,7 +832,7 @@ int main(int argc, char **argv)
     drv_osd_enabled = FALSE;
     before_text = text_calls;
     drv_render();
-    assert(frame_facets == 0 && text_calls == before_text + 2U);
+    assert(frame_facets == 0 && text_calls >= before_text + 2U);
     assert(drv_texture_enabled && drv_texture_loaded && !xgl_texture_failed);
     assert(!drv_texture_active && mipmap_builds == before_mipmaps);
     assert(drv_auto_enabled && !xgl_animating());
@@ -816,7 +855,7 @@ int main(int argc, char **argv)
     send_key(XK_a);
     fault = "abortscene";
     drv_render();
-    assert(drv_frame_failed && frame_facets == 0 && text_calls == before_text + 2U);
+    assert(drv_frame_failed && frame_facets == 0 && text_calls >= before_text + 2U);
     assert(!xgl_texture_used && !xgl_texture_failed && drv_texture_loaded);
     assert(!drv_texture_active);
     assert(drv_auto_enabled && !xgl_animating());
@@ -860,6 +899,32 @@ int main(int argc, char **argv)
     drain_events();
     assert(drv_win_width == 800 && drv_win_height == 600 && resize_calls > 1);
     check_render();
+    xgl_resize(320, 240);
+    check_render();
+    assert(strstr(osd_text, "T = texture mapping") != NULL);
+    before_text = text_calls;
+    extent_calls = 0;
+    osd_text[0] = '\0';
+    xgl_resize(100, 240);
+    drv_draw_osd();
+    assert(text_calls > before_text && extent_calls < 250U);
+    /* A narrow unbroken word still advances, and impossibly small windows
+     * submit no out-of-bounds text or endless line-wrapping queries. */
+    osd_text[0] = '\0';
+    assert(xgl_osd_text("WWWWWWWWWWWWWWWW", 18.0f, 18.0f, 16.0f, TRUE) == 8U);
+    before_text = text_calls;
+    xgl_resize(21, 240);
+    drv_draw_osd();
+    assert(text_calls == before_text);
+    xgl_resize(320, 20);
+    drv_draw_osd();
+    assert(text_calls == before_text);
+    xgl_resize(1, 1);
+    drv_draw_osd();
+    assert(text_calls == before_text);
+    xgl_resize(800, 600);
+    check_render();
+    puts("PASS XGL OSD: measured proportional-font wrapping, bearings, narrow windows, long words and tiny-window guards");
     puts("PASS XGL X11 input: real window/events, all resolution keys, FPS toggle, mouse drag/release and right-button metadata, autorotation, resize and projection");
     memset(&close, 0, sizeof(close));
     close.xclient.type = ClientMessage;

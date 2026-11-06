@@ -217,24 +217,6 @@ void drv_release_optional(void)
 {
 }
 
-static void mtx_init_mouse(void)
-{
-    union REGS regs;
-    mtx_mouse_present = FALSE;
-    /* Some DOS installations leave INT33h null; others point to IRET. */
-    if (_dos_getvect(0x33) == NULL)
-        return;
-    memset(&regs, 0, sizeof(regs));
-    regs.x.ax = 0;
-    int86(0x33, &regs, &regs);
-    if (regs.x.ax == 0xffff)
-    {
-        mtx_mouse_present = TRUE;
-        regs.x.ax = 0x0b;
-        int86(0x33, &regs, &regs); /* Discard motion accumulated at startup. */
-    }
-}
-
 static unsigned short mtx_inquire_lut(void)
 {
     unsigned short value = 0;
@@ -274,7 +256,7 @@ void drv_init(int *argc, char **argv)
     if (!mtx_read_words((short *)mtx_saved_palette, 256 * 3,
                         "palette inquiry")) return;
     mtx_palette_saved = TRUE;
-    mtx_init_mouse();
+    mtx_mouse_present = drv_dos_mouse_init();
 }
 
 int drv_init_window(int in_x, int in_y, int in_width, int in_height)
@@ -495,28 +477,7 @@ static void mtx_keyboard(unsigned char key)
 
 static void mtx_poll_mouse(void)
 {
-    union REGS regs;
-    short dx, dy;
-    int right_pressed;
-    if (!mtx_mouse_present) return;
-    memset(&regs, 0, sizeof(regs));
-    regs.x.ax = 3;
-    int86(0x33, &regs, &regs);
-    drv_lmouse_pressed = (regs.x.bx & 1) != 0;
-    right_pressed = (regs.x.bx & 2) != 0;
-    if (drv_rmouse_pressed != right_pressed) mtx_dirty = TRUE;
-    drv_rmouse_pressed = right_pressed;
-    /* Relative mickeys avoid VGA/CGA coordinate ranges and clipping when
-     * the mouse controls an independent Matrox display. */
-    regs.x.ax = 0x0b;
-    int86(0x33, &regs, &regs);
-    dx = (short)regs.x.cx;
-    dy = (short)regs.x.dx;
-    if (drv_lmouse_pressed && (dx != 0 || dy != 0))
-    {
-        drv_rotate_drag((long)dx, (long)dy);
-        mtx_dirty = TRUE;
-    }
+    if (drv_dos_mouse_poll(mtx_mouse_present)) mtx_dirty = TRUE;
 }
 
 void drv_loop(void)

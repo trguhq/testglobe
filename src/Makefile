@@ -228,28 +228,28 @@ opengl: testglobe-opengl
 
 # Regenerate automatically when a binary map or converter changes. The DOS
 # source uses a different name so native compiler commands need no make dialect.
-e_data.c: $(SRC)/e_bin.c $(SRC)/earthres.h $(EARTH_INPUTS)
+e_data.c: $(SRC)/e_bin.c $(SRC)/buildio.h $(SRC)/earthres.h $(EARTH_INPUTS)
 	$(EARTH_CC) $(EARTH_CFLAGS) -o e_bin $(SRC)/e_bin.c
 	./e_bin $(EARTH_DATA) e_data.c
 
-m_data.c: $(SRC)\e_bin.c $(SRC)\earthres.h $(MTX_INPUTS)
+m_data.c: $(SRC)\e_bin.c $(SRC)\buildio.h $(SRC)\earthres.h $(MTX_INPUTS)
 	@echo -O -W3 -Fee_bin.exe > e_bin.rsp
 	@echo $(SRC)\e_bin.c >> e_bin.rsp
 	$(MTX_CC) @e_bin.rsp
 	e_bin $(MTX_DATA) m_data.c
 
-t_data.c: $(SRC)\e_bin.c $(SRC)\earthres.h $(MTX_INPUTS)
+t_data.c: $(SRC)\e_bin.c $(SRC)\buildio.h $(SRC)\earthres.h $(MTX_INPUTS)
 	@echo -O -W3 -Fee_bin.exe > t_bin.rsp
 	@echo $(SRC)\e_bin.c >> t_bin.rsp
 	$(TGA_CC) @t_bin.rsp
 	e_bin $(MTX_DATA) t_data.c
 
 # Explicitly refresh the checked-in generated source after editing the maps.
-earth-data: $(SRC)/e_bin.c $(SRC)/earthres.h $(EARTH_INPUTS) FORCE
+earth-data: $(SRC)/e_bin.c $(SRC)/buildio.h $(SRC)/earthres.h $(EARTH_INPUTS) FORCE
 	$(EARTH_CC) $(EARTH_CFLAGS) -o e_bin $(SRC)/e_bin.c
 	./e_bin $(EARTH_DATA) $(SRC)/e_saved.c
 
-earth-data-dos: $(SRC)\e_bin.c $(SRC)\earthres.h $(MTX_INPUTS) FORCE
+earth-data-dos: $(SRC)\e_bin.c $(SRC)\buildio.h $(SRC)\earthres.h $(MTX_INPUTS) FORCE
 	@echo -O -W3 -Fee_bin.exe > e_bin.rsp
 	@echo $(SRC)\e_bin.c >> e_bin.rsp
 	$(MTX_CC) @e_bin.rsp
@@ -490,7 +490,7 @@ tiga: $(TGA_OBJECTS) $(TGA_LIB) $(TGA_MODULE) tga_pack.exe FORCE
 	tga_pack.exe tga_host.exe testglob.exe $(TGA_MODULE)
 
 # The packer preserves the MZ load image and publishes the final EXE safely.
-tga_pack.exe: $(SRC)\tga_pack.c $(SRC)\tga_cmd.h
+tga_pack.exe: $(SRC)\tga_pack.c $(SRC)\buildio.h $(SRC)\tga_cmd.h
 	@echo $(TGA_CFLAGS) -Fetga_pack.exe > t_pack.rsp
 	@echo $(SRC)\tga_pack.c >> t_pack.rsp
 	$(TGA_CC) @t_pack.rsp

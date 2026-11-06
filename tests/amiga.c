@@ -929,6 +929,7 @@ int main(int argc, char **argv)
     unsigned char saved_palette[sizeof(desktop_palette)];
     unsigned long reference_hash, reference_count;
     float old_rotation;
+    double time_before;
     const char *mode;
     mode = argc > 1 ? argv[1] : "ocs";
     test_fpu_integer_conversion();
@@ -1022,6 +1023,17 @@ int main(int argc, char **argv)
     if (strcmp(mode, "oversize") == 0)
         assert(drv_init_window(INT_MAX, INT_MAX, INT_MAX, INT_MAX));
     else assert(drv_init_window(0, 0, 0, 0));
+    if (strcmp(mode, "ocs") == 0)
+    {
+        clock_micros = 100000000UL;
+        time_before = ami_time_now();
+        clock_micros = 90000000UL;
+        assert(ami_time_now() == time_before);
+        clock_micros = 91000000UL;
+        assert(fabs(ami_time_now() - time_before - 1.0) < 0.000001);
+        ami_auto_time = ami_time_now();
+        drv_reset_timing();
+    }
     assert(window_count == 1 && drv_win_width < (unsigned int)desktop.Width && drv_win_height < 240);
     if (fail_cache_allocation) assert(ami_project_cache == NULL);
     assert(ami_cpu == (strcmp(mode, "040") == 0 ? 68040 : (exec_base.AttnFlags & AFF_68020 ? 68020 : 68000)));
@@ -1037,6 +1049,9 @@ int main(int argc, char **argv)
     }
     if (strcmp(mode, "backfail") == 0) assert(ami_back_planes == 0 && raster_count == 1);
     test_render(); assert(rendered_count > 20 && text_calls > 0 && strstr(osd_text, "quads") != NULL);
+    /* FPS appears once in the help; the statistic uses the shared long label. */
+    assert(strstr(osd_text, "FPS") != NULL);
+    assert(strstr(strstr(osd_text, "FPS") + 3, "FPS") == NULL);
     assert(baseline_vertices + enhanced_vertices + fpu_vertices == 561);
     test_dither_toggle();
     reference_hash = rendered_hash; reference_count = rendered_count;

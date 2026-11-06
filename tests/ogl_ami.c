@@ -244,6 +244,13 @@ BOOL AutoRequest(struct Window *value, struct IntuiText *body, struct IntuiText 
 }
 void drv_notice(const char *message) { assert(message && *message); ++notices; }
 void drv_reset_timing(void) {}
+double drv_elapsed_time(Drv_clock *state, double sample)
+{
+    /* The clock accumulator's discontinuities are covered by driver_helpers;
+     * this platform fixture checks delegation of the native seconds/micros. */
+    assert(state != NULL && sample == (double)clock_micros / 1000000.0);
+    return sample;
+}
 
 static void fatal_cleanup_check(void)
 {

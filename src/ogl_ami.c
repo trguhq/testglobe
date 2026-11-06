@@ -196,14 +196,11 @@ void ogl_ami_init(int *argc, char **argv)
 double ogl_ami_time_now(void)
 {
     ULONG seconds, micros;
-    double current;
-    static double previous;
-    if (IntuitionBase == NULL) return previous;
+    static Drv_clock clock;
+    if (IntuitionBase == NULL) return clock.elapsed;
     CurrentTime(&seconds, &micros);
-    current = (double)seconds + (double)micros / 1000000.0;
-    if (current < previous) current = previous;
-    previous = current;
-    return current;
+    return drv_elapsed_time(&clock, (double)seconds +
+                                      (double)micros / 1000000.0);
 }
 
 void ogl_ami_get_size(int *width, int *height)

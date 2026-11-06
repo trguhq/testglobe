@@ -71,8 +71,7 @@ static char tga_program_path[260];
 static char tga_temp_path[260];
 static const char *tga_payload_error;
 static unsigned long tga_temp_sequence;
-static unsigned long tga_sequence;
-static unsigned int tga_vertex_count;
+static Drv_quad_stream tga_stream;
 static Soft3d_project_cache tga_cache;
 static union {
     long fixed[3][3];
@@ -309,6 +308,20 @@ static int tga_wait_page(void)
     return TRUE;
 }
 
+/* flush_module is the documented host API: it frees both code and export
+ * symbols. Keep ownership when the module is locked or release otherwise
+ * fails, so recovery can retry without installing a second copy. */
+static int tga_release_module(void)
+{
+    short released;
+    if (tga_module < 0) return TRUE;
+    if (!tga_open || tga_io_failed || !tga_wait_draw()) return FALSE;
+    released = flush_module(tga_module);
+    if (!tga_check() || released != 1) return FALSE;
+    tga_module = -1;
+    return TRUE;
+}
+
 static void tga_cleanup(void)
 {
     int i;
@@ -320,7 +333,7 @@ static void tga_cleanup(void)
     {
         (void)tga_wait_draw();
         if (!tga_io_failed) (void)tga_wait_page();
-        if (!tga_io_failed && tga_module >= 0) (void)del_module(tga_module);
+        if (!tga_io_failed) (void)tga_release_module();
         if (!tga_io_failed && tga_config_saved)
         {
             if (set_config((short)tga_previous_mode, TRUE) & 1)
@@ -352,28 +365,15 @@ void drv_release_optional(void)
     if (tga_rendering) return;
     if (tga_module >= 0 && tga_open && !tga_io_failed)
     {
-        if (tga_wait_draw()) (void)del_module(tga_module);
-        tga_module = -1;
         tga_soft3d = TRUE;
-        drv_notice("TIGA soft3d on; optional TI module released");
+        if (tga_release_module())
+            drv_notice("TIGA soft3d on; optional TI module released");
+        else
+            drv_notice("TIGA soft3d on; TI module release failed");
     }
     soft3d_project_cache_reset(&tga_cache);
-    tga_sequence = 0;
+    drv_quadstream_reset(&tga_stream);
     tga_dirty = TRUE;
-}
-
-static void tga_init_mouse(void)
-{
-    union REGS regs;
-    if (_dos_getvect(0x33) == NULL) return;
-    memset(&regs, 0, sizeof(regs));
-    int86(0x33, &regs, &regs);
-    if (regs.x.ax == 0xffff)
-    {
-        tga_mouse_present = TRUE;
-        regs.x.ax = 0x0b;
-        int86(0x33, &regs, &regs);
-    }
 }
 
 static int tga_mode_supported(const MODEINFO *mode)
@@ -423,7 +423,7 @@ void drv_init(int *argc, char **argv)
         }
         tga_palette_saved = TRUE;
     }
-    tga_init_mouse();
+    tga_mouse_present = drv_dos_mouse_init();
 }
 
 int drv_init_window(int x, int y, int width, int height)
@@ -513,7 +513,7 @@ int drv_init_window(int x, int y, int width, int height)
 static void tga_module_failed(const char *message)
 {
     tga_soft3d = TRUE;
-    tga_sequence = 0;
+    drv_quadstream_reset(&tga_stream);
     soft3d_project_cache_reset(&tga_cache);
     drv_abort_frame(message);
     tga_dirty = TRUE;
@@ -605,10 +605,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         drv_abort_frame("TIGA quad batch is out of range");
         return;
     }
-    memset(&context, 0, sizeof(context));
-    if (drv_quadbatch_context(vertex_count, vertices, &context) && context.reuse_row &&
-        context.sequence == tga_sequence + 1UL && vertex_count == tga_vertex_count)
-        reuse = vertex_count / 2U;
+    reuse = drv_quadstream_reuse(&tga_stream, vertex_count, vertices, &context);
     if (!tga_soft3d)
     {
         if (!tga_transform_ti(vertex_count, vertices))
@@ -636,8 +633,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         (void)soft3d_project_cache_begin(&tga_cache, vertex_count,
                                        drv_win_width, drv_win_height, reuse);
     }
-    tga_sequence = context.sequence;
-    tga_vertex_count = vertex_count;
+    drv_quadstream_commit(&tga_stream, &context);
     for (i = 0; i < quad_count; ++i)
     {
         for (j = 0; j < 4U; ++j) corners[j] = indices[4U * i + j];
@@ -756,8 +752,7 @@ void drv_render(void)
         clear_page((long)tga_black);
         if (!tga_check()) break;
         globe_quads_num_vis = 0;
-        tga_sequence = 0;
-        tga_vertex_count = 0;
+        drv_quadstream_reset(&tga_stream);
         soft3d_project_cache_reset(&tga_cache);
         if (globe_ready())
         {
@@ -793,6 +788,7 @@ void drv_render(void)
 
 static void tga_keyboard(unsigned char key)
 {
+    char loader_command[sizeof(tga_temp_path) + 3U];
     if (key == 27) { drv_close(); return; }
     if (key == 's' || key == 'S')
     {
@@ -806,7 +802,12 @@ static void tga_keyboard(unsigned char key)
             {
                 if (tga_extract_module())
                 {
-                    tga_module = install_rlm(tga_temp_path);
+                    /* No subsequently installed module imports our symbols.
+                     * The documented flag avoids retaining them on the TI.
+                     * Keep the unadorned path intact for file cleanup. */
+                    strcpy(loader_command, tga_temp_path);
+                    strcat(loader_command, " %f");
+                    tga_module = install_rlm(loader_command);
                     /* Installation is synchronous. The board retains its
                      * loaded code, so the host file is no longer needed. */
                     (void)tga_remove_temp();
@@ -823,7 +824,7 @@ static void tga_keyboard(unsigned char key)
             }
         }
         soft3d_project_cache_reset(&tga_cache);
-        tga_sequence = 0;
+        drv_quadstream_reset(&tga_stream);
         drv_reset_timing();
         tga_dirty = TRUE;
     }
@@ -832,26 +833,7 @@ static void tga_keyboard(unsigned char key)
 
 static void tga_poll_mouse(void)
 {
-    union REGS regs;
-    short dx, dy;
-    int right;
-    if (!tga_mouse_present) return;
-    memset(&regs, 0, sizeof(regs));
-    regs.x.ax = 3;
-    int86(0x33, &regs, &regs);
-    drv_lmouse_pressed = (regs.x.bx & 1) != 0;
-    right = (regs.x.bx & 2) != 0;
-    if (right != drv_rmouse_pressed) tga_dirty = TRUE;
-    drv_rmouse_pressed = right;
-    regs.x.ax = 0x0b;
-    int86(0x33, &regs, &regs);
-    dx = (short)regs.x.cx;
-    dy = (short)regs.x.dx;
-    if (drv_lmouse_pressed && (dx != 0 || dy != 0))
-    {
-        drv_rotate_drag((long)dx, (long)dy);
-        tga_dirty = TRUE;
-    }
+    if (drv_dos_mouse_poll(tga_mouse_present)) tga_dirty = TRUE;
 }
 
 void drv_loop(void)

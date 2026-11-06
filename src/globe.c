@@ -382,13 +382,15 @@ int globe_set_resolution(int longitude, int latitude, float radius)
         if (globe_init_verts(candidate, -1, radius)) goto recovered;
     }
     globe_last_result = failure;
-    drv_notice("scene unavailable; select a resolution to retry");
+    sprintf(notice, "%.30s; select a resolution to retry",
+             drv_result_text(failure));
+    drv_notice(notice);
     drv_reset_timing();
     return FALSE;
 recovered:
     globe_last_result = failure;
-    sprintf(notice, "resolution %d unavailable; using %d", longitude,
-            globe_longitude);
+    sprintf(notice, "resolution %d: %.30s; using %d", longitude,
+            drv_result_text(failure), globe_longitude);
     drv_notice(notice);
     drv_reset_timing();
     return TRUE;

@@ -155,6 +155,38 @@ static float special_float(unsigned long pattern)
     return value;
 }
 
+static void test_clock_and_frame_policy(void)
+{
+    Drv_clock clock;
+    memset(&clock, 0, sizeof(clock));
+    assert(drv_elapsed_time(&clock, 100.0) == 0.0);
+    assert(drv_elapsed_time(&clock, 90.0) == 0.0);
+    assert(drv_elapsed_time(&clock, 91.0) == 1.0);
+    assert(drv_elapsed_time(&clock, 99.0) == 9.0);
+    assert(drv_elapsed_time(&clock, 101.0) == 11.0);
+    assert(drv_elapsed_time(&clock, 101.0) == 11.0);
+    assert(drv_elapsed_time(&clock, (double)special_float(0x7fc00000UL)) == 11.0);
+    assert(drv_elapsed_time(&clock, (double)special_float(0x7f800000UL)) == 11.0);
+    assert(drv_elapsed_time(&clock, 101.25) == 11.25);
+    assert(drv_elapsed_time(NULL, 123.0) == 0.0);
+    drv_osd_enabled = FALSE;
+    drv_auto_enabled = TRUE;
+    helper_scene_ready = TRUE;
+    drv_frame_failed = FALSE;
+    assert(!drv_status_required() && drv_animation_allowed());
+    drv_abort_frame("injected traversal failure");
+    assert(drv_status_required() && !drv_animation_allowed());
+    drv_frame_failed = FALSE;
+    helper_scene_ready = FALSE;
+    assert(drv_status_required() && !drv_animation_allowed());
+    helper_scene_ready = TRUE;
+    drv_osd_enabled = TRUE;
+    drv_auto_enabled = FALSE;
+    assert(drv_status_required() && !drv_animation_allowed());
+    drv_notice(NULL);
+    puts("PASS shared clocks and frame policy: backward samples rebase immediately, invalid samples preserve elapsed time, failures force status and stop animation");
+}
+
 static void test_input(void)
 {
     unsigned char key;
@@ -366,6 +398,13 @@ static void split_case(unsigned int count, unsigned int requested_limit,
 static void test_splitter(void)
 {
     prepare_strip();
+    assert(drv_tristrip_batch_facets(1026U, 0U, 127U) == 126U);
+    assert(drv_tristrip_batch_facets(1025U, 1022U, 128U) == 1U);
+    assert(drv_tristrip_batch_facets(1025U, 1023U, 128U) == 0U);
+    assert(drv_tristrip_batch_facets(2U, 0U, 128U) == 0U);
+    assert(drv_tristrip_batch_facets(10U, 1U, 128U) == 0U);
+    assert(drv_frame_failed);
+    drv_frame_failed = FALSE;
     split_case(1026U, 128U, 128U, 8U);
     split_case(1026U, 127U, 126U, 9U);
     split_case(1025U, 128U, 128U, 8U);
@@ -458,6 +497,9 @@ static void test_uv_expansion(void)
 #ifdef DRV_QUAD_BATCH
 static Vertex expected_corners[4];
 static unsigned int quad_calls;
+static Drv_quad_stream helper_stream;
+static unsigned int expected_reuse;
+static int stream_phase, stream_commit;
 
 void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                    const Vertex TG_HUGE *vertices,
@@ -472,7 +514,13 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     assert(colors[0] == 197U);
     assert(drv_quadbatch_context(vertex_count, vertices, &context));
     assert(context.sequence != 0UL && context.vertex_count == vertex_count);
-    assert(!context.reuse_row);
+    if (!stream_phase) assert(!context.reuse_row);
+    else
+    {
+        assert(drv_quadstream_reuse(&helper_stream, vertex_count,
+                                     vertices, &context) == expected_reuse);
+        if (stream_commit) drv_quadstream_commit(&helper_stream, &context);
+    }
     for (i = 0; i < 4U; ++i)
     {
         assert(indices[i] < vertex_count);
@@ -488,6 +536,7 @@ static void test_quad_helpers(void)
     unsigned int i, indices[256];
     Vertex source[7];
     Drv_quad_context context;
+    unsigned char color;
     for (i = 0; i < 64U; ++i)
     {
         indices[4U * i] = 2U * i;
@@ -525,6 +574,29 @@ static void test_quad_helpers(void)
     drv_submit_quad_as_batch(source, source + 2, NULL, source + 6, 197U);
     drv_submit_quad_as_batch(source, source + 2, source + 4, NULL, 197U);
     assert(quad_calls == 1U);
+    stream_phase = stream_commit = TRUE;
+    expected_reuse = 0U;
+    color = 197U;
+    for (i = 0; i < 4U; ++i) indices[i] = i;
+    drv_quadstream_reset(&helper_stream);
+    drv_submit_quadbatch(4U, expected_corners, 1U, indices, &color, FALSE);
+    expected_reuse = 2U;
+    drv_submit_quadbatch(4U, expected_corners, 1U, indices, &color, TRUE);
+    stream_commit = FALSE;
+    drv_submit_quadbatch(4U, expected_corners, 1U, indices, &color, TRUE);
+    expected_reuse = 0U;
+    stream_commit = TRUE;
+    drv_submit_quadbatch(4U, expected_corners, 1U, indices, &color, TRUE);
+    helper_stream.vertex_count = 6U;
+    drv_submit_quadbatch(4U, expected_corners, 1U, indices, &color, TRUE);
+    drv_quadstream_reset(&helper_stream);
+    drv_submit_quadbatch(4U, expected_corners, 1U, indices, &color, TRUE);
+    assert(drv_quadstream_reuse(&helper_stream, 4U, expected_corners, &context) == 0U);
+    drv_quadstream_commit(&helper_stream, &context);
+    assert(helper_stream.sequence == 0UL && helper_stream.vertex_count == 0U);
+    drv_quadstream_reset(NULL);
+    drv_quadstream_commit(NULL, NULL);
+    puts("PASS shared quad stream: adjacent-row reuse, interrupted sequences, mismatched counts, explicit resets and direct-call invalidation");
     puts("PASS shared quad adapters: 64-quad bounds, complete index validation and exact individual-quad corner/color submission");
 }
 #endif
@@ -668,6 +740,7 @@ int main(void)
 {
     test_input();
     test_services();
+    test_clock_and_frame_policy();
     test_stats();
 #ifdef GDI
     test_presentation_timing();

@@ -92,6 +92,9 @@ interval between completed presentations, including event-loop waits. It is an
 interactive frame rate, not a synchronized GPU throughput benchmark; native swap
 and flush calls provide different completion guarantees. Scene and rendering-mode
 changes restart the sample.
+Unix uses a monotonic clock where the platform exposes a compatible interface.
+Older Unix and Amiga clocks accumulate elapsed time and rebase after backward system
+clock changes, so adjusting the desktop clock does not stall rotation or FPS.
 
 | Status | Meaning |
 | --- | --- |
@@ -137,6 +140,9 @@ supported level; startup uses the same lower-resolution fallback. The OSD identi
 the active result and any recovery notice. A scene that still cannot be built leaves
 a responsive empty window so another resolution can be selected. Bad data and invalid
 requests remain distinct from insufficient memory.
+Recovery notices include the failure category. OpenGL, IRIS GL, and XGL force a
+failed-frame diagnostic visible even when OSD is disabled, and suspend automatic
+redraw until input requests another attempt.
 
 Insufficient texture memory or a queried native size limit can reduce the image from
 512 through 256, 128, 64, and 32 pixels wide. Other native errors are not assumed to
@@ -583,6 +589,9 @@ perspective, clipping, triangle-mesh drawing, back-face rejection, and bitmap-fo
 OSD. Geometry is cached in a GL object and rebuilt for resolution or texture changes.
 If the object cannot be allocated or validated, the driver draws the same geometry
 directly and retains the user's requested rendering settings.
+Failed creation or immediate validation disables further cache construction until
+texture enabling permits a retry. If a previously valid object
+disappears, direct drawing preserves the frame and the cache can be rebuilt.
 Interior bands use `bgntmesh`/`endtmesh`; polar caps use three-vertex meshes.
 
 Runtime queries compare single- and double-buffered RGB(A) formats, preferring total
@@ -641,6 +650,8 @@ polar caps use nondegenerate three-vertex strips. Both triangles of each Earth p
 share its flat RGB color. XGL performs transforms, clipping, back-face handling,
 depth testing, and texturing. Texture mapping uses REPLACE mode and preserves UV seams.
 X11 handles keyboard, mouse, expose, resize, and window-close events.
+The OSD wraps using native stroke-font measurements; windows too small for a line
+omit it, and help never overlaps the statistics.
 
 #### Platform notes
 
@@ -772,6 +783,9 @@ temporary file. It tries `TEMP`, `TMP`, then the current directory. TIGA
 loading. If deletion fails, its path is retained for another attempt on `S` or exit.
 The resident TI module is reused until released or the application exits. No separate
 module or Earth-data files need to accompany `testglob.exe`.
+Installation discards unused module export symbols to conserve TI memory. Optional
+release uses TIGA's documented `flush_module()` call; failed release retains the
+module identifier for reuse or another attempt while drawing through host transforms.
 
 If the executable cannot be reopened, the payload is missing or corrupt, temporary
 storage is unavailable, or TIGA rejects the module, rendering continues with
@@ -967,10 +981,15 @@ Color QuickDraw receives the original RGB values through `MakeRGBPat`/`FillCPoly
 Its native ditherer can combine four palette colors and reconverts patterns when
 the device palette or depth changes. The Amiga two-color matcher is therefore
 unnecessary here; monochrome also retains its finer 64-step luminance patterns.
-Unavailable optional palettes or color patterns fall back to native nearest-color
-drawing. Polygon allocation failures unwind the native drawing scope and release
-optional resources before one retry; repeated failure pauses drawing until input
-requests another attempt.
+One checked polygon handle is reused for all fills, avoiding per-polygon recording
+allocations. Once per pass, a temporary allocation probes 8 KiB of contiguous
+headroom for pattern drawing or 4 KiB for basic fills; it is immediately freed.
+This bounded memory preflight can disable optional color dithering or pause
+drawing when native scratch space is scarce; checked allocation failures release
+optional resources before one retry. Repeated failure pauses drawing until input
+requests another attempt. Native QuickDraw pattern and fill routines can still invoke
+system errors or silently omit drawing on internal allocation failure. These opaque
+Toolbox operations do not provide a general recoverable-allocation guarantee.
 
 With 32-bit QuickDraw, an optional GWorld supplies an offscreen back buffer presented
 through `CopyBits`. This uses ordinary GWorld pixel memory. QuickDraw selects available
@@ -1199,20 +1218,27 @@ ordered patterns; QuickDraw delegates that work to its native color machinery.
 | Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. `src/ogl_ami.c`/`.h` provide the OpenGL driver's MiniGL/Amiga integration. |
 | `src/tga_cpu.c` / `src/tga_gsp.c` | DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
 | `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader. |
+| `src/buildio.h` | C89 file validation and safe output publication shared by the Earth converter and TIGA packer; excluded from application binaries. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
 | `web/` | Browser frontend, WebGL rendering, and generated palette module; reads canonical `data/` maps. |
 
 Shared geometry helpers include `drv_validate_quadbatch()`,
 `drv_submit_quad_as_batch()`, `drv_submit_quadbatch()`, `drv_quadbatch_context()`,
-`drv_expand_tristrip_uv()`, and
-`drv_split_tristrip_batches()`. Shared input uses `drv_handle_key()`,
-`drv_rotate_drag()`, and `drv_rotate_elapsed()`. Backend resize and texture-loading
+`drv_expand_tristrip_uv()`, `drv_tristrip_batch_facets()`, and
+`drv_split_tristrip_batches()`. The common strip-range calculation preserves even
+winding for indexed, RGB, and UV packets. Shared input uses `drv_handle_key()`,
+`drv_rotate_drag()`, and `drv_rotate_elapsed()`; DOS Matrox/TIGA mouse adapters use
+`drv_dos_mouse_init()` and `drv_dos_mouse_poll()`. Backend resize and texture-loading
 helpers remain private; `drv_render()` and `drv_close()` are common driver entry points.
 Drawing callbacks borrow inputs for the call and never rebuild the scene inside a
 native begin/end or paint scope. Scene revisions invalidate geometry caches; texture
 intent and the active draw pass are separate. `Drv_result` distinguishes allocation,
 data, input, unavailable-feature, and native failures. Optional-cache eviction occurs
 outside rendering scopes through `drv_release_optional()`.
+`drv_status_required()` and `drv_animation_allowed()` provide the common failed-frame
+policy. Texture drivers use the typed, recoverable `texture_build()` interface;
+`texture_generate()` remains a fatal compatibility wrapper and
+`texture_try_generate()` its nonterminating boolean counterpart.
 Unsupported PGC/PHIGS selections report configuration errors; their headers are
 reference stubs. `types.h` provides wide arithmetic aliases for segmented builds.
 
@@ -1256,6 +1282,9 @@ the preceding bottom row to become the next top row without repeating its transf
 or cached projections. Direct quad calls, new tiles, interrupted streams, and new
 frames disable reuse. No cache uses the address of the reused submission buffer as a
 persistent vertex identity.
+The shared `drv_quadstream_*()` helpers check eligibility, commit successful packet
+state, and reset interrupted streams; each driver retains native transform dispatch
+and cache allocation.
 
 At EARTH_32, host row reuse reduces transforms from 1,056 to 561 per frame. An
 optional packet cache also avoids projecting the same corner for neighboring quads.
@@ -1291,8 +1320,12 @@ clipping, depth/culling, perspective-correct UVs, repeat sampling, and filtered 
 They link it as `texsoft.o` and `i_soft.o`; the OpenGL platform variants use their own
 object prefixes. `src/texture.h` sets `TEXTURE_MAX_SIZE=512`,
 `TEXTURE_PALETTE_SIZE=256`, and `TEXTURE_CACHE_RASTER=0` by default. Disabling software
-texturing releases frame/depth buffers and OpenGL's transfer copy while retaining
-mipmaps. Resizing releases obsolete rasters before replacement. Same-size staging
+texturing releases frame/depth buffers while retaining mipmaps. Indexed OpenGL
+renders directly into palette bytes for `glDrawPixels`, with no full-frame conversion
+copy. IRIS GL retains its native packed-word representation. Compared with the older
+word raster plus byte copy, OpenGL saves approximately 1.17 MiB on 32-bit hosts or
+2.34 MiB on 64-bit hosts at 640 × 480. Changing dimensions or raster format releases
+obsolete storage before replacement. Same-size staging
 images reuse allocation; changed sizes replace the old image only after completion.
 The software mipmap builder can adopt the generated RGB base image instead of
 copying it. IRIS GL fills its native packed image directly from indexed rows; XGL
@@ -1300,8 +1333,9 @@ fills its native raster the same way. OpenGL's GLU path retains the complete RGB
 staging image required by that interface. Native libraries may retain their own
 texture, geometry, and framebuffer storage.
 
-The Earth converter uses POSIX file operations on Unix and Microsoft runtime calls
-on DOS to reserve output paths safely. Generated readers handle chunk and 64 KiB
+The Earth converter and TIGA packer share build-only file helpers using POSIX
+operations on Unix and Microsoft runtime calls on DOS to reserve and publish output
+paths safely. Generated readers handle chunk and 64 KiB
 boundaries; texture expansion and globe color sampling share those readers.
 
 ## Planned work

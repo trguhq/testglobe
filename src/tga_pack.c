@@ -13,108 +13,10 @@
 #if !defined(_MSC_VER) && !defined(_XOPEN_SOURCE)
 #define _XOPEN_SOURCE 500
 #endif
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include "tga_cmd.h"
-
-#ifdef _MSC_VER
-#include <io.h>
-#define Tga_stat struct _stat
-#define tga_stat _stat
-#define tga_lstat _stat
-#define tga_regular(mode) (((mode) & _S_IFMT) == _S_IFREG)
-#define tga_open(path) _open(path, _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE)
-#define tga_fdopen _fdopen
-#define tga_close _close
-#else
-#include <unistd.h>
-#define Tga_stat struct stat
-#define tga_stat stat
-#define tga_lstat lstat
-#define tga_regular(mode) S_ISREG(mode)
-#define tga_open(path) open(path, O_CREAT | O_EXCL | O_WRONLY, 0666)
-#define tga_fdopen fdopen
-#define tga_close close
-#endif
-
 #define TGA_PACK_PATH 260U
-
-static int tga_entry(const char *path, Tga_stat *info)
-{
-    if (tga_lstat(path, info) == 0) return 1;
-    return errno == ENOENT ? 0 : -1;
-}
-
-static int tga_same(const char *first, const Tga_stat *a,
-                    const char *second, const Tga_stat *b)
-{
-#ifdef _MSC_VER
-    static char first_path[TGA_PACK_PATH], second_path[TGA_PACK_PATH];
-    (void)a; (void)b;
-    if (_fullpath(first_path, first, sizeof(first_path)) == NULL ||
-        _fullpath(second_path, second, sizeof(second_path)) == NULL) return -1;
-    return _stricmp(first_path, second_path) == 0;
-#else
-    (void)first; (void)second;
-    return a->st_dev == b->st_dev && a->st_ino == b->st_ino;
-#endif
-}
-
-static int tga_sibling(char *result, const char *output, const char *extension)
-{
-    const char *cursor, *dot = NULL;
-    size_t length;
-    for (cursor = output; *cursor != '\0'; ++cursor)
-    {
-        if (*cursor == '/' || *cursor == '\\' || *cursor == ':') dot = NULL;
-        else if (*cursor == '.') dot = cursor;
-    }
-    length = dot == NULL ? strlen(output) : (size_t)(dot - output);
-    if (length >= TGA_PACK_PATH || strlen(extension) + 1U > TGA_PACK_PATH - length)
-        return 0;
-    memcpy(result, output, length);
-    strcpy(result + length, extension);
-#ifdef _MSC_VER
-    return _stricmp(result, output) != 0;
-#else
-    return strcmp(result, output) != 0;
-#endif
-}
-
-static FILE *tga_create(const char *path)
-{
-    FILE *stream;
-    int descriptor = tga_open(path);
-    if (descriptor < 0) return NULL;
-    stream = tga_fdopen(descriptor, "wb");
-    if (stream == NULL)
-    {
-        tga_close(descriptor);
-        remove(path);
-    }
-    return stream;
-}
-
-/* Match DOS rename's no-replacement semantics on the host as well. */
-static int tga_move_new(const char *source, const char *destination)
-{
-#ifdef _MSC_VER
-    return rename(source, destination) == 0;
-#else
-    if (link(source, destination) != 0) return 0;
-    if (remove(source) != 0)
-    {
-        remove(destination);
-        return 0;
-    }
-    return 1;
-#endif
-}
+#define BUILD_PATH_MAX TGA_PACK_PATH
+#include "buildio.h"
+#include "tga_cmd.h"
 
 static unsigned long tga_u16(const unsigned char *bytes)
 {
@@ -180,15 +82,15 @@ static int tga_copy(FILE *input, FILE *output, unsigned long size,
     return 1;
 }
 
-static int tga_output(const char *path, Tga_stat *info,
-                       int inputs, char **names, const Tga_stat *source)
+static int tga_output(const char *path, Build_stat *info,
+                       int inputs, char **names, const Build_stat *source)
 {
-    int i, same, exists = tga_entry(path, info);
-    if (exists < 0 || (exists && !tga_regular(info->st_mode))) return -1;
+    int i, same, exists = build_entry(path, info);
+    if (exists < 0 || (exists && !build_regular(info->st_mode))) return -1;
     if (!exists) return 0;
     for (i = 0; i < inputs; ++i)
     {
-        same = tga_same(path, info, names[i], &source[i]);
+        same = build_same_file(path, info, names[i], &source[i]);
         if (same != 0) return -1;
     }
     return 1;
@@ -200,7 +102,7 @@ int main(int argc, char **argv)
     unsigned char trailer[TGA_RLM_TRAILER_SIZE];
     char *names[2];
     FILE *input[2], *output;
-    Tga_stat source[2], initial, current, sibling;
+    Build_stat source[2], initial, current, sibling;
     unsigned long sizes[2], checksum = 0UL;
     int i, inputs, valid, had_output, has_output;
     if (argc != 3 && argc != 4)
@@ -213,16 +115,16 @@ int main(int argc, char **argv)
     input[0] = input[1] = NULL;
     output = NULL;
     valid = 0;
-    if (!tga_sibling(temporary, argv[2], ".tmp") ||
-        !tga_sibling(backup, argv[2], ".bak") ||
-        tga_entry(temporary, &sibling) != 0 || tga_entry(backup, &sibling) != 0)
+    if (!build_sibling(temporary, sizeof(temporary), argv[2], ".tmp") ||
+        !build_sibling(backup, sizeof(backup), argv[2], ".bak") ||
+        build_entry(temporary, &sibling) != 0 || build_entry(backup, &sibling) != 0)
     {
         fputs("tga_pack: output requires unused .tmp and .bak siblings\n", stderr);
         goto done;
     }
     for (i = 0; i < inputs; ++i)
     {
-        if (tga_stat(names[i], &source[i]) != 0 || !tga_regular(source[i].st_mode) ||
+        if (build_stat(names[i], &source[i]) != 0 || !build_regular(source[i].st_mode) ||
             source[i].st_size <= 0 || source[i].st_size > 0x7fffffffL)
         {
             fputs("tga_pack: input must be a nonempty regular file below 2 GiB\n", stderr);
@@ -253,7 +155,7 @@ int main(int argc, char **argv)
         fputs("tga_pack: output must be a separate regular file\n", stderr);
         goto done;
     }
-    output = tga_create(temporary);
+    output = build_create(temporary);
     if (output == NULL)
     {
         fputs("tga_pack: cannot reserve temporary output\n", stderr);
@@ -286,22 +188,22 @@ int main(int argc, char **argv)
     valid = 0;
     has_output = tga_output(argv[2], &current, inputs, names, source);
     if (has_output < 0 || has_output != had_output ||
-        (had_output && (tga_same(argv[2], &initial, argv[2], &current) != 1 ||
+        (had_output && (build_same_file(argv[2], &initial, argv[2], &current) != 1 ||
          initial.st_size != current.st_size || initial.st_mtime != current.st_mtime)))
     {
         remove(temporary);
         fputs("tga_pack: output changed while packing; not replaced\n", stderr);
         goto done;
     }
-    if (had_output && !tga_move_new(argv[2], backup))
+    if (had_output && !build_move_new(argv[2], backup))
     {
         remove(temporary);
         fputs("tga_pack: cannot preserve previous output\n", stderr);
         goto done;
     }
-    if (!tga_move_new(temporary, argv[2]))
+    if (!build_move_new(temporary, argv[2]))
     {
-        if (had_output && !tga_move_new(backup, argv[2]))
+        if (had_output && !build_move_new(backup, argv[2]))
             fprintf(stderr, "tga_pack: previous output remains in %s\n", backup);
         remove(temporary);
         fputs("tga_pack: cannot install executable\n", stderr);

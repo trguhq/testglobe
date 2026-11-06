@@ -146,6 +146,9 @@ bounds and packing, invalid inputs, key handling, FPS toggling, debug metadata,
 bounded dragging, zero-sized windows, and large elapsed-time rotations. Shared-service
 checks cover allocation bounds, handle release, bounded status messages, empty-scene
 OSD, and completed-presentation timing that includes time between native events.
+Elapsed-clock checks include backward adjustments without a long freeze. Quad stream
+helpers validate consecutive successful packets and explicit resets; strip-range
+checks preserve winding independently of native color/UV packing.
 Configuration checks cover platform and architecture defaults, conflicting settings,
 Amiga's FLAT/no-texture configuration, and explicit errors for unsupported legacy drivers.
 
@@ -201,6 +204,8 @@ application build dependencies.
   resolution fallback, competing requests, texture failure and reduction, resize
   retry, retained resources after failed GPU uploads, and context loss/restoration
   when `WEBGL_lose_context` is available.
+  A failed base-level texture upload must be checked before mipmap generation so an
+  out-of-memory error still selects a smaller image without changing globe detail.
 
 ### Validation limits
 
@@ -237,12 +242,15 @@ python3 tests/run.py --ogl-contract
   creation, binding, mipmap, and transfer failures must release failed state, draw
   flat colors, and allow off/on retry.
   Native and software allocation-pressure profiles select smaller usable images.
+  Failed traversal with OSD disabled and autorotation enabled must show diagnostics
+  without self-scheduling another failed frame; explicit input can retry.
 - **Window lifecycle and controls:** early probe and window redraws verify a safe
   display callback before rendering is ready, including Apple's GLUT ordering.
   Checks also cover probe cleanup, final size, FPS toggling, right-button metadata,
   OSD status/help order, and omission of unavailable visibility counts.
-- **Software texturing:** transferred bytes match every framebuffer index, including
-  with host 64-bit `unsigned long`. Nondefault unpack/transfer state must be restored.
+- **Software texturing:** OpenGL presents the rasterizer's index bytes directly;
+  transferred bytes match every framebuffer index, including on 64-bit hosts.
+  Nondefault unpack/transfer state must be restored.
   Software texturing bypasses display lists, and both raster-cache policies are
   exercised. Numerical pixel checks are described under [Shared software pipelines](#shared-software-pipelines).
 
@@ -310,7 +318,10 @@ python3 tests/run.py --igl-contract
   quit. Missing or reversed mouse samples must neither block nor consume later
   keyboard/window events.
 - **Recovery and status:** unavailable geometry objects fall back to complete direct
-  drawing; cache allocation failure is latched to avoid repeated failed work.
+  drawing; both identifier-allocation and newly compiled-object validation failures
+  are latched to avoid repeated failed work. Previously valid objects that disappear
+  can be rebuilt. Failed traversal forces diagnostics with OSD disabled and suspends
+  automatic retries until input requests another attempt.
   Recoverable texture failures invalidate incompatible caches, draw flat colors,
   preserve the requested toggle, and allow a
   retry. Status checks distinguish API submission from application software rendering.
@@ -350,6 +361,8 @@ uses real X11 windows and events under Xvfb; XGL calls use a host recorder.
 - **Input and cleanup:** X11 keyboard, mouse, resize, Escape, and window-manager close.
   Status checks track current-frame use; XGL's internal software rendering is not
   reported as application software texturing.
+- **OSD layout:** native extent queries with proportional widths and negative bearings,
+  wrapped status/help at small sizes, long unbroken words, and tiny-window guards.
 
 ### Native validation
 
@@ -459,6 +472,10 @@ python3 tests/tga_cpu.py
   Missing, truncated, or corrupt payloads, invalid bounds, unavailable temporary
   storage, disk-full and close failures must retain software rendering. Short writes,
   exclusive-name collisions, and deferred-deletion retries are also covered.
+  Loader arguments discard unused exports while preserving the plain extraction path.
+  Checked `flush_module()` failure retains module ownership for reuse or retry; the
+  recorder distinguishes it from the reserved internal deletion API and rejects
+  further board calls after a communication failure.
 - **TI arithmetic:** `tests/tiga_module.c` calls the production module entry and
   compares its fixed-point camera coordinates and projections with the host pipeline
   over varied poses, one- and 130-vertex packets, and viewport boundaries. Malformed
@@ -536,7 +553,8 @@ python3 tests/run.py --qd-contract
   Individual and streamed submissions must preserve polygon coordinates/colors at
   multiple poses and window sizes, including clipped silhouettes and collapsed poles.
   The monochrome-68000 profile rejects Color QuickDraw, Palette Manager, and GWorld
-  calls; polygon recording models automatic pen hiding.
+  calls. The recorder validates the reusable native polygon record, its bounds,
+  closure, and point coordinates rather than simulating `OpenPoly()` recording.
 - **CPU and display:** fixed-point/FPU paths and dispatch guards; 1-bit dithering;
   4/8/16/32-bit color; selection among currently configured display depths; old Color
   QuickDraw; small-screen and explicit-size cases; 1×1 viewports and the 32,767-coordinate
@@ -553,11 +571,12 @@ python3 tests/run.py --qd-contract
 - **Input and lifecycle:** startup, short drag-poll waits, activation/suspend/resume,
   resize, `TickCount` rollover, animation, window close, Command-Q, and ownership.
   Early drawing and late teardown events must respect readiness guards.
-- **Recovery:** unavailable optional palettes/patterns use native color drawing;
-  native resource reads return typed failures and empty scenes remain interactive.
-  Polygon allocation failures unwind native state before one retry, then pause
-  without repeated allocations. A subsequent key resumes drawing after the fault
-  clears. Every attempt restores ports/devices and releases temporary ownership.
+- **Recovery:** checked polygon allocation and bounded native-scratch preflight
+  failures release optional resources before one retry, then pause without repeated
+  allocations. Reduced pattern scratch permits nearest-color fallback. A subsequent
+  key resumes drawing after the fault clears. Native resource reads return typed
+  failures and empty scenes remain interactive; attempts restore ports/devices and
+  temporary ownership.
 
 ### Native validation
 
@@ -567,6 +586,10 @@ code resources, A5 globals, executable format, and SANE/68881 dispatch. The FPU 
 is compiled as ordinary host C for numerical checks; only MPW can verify its instruction
 selection and separate code segment. Physical palette mapping and QuickDraw hardware
 acceleration require the target runtime and display.
+Native QuickDraw allocation wrappers can invoke system errors, and polygon filling
+can silently skip work after internal allocation failure. The fixture tests checked
+Memory Manager operations and preflight policy; it cannot establish recovery from
+every opaque Toolbox allocation.
 
 ## Amiga
 
@@ -636,6 +659,8 @@ filtering, mipmap minification, indexed conversion, and cleanup. Invalid matrice
 vertices, and UVs must be rejected before integer conversion; very large finite
 repeating UVs remain valid. Raster release retains mipmaps and the indexed lookup
 table for re-enabling at a resized viewport.
+Byte-index and native-word outputs must agree pixel for pixel. Tests cover ownership
+and allocation when dimensions or output formats change, including same-size reuse.
 
 The same options run `tests/texture.c`, comparing every expanded RGB texel with the
 Earth palette source at all five resolutions. Checks cover same-size allocation reuse,

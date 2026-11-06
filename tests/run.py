@@ -53,7 +53,7 @@ def check_tiga_extraction(executable, output):
         "nooverlay", "badcrc", "truncated", "oversized", "badoffset", "reserved",
         "badmagic", "missingexe", "diskfull", "closefail", "notemp", "shortwrite",
         "removefail", "collision", "movedcwd", "readonlyexe", "fallbacktmp",
-        "longtemp", "moduleioerror",
+        "longtemp", "moduleioerror", "flushioerror",
     )
     payload = bytes((index * 73 + 19) & 255 for index in range(1549))
     image = bytearray(512)
@@ -300,6 +300,7 @@ def check_earth_data(cc, common, output):
     if result.returncode == 0 or "Regenerate Earth data" not in result.stderr:
         raise SystemExit("Stale generated data accepted a changed chunk format")
     shutil.copyfile(ROOT / "src/e_bin.c", mismatch / "e_bin.c")
+    shutil.copyfile(ROOT / "src/buildio.h", mismatch / "buildio.h")
     run(cc + common + [str(mismatch / "e_bin.c"), "-o", str(mismatch / "e_bin")])
     rejected = mismatch / "output.c"
     rejected.write_text("preserve previous generated source\n")
@@ -676,7 +677,7 @@ def main():
                 str(ROOT / "src/err.c"), "-lm"]
             run(cc + common + ogl + ["-DNO_GENMIPMAP"] + ogl_sources +
                 ["-o", str(output / "ogl")])
-            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "reduced", "softreduced", "glureduced"):
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "reduced", "softreduced", "glureduced", "framefail"):
                 run([str(output / "ogl"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl"), mode],
@@ -691,7 +692,7 @@ def main():
                 "stagefail": "Insufficient memory for texture; drawing flat colors",
                 "softmipfail": "Insufficient memory for texture; drawing flat colors",
                 "softframefail": "Cannot prepare indexed OpenGL texture raster",
-                "softtransferallocfail": "Cannot present indexed OpenGL texture raster",
+                "softpixelsfail": "Cannot present indexed OpenGL texture raster",
                 "softtransfererror": "Cannot present indexed OpenGL texture raster",
             }
             for mode, message in texture_failures.items():
@@ -762,7 +763,7 @@ def main():
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl")])
             for mode in ("double", "single", "indexed", "indexed-single", "noz", "software", "unknown", "affine", "winquit", "winshut",
-                         "rgba", "rgba-single", "rgb-single", "unknown-alpha", "cachefail", "reduced", "softreduced"):
+                         "rgba", "rgba-single", "rgb-single", "unknown-alpha", "cachefail", "reduced", "softreduced", "framefail", "objectreject"):
                 run([str(output / "igl"), mode])
             igl_texture_failures = {
                 "stagefail": "Insufficient memory for texture; drawing flat colors",

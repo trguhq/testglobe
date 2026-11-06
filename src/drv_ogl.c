@@ -77,8 +77,6 @@ static unsigned int ogl_palette_size;
 #ifndef OGL_AMIGA
 static unsigned int ogl_foreground, ogl_background;
 #endif
-static GLubyte *ogl_index_pixels;
-static unsigned long ogl_index_capacity;
 #ifdef OGL_AMIGA
 /* MiniGL's immediate buffer is bounded, including while recording lists. */
 static unsigned int ogl_triangle_vertices;
@@ -112,9 +110,6 @@ void drv_release_optional(void)
     ogl_invalidate_dlist();
     ogl_dlist_blocked = TRUE;
     texsoft_release_raster();
-    free(ogl_index_pixels);
-    ogl_index_pixels = NULL;
-    ogl_index_capacity = 0;
     if (!drv_texture_enabled)
     {
         if (texture_id != 0
@@ -151,7 +146,6 @@ static void ogl_cleanup(void)
     ogl_texture_failed = ogl_texture_used = FALSE;
     drv_texture_loaded = drv_texture_enabled = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
-    free(ogl_index_pixels); ogl_index_pixels = NULL; ogl_index_capacity = 0;
     texsoft_free();
 }
 
@@ -501,21 +495,10 @@ void drv_init(int *argc, char **argv)
  * rasterizer, then transfer tightly packed palette bytes through OpenGL. */
 static int ogl_present_indexed_texture(void)
 {
-    unsigned long count, i;
-    unsigned long *source;
-    GLubyte *pixels;
+    const unsigned char *pixels;
     GLint matrix_mode;
-    count = (unsigned long)drv_win_width * drv_win_height;
-    if (count > (size_t)-1) return FALSE;
-    if (count > ogl_index_capacity)
-    {
-        pixels = (GLubyte *)malloc((size_t)count);
-        if (pixels == NULL) return FALSE;
-        free(ogl_index_pixels); ogl_index_pixels = pixels; ogl_index_capacity = count;
-    }
-    source = texsoft_pixels();
-    if (source == NULL) return FALSE;
-    for (i = 0; i < count; ++i) ogl_index_pixels[i] = (GLubyte)source[i];
+    pixels = texsoft_index_pixels();
+    if (pixels == NULL) return FALSE;
     glGetIntegerv(GL_MATRIX_MODE, &matrix_mode);
     glPushAttrib(GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT | GL_PIXEL_MODE_BIT | GL_CURRENT_BIT);
     glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
@@ -533,7 +516,7 @@ static int ogl_present_indexed_texture(void)
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
     glRasterPos2i(0, 0);
     glDrawPixels((GLsizei)drv_win_width, (GLsizei)drv_win_height,
-                  GL_COLOR_INDEX, GL_UNSIGNED_BYTE, ogl_index_pixels);
+                  GL_COLOR_INDEX, GL_UNSIGNED_BYTE, pixels);
     glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix();
     glMatrixMode((GLenum)matrix_mode);
     glPopClientAttrib(); glPopAttrib();
@@ -721,7 +704,7 @@ void drv_render(void)
         glGetFloatv(GL_PROJECTION_MATRIX, &projection[0][0]);
         if (ogl_checkerror() ||
             !texsoft_begin(drv_win_width, drv_win_height, model, projection,
-                             TRUE, &earth_cmap[0][0]))
+                             TEXSOFT_INDEX_BYTES, &earth_cmap[0][0]))
             ogl_texture_failure("Cannot prepare indexed OpenGL texture raster");
         else
         {
@@ -769,7 +752,7 @@ void drv_render(void)
     }
 
 #ifndef OGL_AMIGA
-    if (drv_osd_enabled || !globe_ready())
+    if (drv_status_required())
     {
         glMatrixMode(GL_MODELVIEW);
         glPushMatrix();
@@ -788,12 +771,12 @@ void drv_render(void)
     ogl_ami_present();
     /* The native font writes to the presented Workbench window, outside
      * MiniGL's framebuffer. Its colors and state do not modify GL state. */
-    if (drv_osd_enabled || !globe_ready()) drv_draw_osd();
+    if (drv_status_required()) drv_draw_osd();
 #endif
     ogl_checkerror();
     drv_fps_stop();
     
-    if (drv_auto_enabled == TRUE && globe_ready())
+    if (drv_animation_allowed())
     {
         drv_globe_rotate();
         ogl_post_redisplay();
@@ -892,9 +875,6 @@ static void ogl_texture_failure(const char *message)
     texture_id = 0;
     texture_free();
     texsoft_free();
-    free(ogl_index_pixels);
-    ogl_index_pixels = NULL;
-    ogl_index_capacity = 0;
     fprintf(stderr, "OpenGL texture: %s\n", message);
     drv_reset_timing();
 }
@@ -1046,9 +1026,6 @@ void drv_texture_disable(void)
     drv_texture_enabled = FALSE;
 #if !TEXTURE_CACHE_RASTER
     texsoft_release_raster();
-    free(ogl_index_pixels);
-    ogl_index_pixels = NULL;
-    ogl_index_capacity = 0;
 #endif
 }
 

@@ -14,13 +14,13 @@
 static Drv_result test_texture_build(int size);
 static Drv_result test_texsoft_texture_take(unsigned int width,unsigned int height,unsigned char *rgb);
 static int test_texsoft_begin(unsigned int width,unsigned int height,float model[4][4],float projection[4][4],int indexed,const unsigned char *colormap);
-static void *test_transfer_malloc(size_t size);
+static unsigned char *test_texsoft_index_pixels(void);
 #define texture_build test_texture_build
 #define texsoft_texture_take test_texsoft_texture_take
 #define texsoft_begin test_texsoft_begin
-#define malloc test_transfer_malloc
+#define texsoft_index_pixels test_texsoft_index_pixels
 #include "../src/drv_ogl.c"
-#undef malloc
+#undef texsoft_index_pixels
 #undef texsoft_begin
 #undef texsoft_texture_take
 #undef texture_build
@@ -50,7 +50,8 @@ static unsigned int palette_calls,draw_pixels_calls,texture_uploads,indices,rgb_
 static unsigned int direct_texture_uploads,glu_mipmap_calls;
 static unsigned int texture_allocations,texture_deletions,mipmap_generations;
 static unsigned int proc_lookups,version_queries;
-static unsigned int staging_attempts,soft_mip_attempts,soft_frame_attempts,transfer_attempts;
+static unsigned int staging_attempts,soft_mip_attempts,soft_frame_attempts,pixel_attempts;
+static int fail_traversal;
 static unsigned int texture_exists,texture_binding,frame_texture_pixels;
 static int texture_injection=1;
 static unsigned int list_attempts,list_deletions,list_calls,list_validations;
@@ -95,8 +96,8 @@ static Drv_result test_texsoft_texture_take(unsigned int w,unsigned int h,unsign
 {++soft_mip_attempts;if(texture_profile("softmipfail")){free(rgb);return DRV_NO_MEMORY;}return texsoft_texture_take(w,h,rgb);}
 static int test_texsoft_begin(unsigned int w,unsigned int h,float m[4][4],float p[4][4],int indexed,const unsigned char *c)
 {++soft_frame_attempts;return texture_profile("softframefail")?FALSE:texsoft_begin(w,h,m,p,indexed,c);}
-static void *test_transfer_malloc(size_t size)
-{++transfer_attempts;return texture_profile("softtransferallocfail")?NULL:malloc(size);}
+static unsigned char *test_texsoft_index_pixels(void)
+{++pixel_attempts;return texture_profile("softpixelsfail")?NULL:texsoft_index_pixels();}
 
 static void matrix_identity(GLfloat *m)
 {int i;for(i=0;i<16;++i)m[i]=(GLfloat)(i%5==0);}
@@ -370,6 +371,7 @@ void glEnd(void)
         else geometry_add(&frame_geometry,&geometry);
     }
     begin_mode=0;
+    if(fail_traversal)drv_abort_frame("injected traversal failure");
 }
 void glColor3ub(GLubyte r,GLubyte g,GLubyte b){last_rgb[0]=r;last_rgb[1]=g;last_rgb[2]=b;++rgb_calls;}
 void glColor3f(GLfloat r,GLfloat g,GLfloat b){glColor3ub((GLubyte)(r*255),(GLubyte)(g*255),(GLubyte)(b*255));}
@@ -428,11 +430,11 @@ void glPixelStorei(GLenum p,GLint v){if(p==GL_UNPACK_ALIGNMENT){assert(v==1||v==
 void glPixelZoom(GLfloat x,GLfloat y){zoom_x=x;zoom_y=y;}
 void glDrawPixels(GLsizei w,GLsizei h,GLenum format,GLenum type,const GLvoid *data)
 {
-    unsigned long i,count;const GLubyte *bytes=data;unsigned long *source=texsoft_pixels();int nonbackground=0;
+    unsigned long i,count;const GLubyte *bytes=data;unsigned char *source=texsoft_index_pixels();int nonbackground=0;
     assert(w==(int)drv_win_width&&h==(int)drv_win_height&&format==GL_COLOR_INDEX&&type==GL_UNSIGNED_BYTE&&unpack_alignment==1);
     assert(index_shift==0&&index_offset==0&&!map_color&&zoom_x==1&&zoom_y==1);
-    assert(bytes&&source);count=(unsigned long)w*h;
-    for(i=0;i<count;++i){assert(source[i]<256&&bytes[i]==(GLubyte)source[i]);if(bytes[i]!=last_clear_index)nonbackground=1;}
+    assert(bytes&&source&&data==source&&texsoft_pixels()==NULL);count=(unsigned long)w*h;
+    for(i=0;i<count;++i){assert(bytes[i]==source[i]);if(bytes[i]!=last_clear_index)nonbackground=1;}
     assert(nonbackground);++draw_pixels_calls;
     if(texture_profile("softtransfererror")){pending_error=GL_INVALID_OPERATION;return;}
     ++frame_texture_pixels;
@@ -534,6 +536,34 @@ static void render_checked(int indexed)
     if(drv_osd_enabled)check_dlist_osd();
 }
 
+static void check_failed_frame(void)
+{
+    unsigned int posts, i;
+    float old_x, old_y;
+    keyboard_callback('d',0,0);
+    assert(!ogl_dlist_enabled);
+    drv_auto_enabled=TRUE;drv_osd_enabled=FALSE;fail_traversal=TRUE;
+    old_x=drv_rot_x;old_y=drv_rot_y;
+    for(i=0;i<2U;++i){
+        osd_lengths[0]=osd_lengths[1]=0;
+        osd_lines[0][0]=osd_lines[1][0]=0;
+        posts=redisplay_posts;
+        drv_render();
+        assert(globe_ready()&&drv_frame_failed&&redisplay_posts==posts);
+        assert(strstr(osd_lines[1],"injected traversal failure")!=NULL);
+        assert(drv_rot_x==old_x&&drv_rot_y==old_y);
+        assert(frame_geometry.vertices==0&&!ogl_texture_used&&!ogl_dlist_used);
+    }
+    fail_traversal=FALSE;
+    posts=redisplay_posts;
+    keyboard_callback('a',0,0);
+    assert(!drv_auto_enabled&&redisplay_posts==posts+1U);
+    keyboard_callback('1',0,0);
+    render_checked(FALSE);
+    assert(!drv_frame_failed&&!drv_osd_enabled);
+    puts("PASS OpenGL failed-frame recovery: OSD-off diagnostics, no automatic redraw loop, and explicit input retry");
+}
+
 static void check_cached_frame(int indexed)
 {
     unsigned int previous_vertices=emitted_vertices,previous_lists=native_lists;
@@ -611,18 +641,18 @@ static int creation_failure_profile(void)
 
 static void check_texture_failure(int indexed)
 {
-    unsigned int stages,mips,frames,transfers,allocations;
+    unsigned int stages,mips,frames,pixel_reads,allocations;
     keyboard_callback('t',0,0);assert(drv_texture_enabled);
     render_checked(indexed);
     assert(ogl_texture_failed&&!ogl_texture_used&&!texture_enabled);
     assert(texture_id==0&&texture_data==NULL&&!drv_texture_loaded);
     assert(frame_geometry.triangles==globe_tris_num);
     stages=staging_attempts;mips=soft_mip_attempts;frames=soft_frame_attempts;
-    transfers=transfer_attempts;allocations=texture_allocations;
+    pixel_reads=pixel_attempts;allocations=texture_allocations;
     render_checked(indexed);
     assert(ogl_texture_failed&&!ogl_texture_used&&drv_texture_enabled);
     assert(staging_attempts==stages&&soft_mip_attempts==mips&&
-           soft_frame_attempts==frames&&transfer_attempts==transfers&&texture_allocations==allocations);
+           soft_frame_attempts==frames&&pixel_attempts==pixel_reads&&texture_allocations==allocations);
     keyboard_callback('T',0,0);assert(!drv_texture_enabled);
     render_checked(indexed);assert(strstr(osd_lines[1],", texture off"));
     texture_injection=0;
@@ -712,6 +742,7 @@ int main(int argc,char **argv)
     keyboard_callback('f',0,0);assert(!drv_fps_enabled);
     drv_format_stats(stats);assert(strstr(stats,"frames per second")==NULL);
     keyboard_callback('F',0,0);assert(drv_fps_enabled);
+    if(strcmp(profile,"framefail")==0){check_failed_frame();goto cleanup;}
     if(strstr(profile,"reduced")!=NULL){
         keyboard_callback('t',0,0);assert(texture_size==128&&drv_texture_loaded);
         render_checked(indexed);assert(ogl_texture_used&&texture_data==NULL&&staging_attempts<=6U);
@@ -750,9 +781,9 @@ int main(int argc,char **argv)
         }
         keyboard_callback('T',0,0);assert(!drv_texture_enabled);
 #if !TEXTURE_CACHE_RASTER
-        assert(texsoft_pixels()==NULL&&ogl_index_pixels==NULL&&ogl_index_capacity==0);
+        assert(texsoft_pixels()==NULL&&texsoft_index_pixels()==NULL);
 #else
-        if(indexed)assert(texsoft_pixels()!=NULL&&ogl_index_pixels!=NULL&&ogl_index_capacity>=64UL*48UL);
+        if(indexed)assert(texsoft_pixels()==NULL&&texsoft_index_pixels()!=NULL);
 #endif
         render_checked(indexed);check_cached_frame(indexed);
     }

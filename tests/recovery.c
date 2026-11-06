@@ -72,6 +72,14 @@ void drv_notice(const char *notice)
     assert(strlen(notice) < sizeof(last_notice));
     strcpy(last_notice, notice);
 }
+const char *drv_result_text(Drv_result result)
+{
+    /* The shared formatter is checked separately by driver_helpers.c. */
+    if (result == DRV_NO_MEMORY) return "insufficient memory";
+    if (result == DRV_BAD_DATA) return "invalid Earth data";
+    assert(!"Unexpected recovery category");
+    return "unexpected failure";
+}
 void drv_reset_timing(void) { ++resets; }
 void drv_abort_frame(const char *notice)
 {
@@ -265,6 +273,8 @@ int main(int argc, char **argv)
     assert(globe_last_result == DRV_NO_MEMORY && releases == 1UL);
     assert(used == width64 && peak <= width64 && globe_revision > revision);
     assert(strstr(last_notice, "using 64") != NULL);
+    assert(strstr(last_notice, "insufficient memory") != NULL);
+    assert(strlen(last_notice) < 64U);
     globe_free();
     reset_faults();
     budget = width32;
@@ -283,6 +293,7 @@ int main(int argc, char **argv)
     assert(!globe_set_resolution(512, -1, GLOBE_RADIUS));
     assert(!globe_ready() && used == 0UL && releases == 1UL);
     assert(globe_last_result == DRV_NO_MEMORY);
+    assert(strstr(last_notice, "insufficient memory") != NULL);
     callbacks = 0UL;
 #ifdef TRISTRIP
     globe_draw_pole_tris();
@@ -311,6 +322,8 @@ int main(int argc, char **argv)
     assert(allocations == 1UL);
     assert(globe_set_resolution(64, -1, GLOBE_RADIUS));
     assert(globe_longitude == 32 && globe_last_result == DRV_BAD_DATA);
+    assert(strstr(last_notice, "invalid Earth data") != NULL);
+    assert(strstr(last_notice, "using 32") != NULL);
     reset_faults();
     assert(globe_init_verts(32, 3, GLOBE_RADIUS));
     for (row = 0; row < 3U; ++row)

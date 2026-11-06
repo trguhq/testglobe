@@ -6,11 +6,13 @@
 
 static void *owned[16];
 static unsigned int owned_count, allocation_calls, fail_call;
+static size_t recent_sizes[2];
 
 static void *tracked_malloc(size_t bytes)
 {
     void *result;
     ++allocation_calls;
+    recent_sizes[0]=recent_sizes[1];recent_sizes[1]=bytes;
     if (allocation_calls == fail_call) return NULL;
     result = malloc(bytes);
     assert(result != NULL);
@@ -44,6 +46,36 @@ static unsigned char *image(unsigned int width, unsigned int height)
     assert(data != NULL);
     memset(data, 93, bytes);
     return data;
+}
+
+static void raster_storage(void)
+{
+    float matrix[4][4];
+    unsigned char palette[TEXTURE_PALETTE_BYTES];
+    unsigned int i,j,calls,failure;
+    unsigned char *pixels;
+    memset(palette,0,sizeof(palette));
+    for(i=0;i<4U;++i)for(j=0;j<4U;++j)matrix[i][j]=(float)(i==j);
+    assert(texsoft_texture_take(1,1,image(1,1))==DRV_OK);
+    assert(texsoft_begin(5,7,matrix,matrix,TEXSOFT_INDEX_BYTES,palette));
+    assert(recent_sizes[0]==35U&&recent_sizes[1]==35U*sizeof(float));
+    assert(owned_count==4&&texsoft_pixels()==NULL);
+    calls=allocation_calls;pixels=texsoft_index_pixels();
+    assert(texsoft_begin(5,7,matrix,matrix,TEXSOFT_INDEX_BYTES,palette));
+    assert(calls==allocation_calls&&pixels==texsoft_index_pixels());
+    assert(texsoft_begin(5,7,matrix,matrix,TEXSOFT_INDEX_WORDS,palette));
+    assert(recent_sizes[0]==35U*sizeof(unsigned long)&&recent_sizes[1]==35U*sizeof(float));
+    assert(owned_count==4&&texsoft_index_pixels()==NULL&&texsoft_pixels()!=NULL);
+    for(failure=1;failure<=2U;++failure){
+        fail_call=allocation_calls+failure;
+        assert(!texsoft_begin(5,7,matrix,matrix,TEXSOFT_INDEX_BYTES,palette));
+        assert(texsoft_pixels()==NULL&&texsoft_index_pixels()==NULL&&owned_count==2);
+        fail_call=0;
+        assert(texsoft_begin(5,7,matrix,matrix,TEXSOFT_INDEX_WORDS,palette));
+        assert(owned_count==4);
+    }
+    texsoft_free();assert(owned_count==0);
+    puts("PASS Software raster allocation: byte-sized indexed pixels, no duplicate frame, format replacement, cached reuse and allocation-failure cleanup");
 }
 
 int main(void)
@@ -92,6 +124,7 @@ int main(void)
     assert(memcmp(texsoft_mips[0], borrowed, sizeof(borrowed)) == 0);
     texsoft_free();
     assert(owned_count == 0);
+    raster_storage();
     puts("PASS Software texture adoption: no duplicate base, all mip-allocation failures release ownership exactly once, invalid input and borrowed-copy contracts");
     return 0;
 }

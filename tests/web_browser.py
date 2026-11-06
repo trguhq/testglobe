@@ -317,6 +317,64 @@ async def texture_recovery(browser, url):
         await context.close()
 
 
+async def texture_allocation_recovery(browser, url):
+    context, page, errors = await context_page(browser)
+    try:
+        await page.goto(url)
+        await ready(page, 512)
+        await page.get_by_test_id("resolution-32").click()
+        await ready(page, 32)
+        flat = await image_sample(page)
+        # Leave the failed base image genuinely undefined. A misplaced native
+        # generateMipmap call then adds INVALID_OPERATION; only the initial
+        # allocation failure is injected, not that dependent error.
+        await page.get_by_test_id("globe").evaluate("""canvas => {
+            const gl = canvas.getContext('webgl2');
+            const upload = gl.texImage2D, getError = gl.getError;
+            const generateMipmap = gl.generateMipmap;
+            const fault = { uploads: [], invalidMipmaps: 0, successfulMipmaps: 0 };
+            let pending = false, undefinedImage = false;
+            window.textureAllocationFault = fault;
+            gl.texImage2D = function(...args) {
+                undefinedImage = false;
+                if (args[2] === gl.RGB8) {
+                    fault.uploads.push(args[3]);
+                    if (args[3] === 512) {
+                        pending = undefinedImage = true;
+                        return;
+                    }
+                }
+                return upload.apply(this, args);
+            };
+            gl.getError = function() {
+                if (pending) { pending = false; return gl.OUT_OF_MEMORY; }
+                return getError.call(this);
+            };
+            gl.generateMipmap = function(...args) {
+                if (undefinedImage) ++fault.invalidMipmaps;
+                else ++fault.successfulMipmaps;
+                return generateMipmap.apply(this, args);
+            };
+        }""")
+        await page.get_by_test_id("texture").click()
+        await expect(page.get_by_test_id("status")).to_contain_text("texture on (256)")
+        fault = await page.evaluate("window.textureAllocationFault")
+        assert fault == {"uploads": [512, 256], "invalidMipmaps": 0,
+                         "successfulMipmaps": 1}, fault
+        assert await active_level(page) == 32
+        textured = await image_sample(page)
+        assert_globe(textured)
+        assert textured["signature"] != flat["signature"]
+        assert await page.get_by_test_id("globe").evaluate("""canvas => {
+            const gl = canvas.getContext('webgl2');
+            return gl.getError() === gl.NO_ERROR;
+        }"""), "Texture fallback left pending GL errors"
+        assert_no_errors(errors)
+        print("PASS browser texture allocation: failed base upload skips dependent mipmaps and retries a smaller texture without changing geometry")
+    finally:
+        await context.close()
+
+
 async def empty_recovery(browser, url):
     context, page, errors = await context_page(browser)
     try:
@@ -548,6 +606,7 @@ async def run_browser(url):
             await fetch_recovery(browser, url)
             await selection_race(browser, url)
             await texture_recovery(browser, url)
+            await texture_allocation_recovery(browser, url)
             await empty_recovery(browser, url)
             await resize_recovery(browser, url)
             await resource_recovery(browser, url)

@@ -123,8 +123,7 @@ static int ami_palette_valid;
 static unsigned int ami_black, ami_white;
 static double ami_auto_time;
 static Soft3d_project_cache *ami_project_cache;
-static unsigned long ami_previous_sequence;
-static unsigned int ami_previous_count;
+static Drv_quad_stream ami_stream;
 static union {
     long fixed[3][3];
     float floating[3][3];
@@ -173,8 +172,7 @@ void drv_release_optional(void)
     ami_drop_back_buffer();
     free(ami_project_cache);
     ami_project_cache = NULL;
-    ami_previous_sequence = 0;
-    ami_previous_count = 0;
+    drv_quadstream_reset(&ami_stream);
     ami_dirty = TRUE;
     drv_notice("Amiga direct drawing; optional caches released");
 }
@@ -229,14 +227,11 @@ void ami_error(char *message)
 double ami_time_now(void)
 {
     ULONG seconds, micros;
-    double current;
-    static double previous;
-    if (IntuitionBase == NULL) return previous;
+    static Drv_clock clock;
+    if (IntuitionBase == NULL) return clock.elapsed;
     CurrentTime(&seconds, &micros);
-    current = (double)seconds + (double)micros / 1000000.0;
-    if (current < previous) current = previous;
-    previous = current;
-    return current;
+    return drv_elapsed_time(&clock, (double)seconds +
+                                      (double)micros / 1000000.0);
 }
 
 static void ami_detect_processor(void)
@@ -585,8 +580,7 @@ static int ami_resize(void)
     }
     ami_map_palette();
     ami_pixel_aspect();
-    ami_previous_sequence = 0;
-    ami_previous_count = 0;
+    drv_quadstream_reset(&ami_stream);
     soft3d_project_cache_reset(ami_project_cache);
     ami_ready = TRUE;
     ami_dirty = TRUE;
@@ -828,10 +822,8 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         drv_abort_frame("Amiga quad packet is invalid");
         return;
     }
-    reuse = 0;
-    if (drv_quadbatch_context(vertex_count, vertices, &context) && context.reuse_row &&
-        context.sequence == ami_previous_sequence + 1UL && vertex_count == ami_previous_count)
-        reuse = vertex_count / 2U;
+    reuse = drv_quadstream_reuse(&ami_stream, vertex_count,
+                                      vertices, &context);
     soft3d_project_cache_begin(ami_project_cache, vertex_count, drv_win_width, drv_win_height, reuse);
     if (ami_has_fpu)
         transformed = soft3d_float_transform_reuse(ami_matrix.floating, vertex_count,
@@ -845,11 +837,10 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     if (!transformed)
     {
         drv_abort_frame("Amiga coordinate is out of range");
-        ami_previous_sequence = 0;
+        drv_quadstream_reset(&ami_stream);
         return;
     }
-    ami_previous_sequence = context.sequence;
-    ami_previous_count = vertex_count;
+    drv_quadstream_commit(&ami_stream, &context);
     for (facet = 0; facet < quad_count; ++facet)
     {
         for (corner = 0; corner < 4U; ++corner) corners[corner] = indices[facet * 4U + corner];
@@ -920,11 +911,6 @@ void drv_draw_osd(void)
     SetAPen(ami_draw_port, ami_white);
     SetBPen(ami_draw_port, ami_black);
     drv_format_stats(status);
-    if (drv_fps_enabled)
-    {
-        sprintf(detail, " %.1f FPS", (double)drv_fps_average);
-        drv_append_status(status, sizeof(status), detail);
-    }
     drv_append_status(status, sizeof(status), ami_depth > 8U ? ", dither n/a" :
                       (ami_dither_enabled ? ", dither on" : ", dither off"));
     baseline = ami_draw_port->TxBaseline + 4;
@@ -968,8 +954,7 @@ static void ami_render_pass(void)
 #endif
         RectFill(ami_draw_port, 0, 0, drv_win_width - 1U, drv_win_height - 1U);
     globe_quads_num_vis = 0;
-    ami_previous_sequence = 0;
-    ami_previous_count = 0;
+    drv_quadstream_reset(&ami_stream);
     soft3d_project_cache_reset(ami_project_cache);
     if (globe_ready() && !ami_paused)
     {
