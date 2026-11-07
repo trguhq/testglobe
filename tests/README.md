@@ -38,7 +38,7 @@ Additional options may be combined:
 | [`--tiga-cpu`](#tiga) | DOS CPU-probe instruction and stack checks | Python `unicorn`, GNU `as` and `objcopy` |
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
-| [`--ami-contract`](#amiga) | Amiga Workbench window, native/RTG graphics calls, events, and executable resources | None |
+| [`--ami-contract`](#amiga) | Amiga window/fullscreen lifecycle, native/RTG graphics calls, events, and executable resources | None |
 
 With all prerequisites installed, run every native group with:
 
@@ -626,6 +626,13 @@ cross-build uses the [Amiga build instructions](../README.md#amiga) separately.
   when RTG libraries are absent. The native-only `AMI_RTG=0` build is checked separately.
   Display-compatible bitmap allocation, direct-drawing fallback, resizing, and cleanup
   must not depend on native chipset limits or planar bitmap fields.
+- **Fullscreen:** V39 screen-buffer allocation and presentation, delayed safe/display
+  notifications, failed swaps, allocation rollback, and cleanup with pending work.
+  Drawing must target an inactive buffer and finish before a swap; fullscreen must
+  not copy into the displayed bitmap or discard its buffers during cache recovery.
+  `F`/`f` switches presentation and `P`/`p` toggles FPS. Tests cover retained scene
+  settings, Workbench window restoration, private palettes, older-OS fallback and
+  incompatible RTG buffers.
 - **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch,
   including a reported FPU without a supporting CPU. Cached and uncached drawing
   must retain polygon coordinates and colors, including projection-cache allocation
@@ -649,7 +656,8 @@ implementation, RTG drivers, or the custom chips. Enhanced integer/FPU objects c
 as ordinary host C during these tests, so host results do not prove native opcode selection,
 library-vector ABI, or 68000/FPU dispatch. VBCC/NDK cross-builds provide a separate
 compiler/linker check. Actual Workbench startup, planar fills, palette patterns,
-RTG pixel conversion and acceleration, blitter completion, Chip RAM pressure, and
+RTG pixel conversion and acceleration, fullscreen scanout synchronization,
+screen-depth changes, pointer colors, blitter completion, Chip RAM pressure, and
 performance still need hardware or a suitable emulator on OCS/ECS/AGA and
 CyberGraphX/Picasso96 configurations.
 

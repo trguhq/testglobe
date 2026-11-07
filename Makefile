@@ -182,6 +182,7 @@ QD_DEFINES = -d SEG68 -d DRV_QD -d DRV -d NO_SINF
 # VBCC cross-build for AmigaOS 1.3 and later. The kick13 runtime and msoft
 # keep startup and baseline floating point usable on an original 68000.
 # Newer NDK headers are needed for version-guarded display/palette queries.
+# Fullscreen screen-buffer swapping is enabled at runtime on AmigaOS 3.0+.
 # Override AMI_CPPFLAGS when those headers are outside the configured path.
 AMI_CC = vc
 AMI_CONFIG = +kick13

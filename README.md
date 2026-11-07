@@ -37,8 +37,9 @@ Browser version: [live WebGL demo](https://testglobe.dev/web/).
 
 Earth maps store 8-bit palette indices. OpenGL and IRIS GL use those indices in either
 RGB(A) or color-index windows; Sun XGL expands them to RGB. Matrox LibShell, TIGA,
-Windows GDI, and QuickDraw draw through the Earth palette. Amiga maps those colors to the
-current Workbench screen's pens or draws their RGB values on a truecolor RTG screen.
+Windows GDI, and QuickDraw draw through the Earth palette. Amiga maps those colors to
+Workbench's pens or a private fullscreen palette, or draws their RGB values on a
+truecolor RTG screen.
 The browser frontend uses WebGL 2 with the same maps and palette.
 
 | Driver | Platform | Default globe | Texture toggle |
@@ -63,7 +64,8 @@ Letter controls accept either case.
 | `1`–`5` | Select globe resolution; Matrox LibShell and TIGA support only `1` and `2`. |
 | Left mouse drag | Rotate the globe; the WebGL frontend also supports touch dragging. |
 | `a` | Toggle automatic rotation. |
-| `f` | Toggle FPS measurement and its on-screen statistic. |
+| `f` | Toggle FPS measurement and its on-screen statistic; in the chipset/RTG Amiga driver, toggle fullscreen instead. |
+| `p` | Toggle FPS measurement in the chipset/RTG Amiga driver. |
 | `o` | Toggle the on-screen display (OSD). |
 | `t` | Toggle texture mapping in OpenGL, IRIS GL, Sun XGL, and WebGL. |
 | `d` | Toggle display lists in OpenGL, or palette dithering in native Amiga; both start enabled. |
@@ -108,6 +110,7 @@ clock changes, so adjusting the desktop clock does not stall rotation or FPS.
 | `dlist fail` | Lists are enabled but unavailable, failed, or bypassed. |
 | `dither on` / `dither off` | Amiga palette dithering is enabled / disabled; off uses the nearest solid palette color. |
 | `dither n/a` | Amiga is drawing directly in RGB on a truecolor RTG screen. |
+| `fullscreen, double buffered` | The chipset/RTG Amiga driver is presenting complete frames on a private screen. |
 | `soft3d on` / `soft3d off (TI)` | TIGA uses host transforms / the embedded TI transform module; both use TIGA polygon filling. |
 | `GWorld on` / `GWorld off` | QuickDraw is drawing through an offscreen GWorld / directly to the window. |
 
@@ -129,7 +132,7 @@ area; larger displays use 640 × 480. Explicit size requests are preserved, with
 QuickDraw clamping its window to the selected screen.
 GDI, QuickDraw, and Amiga resize the projection to the drawable client area. Narrow
 windows clip the globe rather than stretching it. Amiga also accounts for the
-Workbench display mode's pixel proportions.
+selected display mode's pixel proportions.
 
 ### Resource recovery
 
@@ -1036,8 +1039,10 @@ resource forks, and acceleration require System 7 hardware or a suitable emulato
 The Amiga driver opens a resizable Workbench window on a 68000 or later CPU.
 The native OCS/ECS/AGA path supports AmigaOS 1.3 or later and planar screens with
 1–8 bitplanes. Optional RTG support uses CyberGraphX or Picasso96 on AmigaOS 3.0 or
-later, supporting 8-bit indexed and 15/16/24/32-bit truecolor desktops. The driver
-uses the existing desktop mode without replacing its palette.
+later, supporting 8-bit indexed and 15/16/24/32-bit truecolor desktops. Windowed
+operation uses the existing desktop mode without replacing its palette. Optional
+fullscreen operation requires AmigaOS 3.0 or later and a display mode that supports
+synchronized screen buffers.
 
 Cross-compilation requires VBCC's m68k-amigaos compiler, vasm, vlink, the `kick13`
 target runtime, Amiga NDK headers, and Python 3.8 or later on the build host. The SDK and compiler
@@ -1097,7 +1102,7 @@ the polygons to horizontal spans and submits RGB fills through CyberGraphX's
 fills. Collapsed pole patches become triangles. Native `Text` draws the wrapped OSD,
 including chipset or RTG backend, CPU/math, color depth, and buffering status.
 
-On indexed screens, the driver reads the Workbench palette and maps Earth indices
+On indexed Workbench screens, the driver reads the desktop palette and maps Earth indices
 to available pens at every supported depth (2 through 256 colors). Ordered two-pen
 patterns approximate missing colors by comparing their mixed RGB values. Palettes
 with up to 16 entries use the closest available pair and 1/16 mixture; larger palettes
@@ -1115,7 +1120,7 @@ not provide the native path's ordinary indexed-pixel semantics. Truecolor RTG us
 the Earth palette's RGB values directly, with pixel-format conversion handled by
 the RTG library. OSD text uses available desktop pens.
 
-An optional offscreen bitmap presents through `BltBitMapRastPort`. Native screens
+In windowed mode, an optional offscreen bitmap presents through `BltBitMapRastPort`. Native screens
 use planar Chip RAM; RTG screens use a display-compatible bitmap allocated through
 `AllocBitMap`. Indexed area fills also need a Chip RAM scratch raster, while truecolor
 RTG fills do not. Geometry and other working data use ordinary memory. Back-buffer
@@ -1132,6 +1137,38 @@ limits of 992 × 1024 pixels and require a Workbench bitmap stride of at most
 ECS Agnus or AGA Alice hardware supports larger windows within the coordinate limits.
 These chipset limits do not apply to RTG bitmaps; all paths retain signed-word
 coordinate bounds.
+
+#### Fullscreen
+
+Press `F` or `f` to switch between the Workbench window and a private fullscreen
+screen. `P` or `p` toggles FPS in this driver; other drivers keep their existing
+controls. `Esc` exits the application from either mode. Switching preserves globe
+resolution, orientation, animation, dithering, OSD and FPS settings, and returning
+to Workbench restores the window's position and size.
+
+Fullscreen draws the globe and OSD into an inactive display bitmap, waits for
+blitter completion, then presents it through `ChangeScreenBuffer`. Safe-to-write
+and display-complete messages control buffer reuse. This avoids copying individual
+bitplanes into the displayed frame. A slow render or temporarily blocked swap
+leaves the previous complete frame visible. The OS continues running, including
+Intuition input and reads of Earth data from the executable.
+
+Native fullscreen uses non-interlaced low resolution: 320 × 200 for NTSC or
+320 × 256 for PAL, with 32 colors on OCS/ECS and 256 on AGA. AGA retries with
+32 colors if the larger buffers cannot be allocated. Its private palette is based
+on the Earth colors, with pointer and OSD colors accounted for; Workbench's palette
+is preserved. RTG fullscreen stays on the current graphics backend and requires
+compatible screen buffers.
+Older OS versions and unsupported modes remain windowed. Allocation failure
+preserves or restores windowed operation; fullscreen never falls back to drawing
+directly into the displayed bitmap.
+
+Removing the presentation copy saves bandwidth, but polygon filling and software
+transforms still determine rendering speed. Two planar display buffers plus the
+area-fill scratch raster at 320 × 256 require about 110 KiB for 32 colors or
+170 KiB for 256 colors, in addition to Workbench, application data and OS structures.
+These buffers are required fullscreen resources; memory recovery may release
+optional transform caches without discarding a displayed or pending frame.
 
 #### Platform notes
 
@@ -1163,6 +1200,8 @@ VBCC 0.9h (m68k generator 1.15), vasm 1.9d, vlink 0.17a, NDK 47.5 headers, and t
 Workbench behavior, or performance on actual machines. Native testing remains
 necessary for 68000/accelerated CPUs, OCS/ECS/AGA screens, CyberGraphX/Picasso96
 desktops, Chip RAM pressure, palette patterns, and blitter/window synchronization.
+Fullscreen also needs native checks of buffer-swap timing, screen switching and
+pointer colors; host tests cannot establish tear-free scanout on an RTG driver.
 
 ## Testing and validation
 
