@@ -174,6 +174,22 @@ OpenGL binaries for these platforms:
 | macOS | x86-64 / ARM64 |
 | Solaris | SPARCv8 |
 
+Current development builds are available in the repository's `downloads` folder:
+
+| Application | Download |
+| --- | --- |
+| Windows 3.1 GDI | [GDI cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-cross.zip) |
+| System 7 QuickDraw, 68000 | [QuickDraw cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-quickdraw-cross.zip) |
+| DOS TIGA | [TIGA cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-tiga-cross.zip) |
+| DOS Matrox LibShell | [Matrox cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-cross.zip) |
+| Amiga chipset / RTG | [Amiga palette build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-palette-fix.zip) |
+
+Each archive includes installation notes, validation limits, and checksums. The DOS
+and Windows applications embed their data in `testglob.exe`. The Macintosh archive
+preserves the application resource fork in MacBinary format; decode it with a
+MacBinary-aware utility before launching. The Amiga archive is the existing palette
+build; it predates the later fullscreen work.
+
 ## Build instructions
 
 The [WebGL frontend](#webgl) runs without a native build. The portable Makefiles use
@@ -195,14 +211,18 @@ and libraries installed:
 | [Windows GDI](#windows-gdi) | `nmake gdi` | `testglob.exe` |
 | [QuickDraw](#quickdraw) (MPW bridge) | `make quickdraw` | `TestglobeQD` |
 | [Amiga](#amiga) (VBCC cross-compiler) | `make amiga` | `testglobe-amiga` |
+| [Windows GDI cross-build](#linux-hosted-cross-builds) | `make gdi-cross` | `build/cross/gdi/testglob.exe` |
+| [QuickDraw cross-build](#linux-hosted-cross-builds) | `make quickdraw-cross` | `build/cross/quickdraw/TestglobeQD.bin` |
+| [TIGA cross-build](#linux-hosted-cross-builds) | `make tiga-cross` | `build/cross/tiga/testglob.exe` |
+| [Matrox cross-build](#linux-hosted-cross-builds) | `make matrox-cross` | `build/cross/matrox/testglob.exe` |
 
 Native MPW users build QuickDraw with `Makefile.mpw` as described in its section. The
 portable `quickdraw` target requires a configured bridge to the MPW tools.
 
 ### Common build settings
 
-Objects and executables are written in the directory where make runs. For an
-out-of-tree build, create a build directory, enter it, then run:
+Native-target objects and executables are written in the directory where make
+runs. For an out-of-tree build, create a build directory, enter it, then run:
 
 ```sh
 make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src
@@ -218,9 +238,11 @@ before changing the compiler or build flags:
 
 | Command | Removes |
 | --- | --- |
-| `make clean` | All build objects, generated build sources, temporary files, and application/helper binaries. |
+| `make clean` | Native-target objects, generated build sources, temporary files, and application/helper binaries. |
 | `make clean-<target>` | That backend's objects, executable, and backend-specific intermediates. Shared data sources and helpers generally remain. |
 | `make clean-earth-data` | Generated `e_data.c`/`m_data.c`/`t_data.c`, converter binaries, and data-generation temporary files. |
+| `make clean-cross` | All four Linux-hosted cross-build directories. |
+| `make clean-<target>-cross` | One cross-build directory; for example, `make clean-gdi-cross`. |
 
 Individual targets are `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`,
 `clean-amiga-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-tiga`, `clean-gdi`,
@@ -239,6 +261,70 @@ separate right-button state. Software texture buffers are released when texturin
 disabled; `CPPFLAGS=-DTEXTURE_CACHE_RASTER=1` retains them instead. Use the corresponding
 CPPFLAGS variable for other targets. [Development notes](#shared-rendering-pipelines)
 describe the cache and memory policy.
+
+### Linux-hosted cross-builds
+
+The `gdi-cross`, `quickdraw-cross`, `tiga-cross`, and `matrox-cross` targets build
+historic application formats on a modern Linux host. They require Python 3.8 or
+later and external cross-compilers. The DOS targets also use a host C compiler for
+Earth-data conversion and executable packing; `HOST_CC` defaults to `cc`.
+The original Microsoft C and MPW targets remain available.
+
+Install [OpenWatcom](https://github.com/open-watcom/open-watcom-v2) for the DOS and
+Windows targets, then set its installation directory:
+
+```sh
+export WATCOM=/path/to/openwatcom
+make gdi-cross
+make matrox-cross CROSS_FLAGS="--xgx-root /path/to/matrox-sdk"
+make tiga-cross CROSS_FLAGS="--tiga-root /path/to/TIGA --tiga-tools /path/to/ti-tools"
+```
+
+Matrox needs `XGX1/HEADERS` and `libsv5/lscl.lib` under its SDK root. TIGA needs
+`include` and `libs/ai.lib`; the original SDK archive directory layout is also
+accepted. For TIGA, install DOSBox on the host and place the TI compiler, assembler,
+and linker together in `--tiga-tools`. The build compiles `tga_gsp.c` and
+`tga_ext.asm`, then embeds the resulting module in `testglob.exe`. To use an
+already-built matching module, replace `--tiga-tools` with
+`--tiga-module /path/to/tga_gsp.rlm`. The finished application needs no separate RLM.
+SDKs, compiler installations, and vendor libraries are not included in this repository.
+
+The Watcom DOS builds use huge-model pointers and C stack calling conventions to
+match the SDK bindings. `src/mtx_ow.c` adapts the supplied Microsoft-built LibShell
+library's runtime calls. Baseline application objects use 8086 instructions; the
+386 transform kernel remains separate and guarded by CPU detection. The supplied
+LibShell library itself requires a 286 or later. Floating-point emulation remains
+available without a coprocessor.
+
+Watcom's Windows runtime uses the large memory model. Explicit `TG_HUGE` pointers
+retain normalized mesh and resource access across 64 KiB boundaries, with `SEG86`
+still enabled. The output is a protected-mode Windows 3.1 NE application with all
+Earth resources embedded and loaded on demand.
+
+Install [Retro68](https://github.com/autc04/Retro68) for QuickDraw, including its
+Multiversal interfaces, resource tools, and 68000 runtime:
+
+```sh
+export RETRO68=/path/to/retro68/toolchain
+make quickdraw-cross
+```
+
+QuickDraw retains a 68000 baseline and separately compiled, runtime-guarded
+68020/68881 code. Its MacBinary output preserves the application and Earth resources
+in one resource-fork-aware file. Decode it on the Macintosh before use.
+
+Builds always run in `build/cross/<backend>` under the repository root, whether
+make starts in the root or `src`. Each invocation recompiles the selected backend
+so changed compiler options cannot reuse incompatible objects. Use `CROSS_FLAGS`
+for extra options, such as `--build-dir /path/to/builds`, `--host-cc clang`, or
+`--dosbox /path/to/dosbox`; `python3 src/cross.py --help` lists them all.
+`make clean-cross` removes these build directories without affecting downloaded
+release archives. Native `make clean` does not require Python or cross-toolchains.
+
+The packaged cross-builds have passed executable-structure and embedded-data checks
+using `tests/cross_binary.py`. Host API tests and DOSBox arithmetic checks provide
+additional coverage; Windows/Macintosh desktop
+behavior and Matrox/TIGA hardware rendering still need testing on the target systems.
 
 ### Earth map data
 
@@ -1284,6 +1370,8 @@ ordered patterns; QuickDraw delegates that work to its native color machinery.
 | Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. `src/ogl_ami.c`/`.h` provide the OpenGL driver's MiniGL/Amiga integration. |
 | `src/drv_cpu.c` / `src/tga_gsp.c` | Shared Matrox/TIGA DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
 | `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader. |
+| `src/cross*.py` | Linux-hosted build orchestration for the existing DOS, Win16, and QuickDraw drivers. |
+| `src/mtx_ow.c` | OpenWatcom runtime adapters for the Microsoft-built LibShell library; excluded from the Microsoft target. |
 | `src/buildio.h` | C89 file validation and safe output publication shared by the Earth converter and TIGA packer; excluded from application binaries. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
 | `web/` | Browser frontend, WebGL rendering, and generated palette module; reads canonical `data/` maps. |

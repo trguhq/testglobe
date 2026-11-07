@@ -21,7 +21,7 @@
 #include <sys/stat.h>
 #include <conio.h>
 #include <dos.h>
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__WATCOMC__)
 #include <io.h>
 #define tga_create(path) _open(path, _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE)
 #define tga_write _write
@@ -89,13 +89,13 @@ static long tga_packet[TGA_GSP_WORDS(TGA_GSP_MAX_VERTICES)];
 static int tga_absolute_path(char *destination, const char *source)
 {
     size_t length;
-#ifndef _MSC_VER
+#if !defined(_MSC_VER) && !defined(__WATCOMC__)
     size_t used;
 #endif
     if (source == NULL || *source == '\0') return FALSE;
     length = strlen(source);
     if (length >= sizeof(tga_program_path)) return FALSE;
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__WATCOMC__)
     return _fullpath(destination, source, sizeof(tga_program_path)) != NULL;
 #else
     if (*source == '/')
@@ -320,7 +320,7 @@ static int tga_release_module(void)
     return TRUE;
 }
 
-static void tga_cleanup(void)
+static void TG_ATEXIT_CALL tga_cleanup(void)
 {
     int i;
     (void)tga_remove_temp();

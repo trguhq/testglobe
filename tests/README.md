@@ -54,6 +54,55 @@ checks; `SKIP` identifies an optional group that did not run. Without `--sdk` or
 vendor graphics SDK. An intentionally injected application failure can be a passing
 test when the runner verifies its expected exit status and diagnostics.
 
+## Cross-built executable checks
+
+The Linux cross-builds compile real target executables in addition to the host
+contract tests. After building them, inspect their executable headers and embedded
+data with:
+
+```sh
+python3 tests/cross_binary.py \
+  --gdi build/cross/gdi/testglob.exe \
+  --quickdraw build/cross/quickdraw/TestglobeQD.bin \
+  --tiga build/cross/tiga/testglob.exe \
+  --matrox build/cross/matrox/testglob.exe
+```
+
+Each argument is optional. The inspector checks DOS MZ loading and relocation
+bounds, Windows 3.1 NE segments/imports and on-demand resources, Macintosh MacBinary
+and resource-fork structure, all required Earth-map bytes, and the embedded TIGA
+module's bounds and CRC. It does not execute graphics calls or establish CPU/ABI
+compatibility. The GDI build also verifies its NE format and Earth resources before
+reporting success.
+
+The OpenWatcom LibShell adapter has a separate `tests/mtx_ow.c` test that captures
+commands from the real SDK library without requiring a Matrox board. Its numeric
+checks exercise world-window and polygon conversion, pointer/stack conventions,
+variadic calls, and runtime adapters. After `make matrox-cross`, compile it with
+`WATCOM/binl64` on `PATH` and `INCLUDE` set to `WATCOM/h`:
+
+```sh
+wcc -q -bt=dos -mh -0 -fpi -ecc -zp2 -dDRV_MTX \
+  -i=build/cross/matrox/sdk -fo=build/cross/matrox/abi_test.obj tests/mtx_ow.c
+wcl -q -bt=dos -mh -0 -fpi -ecc -fe=build/cross/matrox/mtxabi.exe \
+  build/cross/matrox/abi_test.obj build/cross/matrox/mtx_ow.obj \
+  build/cross/matrox/sdk/lscl-ow.lib
+```
+
+Mount that output directory as DOSBox's `C:` drive, then run:
+
+```text
+set NO87=
+mtxabi.exe hardware > abihw.log
+set NO87=1
+mtxabi.exe emulated > abi87.log
+```
+
+Both logs must contain `PASS`; DOSBox's own exit status does not report a DOS
+assertion failure. The test checks Watcom's actual runtime selection, proving the
+forced emulation path even when DOSBox exposes an x87. This is not a test on
+physical hardware without a coprocessor. Vendor SDKs remain external dependencies.
+
 ## What the host checks establish
 
 Compilation uses strict C89, warnings, ASan, and UBSan, with undefined behavior

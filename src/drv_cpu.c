@@ -1,5 +1,5 @@
 /*
- * testglobe - real-mode DOS CPU and x87 detection for Microsoft C 7.
+ * testglobe - real-mode DOS CPU and x87 detection.
  * Copyright (C) 2026 trguhq
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -14,13 +14,14 @@
 #include <string.h>
 #include "drv_ext.h"
 
-#if !defined(_MSC_VER) || !defined(_M_I86)
-#error drv_cpu.c requires the 16-bit Microsoft C DOS compiler
+#if !(defined(_MSC_VER) && defined(_M_I86)) && \
+    !(defined(__WATCOMC__) && defined(__I86__))
+#error drv_cpu.c requires a supported 16-bit DOS compiler
 #endif
 
 int drv_cpu_detect(void)
 {
-    int result;
+    int result = 86;
     _asm {
         push bx
         push si

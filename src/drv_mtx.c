@@ -203,7 +203,7 @@ static int mtx_upload_palette(struct Lutval *palette)
     return TRUE;
 }
 
-static void mtx_cleanup(void)
+static void TG_ATEXIT_CALL mtx_cleanup(void)
 {
     if (!mtx_initialized)
         return;
@@ -258,6 +258,12 @@ void drv_init(int *argc, char **argv)
     (void)argc;
     (void)argv;
     mtx_cpu = drv_cpu_detect();
+#ifdef __WATCOMC__
+    /* The supplied Microsoft LSCL.LIB uses ENTER/LEAVE even in its 2D
+     * binding. The host probe remains 8086-safe, but cannot make that
+     * external library run on an earlier processor. */
+    if (mtx_cpu < 286) error("This LibShell library requires an 80286 or later CPU");
+#endif
     mtx_has_fpu = drv_cpu_has_fpu();
     mtx_transform_scope = mtx_native_failed = FALSE;
     lsinit(0, 1);

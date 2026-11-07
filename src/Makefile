@@ -181,6 +181,10 @@ QD_MAKEFILE = ../Makefile.mpw
 QD_SOURCE = :
 QD_DEFINES = -d SEG68 -d DRV_QD -d DRV -d NO_SINF
 
+# Modern-host builds use Python while preserving this Makefile's old syntax.
+CROSS_PYTHON = python3
+CROSS_FLAGS =
+
 # VBCC cross-build for AmigaOS 1.3 and later. The kick13 runtime and msoft
 # keep startup and baseline floating point usable on an original 68000.
 # Newer NDK headers are needed for version-guarded display/palette queries.
@@ -719,7 +723,34 @@ clean-quickdraw:
 	-$(RM) q_float.o
 	-$(RM) TestglobeQD
 
-# Separate targets can clean one backend; "clean" removes all.
+# Cross-compilers and SDKs are external; each backend has an isolated build.
+gdi-cross: FORCE
+	$(CROSS_PYTHON) $(SRC)/cross.py gdi $(CROSS_FLAGS)
+
+quickdraw-cross: FORCE
+	$(CROSS_PYTHON) $(SRC)/cross.py quickdraw $(CROSS_FLAGS)
+
+tiga-cross: FORCE
+	$(CROSS_PYTHON) $(SRC)/cross.py tiga $(CROSS_FLAGS)
+
+matrox-cross: FORCE
+	$(CROSS_PYTHON) $(SRC)/cross.py matrox $(CROSS_FLAGS)
+
+clean-gdi-cross:
+	$(CROSS_PYTHON) $(SRC)/cross.py gdi $(CROSS_FLAGS) --clean
+
+clean-quickdraw-cross:
+	$(CROSS_PYTHON) $(SRC)/cross.py quickdraw $(CROSS_FLAGS) --clean
+
+clean-tiga-cross:
+	$(CROSS_PYTHON) $(SRC)/cross.py tiga $(CROSS_FLAGS) --clean
+
+clean-matrox-cross:
+	$(CROSS_PYTHON) $(SRC)/cross.py matrox $(CROSS_FLAGS) --clean
+
+clean-cross: clean-gdi-cross clean-quickdraw-cross clean-tiga-cross clean-matrox-cross
+
+# Native cleanup needs no cross-host tools; use clean-cross for cross builds.
 # One file per command also works with the original DOS DEL command.
 # Ignore missing-file errors from DEL (Unix rm -f is already silent).
 clean: clean-opengl clean-solaris-opengl clean-apple-opengl clean-amiga-opengl clean-xgl clean-irisgl clean-matrox clean-tiga clean-gdi clean-quickdraw clean-amiga clean-earth-data

@@ -169,18 +169,18 @@ static int soft3d_float_clip_z(const Soft3d_float_point *in, int count,
     return total;
 }
 
-#ifdef DRV_AMI
-/* VBCC's 68881 conversion of double to long uses FINTRZ, which later 68K
+#if defined(DRV_AMI) || defined(QD_MULTIVERSAL)
+/* VBCC and GCC 68881 conversions of double to long use FINTRZ, which later 68K
  * FPUs need software support to execute. Decode the stored IEEE value
  * instead. The projection limit below bounds its exponent to 26, so two
  * unsigned 32-bit words suffice without wide integers or unaligned reads.
- * Keep other targets' established conversions: MPW also supports extended
- * double representations which are not the Amiga ABI. */
+ * Amiga and Retro68 use IEEE binary64 double. Keep other targets' established
+ * conversions: MPW also supports extended double representations. */
 #if FLT_RADIX != 2 || DBL_MANT_DIG != 53 || DBL_MAX_EXP != 1024
-#error Amiga floating geometry requires IEEE binary64 double
+#error This floating geometry path requires IEEE binary64 double
 #endif
-typedef char Soft3d_amiga_float_size[(sizeof(float) == 4) ? 1 : -1];
-typedef char Soft3d_amiga_double_size[(sizeof(double) == 8) ? 1 : -1];
+typedef char Soft3d_ieee_float_size[(sizeof(float) == 4) ? 1 : -1];
+typedef char Soft3d_ieee_double_size[(sizeof(double) == 8) ? 1 : -1];
 
 static int soft3d_float_truncate(const double *value, long *result)
 {
@@ -247,7 +247,7 @@ static int soft3d_float_project_point(const Soft3d_float_point *point,
     }
     if (!(x >= -134217727.0 && x <= 134217727.0 &&
           y >= -134217727.0 && y <= 134217727.0)) return FALSE;
-#ifdef DRV_AMI
+#if defined(DRV_AMI) || defined(QD_MULTIVERSAL)
     if (!soft3d_float_truncate(&x, &out->x) ||
         !soft3d_float_truncate(&y, &out->y)) return FALSE;
 #else

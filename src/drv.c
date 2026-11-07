@@ -112,7 +112,11 @@ void TG_HUGE *drv_alloc_items(unsigned long count, unsigned int size)
     return (void *)NewPtr((Size)(count * size));
 #elif defined(SEG86)
     if (!count || !size || count > 0x7fffffffUL / size) return NULL;
+#ifdef __WATCOMC__
+    return halloc((long)count, size);
+#else
     return _halloc((long)count, size);
+#endif
 #else
     if (!count || !size || count > (size_t)-1 / size) return NULL;
     return malloc((size_t)count * size);
@@ -137,7 +141,11 @@ void drv_free_items(void TG_HUGE *memory)
 #elif defined(DRV_QD)
     if (memory != NULL) DisposePtr((Ptr)memory);
 #elif defined(SEG86)
+#ifdef __WATCOMC__
+    if (memory != NULL) hfree(memory);
+#else
     if (memory != NULL) _hfree(memory);
+#endif
 #else
     free(memory);
 #endif

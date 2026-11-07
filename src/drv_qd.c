@@ -10,6 +10,36 @@
  */
 #include "testglob.h"
 #ifdef DRV_QD
+#ifdef QD_MULTIVERSAL
+/* Retro68's generated interfaces collect the Toolbox declarations here. */
+#include <Multiverse.h>
+/* System 7 constants missing from the current open interface declarations.
+ * Values match Apple's Universal Interfaces. */
+#ifndef gestalt68020
+#define gestalt68020 3
+#endif
+#ifndef gestalt68882
+#define gestalt68882 2
+#endif
+#ifndef gestalt68040FPU
+#define gestalt68040FPU 3
+#endif
+#ifndef screenDevice
+#define screenDevice 13
+#endif
+#ifndef screenActive
+#define screenActive 15
+#endif
+#ifndef ditherCopy
+#define ditherCopy 64
+#endif
+#ifndef suspendResumeMessage
+#define suspendResumeMessage 1
+#endif
+#ifndef resumeFlag
+#define resumeFlag 1
+#endif
+#else
 #include <Types.h>
 #include <QuickDraw.h>
 #include <Windows.h>
@@ -25,6 +55,7 @@
 #include <ToolUtils.h>
 #include <OSUtils.h>
 #include <Palettes.h>
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <stddef.h>
@@ -143,11 +174,22 @@ static void qd_dispose_buffer(void)
     qd_pattern_color = -1;
 }
 
+static void qd_set_palette(WindowPtr window, PaletteHandle palette, int updates)
+{
+#ifdef QD_MULTIVERSAL
+    /* The open interfaces declare SetPalette without a callable trap stub.
+     * Its System 7 replacement has an inline trap and explicit update flags. */
+    NSetPalette(window, palette, (short)(updates ? pmAllUpdates : pmNoUpdates));
+#else
+    SetPalette(window, palette, updates ? TRUE : FALSE);
+#endif
+}
+
 static void qd_dispose_palette(void)
 {
     if (qd_palette != NULL)
     {
-        if (qd_window != NULL) SetPalette(qd_window, NULL, FALSE);
+        if (qd_window != NULL) qd_set_palette(qd_window, NULL, FALSE);
         DisposePalette(qd_palette);
     }
     qd_palette = NULL;
@@ -371,7 +413,7 @@ static void qd_make_palette(void)
         return;
     }
     qd_palette_reduced = FALSE;
-    SetPalette(qd_window, qd_palette, TRUE);
+    qd_set_palette(qd_window, qd_palette, TRUE);
     ActivatePalette(qd_window);
 }
 
@@ -734,7 +776,7 @@ static Int qd_osd_text(const char *text, Int baseline, short width, int draw)
     while (*text != 0)
     {
         count = last_space = 0;
-        while (text[count] != 0 && TextWidth(text, 0, (short)(count + 1)) <= width)
+        while (text[count] != 0 && TextWidth((Ptr)text, 0, (short)(count + 1)) <= width)
         {
             if (text[count] == ' ') last_space = count;
             ++count;
@@ -745,7 +787,7 @@ static Int qd_osd_text(const char *text, Int baseline, short width, int draw)
             baseline <= 32767L)
         {
             MoveTo(8, (short)baseline);
-            DrawText(text, 0, count);
+            DrawText((Ptr)text, 0, count);
         }
         baseline += 12L;
         text += count;
@@ -802,7 +844,7 @@ static void qd_present(void)
     RGBBackColor(&white);
     SetRect(&bounds, 0, 0, (short)drv_win_width, (short)drv_win_height);
     /* Color QuickDraw's copy mode performs final device-depth conversion. */
-    CopyBits((const BitMap *)*qd_world->portPixMap, &qd_window->portBits,
+    CopyBits((BitMap *)*qd_world->portPixMap, &qd_window->portBits,
               &bounds, &bounds, srcCopy | ditherCopy, NULL);
     RGBForeColor(&saved_foreground);
     RGBBackColor(&saved_background);

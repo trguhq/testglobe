@@ -22,6 +22,11 @@
 #include "earthres.h"
 #include "soft3d.h"
 
+/* Some Win16 headers omit the documented GetNearestColor failure value. */
+#ifndef CLR_INVALID
+#define CLR_INVALID ((COLORREF)0xffffffffUL)
+#endif
+
 /* Indexed quad packets share their boundary vertices. Each packet and its
  * PolyPolygon arrays fit within one Win16 segment at every Earth resolution. */
 #define GDI_MAX_VERTICES SOFT3D_MAX_VERTICES
@@ -196,7 +201,7 @@ static void gdi_quiesce(void)
     gdi_timer_active = FALSE;
 }
 
-static void gdi_cleanup(void)
+static void TG_ATEXIT_CALL gdi_cleanup(void)
 {
     unsigned int i;
     gdi_quiesce();
@@ -249,8 +254,8 @@ int PASCAL WinMain(HINSTANCE instance, HINSTANCE previous,
     int result;
     char *arguments[2];
     (void)command_line;
-    /* Microsoft C's huge Windows model has multiple data segments; Win16
-     * cannot safely create a second instance of that executable. */
+    /* Keep the single-instance policy required by Microsoft C's huge
+     * Windows model, which can have multiple data segments. */
     if (previous != 0)
     {
         MessageBox(0, "testglobe is already running", "Windows GDI",
