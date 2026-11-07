@@ -35,7 +35,7 @@ Additional options may be combined:
 | [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
 | [`--tiga-contract`](#tiga) | TIGA calls, embedded-module loading, arithmetic, and recovery | None |
 | [`--tiga-sdk /path/to/sdk`](#tiga) | TIGA checks plus compilation against original SDK declarations | TIGA host headers |
-| [`--tiga-cpu`](#tiga) | DOS CPU-probe instruction and stack checks | Python `unicorn`, GNU `as` and `objcopy` |
+| [`--dos-cpu`](#tiga) | Shared Matrox/TIGA CPU-probe instruction and stack checks (`--tiga-cpu` remains an alias) | Python `unicorn`, GNU `as` and `objcopy` |
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
 | [`--ami-contract`](#amiga) | Amiga window/fullscreen lifecycle, native/RTG graphics calls, events, and executable resources | None |
@@ -45,7 +45,7 @@ With all prerequisites installed, run every native group with:
 ```sh
 python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
   --gdi-contract --qd-contract --ami-contract --amiga-ogl-contract \
-  --tiga-contract --tiga-cpu --tiga-sdk /path/to/tiga --sdk /path/to/matrox
+  --tiga-contract --dos-cpu --tiga-sdk /path/to/tiga --sdk /path/to/matrox
 ```
 
 Exit status zero means all requested checks passed. `PASS` lines identify completed
@@ -396,6 +396,12 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
   triangle/quad statistics, and cleanup. Independent normal transforms check every
   expected fill and cap count at several noncardinal poses.
+- **Software transforms:** LibShell is the default; `S`/`s` selects host transforms
+  while keeping indexed LibShell polygon filling. An independent orthographic
+  reference checks orientation, integer-degree rotation, screen coordinates and
+  viewport bounds. CPU profiles exercise baseline, 386 and floating-point dispatch,
+  including 8086/8087 and 286/287 combinations. The OSD reports actual selection
+  and failed requests; the help keeps `S` visible.
 - **Replies and errors:** `LSINQ` word counts and payload ordering; short malformed
   replies are drained before failure, while replies longer than 16 words abandon the
   connection. Whole-reply deadlines apply even when words remain ready. Timeouts and
@@ -403,6 +409,8 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 - **Error policy and recovery:** initially enabled and disabled reporting policies;
   opcode, parameter, board-memory, and overflow diagnostics; multiple errors while
   awaiting completion; palette and policy restoration while communication is usable.
+  Recoverable native 3D-packet failures retry through host transforms. Shared 2D
+  drawing errors and communication failures retain their failure handling.
 - **Input:** keyboard restrictions and toggles, INT 33h polling, relative motion,
   left-button dragging, and right-button redraws.
 
@@ -442,9 +450,9 @@ The separate CPU instruction check needs the optional Python `unicorn` package a
 GNU `as` and `objcopy`:
 
 ```sh
-python3 tests/run.py --tiga-cpu
+python3 tests/run.py --dos-cpu
 # Or run only the instruction check:
-python3 tests/tga_cpu.py
+python3 tests/dos_cpu.py
 ```
 
 ### Coverage
@@ -458,7 +466,8 @@ python3 tests/tga_cpu.py
   and TI-module paths must submit identical coordinates and colors. Small command
   buffers force bounded packet splitting rather than oversized transfers.
 - **Transforms and controls:** software 3D is the default; `S`/`s` switches the
-  actual transform path and OSD status. CPU/FPU profiles check dispatch, with mouse
+  actual transform path and OSD status. CPU/FPU profiles check dispatch, including
+  8086/8087, 286/287 and 386/387 combinations, with mouse
   absence and DOS mouse/keyboard input covered independently. Missing embedded
   payloads, incorrect protocol versions, rejected packets, and invalid returned
   coordinates must restore usable host rendering.
@@ -486,7 +495,7 @@ python3 tests/tga_cpu.py
   over varied poses, one- and 130-vertex packets, and viewport boundaries. Malformed
   packet fields, out-of-range matrices, and invalid coordinate bits must be rejected.
 
-`tests/tga_cpu.py` assembles the actual inline probe instructions and executes 24
+`tests/dos_cpu.py` assembles the shared `drv_cpu.c` inline probe instructions and executes 24
 FLAGS/stack cases. Hooks supply the older processors' FLAGS restrictions, which
 Unicorn does not model directly. Checks cover CPU classification, guarded 386
 instructions, aligned stack accesses, and restoration of registers and flags. They

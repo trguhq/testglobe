@@ -109,6 +109,32 @@ int soft3d_fixed_prepare(long matrix[3][3],
     matrix[2][2] = sx;
     return 1;
 }
+
+#ifdef DRV_MTX
+int soft3d_fixed_prepare_ortho(long matrix[3][3],
+                               int yaw_degrees, int pitch_degrees)
+{
+    long yaw, pitch, sy, cy, sp, cp;
+    if (matrix == NULL) return 0;
+    yaw = (long)(yaw_degrees % 360) * 256L;
+    pitch = (long)(pitch_degrees % 360) * 256L;
+    sy = soft3d_sine(yaw); cy = soft3d_sine(yaw + 90L * 256L);
+    sp = soft3d_sine(pitch); cp = soft3d_sine(pitch + 90L * 256L);
+    /* Model rotates the object; view rotates the eye in the opposite
+     * sense. The last row is the eye direction used by object-space
+     * backface rejection: (-sy*sp, -cy*sp, cp). */
+    matrix[0][0] = cy;
+    matrix[0][1] = -sy;
+    matrix[0][2] = 0;
+    matrix[1][0] = cp * sy / SOFT3D_Q14;
+    matrix[1][1] = cp * cy / SOFT3D_Q14;
+    matrix[1][2] = sp;
+    matrix[2][0] = -sp * sy / SOFT3D_Q14;
+    matrix[2][1] = -sp * cy / SOFT3D_Q14;
+    matrix[2][2] = cp;
+    return 1;
+}
+#endif
 #endif
 
 #ifdef SOFT3D_TRANSFORM_020
@@ -171,6 +197,51 @@ int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
 {
     return soft3d_fixed_transform_reuse(matrix, count, vertices, out, 0U);
 }
+
+#ifdef DRV_MTX
+/* floor(coordinate * extent / denominator + extent/2), without forming
+ * denominator*extent. The bounded Q4 coordinate times a 32766-pixel extent
+ * fits signed 32-bit long; adding the world-window offset first would not. */
+static long soft3d_ortho_pixel(long coordinate, unsigned int extent,
+                               unsigned int world_extent)
+{
+    long numerator, denominator, whole, remainder;
+    numerator = coordinate * (long)extent;
+    denominator = (long)world_extent * SOFT3D_COORD_SCALE;
+    whole = numerator / denominator + (long)(extent / 2U);
+    remainder = numerator % denominator;
+    if (extent & 1U) remainder += denominator / 2L;
+    if (remainder < 0L) --whole;
+    else if (remainder >= denominator) ++whole;
+    return whole;
+}
+
+int soft3d_fixed_project_ortho(const Soft3d_fixed_point *points,
+                               unsigned int count,
+                               unsigned int width, unsigned int height,
+                               unsigned int world_width,
+                               unsigned int world_height,
+                               Soft3d_screen_point *out)
+{
+    unsigned int i;
+    if (points == NULL || out == NULL || count == 0U ||
+        count > SOFT3D_MAX_VERTICES || width == 0U || height == 0U ||
+        width > 32767U || height > 32767U ||
+        world_width == 0U || world_height == 0U ||
+        world_width > 32767U || world_height > 32767U) return 0;
+    for (i = 0; i < count; ++i)
+        if (points[i].x < -3L * SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            points[i].x > 3L * SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            points[i].y < -3L * SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            points[i].y > 3L * SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE) return 0;
+    for (i = 0; i < count; ++i)
+    {
+        out[i].x = soft3d_ortho_pixel(points[i].x, width - 1U, world_width);
+        out[i].y = soft3d_ortho_pixel(-points[i].y, height - 1U, world_height);
+    }
+    return (int)count;
+}
+#endif
 
 void soft3d_project_cache_reset(Soft3d_project_cache TG_HUGE *cache)
 {

@@ -65,6 +65,31 @@ int soft3d_float_prepare(float matrix[3][3],
     return TRUE;
 }
 
+#ifdef DRV_MTX
+int soft3d_float_prepare_ortho(float matrix[3][3],
+                               int yaw_degrees, int pitch_degrees)
+{
+    double yaw, pitch, sy, cy, sp, cp;
+    if (matrix == NULL) return FALSE;
+    yaw = (double)(yaw_degrees % 360);
+    pitch = (double)(pitch_degrees % 360);
+    if (yaw < 0.0) yaw += 360.0;
+    if (pitch < 0.0) pitch += 360.0;
+    sy = soft3d_float_sine(yaw); cy = soft3d_float_sine(yaw + 90.0);
+    sp = soft3d_float_sine(pitch); cp = soft3d_float_sine(pitch + 90.0);
+    matrix[0][0] = (float)cy;
+    matrix[0][1] = (float)-sy;
+    matrix[0][2] = 0.0f;
+    matrix[1][0] = (float)(cp * sy);
+    matrix[1][1] = (float)(cp * cy);
+    matrix[1][2] = (float)sp;
+    matrix[2][0] = (float)(-sp * sy);
+    matrix[2][1] = (float)(-sp * cy);
+    matrix[2][2] = (float)cp;
+    return TRUE;
+}
+#endif
+
 int soft3d_float_transform_reuse(float matrix[3][3], unsigned int count,
                                 const Vertex TG_HUGE *vertices,
                                 Soft3d_float_point *out,
@@ -231,6 +256,44 @@ static int soft3d_float_project_point(const Soft3d_float_point *point,
 #endif
     return TRUE;
 }
+
+#ifdef DRV_MTX
+int soft3d_float_project_ortho(const Soft3d_float_point *points,
+                               unsigned int count,
+                               unsigned int width, unsigned int height,
+                               unsigned int world_width,
+                               unsigned int world_height,
+                               Soft3d_screen_point *out)
+{
+    unsigned int i;
+    double x, y;
+    if (points == NULL || out == NULL || count == 0U ||
+        count > SOFT3D_MAX_VERTICES || width == 0U || height == 0U ||
+        width > 32767U || height > 32767U ||
+        world_width == 0U || world_height == 0U ||
+        world_width > 32767U || world_height > 32767U) return 0;
+    for (i = 0; i < count; ++i)
+        if (!soft3d_float_valid(points + i) ||
+            !(points[i].x >= -3.0f * SOFT3D_MAX_RADIUS &&
+              points[i].x <= 3.0f * SOFT3D_MAX_RADIUS &&
+              points[i].y >= -3.0f * SOFT3D_MAX_RADIUS &&
+              points[i].y <= 3.0f * SOFT3D_MAX_RADIUS)) return 0;
+    for (i = 0; i < count; ++i)
+    {
+        /* The validated bounds keep both results within +/-100 million,
+         * even with a one-unit world window and maximum viewport extent.
+         * Floor matches the fixed projector on either side of the window;
+         * no x87 generation-specific instructions are required by /FPi. */
+        x = (0.5 + (double)points[i].x / world_width) * (width - 1U);
+        y = (0.5 - (double)points[i].y / world_height) * (height - 1U);
+        out[i].x = (long)x;
+        out[i].y = (long)y;
+        if ((double)out[i].x > x) --out[i].x;
+        if ((double)out[i].y > y) --out[i].y;
+    }
+    return (int)count;
+}
+#endif
 
 int soft3d_float_project_cached(const Soft3d_float_point *points,
                                 unsigned int point_count,

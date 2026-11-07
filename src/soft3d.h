@@ -57,7 +57,25 @@ extern int soft3d_project_cache_begin(Soft3d_project_cache TG_HUGE *cache,
 extern int soft3d_fixed_prepare(long matrix[3][3],
                                 const float TG_HUGE *rotation_x,
                                 const float TG_HUGE *rotation_y);
-/* The matrix comes from soft3d_fixed_prepare; input radius is at most 1000.
+#ifdef DRV_MTX
+/* Orthographic viewer: object Rz(yaw), then inverse viewer Rx(pitch).
+ * Integer-degree angles match the LibShell commands, including wraparound.
+ * The common transform kernels' camera-Z translation does not affect the
+ * following orthographic projector, which uses only X and Y. */
+extern int soft3d_fixed_prepare_ortho(long matrix[3][3],
+                                     int yaw_degrees, int pitch_degrees);
+/* Map a centered world window to a downward-Y viewport. Return count on
+ * success, zero on invalid input. The caller supplies count output points,
+ * then uses soft3d_finish_polygon for clipping and backface rejection.
+ * Dimensions/extents are 1..32767; coordinates may be outside the viewport. */
+extern int soft3d_fixed_project_ortho(const Soft3d_fixed_point *points,
+                                     unsigned int count,
+                                     unsigned int width, unsigned int height,
+                                     unsigned int world_width,
+                                     unsigned int world_height,
+                                     Soft3d_screen_point *out);
+#endif
+/* The matrix comes from a prepare helper; input radius is at most 1000.
  * C89 does not permit adding const through a pointer to a 2D array, so the
  * matrix parameter is unqualified even though this function only reads it. */
 extern int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
@@ -74,7 +92,7 @@ extern int soft3d_020_transform_reuse(long matrix[3][3], unsigned int count,
                                       Soft3d_fixed_point *out,
                                       unsigned int reuse_count);
 #endif
-#if defined(DRV_TGA) || defined(SOFT3D_TRANSFORM_386)
+#if defined(DRV_TGA) || defined(DRV_MTX) || defined(SOFT3D_TRANSFORM_386)
 /* Compiled separately with Microsoft C /G3; use only on 386 or later CPUs.
  * Code/data pointers retain the same 16-bit huge-model ABI as /G0 code. */
 extern int soft3d_386_transform_reuse(long matrix[3][3], unsigned int count,
@@ -113,6 +131,17 @@ extern int soft3d_fixed_project_cached(const Soft3d_fixed_point *points,
 extern int soft3d_float_prepare(float matrix[3][3],
                                 const float TG_HUGE *rotation_x,
                                 const float TG_HUGE *rotation_y);
+#ifdef DRV_MTX
+/* Floating counterparts to the bounded orthographic helpers above. */
+extern int soft3d_float_prepare_ortho(float matrix[3][3],
+                                     int yaw_degrees, int pitch_degrees);
+extern int soft3d_float_project_ortho(const Soft3d_float_point *points,
+                                     unsigned int count,
+                                     unsigned int width, unsigned int height,
+                                     unsigned int world_width,
+                                     unsigned int world_height,
+                                     Soft3d_screen_point *out);
+#endif
 extern int soft3d_float_transform_reuse(float matrix[3][3], unsigned int count,
                                         const Vertex TG_HUGE *vertices,
                                         Soft3d_float_point *out,

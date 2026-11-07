@@ -99,17 +99,19 @@ IGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
 
 # Microsoft C 7, huge model, with native DOS paths and 8.3 file names.
 MTX_CC = cl
-MTX_CFLAGS = -AH -O -W3
+MTX_CFLAGS = -AH -G0 -FPi -O -W3
+MTX_386FLAGS = -G3 -DSOFT3D_TRANSFORM_386
 MTX_DEFINES = -DSEG86 -DDRV_MTX -DDRV -DNO_SINF
 XGX_ROOT = .
 MTX_CPPFLAGS = -I$(XGX_ROOT)
 MTX_LIB = $(XGX_ROOT)\libsv5\lscl.lib
 MTX_LDFLAGS = -link /STACK:16384
-MTX_OBJECTS = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj
+MTX_OBJECTS = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj \
+    m_cpu.obj m_soft.obj m_386.obj m_float.obj
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\earthres.h \
+    $(SRC)\earthres.h $(SRC)\soft3d.h \
     $(XGX_ROOT)\XGX1\HEADERS\DEF.H \
     $(XGX_ROOT)\XGX1\HEADERS\LIBFN.H \
     $(XGX_ROOT)\XGX1\HEADERS\IOLIB.H
@@ -140,7 +142,7 @@ TGA_OBJECTS = t_drv.obj t_tga.obj t_cpu.obj t_err.obj t_globe.obj t_main.obj t_s
 TGA_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_tga.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\tga_cpu.h $(SRC)\tga_cmd.h
+    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\tga_cmd.h
 TGA_SDK_HEADERS = $(TGA_ROOT)\include\tiga.h \
     $(TGA_ROOT)\include\extend.h $(TGA_ROOT)\include\typedefs.h
 
@@ -441,7 +443,7 @@ matrox: testglob.exe
 # Each echo is short enough for COMMAND.COM. Response files also keep the
 # compiler and linker invocations below DOS's 127-character command limit.
 testglob.exe: $(MTX_OBJECTS) $(MTX_LIB) FORCE
-	@echo -AH -Fetestglob.exe > link.rsp
+	@echo -AH -FPi -Fetestglob.exe > link.rsp
 	@echo $(MTX_OBJECTS) >> link.rsp
 	@echo $(MTX_LIB) $(MTX_LDFLAGS) >> link.rsp
 	$(MTX_CC) @link.rsp
@@ -463,6 +465,33 @@ drv_mtx.obj: $(SRC)\drv_mtx.c $(MTX_HEADERS)
 	@echo $(MTX_CPPFLAGS) -c >> drv_mtx.rsp
 	@echo -Fodrv_mtx.obj $(SRC)\drv_mtx.c >> drv_mtx.rsp
 	$(MTX_CC) @drv_mtx.rsp
+
+# Shared DOS detection and software geometry retain the huge-model ABI.
+# Only m_386.obj may contain newer CPU instructions, selected after detection.
+m_cpu.obj: $(SRC)\drv_cpu.c $(MTX_HEADERS)
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > m_cpu.rsp
+	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_cpu.rsp
+	@echo -Fom_cpu.obj $(SRC)\drv_cpu.c >> m_cpu.rsp
+	$(MTX_CC) @m_cpu.rsp
+
+m_soft.obj: $(SRC)\soft3d.c $(MTX_HEADERS)
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > m_soft.rsp
+	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_soft.rsp
+	@echo -Fom_soft.obj $(SRC)\soft3d.c >> m_soft.rsp
+	$(MTX_CC) @m_soft.rsp
+
+m_386.obj: $(SRC)\soft3d.c $(MTX_HEADERS)
+	@echo $(MTX_DEFINES) > m_386.rsp
+	@echo $(MTX_CFLAGS) $(MTX_386FLAGS) >> m_386.rsp
+	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_386.rsp
+	@echo -Fom_386.obj $(SRC)\soft3d.c >> m_386.rsp
+	$(MTX_CC) @m_386.rsp
+
+m_float.obj: $(SRC)\soft3fp.c $(MTX_HEADERS)
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > m_float.rsp
+	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_float.rsp
+	@echo -Fom_float.obj $(SRC)\soft3fp.c >> m_float.rsp
+	$(MTX_CC) @m_float.rsp
 
 err.obj: $(SRC)\err.c $(MTX_HEADERS)
 	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > err.rsp
@@ -522,11 +551,11 @@ t_tga.obj: $(SRC)\drv_tga.c $(TGA_HEADERS) $(TGA_SDK_HEADERS)
 	@echo -Fot_tga.obj $(SRC)\drv_tga.c >> t_tga.rsp
 	$(TGA_CC) @t_tga.rsp
 
-t_cpu.obj: $(SRC)\tga_cpu.c $(TGA_HEADERS)
+t_cpu.obj: $(SRC)\drv_cpu.c $(TGA_HEADERS)
 	@echo $(TGA_DEFINES) > t_cpu.rsp
 	@echo $(TGA_CFLAGS) >> t_cpu.rsp
 	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_cpu.rsp
-	@echo -Fot_cpu.obj $(SRC)\tga_cpu.c >> t_cpu.rsp
+	@echo -Fot_cpu.obj $(SRC)\drv_cpu.c >> t_cpu.rsp
 	$(TGA_CC) @t_cpu.rsp
 
 t_err.obj: $(SRC)\err.c $(TGA_HEADERS)
@@ -764,6 +793,14 @@ clean-irisgl:
 	-$(RM) testglobe-irisgl
 
 clean-matrox:
+	-$(RM) m_cpu.obj
+	-$(RM) m_soft.obj
+	-$(RM) m_386.obj
+	-$(RM) m_float.obj
+	-$(RM) m_cpu.rsp
+	-$(RM) m_soft.rsp
+	-$(RM) m_386.rsp
+	-$(RM) m_float.rsp
 	-$(RM) e_data.obj
 	-$(RM) e_data.rsp
 	-$(RM) m_data.c

@@ -69,7 +69,7 @@ Letter controls accept either case.
 | `o` | Toggle the on-screen display (OSD). |
 | `t` | Toggle texture mapping in OpenGL, IRIS GL, Sun XGL, and WebGL. |
 | `d` | Toggle display lists in OpenGL, or palette dithering in native Amiga; both start enabled. |
-| `s` | Switch TIGA between host software 3D (default) and TI-processor transforms. |
+| `s` | Switch Matrox or TIGA between host software 3D and board/API transforms. Matrox starts with LibShell transforms; TIGA starts with host transforms. |
 | `Esc` | Exit native applications; in WebGL, pause rotation and release dragging. |
 
 WebGL also provides on-screen controls and a **Reset view** button. Its retained GPU
@@ -111,7 +111,9 @@ clock changes, so adjusting the desktop clock does not stall rotation or FPS.
 | `dither on` / `dither off` | Amiga palette dithering is enabled / disabled; off uses the nearest solid palette color. |
 | `dither n/a` | Amiga is drawing directly in RGB on a truecolor RTG screen. |
 | `fullscreen, double buffered` | The chipset/RTG Amiga driver is presenting complete frames on a private screen. |
-| `soft3d on` / `soft3d off (TI)` | TIGA uses host transforms / the embedded TI transform module; both use TIGA polygon filling. |
+| `soft3d on` | Matrox or TIGA uses host transforms while retaining board/API polygon filling. |
+| `soft3d off (LibShell)` / `soft3d off (TI)` | Matrox uses LibShell transforms / TIGA uses its embedded TI transform module. |
+| `soft3d fail (LibShell)` | Host transforms were requested but could not prepare the frame; the usable LibShell path remains active. |
 | `GWorld on` / `GWorld off` | QuickDraw is drawing through an offscreen GWorld / directly to the window. |
 
 Toggle `t` off and on to retry after a recoverable texture failure. OpenGL software
@@ -119,10 +121,11 @@ texturing bypasses display lists, so enabled lists report `dlist fail` on that p
 XGL's internal software pipeline still reports `texture on`; IRIS GL cannot detect
 all silent native texture failures. Their driver sections describe these limits.
 OpenGL places `dlist` after FPS and before texture status, with its `d` help last.
-QuickDraw appends GWorld status after the other statistics. TIGA appends `soft3d`,
-CPU/FPU detection, and buffering status to the top statistics, and places `S` last
-in its help. Failed TI module extraction or loading leaves `soft3d on` with a
-recovery notice.
+QuickDraw appends GWorld status after the other statistics. Matrox and TIGA append
+`soft3d` and CPU/FPU details and place `S` last in their help; TIGA also reports
+buffering. Failed TI module extraction or loading leaves `soft3d on` with a recovery
+notice. Transform status reports the active path; `S` retries an unavailable path
+from the working fallback.
 When a smaller texture is active, its width follows the status, for example
 `texture on (128)` or `texture soft (128)`. GDI reports direct drawing, individual
 polygons, reduced colors, or manual rotation when those fallbacks are active.
@@ -700,16 +703,25 @@ nmake matrox
 
 The output is `testglob.exe`. For an external SDK use `XGX_ROOT=C:\MATROX`; the default
 is `.` in the root Makefile and `..` in `src/Makefile`. Override `MTX_CC`, `MTX_CFLAGS`,
-`MTX_CPPFLAGS`, `MTX_LIB`, and `MTX_LDFLAGS` as needed, keeping `-AH`. DOS rules use
-backslash paths, 8.3 generated names, and response files for command-line limits.
+`MTX_CPPFLAGS`, `MTX_386FLAGS`, `MTX_LIB`, and `MTX_LDFLAGS` as needed, keeping
+`-AH -G0 -FPi` on baseline objects. Only the guarded `m_386.obj` kernel uses `-G3`.
+DOS rules use backslash paths, 8.3 generated names, and response files for
+command-line limits.
 
 #### Rendering and color
 
 The default globe is key 1; only keys 1 and 2 are available, with no texture controls.
-LibShell performs transforms, orthographic projection, viewport clipping, and filled
-world-coordinate polygons through `v3arwplygn` (`V3ARWPLYGN`). Patches are quads, with
+By default, LibShell transforms, projects, clips, and fills world-coordinate polygons
+through `v3arwplygn` (`V3ARWPLYGN`). Projection is orthographic. Patches are quads, with
 coincident pole vertices collapsed to triangles. All 256 LUT entries come from
 `earth_cmap`, and polygons use the original palette indices.
+
+Press `S` to select host software transforms. This path preserves LibShell's
+orthographic world window, integer-degree rotations and viewport orientation.
+The CPU transforms, projects, clips and culls bounded polygon packets, then sends
+screen-coordinate polygons through `scarwplygn` (`SCARWPLYGN`). LibShell still fills
+the polygons using the same LUT. The driver retains the QUAD traversal and does
+not allocate another complete mesh. Press `S` again to return to LibShell 3D.
 
 #### Platform notes
 
@@ -717,11 +729,22 @@ The host rejects back-facing polygons because the base PG-641 interface document
 neither a depth buffer nor a back-face switch. DOS uses normalized huge pointers,
 `_halloc`/`_hfree`, long mesh counts, and DOS timing.
 
+Matrox and TIGA share `drv_cpu.c` for 8086-class, 286, 386 and 486-or-later detection.
+A usable x87 selects floating-point host transforms; the presence probe supports
+8087/287/387-compatible instructions without identifying the exact coprocessor model.
+Without an x87, 386-or-later CPUs use the separate 386 integer kernel and older CPUs
+use baseline integer code. `NO87=1` forces integer transforms. `/FPi` retains runtime
+emulation for other floating-point work, including mesh generation.
+
 LibShell errors are serviced while waiting for inquiry replies between bounded command
 packets. Diagnostics identify the operation and error bits. Reply polling has a
 ten-second deadline; short malformed replies are drained, while oversized replies or
 timeouts abandon communication. Cleanup restores the palette and error policy when
 communication remains usable and sends no further board commands after abandonment.
+Recoverable errors during native geometry packets can retry the frame with host
+transforms once a valid error reply has been drained. Recovery succeeds only if
+the 2D color and fill commands work. Communication failures and errors in that
+shared drawing path cannot be repaired by changing transform mode.
 
 #### Validation
 
@@ -826,16 +849,19 @@ usable but can flicker and reports its buffering status.
 
 #### CPU and platform notes
 
-CPU detection distinguishes 286, 386, and 486-or-later without requiring CPUID. The
-program remains a 16-bit real-mode executable. Baseline objects use `/G0`; only the
-guarded 386 transform object uses `/G3`, and 486-or-later CPUs use that same path.
+The shared DOS probe distinguishes 8086-class, 286, 386, and 486-or-later without
+requiring CPUID. The program remains a 16-bit real-mode executable. Baseline objects
+use `/G0`; only the guarded 386 transform object uses `/G3`, and 486-or-later CPUs
+use that same path.
 `/FPi` retains the Microsoft emulation runtime for startup, mesh generation, and
 other floating-point work when no coprocessor is available.
 
 The x87 probe checks the BIOS equipment flag and uses bounded, no-wait coprocessor
-status reads. An unreported or unavailable coprocessor selects integer transforms.
-Set `NO87=1` to force that choice. CPU/FPU and buffering details accompany `soft3d`
-in the top OSD. No board-specific addresses or registers are accessed by the host.
+status reads compatible with 8087, 287 and 387 hardware; it reports usable x87
+presence rather than an exact model. An unreported or unavailable coprocessor
+selects integer transforms. Set `NO87=1` to force that choice. CPU/FPU and buffering
+details accompany `soft3d` in the top OSD. No board-specific addresses or registers
+are accessed by the host.
 
 #### Validation
 
@@ -1256,7 +1282,7 @@ ordered patterns; QuickDraw delegates that work to its native color machinery.
 | `src/drv_*.c` | Singular native callbacks such as `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*`; group color/RGB/UV variants by primitive. |
 | `src/drv.c` | Shared allocation/clock services, input, rotation, FPS/OSD, palette matching, geometry-packet helpers, and Earth-resource traversal. |
 | Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. `src/ogl_ami.c`/`.h` provide the OpenGL driver's MiniGL/Amiga integration. |
-| `src/tga_cpu.c` / `src/tga_gsp.c` | DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
+| `src/drv_cpu.c` / `src/tga_gsp.c` | Shared Matrox/TIGA DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
 | `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader. |
 | `src/buildio.h` | C89 file validation and safe output publication shared by the Earth converter and TIGA packer; excluded from application binaries. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
@@ -1338,13 +1364,16 @@ submission remains available, including Matrox. XGL has separate
 
 ### Shared rendering pipelines
 
-TIGA, GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer IEEE-float decoding,
-fixed-point transforms, projection caches, clipping, and back-face rejection.
-`src/soft3fp.c` provides the corresponding floating-point helpers. Projection validates
-indices against the initialized packet. Whole polygons inside the depth and viewport
-bounds bypass clipping; crossing polygons retain the general path. Backface rejection
-uses the complete rounded polygon, preserving silhouette and collapsed-pole behavior.
-Clearly rejected polygons avoid unnecessary subsequent processing.
+Matrox, TIGA, GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer
+IEEE-float decoding, fixed-point transforms, projection, clipping, and back-face
+rejection. `src/soft3fp.c` provides the corresponding floating-point helpers.
+Matrox uses an orthographic projector and stack packets containing one polygon;
+the other four use perspective projection with bounded packet caches. Indexed
+projection validates indices against the initialized packet. Whole polygons inside
+the depth and viewport bounds bypass clipping; crossing polygons retain the general
+path. Backface rejection uses the complete rounded polygon, preserving silhouette
+and collapsed-pole behavior. Clearly rejected polygons avoid unnecessary subsequent
+processing.
 
 GDI, QuickDraw, and Amiga projection caches are optional and bounded to one packet;
 their absence retains the uncached path. TIGA uses bounded static packet storage.

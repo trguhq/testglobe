@@ -36,13 +36,19 @@ static int mtx_io_failed;
 static short mtx_previous_error_reporting;
 static int mtx_dirty = TRUE;
 static int mtx_mouse_present;
+static int mtx_cpu, mtx_has_fpu;
+static int mtx_transform_scope, mtx_native_failed;
+static union {
+    long fixed[3][3];
+    float floating[3][3];
+} mtx_matrix;
 static unsigned short mtx_previous_lut;
 static unsigned short mtx_background;
 static unsigned short mtx_foreground;
 static struct Lutval mtx_saved_palette[256];
 static struct Lutval mtx_palette[256];
-/* Only the visibility test uses this object-space orthographic eye vector.
- * LibShell transforms, clips and rasterizes every retained polygon. */
+/* The native path uses this eye vector only for visibility rejection.
+ * Software mode performs the whole geometry stage before screen filling. */
 static float mtx_eye_x;
 static float mtx_eye_y;
 static float mtx_eye_z = 1.0f;
@@ -70,6 +76,19 @@ static int mtx_failure(const char *operation, unsigned short errors,
     else reason = communication ? "communication timeout" : "unknown error";
     sprintf(message, "Matrox %s: %s (0x%02X)", operation, reason,
             (unsigned int)errors);
+    /* A fully drained, valid inquiry establishes that communication still
+     * works. Only optional native geometry setup/polygon packets permit a
+     * bounded 2D retry; the latter include their color command. A persistent
+     * color/fill error remains fatal at the software packet's checkpoint.
+     * Unknown bits, command-list faults, and transport faults stay fatal. */
+    if (!communication && !mtx_cleanup_active && mtx_transform_scope &&
+        errors != 0U && (errors & ~15U) == 0U)
+    {
+        mtx_native_failed = TRUE;
+        drv_soft3d_active = TRUE;
+        drv_abort_frame(message);
+        return FALSE;
+    }
     if (mtx_cleanup_active) fprintf(stderr, "%s\n", message);
     else error(message);
     return FALSE;
@@ -128,13 +147,13 @@ static int mtx_inquire(unsigned short code, unsigned short *value,
         --remaining;
     }
     errors |= (unsigned short)iogeterror();
-    if (errors != 0) return mtx_failure(operation, errors, FALSE);
     if (!valid)
     {
         if (mtx_cleanup_active) fprintf(stderr, "%s\n", invalid_reply);
         else error(invalid_reply);
         return FALSE;
     }
+    if (errors != 0) return mtx_failure(operation, errors, FALSE);
     return TRUE;
 }
 
@@ -148,6 +167,13 @@ static int mtx_checkpoint(const char *operation)
 
 #define MTX_COMMAND(command, operation) \
     do { command; (void)mtx_checkpoint(operation); } while (0)
+
+/* Used only in helpers which return a success flag. Never allow a failed
+ * V3 operation to continue submitting the rest of that transformation. */
+#define MTX_TRANSFORM(command, operation) \
+    do { int mtx_ok; mtx_transform_scope = TRUE; command; \
+         mtx_ok = mtx_checkpoint(operation); mtx_transform_scope = FALSE; \
+         if (!mtx_ok) return FALSE; } while (0)
 
 static int mtx_read_words(short *words, unsigned short count,
                            const char *operation)
@@ -231,6 +257,9 @@ void drv_init(int *argc, char **argv)
     unsigned short reporting;
     (void)argc;
     (void)argv;
+    mtx_cpu = drv_cpu_detect();
+    mtx_has_fpu = drv_cpu_has_fpu();
+    mtx_transform_scope = mtx_native_failed = FALSE;
     lsinit(0, 1);
     ioflush();
     mtx_initialized = TRUE;
@@ -257,6 +286,19 @@ void drv_init(int *argc, char **argv)
                         "palette inquiry")) return;
     mtx_palette_saved = TRUE;
     mtx_mouse_present = drv_dos_mouse_init();
+}
+
+/* Reissue all native projection state after failed initialization or S retry.
+ * Screen-coordinate fills do not depend on these optional settings. */
+static int mtx_native_projection(void)
+{
+    /* 4:3 aspect, 400-pixel globe diameter, room for the status display. */
+    MTX_TRANSFORM(v2gpswdw(-1600.0, 1600.0, -1200.0, 1200.0), "world window");
+    MTX_TRANSFORM(v3gpsproj(0), "projection");
+    MTX_TRANSFORM(v3gpsdist((double)GLOBE_VIEW_DISTANCE), "view distance");
+    MTX_TRANSFORM(v3gpshclip(0), "hither clipping");
+    MTX_TRANSFORM(v3gpsyclip(0), "yon clipping");
+    return TRUE;
 }
 
 int drv_init_window(int in_x, int in_y, int in_width, int in_height)
@@ -301,12 +343,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     MTX_COMMAND(lssclpl(-1), "clipping selection");
     MTX_COMMAND(scsorg(0, 0), "screen origin");
     MTX_COMMAND(v2gpsvwp(0, DRV_WIN_WIDTH - 1, 0, DRV_WIN_HEIGHT - 1), "viewport");
-    /* 4:3 aspect, 400-pixel globe diameter, room for the status display. */
-    MTX_COMMAND(v2gpswdw(-1600.0, 1600.0, -1200.0, 1200.0), "world window");
-    MTX_COMMAND(v3gpsproj(0), "projection");                /* Documented orthographic projection. */
-    MTX_COMMAND(v3gpsdist((double)GLOBE_VIEW_DISTANCE), "view distance");
-    MTX_COMMAND(v3gpshclip(0), "hither clipping");
-    MTX_COMMAND(v3gpsyclip(0), "yon clipping");
+    if (!drv_soft3d_active) (void)mtx_native_projection();
     MTX_COMMAND(krhwsbop(0), "drawing operation");                 /* REPLACE, not SET-all-ones. */
     MTX_COMMAND(krhwsmsk(0xff), "plane mask");
     MTX_COMMAND(krhwstdef(0), "transparency");
@@ -329,27 +366,93 @@ static short mtx_angle(float angle)
     return (short)wrapped;
 }
 
-static void mtx_set_transform(void)
+static int mtx_prepare_software(short yaw, short pitch)
+{
+    if (mtx_has_fpu)
+        return soft3d_float_prepare_ortho(mtx_matrix.floating, yaw, pitch);
+    return soft3d_fixed_prepare_ortho(mtx_matrix.fixed, yaw, pitch);
+}
+
+static int mtx_set_transform(void)
 {
     short yaw = mtx_angle(drv_rot_y);
     short pitch = mtx_angle(90.0f + drv_rot_x);
-    double yaw_radians = (double)yaw * PI / 180.0;
-    double pitch_radians = (double)pitch * PI / 180.0;
-    double sin_pitch = sin(pitch_radians);
+    double yaw_radians, pitch_radians, sin_pitch;
+    if (drv_soft3d_active) return mtx_prepare_software(yaw, pitch);
+    yaw_radians = (double)yaw * PI / 180.0;
+    pitch_radians = (double)pitch * PI / 180.0;
+    sin_pitch = sin(pitch_radians);
     /* A single rotation in each stage avoids undocumented cumulative
      * matrix ordering. Globe longitude runs around its Z axis. The view
      * command moves the viewer about X around the reference point. */
-    MTX_COMMAND(v3mdid(), "model identity");
-    MTX_COMMAND(v3mdorg(0.0, 0.0, 0.0), "model origin");
-    MTX_COMMAND(v3mdrotz(yaw), "model rotation");
-    MTX_COMMAND(v3vwid(), "view identity");
-    MTX_COMMAND(v3vwrpt(0.0, 0.0, 0.0), "view reference");
-    MTX_COMMAND(v3vwrotx(pitch), "view rotation");
+    MTX_TRANSFORM(v3mdid(), "model identity");
+    MTX_TRANSFORM(v3mdorg(0.0, 0.0, 0.0), "model origin");
+    MTX_TRANSFORM(v3mdrotz(yaw), "model rotation");
+    MTX_TRANSFORM(v3vwid(), "view identity");
+    MTX_TRANSFORM(v3vwrpt(0.0, 0.0, 0.0), "view reference");
+    MTX_TRANSFORM(v3vwrotx(pitch), "view rotation");
     /* Inverse model yaw applied to the viewer's world-space direction.
      * Use exactly the integer-degree angles sent to LibShell. */
     mtx_eye_x = (float)(-sin(yaw_radians) * sin_pitch);
     mtx_eye_y = (float)(-cos(yaw_radians) * sin_pitch);
     mtx_eye_z = (float)cos(pitch_radians);
+    return TRUE;
+}
+
+/* Only a triangle/quad packet is retained on the host. Unlike the perspective
+ * drivers, Matrox maps its fixed orthographic world window to the screen. */
+static void mtx_draw_software_color(unsigned short npoints,
+                                    Vertex TG_HUGE *source[],
+                                    unsigned char color)
+{
+    Vertex vertices[4];
+    union {
+        Soft3d_fixed_point fixed[4];
+        Soft3d_float_point floating[4];
+    } points;
+    Soft3d_screen_point screen[SOFT3D_MAX_POLY];
+    struct Phcoord polygon[SOFT3D_MAX_POLY];
+    unsigned int i;
+    int transformed, count;
+    for (i = 0; i < npoints; ++i) vertices[i] = *source[i];
+    if (mtx_has_fpu)
+        transformed = soft3d_float_transform_reuse(mtx_matrix.floating,
+            npoints, vertices, points.floating, 0U, SOFT3D_FLOAT_SINGLE);
+    else if (mtx_cpu >= 386)
+        transformed = soft3d_386_transform_reuse(mtx_matrix.fixed,
+            npoints, vertices, points.fixed, 0U);
+    else
+        transformed = soft3d_fixed_transform_reuse(mtx_matrix.fixed,
+            npoints, vertices, points.fixed, 0U);
+    if (!transformed)
+    {
+        drv_abort_frame("Matrox software coordinate is out of range");
+        return;
+    }
+    if (mtx_has_fpu)
+        count = soft3d_float_project_ortho(points.floating, npoints,
+                    DRV_WIN_WIDTH, DRV_WIN_HEIGHT, 3200U, 2400U, screen);
+    else
+        count = soft3d_fixed_project_ortho(points.fixed, npoints,
+                    DRV_WIN_WIDTH, DRV_WIN_HEIGHT, 3200U, 2400U, screen);
+    if (count == 0)
+    {
+        drv_abort_frame("Matrox software projection failed");
+        return;
+    }
+    count = soft3d_finish_polygon(screen, count, DRV_WIN_WIDTH - 1U,
+                                   DRV_WIN_HEIGHT - 1U);
+    if (count < 3) return;
+    for (i = 0; i < (unsigned int)count; ++i)
+    {
+        polygon[i].x = (short)screen[i].x;
+        polygon[i].y = (short)screen[i].y;
+    }
+    krhwsfcol((unsigned short)color);
+    scarwplygn((unsigned short)count, polygon);
+    if (!mtx_checkpoint("screen polygon fill")) return;
+    if (npoints == 3) ++globe_tris_num_vis;
+    else ++globe_quads_num_vis;
 }
 
 static void mtx_draw_flat_color(unsigned short npoints,
@@ -361,6 +464,13 @@ static void mtx_draw_flat_color(unsigned short npoints,
     unsigned short i;
     float ax, ay, az, bx, by, bz;
     float nx, ny, nz;
+    int completed;
+    if (drv_frame_failed || mtx_io_failed) return;
+    if (drv_soft3d_active)
+    {
+        mtx_draw_software_color(npoints, source, color);
+        return;
+    }
     /* Tiny contiguous far-data packet for the SDK: never pass huge mesh
      * pointers directly to legacy bindings. Compact repeated pole
      * vertices into three-vertex caps to avoid degenerate quad fills. */
@@ -397,8 +507,11 @@ static void mtx_draw_flat_color(unsigned short npoints,
         return;
     /* Color (4), four 16.16 vertices (52), inquiry (4): 60 bytes total. */
     krhwsfcol((unsigned short)color);
+    mtx_transform_scope = TRUE;
     v3arwplygn(count, vertices);
-    (void)mtx_checkpoint("polygon fill");
+    completed = mtx_checkpoint("polygon fill");
+    mtx_transform_scope = FALSE;
+    if (!completed) return;
     if (npoints == 3)
         ++globe_tris_num_vis;
     else
@@ -444,35 +557,102 @@ static void mtx_draw_text(short x, short y, char *text)
     MTX_COMMAND(sctxbstring(x, y, bounded), "OSD text");
 }
 
+/* The selected font is 8x16. Wrap both status and help to the actual screen
+ * width, in addition to respecting the smaller command FIFO's text limit. */
+static unsigned int mtx_text_lines(const char *text, short y, int draw)
+{
+    char line[79];
+    unsigned int count, split, lines = 0;
+    while (*text != '\0')
+    {
+        count = (unsigned int)strlen(text);
+        if (count > 78U)
+        {
+            count = 78U;
+            split = count;
+            while (split != 0U && text[split] != ' ') --split;
+            if (split != 0U) count = split;
+        }
+        memcpy(line, text, count);
+        line[count] = '\0';
+        if (draw) mtx_draw_text(8, (short)(y + 16U * lines), line);
+        ++lines;
+        text += count;
+        while (*text == ' ') ++text;
+    }
+    return lines;
+}
+
 void drv_draw_osd(void)
 {
-    char status[128];
+    char status[256];
+    unsigned int lines;
     MTX_COMMAND(krhwsfcol(mtx_foreground), "text color");
-    mtx_draw_text(8, DRV_WIN_HEIGHT - 20, drv_help);
+    lines = mtx_text_lines(drv_help, 0, FALSE);
+    (void)mtx_text_lines(drv_help, (short)(DRV_WIN_HEIGHT - 4U - 16U * lines), TRUE);
     drv_format_stats(status);
-    mtx_draw_text(8, 8, status);
+    drv_append_soft3d_status(status, sizeof(status), "LibShell", mtx_cpu, mtx_has_fpu);
+    (void)mtx_text_lines(status, 8, TRUE);
 }
 
 void drv_render(void)
 {
-    drv_fps_start();
-    MTX_COMMAND(krhwcclr(mtx_background), "clear screen");
-    globe_quads_num_vis = 0;
-    if (globe_ready())
+    int attempt, prepared;
+    if (mtx_io_failed) return;
+    /* The board's immediate surface can contain a partial native pass.
+     * Clear it before the single host retry, retaining palette and input. */
+    for (attempt = 0; attempt < 2; ++attempt)
     {
-        mtx_set_transform();
-        globe_draw_quads();
+        drv_fps_start();
+        mtx_native_failed = FALSE;
+        MTX_COMMAND(krhwcclr(mtx_background), "clear screen");
+        globe_quads_num_vis = 0;
+        if (globe_ready())
+        {
+            prepared = mtx_set_transform();
+            if (prepared) globe_draw_quads();
+            else if (!drv_frame_failed) drv_abort_frame("Matrox software rotation failed");
+        }
+        if (drv_frame_failed)
+        {
+            drv_reset_timing();
+            if (mtx_native_failed && attempt == 0) continue;
+            MTX_COMMAND(krhwcclr(mtx_background), "clear failed frame");
+            globe_quads_num_vis = 0;
+        }
+        if (drv_status_required()) drv_draw_osd();
+        /* Completion markers include actual board execution in FPS. */
+        if (!drv_frame_failed) drv_fps_stop();
+        if (drv_animation_allowed()) drv_globe_rotate();
+        return;
     }
-    if (drv_osd_enabled || !globe_ready()) drv_draw_osd();
-    /* Every completion marker includes actual board execution in FPS. */
-    drv_fps_stop();
-    if (drv_auto_enabled && globe_ready()) drv_globe_rotate();
 }
 
 static void mtx_keyboard(unsigned char key)
 {
     if (key == 27) { drv_close(); return; }
-    if (drv_handle_key(key)) mtx_dirty = TRUE;
+    if (key == 's' || key == 'S')
+    {
+        if (drv_soft3d_toggle())
+        {
+            /* Commit the selected path only after its frame setup succeeds.
+             * A rejected optional setup leaves the working native mode and
+             * requested-vs-active OSD state intact for another S-key retry. */
+            if (mtx_prepare_software(mtx_angle(drv_rot_y), mtx_angle(90.0f + drv_rot_x)))
+            {
+                drv_soft3d_active = TRUE;
+                drv_notice(NULL);
+            }
+            else drv_notice("Matrox software setup failed; using LibShell");
+        }
+        else if (mtx_native_projection())
+        {
+            drv_soft3d_active = FALSE;
+            drv_notice(NULL);
+        }
+        mtx_dirty = TRUE;
+    }
+    else if (drv_handle_key(key)) mtx_dirty = TRUE;
 }
 
 static void mtx_poll_mouse(void)
@@ -496,7 +676,7 @@ void drv_loop(void)
             mtx_keyboard((unsigned char)key);
         }
         mtx_poll_mouse();
-        if (mtx_dirty || (drv_auto_enabled && globe_ready()))
+        if (mtx_dirty || drv_animation_allowed())
         {
             drv_render();
             mtx_dirty = FALSE;

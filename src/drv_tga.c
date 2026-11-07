@@ -39,7 +39,6 @@
 #include "drv_ext.h"
 #include "globe.h"
 #include "glob_ext.h"
-#include "tga_cpu.h"
 #include "tga_cmd.h"
 
 /* SDK order matters. Its far-data bindings must see small contiguous
@@ -57,7 +56,6 @@ static unsigned short tga_previous_video, tga_previous_mode;
 static int tga_open, tga_video_set, tga_config_saved, tga_palette_saved;
 static int tga_ready, tga_rendering, tga_io_failed, tga_cleaning;
 static int tga_dirty = TRUE;
-static int tga_soft3d = TRUE;
 static int tga_cpu, tga_has_fpu, tga_mouse_present;
 static short tga_module = -1;
 static unsigned short tga_error_command;
@@ -365,7 +363,7 @@ void drv_release_optional(void)
     if (tga_rendering) return;
     if (tga_module >= 0 && tga_open && !tga_io_failed)
     {
-        tga_soft3d = TRUE;
+        drv_soft3d_active = TRUE;
         if (tga_release_module())
             drv_notice("TIGA soft3d on; optional TI module released");
         else
@@ -388,8 +386,8 @@ void drv_init(int *argc, char **argv)
 {
     long result;
     (void)argc;
-    tga_cpu = tga_cpu_detect();
-    tga_has_fpu = tga_cpu_has_fpu();
+    tga_cpu = drv_cpu_detect();
+    tga_has_fpu = drv_cpu_has_fpu();
     if (argv == NULL || !tga_absolute_path(tga_program_path, argv[0])) tga_program_path[0] = '\0';
     tga_temp_sequence = (unsigned long)clock() & 0x00ffffffUL;
     if (atexit(tga_cleanup) != 0) error("Cannot register TIGA cleanup");
@@ -504,7 +502,7 @@ int drv_init_window(int x, int y, int width, int height)
     page_flip(tga_display_page, tga_draw_page);
     if (!tga_wait_page()) return FALSE;
     tga_ready = TRUE;
-    tga_soft3d = TRUE;
+    drv_soft3d_requested = drv_soft3d_active = DRV_SOFT3D_DEFAULT;
     tga_dirty = TRUE;
     if (tga_draw_page == 0) drv_notice("TIGA single page; presentation may flicker");
     return TRUE;
@@ -512,7 +510,7 @@ int drv_init_window(int x, int y, int width, int height)
 
 static void tga_module_failed(const char *message)
 {
-    tga_soft3d = TRUE;
+    drv_soft3d_active = TRUE;
     drv_quadstream_reset(&tga_stream);
     soft3d_project_cache_reset(&tga_cache);
     drv_abort_frame(message);
@@ -606,7 +604,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         return;
     }
     reuse = drv_quadstream_reuse(&tga_stream, vertex_count, vertices, &context);
-    if (!tga_soft3d)
+    if (!drv_soft3d_active)
     {
         if (!tga_transform_ti(vertex_count, vertices))
         {
@@ -637,7 +635,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     for (i = 0; i < quad_count; ++i)
     {
         for (j = 0; j < 4U; ++j) corners[j] = indices[4U * i + j];
-        if (tga_soft3d && tga_has_fpu)
+        if (drv_soft3d_active && tga_has_fpu)
             count = soft3d_float_project_cached(tga_points.floating, vertex_count,
                 corners, 4U, drv_win_width, drv_win_height, SOFT3D_FLOAT_SINGLE, &tga_cache, screen);
         else
@@ -716,17 +714,14 @@ static void tga_draw_text(short y, const char *text)
 
 void drv_draw_osd(void)
 {
-    char status[256], detail[100];
+    char status[256];
     unsigned int lines, columns;
     set_fcolor((long)tga_white);
     if (!tga_check()) return;
     drv_format_stats(status);
-    drv_append_status(status, sizeof(status), tga_soft3d ? ", soft3d on" : ", soft3d off (TI)");
-    sprintf(detail, ", %s%s, %s", tga_cpu >= 486 ? "486+" :
-            (tga_cpu >= 386 ? "386" : (tga_cpu >= 286 ? "286" : "8086")),
-            tga_has_fpu ? " + x87" : " integer",
-            tga_config.mode.num_pages >= 2U ? "double buffer" : "single page");
-    drv_append_status(status, sizeof(status), detail);
+    drv_append_soft3d_status(status, sizeof(status), "TI", tga_cpu, tga_has_fpu);
+    drv_append_status(status, sizeof(status), tga_config.mode.num_pages >= 2U ?
+                       ", double buffer" : ", single page");
     tga_draw_text(8, status);
     columns = tga_text_columns();
     /* Help may wrap at spaces before the column limit; reserve one extra
@@ -756,7 +751,7 @@ void drv_render(void)
         soft3d_project_cache_reset(&tga_cache);
         if (globe_ready())
         {
-            if (tga_soft3d && tga_has_fpu)
+            if (drv_soft3d_active && tga_has_fpu)
                 prepared = soft3d_float_prepare(tga_matrix.floating, &drv_rot_x, &drv_rot_y);
             else
                 prepared = soft3d_fixed_prepare(tga_matrix.fixed, &drv_rot_x, &drv_rot_y);
@@ -793,7 +788,7 @@ static void tga_keyboard(unsigned char key)
     if (key == 's' || key == 'S')
     {
         (void)tga_remove_temp();
-        if (!tga_soft3d) tga_soft3d = TRUE;
+        if (drv_soft3d_toggle()) drv_soft3d_active = TRUE;
         else if (tga_packet_vertices == 0U)
             drv_notice("soft3d on; TIGA command buffer cannot hold TI transforms");
         else
@@ -819,7 +814,7 @@ static void tga_keyboard(unsigned char key)
             }
             if (tga_module >= 0)
             {
-                tga_soft3d = FALSE;
+                drv_soft3d_active = FALSE;
                 drv_notice(tga_temp_path[0] == '\0' ? NULL : "TI temporary-file cleanup pending");
             }
         }

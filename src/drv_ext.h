@@ -53,6 +53,25 @@ extern int drv_auto_enabled;
 extern int drv_auto_available;
 extern int drv_frame_failed;
 
+#ifdef DRV_SOFT3D
+/* Selection is distinct from the active path. After a failed native request,
+ * S retries that request from the actual software fallback, as on TIGA. */
+extern int drv_soft3d_requested;
+extern int drv_soft3d_active;
+extern int drv_soft3d_toggle(void);
+extern void drv_append_soft3d_status(char *buffer, unsigned int capacity,
+                                     const char *backend, int cpu, int has_fpu);
+#endif
+
+#if defined(DRV_MTX) || defined(DRV_TGA)
+/* DOS probes run in a separate /G0 object before any optimized kernel.
+ * 486 means 486 or later; older unrecognized CPUs use the 8086 class.
+ * The conservative x87 presence test honors NO87 and does not distinguish
+ * 8087/287/387 models. Missing BIOS reporting selects integer transforms. */
+extern int drv_cpu_detect(void);
+extern int drv_cpu_has_fpu(void);
+#endif
+
 /* Services selected by the native backend, not by pointer width. Allocations
  * retain native handles internally; callers own only successful results. */
 extern void TG_HUGE *drv_alloc_items(unsigned long count, unsigned int size);

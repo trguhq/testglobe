@@ -12,13 +12,13 @@
 #include <float.h>
 #include <stdlib.h>
 #include <string.h>
-#include "tga_cpu.h"
+#include "drv_ext.h"
 
 #if !defined(_MSC_VER) || !defined(_M_I86)
-#error tga_cpu.c requires the 16-bit Microsoft C DOS compiler
+#error drv_cpu.c requires the 16-bit Microsoft C DOS compiler
 #endif
 
-int tga_cpu_detect(void)
+int drv_cpu_detect(void)
 {
     int result;
     _asm {
@@ -36,11 +36,11 @@ int tga_cpu_detect(void)
         pop ax
         and ax, 0f000h
         cmp ax, 0f000h
-        jne tga_probe_at
+        jne drv_probe_at
         mov ax, 86
-        jmp tga_probe_done
+        jmp drv_probe_done
 
-    tga_probe_at:
+    drv_probe_at:
         /* In real mode a 286 cannot set these high FLAGS bits. */
         mov ax, dx
         or ax, 0f000h
@@ -49,11 +49,11 @@ int tga_cpu_detect(void)
         pushf
         pop ax
         and ax, 0f000h
-        jnz tga_probe_386
+        jnz drv_probe_386
         mov ax, 286
-        jmp tga_probe_done
+        jmp drv_probe_done
 
-    tga_probe_386:
+    drv_probe_386:
         push dx
         popf
         /* Keep every 32-bit stack access aligned. Do not use ESP to align
@@ -83,12 +83,12 @@ int tga_cpu_detect(void)
         mov sp, bx
         xor cx, si
         and cx, 4
-        jz tga_probe_is386
+        jz drv_probe_is386
         mov ax, 486
-        jmp tga_probe_done
-    tga_probe_is386:
+        jmp drv_probe_done
+    drv_probe_is386:
         mov ax, 386
-    tga_probe_done:
+    drv_probe_done:
         mov result, ax
         push dx
         popf
@@ -100,12 +100,12 @@ int tga_cpu_detect(void)
 
 /* The no-wait stores may finish asynchronously on an old coprocessor.
  * Static storage remains valid even if a broken device misses the deadline. */
-static volatile unsigned short tga_fp_probe[2];
+static volatile unsigned short drv_fp_probe[2];
 
-int tga_cpu_has_fpu(void)
+int drv_cpu_has_fpu(void)
 {
     union REGS regs;
-    volatile unsigned short _far *probe = tga_fp_probe;
+    volatile unsigned short _far *probe = drv_fp_probe;
     const char *disabled;
     unsigned int remaining;
     int available = 0;
@@ -116,7 +116,7 @@ int tga_cpu_has_fpu(void)
     int86(0x11, &regs, &regs);
     if ((regs.x.ax & 2U) == 0U) return 0;
 
-    tga_fp_probe[0] = tga_fp_probe[1] = 0xffffU;
+    drv_fp_probe[0] = drv_fp_probe[1] = 0xffffU;
     _asm {
         push es
         push bx
@@ -131,8 +131,8 @@ int tga_cpu_has_fpu(void)
     }
     for (remaining = 65535U; remaining != 0U; --remaining)
     {
-        if (tga_fp_probe[0] == 0U &&
-            (tga_fp_probe[1] & 0x103fU) == 0x003fU)
+        if (drv_fp_probe[0] == 0U &&
+            (drv_fp_probe[1] & 0x103fU) == 0x003fU)
         {
             available = 1;
             break;

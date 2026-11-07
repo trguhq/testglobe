@@ -75,6 +75,10 @@ static long drv_fps_history_num;        /* frames in this FPS sample */
 int drv_auto_enabled;                   /* automatically rotate */
 int drv_auto_available;
 int drv_frame_failed;
+#ifdef DRV_SOFT3D
+int drv_soft3d_requested;
+int drv_soft3d_active;
+#endif
 static char drv_message[64];
 
 #ifdef GDI
@@ -162,6 +166,32 @@ void drv_append_status(char *buffer, unsigned int capacity, const char *message)
     while (used + 1U < capacity && *message != 0) buffer[used++] = *message++;
     buffer[used] = 0;
 }
+
+#ifdef DRV_SOFT3D
+int drv_soft3d_toggle(void)
+{
+    drv_soft3d_requested = !drv_soft3d_active;
+    drv_reset_timing();
+    return drv_soft3d_requested;
+}
+
+void drv_append_soft3d_status(char *buffer, unsigned int capacity,
+                              const char *backend, int cpu, int has_fpu)
+{
+    if (drv_soft3d_active)
+        drv_append_status(buffer, capacity, ", soft3d on");
+    else
+    {
+        drv_append_status(buffer, capacity, drv_soft3d_requested ?
+                           ", soft3d fail (" : ", soft3d off (");
+        drv_append_status(buffer, capacity, backend == NULL ? "API" : backend);
+        drv_append_status(buffer, capacity, ")");
+    }
+    drv_append_status(buffer, capacity, cpu >= 486 ? ", 486+" :
+                       (cpu >= 386 ? ", 386" : (cpu >= 286 ? ", 286" : ", 8086")));
+    drv_append_status(buffer, capacity, has_fpu ? " + x87" : " integer");
+}
+#endif
 
 void drv_notice(const char *message)
 {
@@ -610,6 +640,9 @@ void drv_ext_init(void)
     drv_auto_available = TRUE;
     drv_texture_active = FALSE;
     drv_frame_failed = FALSE;
+#ifdef DRV_SOFT3D
+    drv_soft3d_requested = drv_soft3d_active = DRV_SOFT3D_DEFAULT;
+#endif
     drv_notice(NULL);
     drv_reset_timing();
     
