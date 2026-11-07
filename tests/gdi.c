@@ -27,7 +27,8 @@ typedef struct {
     int kind;
     void *memory;
     DWORD size;
-    COLORREF color;
+    COLORREF color, text_color, background_color;
+    int monochrome, width, height, fill_mode;
     HGDIOBJ brush, pen, bitmap, font;
     HPALETTE palette;
     int memory_dc;
@@ -76,6 +77,9 @@ static int custom_realized_palette, fail_color_query;
 static unsigned char realized_palette[256][3];
 static unsigned int color_queries, dib_brush_calls, fail_dib_brushes;
 static unsigned int fail_memory_locks;
+static unsigned int mask_blits, mask_clears, mask_bitmaps, pattern_mask_blits;
+static int fail_mask_bitmap, fail_mask_blit, fail_mask_clear, fail_pens;
+static int fail_mask_polygon;
 
 static HANDLE object_new(int kind)
 {
@@ -306,6 +310,8 @@ HDC GetDC(HWND window)
     objects[handle].pen = GetStockObject(NULL_PEN);
     objects[handle].bitmap = 903;
     objects[handle].palette = 904;
+    objects[handle].text_color = RGB(12, 34, 56);
+    objects[handle].background_color = RGB(78, 90, 123);
     return handle;
 }
 int ReleaseDC(HWND window, HDC dc)
@@ -375,6 +381,29 @@ HBITMAP CreateCompatibleBitmap(HDC dc, int width, int height)
     if (fail_bitmap) return 0;
     return object_new(OBJ_BITMAP);
 }
+HBITMAP CreateBitmap(int width, int height, UINT planes, UINT bits,
+                      const void *pixels)
+{
+    HBITMAP bitmap;
+    assert(width > 0 && height > 0 && planes == 1 && bits == 1);
+    assert(pixels == NULL);
+    ++mask_bitmaps;
+    if (fail_mask_bitmap) return 0;
+    bitmap = object_new(OBJ_BITMAP);
+    objects[bitmap].monochrome = TRUE;
+    objects[bitmap].width = width;
+    objects[bitmap].height = height;
+    return bitmap;
+}
+HPEN CreatePen(int style, int width, COLORREF color)
+{
+    HPEN pen;
+    assert(style == PS_SOLID && (width == 0 || width == 1));
+    if (fail_pens) return 0;
+    pen = object_new(OBJ_PEN);
+    objects[pen].color = color;
+    return pen;
+}
 HGDIOBJ SelectObject(HDC dc, HGDIOBJ object)
 {
     HGDIOBJ previous;
@@ -406,7 +435,11 @@ HGDIOBJ GetStockObject(int index)
     if (index == NULL_PEN) { handle = 900; objects[handle].kind = OBJ_PEN; }
     else if (index == BLACK_BRUSH) { handle = 901; objects[handle].kind = OBJ_BRUSH; }
     else if (index == WHITE_BRUSH) { handle = 902; objects[handle].kind = OBJ_BRUSH; }
+    else if (index == BLACK_PEN) { handle = 906; objects[handle].kind = OBJ_PEN; }
+    else if (index == WHITE_PEN) { handle = 907; objects[handle].kind = OBJ_PEN; }
     else { assert(index == SYSTEM_FONT); handle = 905; objects[handle].kind = OBJ_FONT; }
+    objects[901].color = objects[906].color = RGB(0, 0, 0);
+    objects[902].color = objects[907].color = RGB(255, 255, 255);
     objects[903].kind = OBJ_BITMAP;
     objects[904].kind = OBJ_PALETTE;
     return handle;
@@ -510,16 +543,33 @@ static void record_polygon(HDC dc, const POINT *points, int count)
 {
     RecordedPolygon *polygon;
     int i;
+    HBRUSH brush;
     assert(objects[dc].kind == OBJ_DC);
-    assert(objects[objects[dc].brush].kind == OBJ_BRUSH);
-    assert(objects[dc].pen == GetStockObject(NULL_PEN));
-    assert(count >= 3 && count <= 12);
+    brush = objects[dc].brush;
+    assert(objects[brush].kind == OBJ_BRUSH);
+    assert(objects[dc].pen != GetStockObject(NULL_PEN));
+    if (objects[objects[dc].bitmap].monochrome) {
+        assert(dc == gdi_mask);
+        assert(brush == GetStockObject(WHITE_BRUSH));
+        assert(objects[dc].pen == GetStockObject(WHITE_PEN));
+        assert(objects[dc].fill_mode == WINDING);
+        brush = gdi_selected_brush;
+        assert(objects[brush].kind == OBJ_BRUSH);
+    } else {
+        assert(!objects[brush].patterned);
+        assert(objects[objects[dc].pen].color == objects[brush].color);
+    }
+    assert(count >= 3 && count <= GDI_MAX_POLY + 1);
+    /* Native contour closure is an API detail, not an extra mesh vertex. */
+    if (points[0].x == points[count - 1].x &&
+        points[0].y == points[count - 1].y) --count;
+    assert(count >= 3);
     polygon = NULL;
     if (!stream_polygons) {
         assert(recorded_count < 5000);
         polygon = recorded + recorded_count++;
         polygon->count = count;
-        polygon->color = (unsigned char)objects[objects[dc].brush].color;
+        polygon->color = (unsigned char)objects[brush].color;
     }
     for (i = 0; i < count; ++i) {
         assert(points[i].x >= 0 && points[i].x <= (int)drv_win_width);
@@ -549,7 +599,7 @@ static void record_polygon(HDC dc, const POINT *points, int count)
 BOOL Polygon(HDC dc, const POINT *points, int count)
 {
     ++polygon_calls;
-    if (fail_single_polygon) return FALSE;
+    if (fail_single_polygon || (fail_mask_polygon && dc == gdi_mask)) return FALSE;
     record_polygon(dc, points, count);
     return 1;
 }
@@ -571,6 +621,10 @@ BOOL PolyPolygon(HDC dc, const POINT *points, int *counts, int polygons)
     if (fail_polygon) return FALSE;
     total = 0;
     for (i = 0; i < polygons; ++i) {
+        /* Win16 PolyPolygon does not automatically close its contours. */
+        assert(counts[i] >= 4 && counts[i] <= GDI_MAX_POLY + 1);
+        assert(points[total].x == points[total + counts[i] - 1].x);
+        assert(points[total].y == points[total + counts[i] - 1].y);
         record_polygon(dc, points + total, counts[i]);
         total += counts[i];
     }
@@ -579,15 +633,44 @@ BOOL PolyPolygon(HDC dc, const POINT *points, int *counts, int polygons)
 }
 BOOL PatBlt(HDC dc, int x, int y, int width, int height, DWORD operation)
 {
+    HBITMAP bitmap;
     assert(objects[dc].kind == OBJ_DC && width > 0 && height > 0);
-    (void)x; (void)y; (void)operation;
-    return 1;
+    bitmap = objects[dc].bitmap;
+    assert(dc == gdi_mask && objects[bitmap].monochrome);
+    assert(operation == BLACKNESS && x >= 0 && y >= 0);
+    assert(x + width <= objects[bitmap].width);
+    assert(y + height <= objects[bitmap].height);
+    ++mask_clears;
+    return !fail_mask_clear;
 }
 BOOL BitBlt(HDC dc, int x, int y, int width, int height, HDC source,
              int source_x, int source_y, DWORD operation)
 {
     assert(objects[dc].kind == OBJ_DC && objects[source].kind == OBJ_DC);
-    assert(width > 0 && height > 0 && operation == SRCCOPY);
+    assert(width > 0 && height > 0);
+    if (operation == 0x00E20746UL) {
+        unsigned int p, s, d, bit;
+        HBITMAP bitmap;
+        bitmap = objects[source].bitmap;
+        assert(source == gdi_mask && objects[bitmap].monochrome);
+        assert(x == source_x && y == source_y && x >= 0 && y >= 0);
+        assert(x + width <= objects[bitmap].width);
+        assert(y + height <= objects[bitmap].height);
+        assert(objects[dc].text_color == RGB(0, 0, 0));
+        assert(objects[dc].background_color == RGB(255, 255, 255));
+        assert(objects[dc].brush == gdi_selected_brush);
+        /* The Win16 ROP3 truth table selects the destination pattern only
+         * where the black/white mask covers a filled interior or outline. */
+        for (p = 0; p < 2; ++p) for (s = 0; s < 2; ++s)
+            for (d = 0; d < 2; ++d) {
+                bit = (unsigned int)((operation >> (16 + 4*p + 2*s + d)) & 1UL);
+                assert(bit == (s ? p : d));
+            }
+        ++mask_blits;
+        if (objects[objects[dc].brush].patterned) ++pattern_mask_blits;
+        return !fail_mask_blit;
+    }
+    assert(operation == SRCCOPY);
     (void)x; (void)y; (void)source_x; (void)source_y;
     ++bitblts;
     if (fail_blit) return FALSE;
@@ -600,12 +683,29 @@ int FillRect(HDC dc, const RECT *rectangle, HBRUSH brush)
 }
 int SetPolyFillMode(HDC dc, int mode)
 {
+    int old;
     assert(objects[dc].kind == OBJ_DC && (mode == WINDING || mode == ALTERNATE));
-    return WINDING;
+    old = objects[dc].fill_mode;
+    objects[dc].fill_mode = mode;
+    return old ? old : ALTERNATE;
 }
 int SetBkMode(HDC dc, int mode) { assert(objects[dc].kind == OBJ_DC); return mode; }
-COLORREF SetTextColor(HDC dc, COLORREF color) { assert(objects[dc].kind == OBJ_DC); return color; }
-COLORREF SetBkColor(HDC dc, COLORREF color) { assert(objects[dc].kind == OBJ_DC); return color; }
+COLORREF SetTextColor(HDC dc, COLORREF color)
+{
+    COLORREF old;
+    assert(objects[dc].kind == OBJ_DC);
+    old = objects[dc].text_color;
+    objects[dc].text_color = color;
+    return old;
+}
+COLORREF SetBkColor(HDC dc, COLORREF color)
+{
+    COLORREF old;
+    assert(objects[dc].kind == OBJ_DC);
+    old = objects[dc].background_color;
+    objects[dc].background_color = color;
+    return old;
+}
 static void check_text(LPCSTR text, int length)
 {
     assert(text != NULL && length > 0 && strstr(text, "texture") == NULL);
@@ -1233,6 +1333,107 @@ static void check_palette_mixtures(void)
     puts("PASS GDI palette mixtures: realized colors, logical-index DIB patterns, all coverage levels, deferred palette changes, solid fallbacks and resource ownership");
 }
 
+/* These checks enforce the Win16 raster-operation contract, not the host's
+ * own polygon rasterizer: closing contours, including the pen in the mask,
+ * preserving destination brush phase/colors, and bounded fallback retries. */
+static void check_mask_coverage(void)
+{
+    COLORREF text_color, background_color;
+    static const POINT clipped[10] = {
+        {10, 10}, {8, 13}, {7, 17}, {8, 21}, {11, 23},
+        {15, 24}, {19, 21}, {21, 17}, {19, 13}, {15, 10}
+    };
+    Drv_palette_match match;
+    unsigned int allocations, blits, clears;
+    int failure, width, height, i;
+    width = (int)drv_win_width; height = (int)drv_win_height;
+    assert(gdi_buffer != 0 && !drv_osd_enabled);
+    stream_polygons = TRUE;
+    drv_render();
+    text_color = RGB(17, 29, 41);
+    background_color = RGB(53, 67, 79);
+    SetTextColor(gdi_buffer, text_color);
+    SetBkColor(gdi_buffer, background_color);
+    allocations = mask_bitmaps;
+    blits = mask_blits; clears = mask_clears;
+    stream_polygons = TRUE;
+    drv_render();
+    assert(gdi_mask != 0 && !gdi_mask_unavailable);
+    assert(mask_bitmaps == allocations && mask_blits > blits && mask_clears > clears);
+    assert(objects[gdi_buffer].text_color == text_color &&
+           objects[gdi_buffer].background_color == background_color);
+    /* A maximum-sized clipped contour needs eleven packed points; its
+     * boundary receives the same palette pattern as its filled interior. */
+    match = gdi_color_matches[17];
+    gdi_release_brushes();
+    gdi_color_matches[17].first = 2;
+    gdi_color_matches[17].second = gdi_color_matches[17].solid = 3;
+    gdi_color_matches[17].mix = 8;
+    for (i = 0; i < GDI_MAX_POLY; ++i) gdi_batch_points[i] = clipped[i];
+    gdi_batch_points[GDI_MAX_POLY] = clipped[0];
+    gdi_batch_counts[0] = GDI_MAX_POLY + 1;
+    blits = pattern_mask_blits;
+    gdi_fill_batch(gdi_buffer, 17, 1, GDI_MAX_POLY + 1);
+    assert(pattern_mask_blits == blits + 1);
+    assert(objects[gdi_buffer].text_color == text_color &&
+           objects[gdi_buffer].background_color == background_color);
+    gdi_release_brushes();
+    gdi_color_matches[17] = match;
+    /* Allocation, clearing, and transfer failures each select the complete
+     * solid-colored polygon path, with matching one-pixel outlines. */
+    for (failure = 0; failure < 3; ++failure) {
+        gdi_resize(width, height);
+        assert(gdi_mask == 0 && !gdi_mask_unavailable);
+        SetTextColor(gdi_buffer, text_color);
+        SetBkColor(gdi_buffer, background_color);
+        fail_mask_bitmap = failure == 0;
+        fail_mask_clear = failure == 1;
+        fail_mask_blit = failure == 2;
+        drv_render();
+        assert(gdi_mask == 0 && gdi_mask_bitmap == 0 && gdi_mask_unavailable);
+        assert(!gdi_draw_paused && !gdi_frame_failed && !drv_frame_failed);
+        assert(globe_quads_num_vis > 0);
+        assert(objects[gdi_buffer].text_color == text_color &&
+               objects[gdi_buffer].background_color == background_color);
+        fail_mask_bitmap = fail_mask_clear = fail_mask_blit = FALSE;
+    }
+    /* Both independent native capabilities can fail during the same frame:
+     * batched mask -> individual mask -> individual solid polygons. */
+    gdi_resize(width, height);
+    gdi_batch_enabled = TRUE;
+    fail_polygon = fail_mask_blit = TRUE;
+    drv_render();
+    assert(!gdi_batch_enabled && gdi_mask_unavailable && gdi_mask == 0);
+    assert(!gdi_draw_paused && !gdi_frame_failed && !drv_frame_failed);
+    assert(globe_quads_num_vis > 0);
+    fail_polygon = fail_mask_blit = FALSE;
+    /* Polygon can fail only on a monochrome destination: retry that
+     * individual call on the display DC before declaring drawing failed. */
+    gdi_resize(width, height);
+    fail_mask_polygon = TRUE;
+    drv_render();
+    assert(gdi_mask_unavailable && gdi_mask == 0 && !gdi_batch_enabled);
+    assert(!gdi_draw_paused && !gdi_frame_failed && !drv_frame_failed);
+    assert(globe_quads_num_vis > 0);
+    fail_mask_polygon = FALSE;
+    /* Even pen-allocation failure must keep matching brush/pen pairs. */
+    gdi_resize(width, height);
+    fail_mask_bitmap = fail_pens = TRUE;
+    drv_render();
+    assert(gdi_brush_reduced && gdi_mask_unavailable && !gdi_draw_paused);
+    assert(globe_quads_num_vis > 0);
+    fail_mask_bitmap = fail_pens = FALSE;
+    gdi_brush_reduced = FALSE;
+    gdi_batch_enabled = TRUE;
+    gdi_resize(width, height);
+    drv_render();
+    assert(gdi_mask != 0 && !gdi_mask_unavailable && !gdi_brush_reduced);
+    assert(!gdi_draw_paused && !gdi_frame_failed && !drv_frame_failed);
+    stream_polygons = FALSE;
+    drv_notice(NULL);
+    puts("PASS GDI boundary coverage: closed Win16 contours, white fill/outline masks, pattern-preserving ROP and DC restoration, bounded mask/batch/pen fallbacks");
+}
+
 static int run_contract(void)
 {
     int resolution, pose, i;
@@ -1308,6 +1509,7 @@ static int run_contract(void)
     check_stream_equivalence();
     assert(polypolygon_calls > 0 && polygon_calls == 0);
     check_clipping();
+    check_mask_coverage();
     puts("PASS GDI rendering: five Earth resolutions, huge allocations/resources, independent pose checks, bounded palette batches, near/far/screen clipping");
 
     old_x = drv_rot_x; old_y = drv_rot_y;

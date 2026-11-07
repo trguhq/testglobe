@@ -32,6 +32,7 @@
 #define GDI_MAX_VERTICES SOFT3D_MAX_VERTICES
 #define GDI_MAX_FACETS DRV_QUAD_BATCH_MAX
 #define GDI_MAX_POLY SOFT3D_MAX_POLY
+#define GDI_MASK_ROP 0x00e20746UL /* DSPDxax: mask ? selected brush : destination */
 #define GDI_TIMER 1
 #if 2 * (DRV_QUAD_BATCH_MAX + 1) > GDI_MAX_VERTICES
 #error GDI quad batches exceed the transformed vertex cache
@@ -56,6 +57,10 @@ static HDC gdi_buffer;
 static HBITMAP gdi_bitmap;
 static HBITMAP gdi_previous_bitmap;
 static HPALETTE gdi_previous_palette;
+static HDC gdi_mask;
+static HBITMAP gdi_mask_bitmap;
+static HBITMAP gdi_mask_previous;
+static int gdi_mask_unavailable;
 /* A paint DC is borrowed only for one render; gdi_buffer remains owned. */
 static HDC gdi_target;
 static HBRUSH gdi_selected_brush;
@@ -89,7 +94,8 @@ static POINT gdi_polygons[GDI_MAX_FACETS][GDI_MAX_POLY];
 static int gdi_polygon_counts[GDI_MAX_FACETS];
 static int gdi_color_head[256];
 static int gdi_color_next[GDI_MAX_FACETS];
-static POINT gdi_batch_points[GDI_MAX_FACETS * GDI_MAX_POLY];
+/* Win16 PolyPolygon requires an explicit closing point for every contour. */
+static POINT gdi_batch_points[GDI_MAX_FACETS * (GDI_MAX_POLY + 1)];
 static int gdi_batch_counts[GDI_MAX_FACETS];
 static void gdi_present(HDC dc);
 
@@ -171,6 +177,50 @@ static void gdi_delete_buffer(void)
     gdi_previous_palette = 0;
 }
 
+static void gdi_delete_mask(void)
+{
+    if (gdi_mask != 0)
+    {
+        if (gdi_mask_previous != 0)
+            SelectObject(gdi_mask, gdi_mask_previous);
+        DeleteDC(gdi_mask);
+    }
+    if (gdi_mask_bitmap != 0) DeleteObject(gdi_mask_bitmap);
+    gdi_mask = 0;
+    gdi_mask_bitmap = gdi_mask_previous = 0;
+}
+
+static void gdi_use_solid_colors(void)
+{
+    gdi_delete_mask();
+    gdi_mask_unavailable = TRUE;
+    gdi_release_brushes();
+    drv_notice("nearest palette colors");
+}
+
+/* The mask includes the one-pixel outline. Windows 3.1 NULL_PEN polygon
+ * fills can omit boundary pixels (Microsoft Q98619). Applying the actual
+ * brush through this mask gives the outline the same dither as the interior.
+ * One reusable bit per viewport pixel costs 9,600 bytes at 320x240. */
+static int gdi_make_mask(HDC dc)
+{
+    if (gdi_mask != 0) return TRUE;
+    if (gdi_mask_unavailable) return FALSE;
+    gdi_mask = CreateCompatibleDC(dc);
+    gdi_mask_bitmap = CreateBitmap((int)drv_win_width, (int)drv_win_height,
+                                  1, 1, NULL);
+    if (gdi_mask != 0 && gdi_mask_bitmap != 0)
+    {
+        gdi_mask_previous = (HBITMAP)SelectObject(gdi_mask, gdi_mask_bitmap);
+        if (gdi_mask_previous != 0 &&
+            SelectObject(gdi_mask, GetStockObject(WHITE_BRUSH)) != 0 &&
+            SelectObject(gdi_mask, GetStockObject(WHITE_PEN)) != 0 &&
+            SetPolyFillMode(gdi_mask, WINDING) != 0) return TRUE;
+    }
+    gdi_use_solid_colors();
+    return FALSE;
+}
+
 void drv_release_optional(void)
 {
     if (gdi_rendering)
@@ -179,6 +229,7 @@ void drv_release_optional(void)
         return;
     }
     gdi_delete_buffer();
+    gdi_use_solid_colors();
     drv_free_items(gdi_project_cache);
     gdi_project_cache = NULL;
     gdi_packet_active = FALSE;
@@ -211,6 +262,7 @@ static void TG_ATEXIT_CALL gdi_cleanup(void)
     drv_quadstream_reset(&gdi_stream);
     if (gdi_window != 0) DestroyWindow(gdi_window);
     gdi_delete_buffer();
+    gdi_delete_mask();
     for (i = 0; i < 256; ++i)
     {
         if (gdi_brushes[i] != 0) DeleteObject(gdi_brushes[i]);
@@ -335,7 +387,8 @@ static HBRUSH gdi_create_brush(unsigned int color)
     {
         match = &gdi_color_matches[color];
         solid = match->solid;
-        if (match->mix != 0U && !gdi_pattern_unavailable)
+        if (match->mix != 0U && !gdi_pattern_unavailable &&
+            !gdi_mask_unavailable)
         {
             memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT,
                                   (DWORD)sizeof(*dib));
@@ -429,6 +482,8 @@ static void gdi_make_buffer(void)
 {
     HDC dc;
     gdi_delete_buffer();
+    gdi_delete_mask();
+    gdi_mask_unavailable = FALSE;
     gdi_release_brushes();
     gdi_pattern_unavailable = FALSE;
     if (gdi_window == 0 || drv_win_width == 0 || drv_win_height == 0) return;
@@ -643,6 +698,140 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
     drv_submit_quad_as_batch(first, second, third, fourth, color);
 }
 
+/* Both native calls consume the same explicitly closed packed contours. */
+static int gdi_fill_polygons(HDC dc, int total)
+{
+    int j, points;
+    if (gdi_batch_enabled)
+    {
+        if (PolyPolygon(dc, gdi_batch_points, gdi_batch_counts, total))
+            return TRUE;
+        gdi_batch_enabled = FALSE;
+        gdi_restart_frame = TRUE;
+        drv_abort_frame("individual polygons");
+    }
+    else
+    {
+        points = 0;
+        for (j = 0; j < total; ++j)
+        {
+            if (!Polygon(dc, gdi_batch_points + points, gdi_batch_counts[j]))
+            {
+                gdi_frame_failed = TRUE;
+                drv_abort_frame("individual polygon failed");
+                return FALSE;
+            }
+            points += gdi_batch_counts[j];
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void gdi_fill_batch(HDC dc, unsigned int color, int total, int points)
+{
+    RECT bounds;
+    HBRUSH brush, previous;
+    HPEN pen, previous_pen;
+    COLORREF text_color, background_color;
+    unsigned int solid;
+    int j, masked, owned_pen, mask_failed, drawn;
+    masked = gdi_make_mask(dc);
+    brush = gdi_brush(color);
+    pen = previous_pen = 0;
+    owned_pen = mask_failed = FALSE;
+    if (!masked)
+    {
+        if (!gdi_brush_reduced)
+        {
+            solid = gdi_palette_valid ? gdi_color_matches[color].solid : color;
+            pen = CreatePen(PS_SOLID, 0, PALETTEINDEX(solid));
+            owned_pen = pen != 0;
+            if (pen == 0)
+            {
+                gdi_brush_reduced = TRUE;
+                drv_notice("reduced colors");
+                brush = gdi_brush(color);
+            }
+        }
+        if (pen == 0)
+            pen = (HPEN)GetStockObject(brush == GetStockObject(BLACK_BRUSH) ?
+                                      BLACK_PEN : WHITE_PEN);
+        previous_pen = (HPEN)SelectObject(dc, pen);
+    }
+    previous = (HBRUSH)SelectObject(dc, brush);
+    if (previous == 0 || (!masked && previous_pen == 0))
+    {
+        gdi_frame_failed = TRUE;
+        drv_abort_frame("cannot select drawing brush or pen");
+    }
+    else
+    {
+        gdi_selected_brush = brush;
+        if (masked)
+        {
+            bounds.left = bounds.right = gdi_batch_points[0].x;
+            bounds.top = bounds.bottom = gdi_batch_points[0].y;
+            for (j = 1; j < points; ++j)
+            {
+                if (gdi_batch_points[j].x < bounds.left)
+                    bounds.left = gdi_batch_points[j].x;
+                if (gdi_batch_points[j].x > bounds.right)
+                    bounds.right = gdi_batch_points[j].x;
+                if (gdi_batch_points[j].y < bounds.top)
+                    bounds.top = gdi_batch_points[j].y;
+                if (gdi_batch_points[j].y > bounds.bottom)
+                    bounds.bottom = gdi_batch_points[j].y;
+            }
+            /* Include the outline without exceeding signed Win16 bounds. */
+            if (bounds.right < (int)drv_win_width) ++bounds.right;
+            if (bounds.bottom < (int)drv_win_height) ++bounds.bottom;
+            drawn = PatBlt(gdi_mask, bounds.left, bounds.top,
+                          bounds.right - bounds.left, bounds.bottom - bounds.top,
+                          BLACKNESS);
+            if (!drawn) mask_failed = TRUE;
+            else if (gdi_fill_polygons(gdi_mask, total))
+            {
+                /* Expand black mask bits to zero and white bits to all ones.
+                 * The brush stays anchored in destination coordinates. */
+                text_color = SetTextColor(dc, RGB(0, 0, 0));
+                background_color = SetBkColor(dc, RGB(255, 255, 255));
+                drawn = text_color != CLR_INVALID &&
+                        background_color != CLR_INVALID &&
+                        BitBlt(dc, bounds.left, bounds.top,
+                               bounds.right - bounds.left,
+                               bounds.bottom - bounds.top, gdi_mask,
+                               bounds.left, bounds.top, GDI_MASK_ROP);
+                if (background_color != CLR_INVALID)
+                    SetBkColor(dc, background_color);
+                if (text_color != CLR_INVALID) SetTextColor(dc, text_color);
+                if (!drawn) mask_failed = TRUE;
+            }
+            else if (!gdi_restart_frame)
+            {
+                /* A device may reject drawing to a monochrome bitmap while
+                 * still supporting the direct solid-color operation. */
+                gdi_frame_failed = FALSE;
+                mask_failed = TRUE;
+            }
+        }
+        else (void)gdi_fill_polygons(dc, total);
+    }
+    if (previous != 0) SelectObject(dc, previous);
+    if (previous_pen != 0) SelectObject(dc, previous_pen);
+    if (owned_pen) DeleteObject(pen);
+    gdi_selected_brush = 0;
+    if (mask_failed)
+    {
+        /* A failing raster operation may have partly painted the target.
+         * Restore all selected objects before releasing brushes and retry
+         * the complete frame with solid brushes and matching outlines. */
+        gdi_use_solid_colors();
+        gdi_restart_frame = TRUE;
+        drv_abort_frame("nearest palette colors");
+    }
+}
+
 void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                    const Vertex TG_HUGE *vertices,
                                    unsigned int quad_count,
@@ -652,7 +841,6 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     unsigned int i, color, corner, quad_indices[4], reuse_count;
     int facet, total, points, j, transformed;
     Drv_quad_context context;
-    HBRUSH previous, brush;
     HDC dc;
     dc = gdi_draw_dc();
     if (gdi_failed || dc == 0 || gdi_restart_frame || gdi_frame_failed ||
@@ -704,47 +892,13 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         total = points = 0;
         for (facet = gdi_color_head[color]; facet >= 0; facet = gdi_color_next[facet])
         {
-            gdi_batch_counts[total++] = gdi_polygon_counts[facet];
+            gdi_batch_counts[total++] = gdi_polygon_counts[facet] + 1;
             for (j = 0; j < gdi_polygon_counts[facet]; ++j)
                 gdi_batch_points[points++] = gdi_polygons[facet][j];
+            gdi_batch_points[points++] = gdi_polygons[facet][0];
         }
         if (total == 0) continue;
-        brush = gdi_brush(color);
-        previous = (HBRUSH)SelectObject(dc, brush);
-        if (previous == 0)
-        {
-            gdi_frame_failed = TRUE;
-            drv_abort_frame("cannot select drawing brush");
-            return;
-        }
-        gdi_selected_brush = brush;
-        if (gdi_batch_enabled)
-        {
-            if (!PolyPolygon(dc, gdi_batch_points, gdi_batch_counts, total))
-            {
-                gdi_batch_enabled = FALSE;
-                gdi_restart_frame = TRUE;
-                drv_abort_frame("individual polygons");
-            }
-        }
-        else
-        {
-            points = 0;
-            for (j = 0; j < total; ++j)
-            {
-                /* The public quad leaf delegates back to this batch entry.
-                 * Retry only the native call, without recursive submission. */
-                if (!Polygon(dc, gdi_batch_points + points, gdi_batch_counts[j]))
-                {
-                    gdi_frame_failed = TRUE;
-                    drv_abort_frame("individual polygon failed");
-                    break;
-                }
-                points += gdi_batch_counts[j];
-            }
-        }
-        SelectObject(dc, previous);
-        gdi_selected_brush = 0;
+        gdi_fill_batch(dc, color, total, points);
         if (gdi_restart_frame || gdi_frame_failed) return;
     }
 }
@@ -767,6 +921,8 @@ void drv_draw_osd(void)
         drv_append_status(status, sizeof(status), ", individual polygons");
     if (gdi_brush_reduced)
         drv_append_status(status, sizeof(status), ", reduced colors");
+    else if (gdi_mask_unavailable)
+        drv_append_status(status, sizeof(status), ", nearest palette colors");
     if (!drv_auto_available)
         drv_append_status(status, sizeof(status), ", manual rotation");
     SetBkMode(dc, TRANSPARENT);
@@ -794,7 +950,6 @@ void drv_draw_osd(void)
 static void gdi_render_to(HDC dc)
 {
     RECT bounds;
-    HPEN previous;
     HPALETTE previous_palette;
     int pass;
     if (gdi_failed || !gdi_ready || gdi_rendering || dc == 0) return;
@@ -811,12 +966,12 @@ static void gdi_render_to(HDC dc)
     bounds.right = (int)drv_win_width;
     bounds.bottom = (int)drv_win_height;
     gdi_frame_failed = FALSE;
-    for (pass = 0; pass < 2; ++pass)
+    /* At most one retry each for mask failure and batched-call failure. */
+    for (pass = 0; pass < 3; ++pass)
     {
         drv_frame_failed = FALSE;
         gdi_restart_frame = FALSE;
         FillRect(dc, &bounds, gdi_brush(gdi_background));
-        previous = (HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
         SetPolyFillMode(dc, WINDING);
         globe_quads_num_vis = 0;
         if (globe_ready() && !gdi_draw_paused)
@@ -824,7 +979,6 @@ static void gdi_render_to(HDC dc)
             gdi_set_transform();
             if (!gdi_frame_failed) globe_draw_quadbatches();
         }
-        SelectObject(dc, previous);
         if (drv_frame_failed && !gdi_restart_frame) gdi_frame_failed = TRUE;
         if (!gdi_restart_frame) break;
     }

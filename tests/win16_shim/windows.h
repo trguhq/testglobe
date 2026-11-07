@@ -106,7 +106,10 @@ typedef struct {
 #define PLANES 14
 #define NUMCOLORS 24
 #define SIZEPALETTE 104
+#define WHITE_PEN 6
+#define BLACK_PEN 7
 #define NULL_PEN 8
+#define PS_SOLID 0
 #define BLACK_BRUSH 4
 #define WHITE_BRUSH 0
 #define SYSTEM_FONT 13
@@ -215,6 +218,8 @@ HICON LoadIcon(HINSTANCE, LPCSTR);
 HDC CreateCompatibleDC(HDC);
 BOOL DeleteDC(HDC);
 HBITMAP CreateCompatibleBitmap(HDC, int, int);
+HBITMAP CreateBitmap(int, int, UINT, UINT, const void *);
+HPEN CreatePen(int, int, COLORREF);
 HGDIOBJ SelectObject(HDC, HGDIOBJ);
 BOOL DeleteObject(HGDIOBJ);
 HGDIOBJ GetStockObject(int);

@@ -178,7 +178,7 @@ Current development builds are available in the repository's `downloads` folder:
 
 | Application | Download |
 | --- | --- |
-| Windows 3.1 GDI | [GDI cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-cross.zip) |
+| Windows 3.1 GDI | [GDI cross-build ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-cross.zip) or [testglob.exe](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglob.exe) |
 | System 7 QuickDraw, 68000 | [QuickDraw cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-quickdraw-cross.zip) |
 | DOS TIGA | [TIGA cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-tiga-cross.zip) |
 | DOS Matrox LibShell | [Matrox cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-cross.zip) |
@@ -1005,9 +1005,19 @@ falls back to a solid palette brush.
 Software transforms, perspective projection, clipping, and culling operate on whole
 quads. Bounded packets reuse adjoining transformed rows and projected corners, then
 retained polygons are grouped by palette index for `PolyPolygon` calls of at most
-64 polygons. Pole vertices collapse to triangles. Visibility relies on the convex
-globe rather than a depth buffer for intersecting geometry. Native Windows messages handle input, resizing,
-palette changes, and window closure.
+64 polygons. Every contour repeats its first vertex, as required by Win16
+`PolyPolygon`. Pole vertices collapse to triangles. Visibility relies on the convex
+globe rather than a depth buffer for intersecting geometry. Native Windows messages
+handle input, resizing, palette changes, and window closure.
+
+A reusable monochrome mask includes polygon fills and one-pixel outlines, then
+applies the selected palette brush across both. This preserves dithering at shared
+edges and avoids Win16's incomplete coverage with `NULL_PEN`. The mask is allocated
+on demand and adds about 9.4 KiB at 320 × 240 or 37.5 KiB at 640 × 480, excluding
+GDI overhead. If unavailable, matching solid fills and outlines retain closed facets;
+pen allocation failure uses stock black or white. Optional-memory recovery releases
+the mask, and resizing allows another allocation attempt.
+
 Failed `PolyPolygon` submission can fall back to individual `Polygon` calls. Brush
 allocation can reclaim cached brushes or use a stock color. Failure to create the
 animation timer leaves manual rotation and keyboard input available.

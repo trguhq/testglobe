@@ -573,7 +573,8 @@ python3 tests/run.py --gdi-contract
 - **Geometry and resources:** all resolutions, binary resource contents, large global
   heaps, exact palette bytes, quad topology, independent double-precision projection
   references, clipping, and shared-vertex packets. `PolyPolygon` calls are bounded to
-  64 polygons; lock/unlock/release ownership is checked. Individual and streamed
+  64 polygons and must explicitly repeat the first point of each contour;
+  lock/unlock/release ownership is checked. Individual and streamed
   submissions must produce the same polygon/color multiset across poses and resized
   viewports, including narrow windows that require clipping.
 - **CPU and display:** 80387 selection and fixed-point fallback, including a 286/287
@@ -583,6 +584,9 @@ python3 tests/run.py --gdi-contract
   patterns, cache refreshes after palette changes, and solid fallback when queries
   or pattern creation fail. Packed DIB layout, logical palette indices, pattern
   coverage, and GDI/global-memory ownership are checked.
+- **Polygon coverage:** monochrome mask allocation, fill and outline objects, and
+  masked brush-transfer operations preserve the selected pattern across polygon
+  boundaries. Checks cover solid-pen fallback, stock pens, and mask cleanup/retry.
 - **Input and lifecycle:** `WinMain`, common startup, keyboard/mouse/resize messages,
   timer rollover, Escape/window close, and heap/GDI-object ownership.
 - **Recovery:** missing back buffers use direct paint; failed `PolyPolygon` calls
@@ -594,7 +598,8 @@ python3 tests/run.py --gdi-contract
 
 ### Native validation
 
-The Win16 fixture models 16-bit `POINT` fields but does not reproduce Microsoft C 7
+The Win16 fixture models 16-bit `POINT` fields and checks explicit polygon closure,
+but does not implement Windows' native polygon rasterizer or reproduce Microsoft C 7
 segmented pointers or callback code generation. Its `MakeProcInstance` casts suppress
 only GCC's corresponding function-cast warning. Microsoft C 7, the Windows 3.1 SDK,
 and Windows must validate loader format, segmentation, FPU-emulator dispatch, palette
