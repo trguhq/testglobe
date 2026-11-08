@@ -93,7 +93,9 @@ FPS starts enabled; turning it off leaves rotation timing active. FPS measures t
 interval between completed presentations, including event-loop waits. It is an
 interactive frame rate, not a synchronized GPU throughput benchmark; native swap
 and flush calls provide different completion guarantees. Scene and rendering-mode
-changes restart the sample.
+changes restart the sample. The running average updates after each completed frame
+once the clock advances; its averaging window ends after about one second or 60
+frames. Frames taking a second or longer report their individual rate immediately.
 Unix uses a monotonic clock where the platform exposes a compatible interface.
 Older Unix and Amiga clocks accumulate elapsed time and rebase after backward system
 clock changes, so adjusting the desktop clock does not stall rotation or FPS.

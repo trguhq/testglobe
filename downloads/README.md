@@ -21,6 +21,7 @@ The GDI build closes every Win16 polygon explicitly and fills its boundary throu
 a monochrome mask, preserving palette dithering across the edges. If mask allocation
 fails, solid fills and matching outlines remain available. The ZIP and standalone
 executable contain the same application.
+Its FPS counter reports subsecond frames promptly instead of waiting for 60 frames.
 
 The four cross-builds passed compilation, executable/resource inspection, and host
 regression tests. The Matrox library adapter also passed DOSBox tests with x87 and

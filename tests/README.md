@@ -195,6 +195,8 @@ bounds and packing, invalid inputs, key handling, FPS toggling, debug metadata,
 bounded dragging, zero-sized windows, and large elapsed-time rotations. Shared-service
 checks cover allocation bounds, handle release, bounded status messages, empty-scene
 OSD, and completed-presentation timing that includes time between native events.
+FPS checks cover prompt subsecond samples, bounded averaging windows, coarse clock
+ticks, and slow-frame, reset, and failure transitions.
 Elapsed-clock checks include backward adjustments without a long freeze. Quad stream
 helpers validate consecutive successful packets and explicit resets; strip-range
 checks preserve winding independently of native color/UV packing.

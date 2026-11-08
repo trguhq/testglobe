@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <float.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #ifdef DRV_EARTH_RESOURCES
@@ -782,13 +783,19 @@ void drv_fps_stop(void)
         return;
     }
     drv_fps_history_seconds += (float)seconds;
-    ++drv_fps_history_num;
-    if (drv_fps_history_num >= DRV_FPS_HISTORY)
+    /* Publish while the sample grows: waiting for 60 frames can otherwise
+     * leave a slow renderer at zero or a stale FPS value for many seconds.
+     * Retain zero-tick frames until coarse native clocks actually advance. */
+    if (drv_fps_history_num < LONG_MAX) ++drv_fps_history_num;
+    if (drv_fps_history_seconds > 0)
     {
-        if (drv_fps_history_seconds > 0)
-            drv_fps_average = (float)drv_fps_history_num / drv_fps_history_seconds;
-        drv_fps_history_num = 0;
-        drv_fps_history_seconds = 0;
+        drv_fps_average = (float)drv_fps_history_num / drv_fps_history_seconds;
+        if (drv_fps_history_num >= DRV_FPS_HISTORY ||
+            drv_fps_history_seconds >= 1.0f)
+        {
+            drv_fps_history_num = 0;
+            drv_fps_history_seconds = 0;
+        }
     }
 }
 
