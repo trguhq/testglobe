@@ -11,13 +11,16 @@
 #ifndef DRV
 #define DRV
 #endif
+#include "soft3d.h"
 /* LibShell's float binding encodes signed 16.16 coordinates. Keep the
  * validated radius/view envelope: rotations preserve radius 1000 and the
  * 3000-unit view distance stays well inside the signed coordinate range.
  * A larger input-only limit would not establish safe SDK intermediates. */
 #define DRV_MAX_RADIUS 1000L
 #define DRV_NAME "Matrox LibShell"
-#define DRV_HELP "1-2 = facets, A = auto rotate, F = FPS, O = OSD, Esc = exit"
+#define DRV_HELP "1-2 = facets, A = auto rotate, F = FPS, O = OSD, Esc = exit, S = soft3d"
+#define DRV_SOFT3D
+#define DRV_SOFT3D_DEFAULT FALSE
 #define DRV_WIN_X 0
 #define DRV_WIN_Y 0
 #define DRV_WIN_WIDTH 640

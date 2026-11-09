@@ -23,8 +23,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def probe_code():
-    source = (ROOT / "src/tga_cpu.c").read_text()
-    body = source.split("int tga_cpu_detect(void)", 1)[1].split("_asm {", 1)[1]
+    source = (ROOT / "src/drv_cpu.c").read_text()
+    body = source.split("int drv_cpu_detect(void)", 1)[1].split("_asm {", 1)[1]
     body = body.split("\n    }", 1)[0]
     body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
     body = re.sub(r"\b([0-9][0-9a-f]*)h\b", r"0x\1", body, flags=re.I)
@@ -98,7 +98,7 @@ def main():
             for flags in (0x202, 0x203, 0x40202):
                 check(cpu, stack, flags, code)
                 cases += 1
-    print("TIGA CPU probe: %d emulated FLAGS/stack cases passed" % cases)
+    print("DOS CPU probe: %d emulated FLAGS/stack cases passed" % cases)
 
 
 if __name__ == "__main__":

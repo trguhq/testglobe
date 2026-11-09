@@ -35,17 +35,17 @@ Additional options may be combined:
 | [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
 | [`--tiga-contract`](#tiga) | TIGA calls, embedded-module loading, arithmetic, and recovery | None |
 | [`--tiga-sdk /path/to/sdk`](#tiga) | TIGA checks plus compilation against original SDK declarations | TIGA host headers |
-| [`--tiga-cpu`](#tiga) | DOS CPU-probe instruction and stack checks | Python `unicorn`, GNU `as` and `objcopy` |
+| [`--dos-cpu`](#tiga) | Shared Matrox/TIGA CPU-probe instruction and stack checks (`--tiga-cpu` remains an alias) | Python `unicorn`, GNU `as` and `objcopy` |
 | [`--gdi-contract`](#windows-gdi) | Win16 startup, GDI calls, and messages | None |
 | [`--qd-contract`](#quickdraw) | System 7 startup, Toolbox calls, and events | None |
-| [`--ami-contract`](#amiga) | Amiga Workbench window, native/RTG graphics calls, events, and executable resources | None |
+| [`--ami-contract`](#amiga) | Amiga window/fullscreen lifecycle, native/RTG graphics calls, events, and executable resources | None |
 
 With all prerequisites installed, run every native group with:
 
 ```sh
 python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
   --gdi-contract --qd-contract --ami-contract --amiga-ogl-contract \
-  --tiga-contract --tiga-cpu --tiga-sdk /path/to/tiga --sdk /path/to/matrox
+  --tiga-contract --dos-cpu --tiga-sdk /path/to/tiga --sdk /path/to/matrox
 ```
 
 Exit status zero means all requested checks passed. `PASS` lines identify completed
@@ -53,6 +53,55 @@ checks; `SKIP` identifies an optional group that did not run. Without `--sdk` or
 `MATROX_SDK`, the Matrox SDK group is reported as skipped. The baseline needs no
 vendor graphics SDK. An intentionally injected application failure can be a passing
 test when the runner verifies its expected exit status and diagnostics.
+
+## Cross-built executable checks
+
+The Linux cross-builds compile real target executables in addition to the host
+contract tests. After building them, inspect their executable headers and embedded
+data with:
+
+```sh
+python3 tests/cross_binary.py \
+  --gdi build/cross/gdi/testglob.exe \
+  --quickdraw build/cross/quickdraw/TestglobeQD.bin \
+  --tiga build/cross/tiga/testglob.exe \
+  --matrox build/cross/matrox/testglob.exe
+```
+
+Each argument is optional. The inspector checks DOS MZ loading and relocation
+bounds, Windows 3.1 NE segments/imports and on-demand resources, Macintosh MacBinary
+and resource-fork structure, all required Earth-map bytes, and the embedded TIGA
+module's bounds and CRC. It does not execute graphics calls or establish CPU/ABI
+compatibility. The GDI build also verifies its NE format and Earth resources before
+reporting success.
+
+The OpenWatcom LibShell adapter has a separate `tests/mtx_ow.c` test that captures
+commands from the real SDK library without requiring a Matrox board. Its numeric
+checks exercise world-window and polygon conversion, pointer/stack conventions,
+variadic calls, and runtime adapters. After `make matrox-cross`, compile it with
+`WATCOM/binl64` on `PATH` and `INCLUDE` set to `WATCOM/h`:
+
+```sh
+wcc -q -bt=dos -mh -0 -fpi -ecc -zp2 -dDRV_MTX \
+  -i=build/cross/matrox/sdk -fo=build/cross/matrox/abi_test.obj tests/mtx_ow.c
+wcl -q -bt=dos -mh -0 -fpi -ecc -fe=build/cross/matrox/mtxabi.exe \
+  build/cross/matrox/abi_test.obj build/cross/matrox/mtx_ow.obj \
+  build/cross/matrox/sdk/lscl-ow.lib
+```
+
+Mount that output directory as DOSBox's `C:` drive, then run:
+
+```text
+set NO87=
+mtxabi.exe hardware > abihw.log
+set NO87=1
+mtxabi.exe emulated > abi87.log
+```
+
+Both logs must contain `PASS`; DOSBox's own exit status does not report a DOS
+assertion failure. The test checks Watcom's actual runtime selection, proving the
+forced emulation path even when DOSBox exposes an x87. This is not a test on
+physical hardware without a coprocessor. Vendor SDKs remain external dependencies.
 
 ## What the host checks establish
 
@@ -128,6 +177,10 @@ colors, nearest solid entries, invalid inputs, and all ordered-pattern levels.
   resolution changes.
 - The independent-triangle reference uses `tests/tri_mode.h`. Normal builds select
   `TRI`, `TRISTRIP`, or `QUAD` in driver headers, not through command-line defines.
+- `tests/cull_bands.c` compares CPU band culling with an independent triangle-facing
+  calculation for OpenGL strips/caps, retained TRI, IRIS GL, and XGL. It checks
+  all five resolutions, seam and pole views, grazing boundaries, custom radii and
+  latitudes, and exact winding, colors, and UVs.
 - `tests/driver_api.c` checks supported declarations, rejects unsupported callbacks,
   and checks XGL's distinct RGB/UV signatures. Plural `globe_draw_*` traversal names
   and singular `drv_draw_*` callbacks are checked as separate interfaces.
@@ -146,6 +199,8 @@ bounds and packing, invalid inputs, key handling, FPS toggling, debug metadata,
 bounded dragging, zero-sized windows, and large elapsed-time rotations. Shared-service
 checks cover allocation bounds, handle release, bounded status messages, empty-scene
 OSD, and completed-presentation timing that includes time between native events.
+FPS checks cover prompt subsecond samples, bounded averaging windows, coarse clock
+ticks, and slow-frame, reset, and failure transitions.
 Elapsed-clock checks include backward adjustments without a long freeze. Quad stream
 helpers validate consecutive successful packets and explicit resets; strip-range
 checks preserve winding independently of native color/UV packing.
@@ -196,9 +251,11 @@ application build dependencies.
   incorrect chunk sizes, and partial or cancelled loads.
 - **Geometry:** all five resolutions match the native triangle topology, including
   nondegenerate pole triangles, outward winding, strip-restart parity, index bounds,
-  and UV coordinates. The frontend retains no global map-data cache.
+  and UV coordinates. CPU band ranges are compared with a per-triangle reference;
+  rendered comparisons permit bounded silhouette-only rounding differences.
+  The frontend retains no global map-data cache.
 - **Browser rendering and controls:** the browser checks exercise the production
-  page, canvas output, resolution selection, texture/rotation/OSD/FPS controls,
+  page, canvas output, resolution selection, texture/rotation/OSD/FPS/culling controls,
   resetting the view, dragging, resizing, and touch input.
 - **Recovery:** browser checks cover unavailable WebGL, failed map requests,
   resolution fallback, competing requests, texture failure and reduction, resize
@@ -233,6 +290,8 @@ python3 tests/run.py --ogl-contract
   compared with the TRI reference at all resolutions, including provoking colors and
   UVs. Display-list checks cover the enabled default, `d`/`D`, redraws, deletion,
   immediate drawing while disabled, lazy rebuilding, and resolution/texture changes.
+  `c`/`C` temporarily disables lists while preserving the saved `d` preference;
+  IRIS GL objects are also bypassed and reused when culling is turned off.
 - **Compatibility and failures:** OpenGL 1.1 declarations and object imports are
   checked. GLUT headers without display-mode availability queries use one RGB,
   double-buffered window request, including old headers without display strings.
@@ -396,6 +455,12 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
   triangle/quad statistics, and cleanup. Independent normal transforms check every
   expected fill and cap count at several noncardinal poses.
+- **Software transforms:** LibShell is the default; `S`/`s` selects host transforms
+  while keeping indexed LibShell polygon filling. An independent orthographic
+  reference checks orientation, integer-degree rotation, screen coordinates and
+  viewport bounds. CPU profiles exercise baseline, 386 and floating-point dispatch,
+  including 8086/8087 and 286/287 combinations. The OSD reports actual selection
+  and failed requests; the help keeps `S` visible.
 - **Replies and errors:** `LSINQ` word counts and payload ordering; short malformed
   replies are drained before failure, while replies longer than 16 words abandon the
   connection. Whole-reply deadlines apply even when words remain ready. Timeouts and
@@ -403,6 +468,8 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 - **Error policy and recovery:** initially enabled and disabled reporting policies;
   opcode, parameter, board-memory, and overflow diagnostics; multiple errors while
   awaiting completion; palette and policy restoration while communication is usable.
+  Recoverable native 3D-packet failures retry through host transforms. Shared 2D
+  drawing errors and communication failures retain their failure handling.
 - **Input:** keyboard restrictions and toggles, INT 33h polling, relative motion,
   left-button dragging, and right-button redraws.
 
@@ -442,9 +509,9 @@ The separate CPU instruction check needs the optional Python `unicorn` package a
 GNU `as` and `objcopy`:
 
 ```sh
-python3 tests/run.py --tiga-cpu
+python3 tests/run.py --dos-cpu
 # Or run only the instruction check:
-python3 tests/tga_cpu.py
+python3 tests/dos_cpu.py
 ```
 
 ### Coverage
@@ -458,7 +525,8 @@ python3 tests/tga_cpu.py
   and TI-module paths must submit identical coordinates and colors. Small command
   buffers force bounded packet splitting rather than oversized transfers.
 - **Transforms and controls:** software 3D is the default; `S`/`s` switches the
-  actual transform path and OSD status. CPU/FPU profiles check dispatch, with mouse
+  actual transform path and OSD status. CPU/FPU profiles check dispatch, including
+  8086/8087, 286/287 and 386/387 combinations, with mouse
   absence and DOS mouse/keyboard input covered independently. Missing embedded
   payloads, incorrect protocol versions, rejected packets, and invalid returned
   coordinates must restore usable host rendering.
@@ -486,7 +554,7 @@ python3 tests/tga_cpu.py
   over varied poses, one- and 130-vertex packets, and viewport boundaries. Malformed
   packet fields, out-of-range matrices, and invalid coordinate bits must be rejected.
 
-`tests/tga_cpu.py` assembles the actual inline probe instructions and executes 24
+`tests/dos_cpu.py` assembles the shared `drv_cpu.c` inline probe instructions and executes 24
 FLAGS/stack cases. Hooks supply the older processors' FLAGS restrictions, which
 Unicorn does not model directly. Checks cover CPU classification, guarded 386
 instructions, aligned stack accesses, and restoration of registers and flags. They
@@ -515,7 +583,8 @@ python3 tests/run.py --gdi-contract
 - **Geometry and resources:** all resolutions, binary resource contents, large global
   heaps, exact palette bytes, quad topology, independent double-precision projection
   references, clipping, and shared-vertex packets. `PolyPolygon` calls are bounded to
-  64 polygons; lock/unlock/release ownership is checked. Individual and streamed
+  64 polygons and must explicitly repeat the first point of each contour;
+  lock/unlock/release ownership is checked. Individual and streamed
   submissions must produce the same polygon/color multiset across poses and resized
   viewports, including narrow windows that require clipping.
 - **CPU and display:** 80387 selection and fixed-point fallback, including a 286/287
@@ -525,6 +594,9 @@ python3 tests/run.py --gdi-contract
   patterns, cache refreshes after palette changes, and solid fallback when queries
   or pattern creation fail. Packed DIB layout, logical palette indices, pattern
   coverage, and GDI/global-memory ownership are checked.
+- **Polygon coverage:** monochrome mask allocation, fill and outline objects, and
+  masked brush-transfer operations preserve the selected pattern across polygon
+  boundaries. Checks cover solid-pen fallback, stock pens, and mask cleanup/retry.
 - **Input and lifecycle:** `WinMain`, common startup, keyboard/mouse/resize messages,
   timer rollover, Escape/window close, and heap/GDI-object ownership.
 - **Recovery:** missing back buffers use direct paint; failed `PolyPolygon` calls
@@ -536,7 +608,8 @@ python3 tests/run.py --gdi-contract
 
 ### Native validation
 
-The Win16 fixture models 16-bit `POINT` fields but does not reproduce Microsoft C 7
+The Win16 fixture models 16-bit `POINT` fields and checks explicit polygon closure,
+but does not implement Windows' native polygon rasterizer or reproduce Microsoft C 7
 segmented pointers or callback code generation. Its `MakeProcInstance` casts suppress
 only GCC's corresponding function-cast warning. Microsoft C 7, the Windows 3.1 SDK,
 and Windows must validate loader format, segmentation, FPU-emulator dispatch, palette
@@ -626,6 +699,13 @@ cross-build uses the [Amiga build instructions](../README.md#amiga) separately.
   when RTG libraries are absent. The native-only `AMI_RTG=0` build is checked separately.
   Display-compatible bitmap allocation, direct-drawing fallback, resizing, and cleanup
   must not depend on native chipset limits or planar bitmap fields.
+- **Fullscreen:** V39 screen-buffer allocation and presentation, delayed safe/display
+  notifications, failed swaps, allocation rollback, and cleanup with pending work.
+  Drawing must target an inactive buffer and finish before a swap; fullscreen must
+  not copy into the displayed bitmap or discard its buffers during cache recovery.
+  `F`/`f` switches presentation and `P`/`p` toggles FPS. Tests cover retained scene
+  settings, Workbench window restoration, private palettes, older-OS fallback and
+  incompatible RTG buffers.
 - **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch,
   including a reported FPU without a supporting CPU. Cached and uncached drawing
   must retain polygon coordinates and colors, including projection-cache allocation
@@ -649,7 +729,8 @@ implementation, RTG drivers, or the custom chips. Enhanced integer/FPU objects c
 as ordinary host C during these tests, so host results do not prove native opcode selection,
 library-vector ABI, or 68000/FPU dispatch. VBCC/NDK cross-builds provide a separate
 compiler/linker check. Actual Workbench startup, planar fills, palette patterns,
-RTG pixel conversion and acceleration, blitter completion, Chip RAM pressure, and
+RTG pixel conversion and acceleration, fullscreen scanout synchronization,
+screen-depth changes, pointer colors, blitter completion, Chip RAM pressure, and
 performance still need hardware or a suitable emulator on OCS/ECS/AGA and
 CyberGraphX/Picasso96 configurations.
 

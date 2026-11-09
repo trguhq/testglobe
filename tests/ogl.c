@@ -345,18 +345,22 @@ void glEnd(void)
         memset(&geometry,0,sizeof(geometry));
         geometry.vertices=block_vertices;
         if(begin_mode==GL_TRIANGLE_STRIP){
-            assert(block_vertices==2U*((unsigned int)globe_longitude+1U));
+            assert(block_vertices>=3U&&block_vertices<=2U*((unsigned int)globe_longitude+1U));
+            if(!drv_cull_enabled)assert(block_vertices==2U*((unsigned int)globe_longitude+1U));
             geometry.triangles=block_vertices-2U;geometry.strip_batches=1;
-            if(texture_enabled){
+            if(texture_enabled&&!drv_cull_enabled){
                 assert(first_uvs[0][0]==0&&first_uvs[1][0]==0);
                 assert(block_uvs[0][0]==1&&block_uvs[1][0]==1);
             }
         }else{
+            if(drv_cull_enabled)assert(block_vertices%3U==0U);
+            else{
 #ifdef TRI
             assert(block_vertices==3UL*globe_tris_num);
 #else
             assert(block_vertices==6U*(unsigned int)globe_longitude);
 #endif
+            }
             geometry.triangles=block_vertices/3U;geometry.cap_batches=1;
         }
         assert(block_coordinates==(texture_enabled?block_vertices:0U));
@@ -472,7 +476,9 @@ static void check_dlist_osd(void)
     option=strstr(osd_lines[0],"T = texture mapping, D = display list");
     assert(option&&strcmp(option,"T = texture mapping, D = display list")==0);
     assert(strcmp(osd_lines[0],drv_help)==0);
-    expected_state=!ogl_dlist_enabled?", dlist off":
+    assert(strstr(osd_lines[0],"C = cull")!=NULL);
+    assert(strstr(osd_lines[1],drv_cull_enabled?", cull on":", cull off")!=NULL);
+    expected_state=(!ogl_dlist_enabled||drv_cull_enabled)?", dlist off":
                     (frame_list_successes?", dlist on":", dlist fail");
     state=strstr(osd_lines[1],expected_state);
     assert(state);
@@ -488,9 +494,7 @@ static void check_dlist_osd(void)
     fps=strstr(osd_lines[1],"frames per second");
     if(drv_fps_enabled){
         assert(fps&&fps<state);
-#if !DEBUG
-        assert(fps+strlen("frames per second")==state);
-#endif
+        assert(strstr(osd_lines[1],", cull ")<state);
     }else assert(fps==NULL);
 }
 
@@ -505,6 +509,9 @@ static void render_checked(int indexed)
     if(ogl_texture_used&&!indexed)assert(texture_min_filter==GL_LINEAR&&texture_mag_filter==GL_LINEAR);
     if(!ogl_dlist_enabled)
         assert(list_attempts==previous_attempts&&list_calls==previous_calls&&dlist==0);
+    if(drv_cull_enabled)
+        assert(!ogl_dlist_used&&list_attempts==previous_attempts&&
+               list_calls==previous_calls&&list_validations==previous_validations);
     if(indexed&&drv_texture_enabled&&!ogl_texture_failed){
         assert(!ogl_dlist_used&&list_attempts==previous_attempts&&
                list_calls==previous_calls&&list_validations==previous_validations);
@@ -513,6 +520,9 @@ static void render_checked(int indexed)
     }else{
         assert(draw_pixels_calls==previous_pixels||
                (ogl_texture_failed&&draw_pixels_calls==previous_pixels+1U));
+        if(drv_cull_enabled){
+            assert(frame_geometry.triangles>0&&frame_geometry.triangles<globe_tris_num);
+        }else{
         assert(frame_geometry.triangles==globe_tris_num);
         assert(frame_geometry.cap_batches==1);
 #ifdef TRI
@@ -523,6 +533,7 @@ static void render_checked(int indexed)
                2UL*(globe_longitude+1UL)*(globe_latitude-2UL));
         assert(frame_geometry.strip_batches==(unsigned long)globe_latitude-2UL);
 #endif
+        }
     }
     if(!ogl_dlist_enabled)assert(list_validations==previous_validations);
     if(ogl_dlist_enabled&&!(indexed&&drv_texture_enabled)&&
@@ -628,6 +639,44 @@ static void check_display_list_toggle(int indexed)
         assert(dlist!=0);
     }
     puts("PASS OpenGL display-list toggle: default on, d/D redraw, immediate geometry while off, lazy rebuild, resolution/texture changes and ordered OSD status/help");
+}
+
+static void check_cull_toggle(int indexed)
+{
+    GLuint saved;
+    unsigned int attempts,calls,posts;
+    assert(!drv_cull_enabled&&ogl_dlist_enabled&&!drv_texture_enabled&&dlist!=0);
+    saved=dlist;attempts=list_attempts;calls=list_calls;posts=redisplay_posts;
+    keyboard_callback('C',0,0);
+    assert(drv_cull_enabled&&ogl_dlist_enabled&&redisplay_posts==posts+1U);
+    render_checked(indexed);
+    assert(dlist==saved&&list_attempts==attempts&&list_calls==calls);
+    keyboard_callback('c',0,0);
+    render_checked(indexed);
+    assert(!drv_cull_enabled&&ogl_dlist_used&&dlist==saved&&list_attempts==attempts);
+
+    /* D changes the saved preference even while C overrides actual use. */
+    keyboard_callback('c',0,0);keyboard_callback('d',0,0);
+    assert(drv_cull_enabled&&!ogl_dlist_enabled&&dlist==0);
+    render_checked(indexed);
+    keyboard_callback('C',0,0);render_checked(indexed);
+    assert(!drv_cull_enabled&&!ogl_dlist_enabled&&dlist==0);
+    keyboard_callback('C',0,0);keyboard_callback('D',0,0);
+    attempts=list_attempts;calls=list_calls;
+    render_checked(indexed);
+    assert(drv_cull_enabled&&ogl_dlist_enabled&&dlist==0&&
+           list_attempts==attempts&&list_calls==calls);
+    keyboard_callback('c',0,0);render_checked(indexed);
+    assert(ogl_dlist_used&&dlist!=0&&list_attempts==attempts+1U);
+
+    /* Native and indexed/software textures follow the same C preference. */
+    keyboard_callback('t',0,0);render_checked(indexed);
+    keyboard_callback('C',0,0);render_checked(indexed);
+    assert(ogl_texture_used&&!ogl_dlist_used);
+    keyboard_callback('c',0,0);keyboard_callback('T',0,0);
+    render_checked(indexed);
+    assert(!drv_cull_enabled&&ogl_dlist_enabled&&ogl_dlist_used);
+    puts("PASS OpenGL CPU culling: C/c selects direct band ranges, retained lists stay unused, D preference survives overrides, and flat/native/software texture modes restore correctly");
 }
 
 static int creation_failure_profile(void)
@@ -788,7 +837,10 @@ int main(int argc,char **argv)
         render_checked(indexed);check_cached_frame(indexed);
     }
     if(indexed)assert(draw_pixels_calls==10);
-    if(strcmp(profile,"rgba")==0||strcmp(profile,"legacy-glut")==0||indexed)check_display_list_toggle(indexed);
+    if(strcmp(profile,"rgba")==0||strcmp(profile,"legacy-glut")==0||indexed){
+        check_display_list_toggle(indexed);
+        check_cull_toggle(indexed);
+    }
     if(!indexed&&strcmp(profile,"limited")==0)assert(texture_size==256&&direct_texture_uploads==1&&capacity_queries==1);
 cleanup:
     assert(stack_depth[0]==0&&stack_depth[1]==0&&attrib_depth==0&&client_depth==0&&cull_enabled);

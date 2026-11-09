@@ -30,7 +30,7 @@
 #endif
 
 /* The application owns the shared scene; each driver owns native objects. */
-static void testglobe_cleanup(void)
+static void TG_ATEXIT_CALL testglobe_cleanup(void)
 {
 #ifdef TEXTURE
     texture_free();

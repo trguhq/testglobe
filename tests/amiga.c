@@ -84,6 +84,8 @@ static int blitter_busy, event_outstanding, small_stack;
 static unsigned long clock_micros;
 static struct IntuiMessage messages[8];
 static unsigned int message_count, message_next;
+static struct IntuiMessage fullscreen_events[8];
+static unsigned int fullscreen_event_count, fullscreen_event_next;
 static char osd_text[4096];
 static void *rasters[32];
 static ULONG raster_sizes[32];
@@ -95,6 +97,52 @@ static unsigned int rtg_backend, rtg_depth, rtg_storage_depth;
 static int friend_failure, pubscreen_failure;
 static int rtg_unknown, rtg_both_libraries, rtg_libraries_native;
 static struct Library cgx_library, p96_library;
+/* Fullscreen records model two display surfaces and independent notification
+ * delivery. Drawing calls must never touch a displayed or not-yet-safe bitmap. */
+static struct Screen fullscreen_screen;
+static struct ColorMap fullscreen_colormap;
+static unsigned char fullscreen_palette[256][3];
+static struct Window fullscreen_window;
+static struct RastPort fullscreen_port;
+static struct MsgPort fullscreen_messages, fullscreen_reply_ports[2];
+static struct ScreenBuffer fullscreen_buffers[2];
+static struct DBufInfo fullscreen_dbuf[2];
+static struct BitMap fullscreen_alternate;
+static UWORD fullscreen_plane_markers[2][8];
+static struct BitMap *displayed_bitmap, *previous_bitmap;
+static struct Message *pending_safe, *pending_display;
+static unsigned int screen_count, fullscreen_window_count, screenbuffer_count;
+static unsigned int reply_port_count, reply_port_calls, screen_calls, screenbuffer_calls, swap_calls, swap_successes;
+static unsigned int palette_writes, activate_calls, screen_front_calls;
+static unsigned int buffer_alive[2], reply_port_alive[2];
+static unsigned int screen_failures, fullscreen_window_failures, buffer_fail_at, port_fail_at;
+static unsigned int failed_swaps, hold_safe, hold_display, notification_waits;
+static ULONG fullscreen_mode;
+static int fullscreen_incompatible;
+static int private_screen_visible;
+static unsigned int pointer_base = 16;
+static unsigned int fullscreen_loop_script, fullscreen_loop_step, hold_after_safe;
+
+static unsigned int test_pointer_base(void)
+{
+    return !rtg_backend && fullscreen_screen.BitMap.Depth == 8U ? pointer_base : 16U;
+}
+
+static int test_screen_bitmap(const struct BitMap *bitmap)
+{
+    return screen_count && (bitmap == &fullscreen_screen.BitMap || bitmap == &fullscreen_alternate);
+}
+
+static void test_safe_draw(const struct RastPort *port)
+{
+    if (!test_screen_bitmap(port->BitMap)) return;
+    if (private_screen_visible)
+    {
+        assert(port->BitMap != displayed_bitmap);
+        assert(pending_safe == NULL || port->BitMap != previous_bitmap);
+    }
+    assert(port->Layer == NULL);
+}
 #if AMI_RTG
 static int friend_incompatible;
 static unsigned int cgx_calls, p96_calls, span_calls;
@@ -137,7 +185,31 @@ APTR AllocMem(ULONG size, ULONG flags)
 void FreeMem(APTR memory, ULONG size) { (void)size; free(memory); }
 struct Message *GetMsg(struct MsgPort *port)
 {
-    assert(port == &window_messages && !event_outstanding);
+    struct Message *message;
+    unsigned int i;
+    assert(!event_outstanding);
+    for (i = 0; i < 2U; ++i)
+        if (port == &fullscreen_reply_ports[i])
+        {
+            assert(reply_port_alive[i]);
+            if (pending_safe != NULL && pending_safe->mn_ReplyPort == port && !hold_safe)
+            {
+                message = pending_safe; pending_safe = NULL;
+                if (hold_after_safe) { hold_safe = hold_display = 1; hold_after_safe = 0; }
+                return message;
+            }
+            if (pending_display != NULL && pending_display->mn_ReplyPort == port && !hold_display)
+            { message = pending_display; pending_display = NULL; return message; }
+            return NULL;
+        }
+    if (port == &fullscreen_messages)
+    {
+        assert(fullscreen_window_count);
+        if (fullscreen_event_next == fullscreen_event_count) return NULL;
+        event_outstanding = 1;
+        return (struct Message *)&fullscreen_events[fullscreen_event_next++];
+    }
+    assert(port == &window_messages);
     if (message_next == message_count) return NULL;
     event_outstanding = 1;
     return (struct Message *)&messages[message_next++];
@@ -146,11 +218,88 @@ void ReplyMsg(struct Message *message)
 { assert(message != NULL && event_outstanding); event_outstanding = 0; ++reply_count; }
 ULONG Wait(ULONG mask)
 {
-    assert(mask == (1UL << window_messages.mp_SigBit));
     assert(!event_outstanding);
-    messages[message_count].Class = CLOSEWINDOW;
-    ++message_count;
+    if (fullscreen_loop_script)
+    {
+        if (fullscreen_loop_step < 4U)
+            assert((mask & ((1UL << 4) | (1UL << 5) | (1UL << 6) | (1UL << 7))) ==
+                   ((1UL << 4) | (1UL << 5) | (1UL << 6) | (1UL << 7)));
+        switch (fullscreen_loop_step++)
+        {
+            case 0:
+                assert(pending_safe != NULL && pending_display != NULL);
+                hold_display = 0;
+                return 1UL << 7;
+            case 1:
+                assert(pending_safe != NULL && pending_display == NULL);
+                hold_safe = 0; hold_after_safe = 1;
+                fullscreen_events[0].Class = VANILLAKEY; fullscreen_events[0].Code = 'D';
+                fullscreen_events[1].Class = VANILLAKEY; fullscreen_events[1].Code = 'O';
+                fullscreen_events[2].Class = VANILLAKEY; fullscreen_events[2].Code = '2';
+                fullscreen_event_count = 3;
+                return (1UL << 6) | (1UL << 5);
+            case 2:
+                assert(pending_safe != NULL && pending_display != NULL);
+                assert(globe_longitude == 64 && !drv_osd_enabled && ami_dither_enabled);
+                /* Returning to Workbench through the OS leaves the original
+                 * window alive. Its F must still be delivered while fullscreen. */
+                messages[1].Class = VANILLAKEY; messages[1].Code = 'F'; message_count = 2;
+                return 1UL << 4;
+            case 3:
+                assert(screen_count == 1 && pending_safe != NULL && pending_display != NULL);
+                hold_safe = hold_display = 0;
+                return (1UL << 6) | (1UL << 7);
+            case 4:
+                assert(screen_count == 0 && ami_window == &window_record);
+                assert(mask == (1UL << window_messages.mp_SigBit));
+                messages[2].Class = CLOSEWINDOW; message_count = 3;
+                return mask;
+            default: assert(!"Unexpected fullscreen event-loop wait");
+        }
+    }
+    if (pending_safe != NULL || pending_display != NULL)
+    {
+        ULONG notification_mask;
+        notification_mask = 0UL;
+        if (pending_safe != NULL) notification_mask |= 1UL << pending_safe->mn_ReplyPort->mp_SigBit;
+        if (pending_display != NULL) notification_mask |= 1UL << pending_display->mn_ReplyPort->mp_SigBit;
+        assert(mask & notification_mask);
+        hold_safe = hold_display = 0;
+        ++notification_waits;
+        return mask & notification_mask;
+    }
+    assert(mask & ((1UL << window_messages.mp_SigBit) | (1UL << fullscreen_messages.mp_SigBit)));
+    if (ami_window == &fullscreen_window)
+    {
+        assert(fullscreen_event_count < 8U);
+        fullscreen_events[fullscreen_event_count++].Class = CLOSEWINDOW;
+    }
+    else
+    {
+        assert(message_count < 8U);
+        messages[message_count++].Class = CLOSEWINDOW;
+    }
     return mask;
+}
+struct MsgPort *CreateMsgPort(void)
+{
+    unsigned int i;
+    ++reply_port_calls;
+    if (port_fail_at && reply_port_calls == port_fail_at) return NULL;
+    for (i = 0; i < 2U && reply_port_alive[i]; ++i) ;
+    assert(i < 2U);
+    reply_port_alive[i] = 1; ++reply_port_count;
+    fullscreen_reply_ports[i].mp_SigBit = (UBYTE)(6U + i);
+    return &fullscreen_reply_ports[i];
+}
+void DeleteMsgPort(struct MsgPort *port)
+{
+    unsigned int i;
+    for (i = 0; i < 2U && port != &fullscreen_reply_ports[i]; ++i) ;
+    assert(i < 2U && reply_port_alive[i]);
+    assert(pending_safe == NULL || pending_safe->mn_ReplyPort != port);
+    assert(pending_display == NULL || pending_display->mn_ReplyPort != port);
+    reply_port_alive[i] = 0; --reply_port_count;
 }
 void CurrentTime(ULONG *seconds, ULONG *micros)
 { clock_micros += 16667UL; *seconds = clock_micros / 1000000UL; *micros = clock_micros % 1000000UL; }
@@ -171,14 +320,175 @@ void UnlockPubScreen(CONST_STRPTR name, struct Screen *screen)
     assert(name == NULL || strcmp(name, "Workbench") == 0);
     assert(screen == &desktop && pubscreen_locks != 0); --pubscreen_locks;
 }
+struct Screen *OpenScreenTagList(const struct NewScreen *settings, const struct TagItem *tags)
+{
+    ULONG width, height, depth, type;
+    unsigned int plane;
+    int behind, quiet, exclusive, draggable;
+    assert(settings == NULL && display_version >= 39 && !event_outstanding && screen_count == 0);
+    ++screen_calls;
+    if (screen_failures) { --screen_failures; return NULL; }
+    width = height = depth = type = 0;
+    behind = quiet = exclusive = 0; draggable = 1;
+    for (; tags->ti_Tag != TAG_DONE; ++tags)
+        switch (tags->ti_Tag)
+        {
+            case SA_Width: width = tags->ti_Data; break;
+            case SA_Height: height = tags->ti_Data; break;
+            case SA_Depth: depth = tags->ti_Data; break;
+            case SA_Type: type = tags->ti_Data; break;
+            case SA_DisplayID: fullscreen_mode = tags->ti_Data; break;
+            case SA_Behind: behind = tags->ti_Data != 0; break;
+            case SA_Quiet: quiet = tags->ti_Data != 0; break;
+            case SA_Exclusive: exclusive = tags->ti_Data != 0; break;
+            case SA_Draggable: draggable = tags->ti_Data != 0; break;
+            case SA_ShowTitle: assert(tags->ti_Data == 0); break;
+            case SA_Title: assert(tags->ti_Data != 0); break;
+            default: assert(!"Unexpected screen tag");
+        }
+    assert(type == CUSTOMSCREEN && behind && quiet && exclusive && !draggable);
+    if (rtg_backend)
+    {
+        assert(fullscreen_mode == 0x50000UL && width == (ULONG)desktop.Width &&
+               height == (ULONG)desktop.Height && depth == rtg_depth);
+    }
+    else
+    {
+        assert(width == 320UL && height == ((graphics_base.DisplayFlags & PAL) ? 256UL : 200UL));
+        assert(fullscreen_mode == ((graphics_base.DisplayFlags & PAL) ? PAL_MONITOR_ID : NTSC_MONITOR_ID));
+        assert(depth == 5UL || ((graphics_base.ChipRevBits0 & GFXF_AA_ALICE) && depth == 8UL));
+    }
+    memset(&fullscreen_screen, 0, sizeof(fullscreen_screen));
+    fullscreen_screen.Width = (WORD)width; fullscreen_screen.Height = (WORD)height;
+    InitBitMap(&fullscreen_screen.BitMap, depth, width, height);
+    for (plane = 0; plane < 8U; ++plane)
+        fullscreen_screen.BitMap.Planes[plane] = (PLANEPTR)&fullscreen_plane_markers[0][plane];
+    if (rtg_backend)
+    { fullscreen_screen.BitMap.Depth = 1; fullscreen_screen.BitMap.BytesPerRow = 65535U; }
+    InitRastPort(&fullscreen_screen.RastPort);
+    fullscreen_screen.RastPort.BitMap = &fullscreen_screen.BitMap;
+    fullscreen_colormap.Count = depth <= 8UL ? (UWORD)(1UL << depth) : 256U;
+    fullscreen_screen.ViewPort.ColorMap = &fullscreen_colormap;
+    memset(fullscreen_palette, 0, sizeof(fullscreen_palette));
+    /* The system's pointer pens must survive the private palette install. */
+    fullscreen_palette[test_pointer_base() + 1U][0] = 17;
+    fullscreen_palette[test_pointer_base() + 2U][1] = 18;
+    fullscreen_palette[test_pointer_base() + 3U][2] = 19;
+    displayed_bitmap = &fullscreen_screen.BitMap;
+    private_screen_visible = 0;
+    ++screen_count;
+    return &fullscreen_screen;
+}
+BOOL CloseScreen(struct Screen *screen)
+{
+    assert(screen == &fullscreen_screen && screen_count == 1);
+    assert(!fullscreen_window_count && !screenbuffer_count && !pending_safe && !pending_display && !blitter_busy);
+    --screen_count; displayed_bitmap = previous_bitmap = NULL;
+    return TRUE;
+}
+void ScreenToFront(struct Screen *screen)
+{
+    assert((screen == &fullscreen_screen && screen_count) || screen == &desktop);
+    private_screen_visible = screen == &fullscreen_screen;
+    ++screen_front_calls;
+}
+void ActivateWindow(struct Window *window)
+{ assert((window == &window_record && window_count) || (window == &fullscreen_window && fullscreen_window_count)); ++activate_calls; }
+struct ScreenBuffer *AllocScreenBuffer(struct Screen *screen, struct BitMap *bitmap, ULONG flags)
+{
+    unsigned int i, plane;
+    assert(screen == &fullscreen_screen && screen_count && bitmap == NULL && display_version >= 39);
+    ++screenbuffer_calls;
+    if (buffer_fail_at && screenbuffer_calls == buffer_fail_at) return NULL;
+    i = flags & SB_SCREEN_BITMAP ? 0U : 1U;
+    assert(flags == (i == 0U ? SB_SCREEN_BITMAP : 0UL) && !buffer_alive[i]);
+    memset(&fullscreen_dbuf[i], 0, sizeof(fullscreen_dbuf[i]));
+    if (i == 1U)
+    {
+        InitBitMap(&fullscreen_alternate, fullscreen_screen.BitMap.Depth,
+                   (ULONG)fullscreen_screen.Width, (ULONG)fullscreen_screen.Height);
+        for (plane = 0; plane < 8U; ++plane)
+            fullscreen_alternate.Planes[plane] = (PLANEPTR)&fullscreen_plane_markers[1][plane];
+        if (rtg_backend)
+        { fullscreen_alternate.Depth = 1; fullscreen_alternate.BytesPerRow = 65535U; }
+        else if (fullscreen_incompatible) fullscreen_alternate.BytesPerRow += 2U;
+    }
+    fullscreen_buffers[i].sb_BitMap = i == 0U ? &fullscreen_screen.BitMap : &fullscreen_alternate;
+    fullscreen_buffers[i].sb_DBufInfo = &fullscreen_dbuf[i];
+    buffer_alive[i] = 1; ++screenbuffer_count;
+    return &fullscreen_buffers[i];
+}
+void FreeScreenBuffer(struct Screen *screen, struct ScreenBuffer *buffer)
+{
+    unsigned int i;
+    if (buffer == NULL) return;
+    assert(screen == &fullscreen_screen && screen_count && !blitter_busy);
+    i = buffer == &fullscreen_buffers[0] ? 0U : 1U;
+    assert(buffer == &fullscreen_buffers[i] && buffer_alive[i]);
+    assert(pending_safe != &fullscreen_dbuf[i].dbi_SafeMessage && pending_display != &fullscreen_dbuf[i].dbi_DispMessage);
+    buffer_alive[i] = 0; --screenbuffer_count;
+}
+ULONG ChangeScreenBuffer(struct Screen *screen, struct ScreenBuffer *buffer)
+{
+    unsigned int i;
+    assert(screen == &fullscreen_screen && screen_count && display_version >= 39);
+    i = buffer == &fullscreen_buffers[0] ? 0U : 1U;
+    assert(buffer == &fullscreen_buffers[i] && buffer_alive[i] && !blitter_busy);
+    assert(pending_safe == NULL && pending_display == NULL);
+    assert(buffer->sb_BitMap != displayed_bitmap);
+    ++swap_calls;
+    if (failed_swaps) { --failed_swaps; return FALSE; }
+    previous_bitmap = displayed_bitmap; displayed_bitmap = buffer->sb_BitMap;
+    pending_safe = &buffer->sb_DBufInfo->dbi_SafeMessage;
+    pending_display = &buffer->sb_DBufInfo->dbi_DispMessage;
+    assert(pending_safe->mn_ReplyPort != NULL && pending_display->mn_ReplyPort != NULL);
+    ++swap_successes;
+    return TRUE;
+}
+void SetRGB32(struct ViewPort *view, ULONG pen, ULONG red, ULONG green, ULONG blue)
+{
+    unsigned int bits;
+    assert(view == &fullscreen_screen.ViewPort && screen_count && pen < fullscreen_colormap.Count);
+    assert(pen <= test_pointer_base() || pen > test_pointer_base() + 3U);
+    bits = rtg_backend || (graphics_base.ChipRevBits0 & GFXF_AA_ALICE) ? 8U : 4U;
+    fullscreen_palette[pen][0] = (UBYTE)(bits == 8U ? red >> 24 : (red >> 28) * 17UL);
+    fullscreen_palette[pen][1] = (UBYTE)(bits == 8U ? green >> 24 : (green >> 28) * 17UL);
+    fullscreen_palette[pen][2] = (UBYTE)(bits == 8U ? blue >> 24 : (blue >> 28) * 17UL);
+    ++palette_writes;
+}
+ULONG VideoControl(struct ColorMap *colors, struct TagItem *tags)
+{
+    assert(colors == &fullscreen_colormap && screen_count && display_version >= 39);
+    assert(tags[0].ti_Tag == VTAG_SPEVEN_BASE_GET && tags[1].ti_Tag == TAG_DONE);
+    tags[0].ti_Data = pointer_base;
+    return 0;
+}
 struct Window *OpenWindow(const struct NewWindow *settings)
 {
+    if (settings->Type == CUSTOMSCREEN)
+    {
+        assert(settings->Screen == &fullscreen_screen && screen_count && !fullscreen_window_count);
+        assert((settings->Flags & (BORDERLESS | GIMMEZEROZERO | SIMPLE_REFRESH)) ==
+               (BORDERLESS | GIMMEZEROZERO | SIMPLE_REFRESH));
+        assert(!(settings->Flags & (WINDOWCLOSE | WINDOWDRAG | WINDOWSIZING)));
+        assert(settings->Width == fullscreen_screen.Width && settings->Height == fullscreen_screen.Height);
+        if (fullscreen_window_failures) { --fullscreen_window_failures; return NULL; }
+        memset(&fullscreen_window, 0, sizeof(fullscreen_window));
+        InitRastPort(&fullscreen_port); fullscreen_port.BitMap = &fullscreen_screen.BitMap;
+        fullscreen_window.Width = fullscreen_window.GZZWidth = settings->Width;
+        fullscreen_window.Height = fullscreen_window.GZZHeight = settings->Height;
+        fullscreen_window.WScreen = &fullscreen_screen; fullscreen_window.RPort = &fullscreen_port;
+        fullscreen_window.UserPort = &fullscreen_messages; fullscreen_messages.mp_SigBit = 5;
+        ++fullscreen_window_count;
+        return &fullscreen_window;
+    }
     assert((settings->Type == WBENCHSCREEN && settings->Screen == NULL) ||
            (settings->Type == PUBLICSCREEN && settings->Screen == &desktop && pubscreen_locks));
     assert((settings->Flags & (WINDOWSIZING | GIMMEZEROZERO | WINDOWCLOSE)) ==
            (WINDOWSIZING | GIMMEZEROZERO | WINDOWCLOSE));
     assert(settings->IDCMPFlags & NEWSIZE);
     memset(&window_record, 0, sizeof(window_record));
+    window_record.LeftEdge = settings->LeftEdge; window_record.TopEdge = settings->TopEdge;
     window_record.Width = settings->Width; window_record.Height = settings->Height;
     window_record.GZZWidth = settings->Width - 16; window_record.GZZHeight = settings->Height - 24;
     window_record.WScreen = &desktop; window_record.RPort = &window_port;
@@ -189,11 +499,15 @@ struct Window *OpenWindow(const struct NewWindow *settings)
     return &window_record;
 }
 void CloseWindow(struct Window *window)
-{ assert(window == &window_record && window_count == 1 && !event_outstanding); --window_count; }
+{
+    assert(!event_outstanding);
+    if (window == &fullscreen_window) { assert(fullscreen_window_count); --fullscreen_window_count; return; }
+    assert(window == &window_record && window_count == 1); --window_count;
+}
 void BeginRefresh(struct Window *window)
-{ assert(window == &window_record && !refresh_count); ++refresh_count; }
+{ assert((window == &window_record || window == &fullscreen_window) && !refresh_count); ++refresh_count; }
 void EndRefresh(struct Window *window, LONG complete)
-{ assert(window == &window_record && complete && refresh_count == 1); --refresh_count; }
+{ assert((window == &window_record || window == &fullscreen_window) && complete && refresh_count == 1); --refresh_count; }
 void InitBitMap(struct BitMap *bitmap, LONG depth, ULONG width, ULONG height)
 {
     memset(bitmap, 0, sizeof(*bitmap)); bitmap->Depth = (UBYTE)depth;
@@ -219,9 +533,11 @@ void FreeBitMap(struct BitMap *bitmap)
 ULONG GetBitMapAttr(const struct BitMap *bitmap, ULONG attribute)
 {
     assert(display_version >= 39);
-    assert(bitmap == &desktop.BitMap || (bitmap == &friend_bitmap && friend_count));
+    assert(bitmap == &desktop.BitMap || (bitmap == &friend_bitmap && friend_count) || test_screen_bitmap(bitmap));
     if (attribute == BMA_FLAGS)
         return rtg_backend != 0 || rtg_unknown ? 0UL : BMF_STANDARD;
+    if (attribute == BMA_WIDTH) return test_screen_bitmap(bitmap) ? (ULONG)fullscreen_screen.Width : (ULONG)desktop.Width;
+    if (attribute == BMA_HEIGHT) return test_screen_bitmap(bitmap) ? (ULONG)fullscreen_screen.Height : (ULONG)desktop.Height;
     assert(attribute == BMA_DEPTH);
     return rtg_backend != 0 || rtg_unknown ? rtg_storage_depth : bitmap->Depth;
 }
@@ -267,12 +583,17 @@ struct TmpRas *InitTmpRas(struct TmpRas *tmp, PLANEPTR raster, LONG size)
     tmp->RasPtr = raster; tmp->Size = size; return tmp;
 }
 void SetAPen(struct RastPort *port, ULONG pen)
-{ assert(pen < colormap.Count); port->FgPen = (UBYTE)pen; }
+{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->FgPen = (UBYTE)pen; }
 void SetBPen(struct RastPort *port, ULONG pen)
-{ assert(pen < colormap.Count); port->BgPen = (UBYTE)pen; }
+{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->BgPen = (UBYTE)pen; }
 void SetDrMd(struct RastPort *port, ULONG mode) { port->DrawMode = (UBYTE)mode; }
 void RectFill(struct RastPort *port, LONG x0, LONG y0, LONG x1, LONG y1)
-{ assert(port != NULL && x0 == 0 && y0 == 0 && x1 == (LONG)drv_win_width - 1 && y1 == (LONG)drv_win_height - 1); ++rect_calls; }
+{
+    assert(port != NULL && x0 == 0 && y0 == 0);
+    assert(x1 == (test_screen_bitmap(port->BitMap) ? (LONG)fullscreen_screen.Width : (LONG)drv_win_width) - 1);
+    assert(y1 == (test_screen_bitmap(port->BitMap) ? (LONG)fullscreen_screen.Height : (LONG)drv_win_height) - 1);
+    test_safe_draw(port); ++rect_calls; blitter_busy = 1;
+}
 void Move(struct RastPort *port, LONG x, LONG y)
 { port->cp_x = (WORD)x; port->cp_y = (WORD)y; }
 void Text(struct RastPort *port, CONST_STRPTR text, ULONG length)
@@ -280,6 +601,8 @@ void Text(struct RastPort *port, CONST_STRPTR text, ULONG length)
     size_t used;
     assert(port->cp_x >= 0 && port->cp_y >= 0 && port->cp_y < (WORD)drv_win_height);
     assert((ULONG)port->cp_x + length * 8UL <= drv_win_width);
+    test_safe_draw(port);
+    blitter_busy = 1;
     ++text_calls; used = strlen(osd_text);
     if (used + length + 2U < sizeof(osd_text)) { memcpy(osd_text + used, text, length); osd_text[used + length] = '\n'; osd_text[used + length + 1] = 0; }
 }
@@ -287,6 +610,7 @@ WORD TextLength(struct RastPort *port, CONST_STRPTR text, ULONG length)
 { (void)port; (void)text; return (WORD)(8UL * length); }
 static LONG record_corner(struct RastPort *port, LONG x, LONG y)
 {
+    test_safe_draw(port);
     assert(port->TmpRas != NULL && port->TmpRas->RasPtr != NULL && port->AreaInfo != NULL);
     assert(x >= 0 && y >= 0 && x < (LONG)drv_win_width && y < (LONG)drv_win_height);
     assert(area_count < SOFT3D_MAX_POLY && area_count < (unsigned int)port->AreaInfo->MaxCount);
@@ -319,21 +643,26 @@ void BltBitMapRastPort(const struct BitMap *bitmap, LONG sx, LONG sy,
 }
 ULONG GetRGB4(struct ColorMap *colors, LONG pen)
 {
-    assert(colors == &colormap && pen >= 0 && (ULONG)pen < colors->Count);
-    return ((ULONG)(desktop_palette[pen][0] >> 4) << 8) |
-           ((ULONG)(desktop_palette[pen][1] >> 4) << 4) | (desktop_palette[pen][2] >> 4);
+    unsigned char (*palette)[3];
+    assert((colors == &colormap || colors == &fullscreen_colormap) && pen >= 0 && (ULONG)pen < colors->Count);
+    palette = colors == &colormap ? desktop_palette : fullscreen_palette;
+    return ((ULONG)(palette[pen][0] >> 4) << 8) |
+           ((ULONG)(palette[pen][1] >> 4) << 4) | (palette[pen][2] >> 4);
 }
 void GetRGB32(struct ColorMap *colors, ULONG first, ULONG count, ULONG *out)
 {
     unsigned int i;
-    assert(display_version >= 39 && colors == &colormap && count == 1 && first < colors->Count);
-    for (i = 0; i < 3; ++i) out[i] = (ULONG)desktop_palette[first][i] * 0x01010101UL;
+    unsigned char (*palette)[3];
+    assert(display_version >= 39 && (colors == &colormap || colors == &fullscreen_colormap) && count == 1 && first < colors->Count);
+    palette = colors == &colormap ? desktop_palette : fullscreen_palette;
+    for (i = 0; i < 3; ++i) out[i] = (ULONG)palette[first][i] * 0x01010101UL;
 }
-ULONG GetVPModeID(struct ViewPort *view) { assert(display_version >= 36 && view == &desktop.ViewPort); return 0; }
+ULONG GetVPModeID(struct ViewPort *view)
+{ assert(display_version >= 36 && (view == &desktop.ViewPort || view == &fullscreen_screen.ViewPort)); return view == &fullscreen_screen.ViewPort ? fullscreen_mode : rtg_backend ? 0x50000UL : 0; }
 ULONG GetDisplayInfoData(APTR handle, UBYTE *buffer, ULONG length, ULONG tag, ULONG id)
 {
     struct DisplayInfo *info;
-    assert(display_version >= 36 && handle == NULL && length == sizeof(*info) && tag == DTAG_DISP && id == 0);
+    assert(display_version >= 36 && handle == NULL && length == sizeof(*info) && tag == DTAG_DISP && (id == 0 || id == fullscreen_mode));
     info = (struct DisplayInfo *)buffer; info->Resolution.x = (WORD)pixel_x; info->Resolution.y = (WORD)pixel_y;
     return sizeof(*info);
 }
@@ -341,10 +670,11 @@ ULONG GetDisplayInfoData(APTR handle, UBYTE *buffer, ULONG length, ULONG tag, UL
 ULONG ami_cgx_attr(struct Library *base, struct BitMap *bitmap, ULONG attribute)
 {
     assert(base == &cgx_library && display_version >= 39);
-    assert(bitmap == &desktop.BitMap || (bitmap == &friend_bitmap && friend_count));
+    assert(bitmap == &desktop.BitMap || (bitmap == &friend_bitmap && friend_count) || test_screen_bitmap(bitmap));
     if (attribute == AMI_CGX_IS)
         return rtg_backend == 1 &&
-               !(bitmap == &friend_bitmap && friend_incompatible);
+               !(bitmap == &friend_bitmap && friend_incompatible) &&
+               !(bitmap == &fullscreen_alternate && fullscreen_incompatible);
     assert(rtg_backend == 1);
     if (attribute == AMI_CGX_BYTES) return (rtg_storage_depth + 7U) / 8U;
     assert(attribute == AMI_CGX_DEPTH); return rtg_depth;
@@ -352,9 +682,10 @@ ULONG ami_cgx_attr(struct Library *base, struct BitMap *bitmap, ULONG attribute)
 ULONG ami_p96_attr(struct Library *base, struct BitMap *bitmap, ULONG attribute)
 {
     assert(base == &p96_library && display_version >= 39);
-    assert(bitmap == &desktop.BitMap || (bitmap == &friend_bitmap && friend_count));
+    assert(bitmap == &desktop.BitMap || (bitmap == &friend_bitmap && friend_count) || test_screen_bitmap(bitmap));
     if (attribute == AMI_P96_IS)
-        return rtg_backend == 2 && !(bitmap == &friend_bitmap && friend_incompatible);
+        return rtg_backend == 2 && !(bitmap == &friend_bitmap && friend_incompatible) &&
+               !(bitmap == &fullscreen_alternate && fullscreen_incompatible);
     assert(rtg_backend == 2);
     if (attribute == AMI_P96_DEPTH) return rtg_storage_depth;
     assert(attribute == AMI_P96_BITS); return rtg_depth;
@@ -365,7 +696,9 @@ static void record_rgb_fill(struct RastPort *port, unsigned int x0, unsigned int
     unsigned int x, y;
     assert(rtg_depth > 8 && port != NULL);
     assert(port->BitMap == &desktop.BitMap ||
-           (port->BitMap == &friend_bitmap && friend_count));
+           (port->BitMap == &friend_bitmap && friend_count) || test_screen_bitmap(port->BitMap));
+    test_safe_draw(port);
+    blitter_busy = 1;
     assert(x0 <= x1 && y0 <= y1 && x1 < drv_win_width && y1 < drv_win_height);
     assert((argb & 0xff000000UL) == 0);
     if (coverage_active)
@@ -923,6 +1256,170 @@ static int test_rtg(int argc, char **argv, const char *mode)
 }
 #endif
 
+static void test_fullscreen_windowed(void)
+{
+    assert(ami_window == &window_record && window_count == 1);
+    assert(!screen_count && !fullscreen_window_count && !screenbuffer_count && !reply_port_count);
+    assert(!pending_safe && !pending_display);
+    assert(drv_win_width == (unsigned int)window_record.GZZWidth &&
+           drv_win_height == (unsigned int)window_record.GZZHeight);
+}
+
+static int test_fullscreen(int argc, char **argv, const char *mode)
+{
+    unsigned int calls, copies, draws, swaps, i, saved_width, saved_height;
+    int old_fps;
+    WORD left, top;
+    unsigned char saved_palette[sizeof(desktop_palette)];
+    drv_ext_init(); globe_init(); drv_init(&argc, argv);
+    assert(drv_init_window(0, 0, 0, 0));
+    assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
+    drv_auto_enabled = FALSE;
+    drv_rot_x = 12.0f; drv_rot_y = 34.0f;
+    ami_keyboard('d'); assert(!ami_dither_enabled);
+    old_fps = drv_fps_enabled;
+    ami_keyboard('p'); assert(drv_fps_enabled != old_fps);
+    ami_keyboard('P'); assert(drv_fps_enabled == old_fps);
+    saved_width = drv_win_width; saved_height = drv_win_height;
+    left = window_record.LeftEdge; top = window_record.TopEdge;
+    memcpy(saved_palette, desktop_palette, sizeof(saved_palette));
+    if (strcmp(mode, "fs-loop") == 0)
+    {
+        fullscreen_loop_script = 1; hold_safe = hold_display = 1;
+        messages[0].Class = VANILLAKEY; messages[0].Code = 'f'; message_count = 1;
+        drv_loop();
+        assert(fullscreen_loop_step == 5U && reply_count == 6U && swap_successes >= 2U);
+        assert(!screen_count && !screenbuffer_count && !reply_port_count && !fullscreen_window_count);
+        assert(!window_count && !library_count && !raster_count && !friend_count);
+        assert(!pending_safe && !pending_display && !blitter_busy);
+        assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
+        globe_free();
+        puts("PASS Amiga fullscreen event loop: delayed display/safe notifications, combined wait masks, scene changes and retained-window F");
+        return 0;
+    }
+    if (display_version < 39)
+    {
+        ami_keyboard('f'); ami_keyboard('F');
+        test_fullscreen_windowed();
+        assert(screen_calls == 0 && reply_port_calls == 0 && drv_fps_enabled == old_fps);
+        test_render();
+        ami_cleanup(); globe_free();
+        assert(!library_count && !raster_count && !window_count);
+        puts("PASS Amiga fullscreen legacy: F/f retains windowed mode without newer OS calls; P/p toggles FPS");
+        return 0;
+    }
+    /* Each failed acquisition unwinds its partial graph and preserves the
+     * original Workbench window, including its visible contents and palette. */
+    if (strcmp(mode, "fs-ocs") == 0)
+    {
+        for (i = 0; i < 7U; ++i)
+        {
+            if (i == 0U) screen_failures = 1;
+            if (i == 1U) fullscreen_window_failures = 1;
+            if (i == 2U || i == 3U) buffer_fail_at = screenbuffer_calls + i - 1U;
+            if (i == 4U || i == 5U) port_fail_at = reply_port_calls + i - 3U;
+            if (i == 6U) raster_fail_at = raster_calls + 1U;
+            ami_keyboard('f');
+            test_fullscreen_windowed();
+            screen_failures = fullscreen_window_failures = buffer_fail_at = port_fail_at = raster_fail_at = 0;
+            assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
+        }
+    }
+    fullscreen_incompatible = 1;
+    ami_keyboard('f');
+    test_fullscreen_windowed();
+    fullscreen_incompatible = 0;
+    /* AGA retries a smaller private palette when 8-bit display storage is
+     * unavailable; a later toggle may again choose the full palette. */
+    if (strcmp(mode, "fs-aga") == 0)
+    {
+        buffer_fail_at = screenbuffer_calls + 2U;
+        ami_keyboard('F');
+        assert(ami_window == &fullscreen_window && ami_depth == 5U);
+        buffer_fail_at = 0;
+        ami_keyboard('f'); test_fullscreen_windowed();
+    }
+    copies = copy_calls;
+    ami_keyboard('f');
+    assert(ami_window == &fullscreen_window && screen_count == 1 && screenbuffer_count == 2);
+    assert(fullscreen_window_count == 1 && reply_port_count == 2 && window_count == 1);
+    assert(drv_fps_enabled == old_fps && !ami_dither_enabled && globe_longitude == 32);
+    assert(drv_rot_x == 12.0f && drv_rot_y == 34.0f && !drv_auto_enabled);
+    assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
+    if (ami_depth <= 8U)
+    {
+        assert(palette_writes > 0 && fullscreen_palette[test_pointer_base() + 1U][0] == 17 &&
+               fullscreen_palette[test_pointer_base() + 2U][1] == 18 &&
+               fullscreen_palette[test_pointer_base() + 3U][2] == 19);
+        assert(fullscreen_palette[0][0] == 0 && fullscreen_palette[1][0] == 255);
+    }
+    test_render();
+    assert(copy_calls == copies && swap_successes > 0 && rendered_count > 20);
+    test_osd_contains("fullscreen, double buffered");
+    test_osd_contains("F fullscreen"); test_osd_contains("P FPS");
+    ami_fs_poll();
+    /* Safe and displayed notifications are deliberately separated. Releasing
+     * only the old buffer permits rendering but cannot permit another swap. */
+    hold_safe = hold_display = 1;
+    drv_render();
+    assert(pending_safe != NULL && pending_display != NULL);
+    swaps = swap_successes; draws = rect_calls; calls = area_calls;
+    drv_render();
+    assert(swap_successes == swaps && rect_calls == draws && area_calls == calls);
+    hold_safe = 0;
+    drv_render();
+    assert(pending_safe == NULL && pending_display != NULL && swap_successes == swaps);
+    assert(rect_calls > draws);
+    draws = rect_calls;
+    drv_render(); assert(rect_calls == draws && swap_successes == swaps);
+    hold_safe = 1; hold_display = 0;
+    drv_render(); assert(swap_successes == swaps + 1U && pending_safe != NULL);
+    /* Optional cache reclamation must not destroy either presentation surface. */
+    drv_release_optional();
+    assert(screenbuffer_count == 2 && ami_project_cache == NULL && screen_count == 1);
+    draws = rect_calls; ami_keyboard('F');
+    assert(screen_count == 1 && pending_safe != NULL);
+    drv_render(); assert(rect_calls == draws && screen_count == 1);
+    hold_safe = 0; drv_render(); test_fullscreen_windowed();
+    assert(drv_win_width == saved_width && drv_win_height == saved_height &&
+           window_record.LeftEdge == left && window_record.TopEdge == top);
+    assert(drv_rot_x == 12.0f && drv_rot_y == 34.0f && !ami_dither_enabled && drv_fps_enabled == old_fps);
+    assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
+    /* A rejected swap is retried on events without rerendering its completed
+     * bitmap. Persistent rejection restores Workbench instead of direct draw. */
+    ami_keyboard('f'); failed_swaps = 40;
+    drv_render(); calls = swap_calls; draws = rect_calls; swaps = swap_successes;
+    drv_render(); assert(swap_calls == calls && rect_calls == draws);
+    for (i = 0; i < 35U && screen_count; ++i)
+    { ami_event(INTUITICKS, 0, 0, 0); drv_render(); }
+    failed_swaps = 0;
+    test_fullscreen_windowed(); assert(swap_successes == swaps);
+    /* Rendering failure keeps the old frame intact through fallback. */
+    ami_keyboard('f'); test_render(); ami_fs_poll();
+    swaps = swap_successes;
+    area_failures = rtg_depth > 8U ? 0U : 3U;
+    if (area_failures)
+    {
+        drv_render(); assert(swap_successes == swaps);
+        area_failures = 0; drv_render(); test_fullscreen_windowed();
+        ami_keyboard('f');
+    }
+    /* Close while both notifications are delayed: cleanup must wait and drain
+     * them before freeing either bitmap, its ports, or the custom screen. */
+    ami_fs_poll(); hold_safe = hold_display = 1;
+    drv_render(); assert(pending_safe != NULL && pending_display != NULL);
+    calls = notification_waits;
+    ami_cleanup();
+    assert(notification_waits > calls);
+    assert(!screen_count && !screenbuffer_count && !reply_port_count && !fullscreen_window_count);
+    assert(!window_count && !library_count && !raster_count && !friend_count);
+    assert(!pending_safe && !pending_display && !blitter_busy);
+    assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
+    ami_cleanup(); globe_free();
+    printf("PASS Amiga %s: safe fullscreen swaps, independent notifications, palette ownership, failure rollback, input and cleanup\n", mode);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i, saved_palette_size, saved_count, level;
@@ -965,6 +1462,24 @@ int main(int argc, char **argv)
         display_version = 39; rtg_unknown = 1; rtg_storage_depth = 32;
         desktop.BitMap.Depth = 1; desktop.BitMap.BytesPerRow = 65535U;
     }
+    if (strncmp(mode, "fs-", 3) == 0)
+    {
+        display_version = strcmp(mode, "fs-old") == 0 ? 34U : 39U;
+        if (strcmp(mode, "fs-aga") == 0 || strcmp(mode, "fs-ntsc") == 0 || strcmp(mode, "fs-pointer") == 0)
+        { desktop.BitMap.Depth = 8; graphics_base.ChipRevBits0 = GFXF_AA_ALICE; }
+        if (strcmp(mode, "fs-pointer") == 0) pointer_base = 240;
+#if AMI_RTG
+        if (strncmp(mode + 3, "cgx", 3) == 0 || strncmp(mode + 3, "p96", 3) == 0)
+        {
+            rtg_backend = strncmp(mode + 3, "cgx", 3) == 0 ? 1U : 2U;
+            rtg_depth = (unsigned int)atoi(mode + 6);
+            rtg_storage_depth = rtg_depth == 15U ? 16U : rtg_depth;
+            if (rtg_backend == 2U && rtg_depth == 32U) rtg_depth = 24U;
+            desktop.Width = 400; desktop.Height = 300;
+            desktop.BitMap.Depth = 1; desktop.BitMap.BytesPerRow = 65535U;
+        }
+#endif
+    }
 #if AMI_RTG
     if (strncmp(mode, "cgx", 3) == 0 || strncmp(mode, "p96", 3) == 0 ||
         strncmp(mode, "rtg", 3) == 0)
@@ -997,6 +1512,7 @@ int main(int argc, char **argv)
     colormap.Count = rtg_backend ? 256U : (UWORD)(1U << desktop.BitMap.Depth);
     desktop.ViewPort.ColorMap = &colormap;
     desktop.ViewPort.Modes = HIRES; graphics_base.DisplayFlags = PAL;
+    if (strcmp(mode, "fs-ntsc") == 0) graphics_base.DisplayFlags = 0;
     if (strcmp(mode, "ham") == 0) desktop.ViewPort.Modes |= HAM;
     for (i = 0; i < colormap.Count; ++i)
     {
@@ -1008,6 +1524,7 @@ int main(int argc, char **argv)
     memcpy(saved_palette, desktop_palette, sizeof(desktop_palette)); saved_palette_size = sizeof(desktop_palette);
     InitRastPort(&window_port); window_port.BitMap = &desktop.BitMap; window_messages.mp_SigBit = 4;
     desktop.RastPort.BitMap = &desktop.BitMap;
+    if (strncmp(mode, "fs-", 3) == 0) return test_fullscreen(argc, argv, mode);
 #if AMI_RTG
     if (rtg_backend) return test_rtg(argc, argv, mode);
 #endif
@@ -1100,7 +1617,7 @@ int main(int argc, char **argv)
     ami_event(ACTIVEWINDOW, 0, 0, 0); assert(ami_active);
     ami_keyboard('t'); assert(!drv_texture_enabled);
     ami_keyboard('o'); assert(!drv_osd_enabled); ami_keyboard('o'); assert(drv_osd_enabled);
-    ami_keyboard('f'); assert(!drv_fps_enabled); ami_keyboard('f'); assert(drv_fps_enabled);
+    ami_keyboard('p'); assert(!drv_fps_enabled); ami_keyboard('P'); assert(drv_fps_enabled);
     if (strcmp(mode, "ocs") == 0)
     {
         for (level = 32, i = 1; level <= 512; level *= 2, ++i)
@@ -1122,7 +1639,7 @@ int main(int argc, char **argv)
     ami_event(ACTIVEWINDOW, 0, 0, 0);
     assert(ami_black == 0U && ami_white == colormap.Count - 1U);
     assert(memcmp(saved_palette, desktop_palette, saved_palette_size) == 0);
-    messages[0].Class = VANILLAKEY; messages[0].Code = 'f';
+    messages[0].Class = VANILLAKEY; messages[0].Code = 'p';
     messages[1].Class = MOUSEBUTTONS; messages[1].Code = SELECTDOWN;
     messages[2].Class = MOUSEMOVE; messages[2].MouseX = 20; messages[2].MouseY = 10;
     messages[3].Class = MOUSEBUTTONS; messages[3].Code = SELECTUP;

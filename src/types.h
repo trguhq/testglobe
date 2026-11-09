@@ -20,6 +20,14 @@
 #ifndef types_h
 #define types_h
 
+/* OpenWatcom's runtime callbacks retain its register calling convention,
+ * including when SDK-facing application code uses Microsoft C stack calls. */
+#ifdef __WATCOMC__
+#define TG_ATEXIT_CALL __watcall
+#else
+#define TG_ATEXIT_CALL
+#endif
+
 /* Small C89 results distinguish recoverable exhaustion from invalid data or
  * a native renderer whose state can no longer be trusted. */
 typedef enum Drv_result

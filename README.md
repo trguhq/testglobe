@@ -37,8 +37,9 @@ Browser version: [live WebGL demo](https://testglobe.dev/web/).
 
 Earth maps store 8-bit palette indices. OpenGL and IRIS GL use those indices in either
 RGB(A) or color-index windows; Sun XGL expands them to RGB. Matrox LibShell, TIGA,
-Windows GDI, and QuickDraw draw through the Earth palette. Amiga maps those colors to the
-current Workbench screen's pens or draws their RGB values on a truecolor RTG screen.
+Windows GDI, and QuickDraw draw through the Earth palette. Amiga maps those colors to
+Workbench's pens or a private fullscreen palette, or draws their RGB values on a
+truecolor RTG screen.
 The browser frontend uses WebGL 2 with the same maps and palette.
 
 | Driver | Platform | Default globe | Texture toggle |
@@ -63,11 +64,13 @@ Letter controls accept either case.
 | `1`–`5` | Select globe resolution; Matrox LibShell and TIGA support only `1` and `2`. |
 | Left mouse drag | Rotate the globe; the WebGL frontend also supports touch dragging. |
 | `a` | Toggle automatic rotation. |
-| `f` | Toggle FPS measurement and its on-screen statistic. |
+| `f` | Toggle FPS measurement and its on-screen statistic; in the chipset/RTG Amiga driver, toggle fullscreen instead. |
+| `p` | Toggle FPS measurement in the chipset/RTG Amiga driver. |
 | `o` | Toggle the on-screen display (OSD). |
 | `t` | Toggle texture mapping in OpenGL, IRIS GL, Sun XGL, and WebGL. |
+| `c` | Toggle CPU culling by latitude-band longitude ranges in OpenGL, IRIS GL, Sun XGL, and WebGL; starts off. |
 | `d` | Toggle display lists in OpenGL, or palette dithering in native Amiga; both start enabled. |
-| `s` | Switch TIGA between host software 3D (default) and TI-processor transforms. |
+| `s` | Switch Matrox or TIGA between host software 3D and board/API transforms. Matrox starts with LibShell transforms; TIGA starts with host transforms. |
 | `Esc` | Exit native applications; in WebGL, pause rotation and release dragging. |
 
 WebGL also provides on-screen controls and a **Reset view** button. Its retained GPU
@@ -91,7 +94,9 @@ FPS starts enabled; turning it off leaves rotation timing active. FPS measures t
 interval between completed presentations, including event-loop waits. It is an
 interactive frame rate, not a synchronized GPU throughput benchmark; native swap
 and flush calls provide different completion guarantees. Scene and rendering-mode
-changes restart the sample.
+changes restart the sample. The running average updates after each completed frame
+once the clock advances; its averaging window ends after about one second or 60
+frames. Frames taking a second or longer report their individual rate immediately.
 Unix uses a monotonic clock where the platform exposes a compatible interface.
 Older Unix and Amiga clocks accumulate elapsed time and rebase after backward system
 clock changes, so adjusting the desktop clock does not stall rotation or FPS.
@@ -104,22 +109,27 @@ clock changes, so adjusting the desktop clock does not stall rotation or FPS.
 | `texture loading` | WebGL is fetching or uploading a texture; flat colors remain visible. |
 | `texture fail` | Texturing is enabled but a detected failure prevents its use; recoverable failures draw flat colors. |
 | `dlist on` | OpenGL successfully uses a display list for the current frame. |
-| `dlist off` | Display lists are disabled. |
-| `dlist fail` | Lists are enabled but unavailable, failed, or bypassed. |
+| `dlist off` | Display lists are disabled by `d`, or temporarily disabled while CPU culling is on. |
+| `dlist fail` | Lists are enabled but unavailable, failed, or bypassed by software texturing. |
+| `cull on` / `cull off` | CPU band culling is enabled / disabled; native API backface culling remains enabled in both modes. |
 | `dither on` / `dither off` | Amiga palette dithering is enabled / disabled; off uses the nearest solid palette color. |
 | `dither n/a` | Amiga is drawing directly in RGB on a truecolor RTG screen. |
-| `soft3d on` / `soft3d off (TI)` | TIGA uses host transforms / the embedded TI transform module; both use TIGA polygon filling. |
+| `fullscreen, double buffered` | The chipset/RTG Amiga driver is presenting complete frames on a private screen. |
+| `soft3d on` | Matrox or TIGA uses host transforms while retaining board/API polygon filling. |
+| `soft3d off (LibShell)` / `soft3d off (TI)` | Matrox uses LibShell transforms / TIGA uses its embedded TI transform module. |
+| `soft3d fail (LibShell)` | Host transforms were requested but could not prepare the frame; the usable LibShell path remains active. |
 | `GWorld on` / `GWorld off` | QuickDraw is drawing through an offscreen GWorld / directly to the window. |
 
 Toggle `t` off and on to retry after a recoverable texture failure. OpenGL software
 texturing bypasses display lists, so enabled lists report `dlist fail` on that path.
 XGL's internal software pipeline still reports `texture on`; IRIS GL cannot detect
 all silent native texture failures. Their driver sections describe these limits.
-OpenGL places `dlist` after FPS and before texture status, with its `d` help last.
-QuickDraw appends GWorld status after the other statistics. TIGA appends `soft3d`,
-CPU/FPU detection, and buffering status to the top statistics, and places `S` last
-in its help. Failed TI module extraction or loading leaves `soft3d on` with a
-recovery notice.
+OpenGL places `dlist` before texture status, with its `d` help last.
+QuickDraw appends GWorld status after the other statistics. Matrox and TIGA append
+`soft3d` and CPU/FPU details and place `S` last in their help; TIGA also reports
+buffering. Failed TI module extraction or loading leaves `soft3d on` with a recovery
+notice. Transform status reports the active path; `S` retries an unavailable path
+from the working fallback.
 When a smaller texture is active, its width follows the status, for example
 `texture on (128)` or `texture soft (128)`. GDI reports direct drawing, individual
 polygons, reduced colors, or manual rotation when those fallbacks are active.
@@ -129,7 +139,18 @@ area; larger displays use 640 × 480. Explicit size requests are preserved, with
 QuickDraw clamping its window to the selected screen.
 GDI, QuickDraw, and Amiga resize the projection to the drawable client area. Narrow
 windows clip the globe rather than stretching it. Amiga also accounts for the
-Workbench display mode's pixel proportions.
+selected display mode's pixel proportions.
+
+CPU culling finds the front-facing longitude ranges of each latitude band and
+submits their triangle-strip runs, with checks near the boundaries to preserve
+the silhouette, winding, and texture coordinates. It uses the perspective camera
+position rather than assuming that exactly half the globe is visible. This option
+can reduce geometry submission, but its performance depends on the platform.
+OpenGL display lists and IRIS GL geometry objects are bypassed while it is on.
+OpenGL remembers the `d` preference, including changes made while culling is on,
+and applies it again when culling is turned off. The displayed polygon total
+continues to describe the complete mesh. Nearly edge-on facets can differ by a
+silhouette pixel because CPU and native transform rounding are not identical.
 
 ### Resource recovery
 
@@ -168,6 +189,22 @@ OpenGL binaries for these platforms:
 | macOS | x86-64 / ARM64 |
 | Solaris | SPARCv8 |
 
+Current development builds are available in the repository's `downloads` folder:
+
+| Application | Download |
+| --- | --- |
+| Windows 3.1 GDI | [GDI cross-build ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-cross.zip) or [testglob.exe](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglob.exe) |
+| System 7 QuickDraw, 68000 | [QuickDraw cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-quickdraw-cross.zip) |
+| DOS TIGA | [TIGA cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-tiga-cross.zip) |
+| DOS Matrox LibShell | [Matrox cross-build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-cross.zip) |
+| Amiga chipset / RTG | [Amiga palette build](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-palette-fix.zip) |
+
+Each archive includes installation notes, validation limits, and checksums. The DOS
+and Windows applications embed their data in `testglob.exe`. The Macintosh archive
+preserves the application resource fork in MacBinary format; decode it with a
+MacBinary-aware utility before launching. The Amiga archive is the existing palette
+build; it predates the later fullscreen work.
+
 ## Build instructions
 
 The [WebGL frontend](#webgl) runs without a native build. The portable Makefiles use
@@ -189,14 +226,18 @@ and libraries installed:
 | [Windows GDI](#windows-gdi) | `nmake gdi` | `testglob.exe` |
 | [QuickDraw](#quickdraw) (MPW bridge) | `make quickdraw` | `TestglobeQD` |
 | [Amiga](#amiga) (VBCC cross-compiler) | `make amiga` | `testglobe-amiga` |
+| [Windows GDI cross-build](#linux-hosted-cross-builds) | `make gdi-cross` | `build/cross/gdi/testglob.exe` |
+| [QuickDraw cross-build](#linux-hosted-cross-builds) | `make quickdraw-cross` | `build/cross/quickdraw/TestglobeQD.bin` |
+| [TIGA cross-build](#linux-hosted-cross-builds) | `make tiga-cross` | `build/cross/tiga/testglob.exe` |
+| [Matrox cross-build](#linux-hosted-cross-builds) | `make matrox-cross` | `build/cross/matrox/testglob.exe` |
 
 Native MPW users build QuickDraw with `Makefile.mpw` as described in its section. The
 portable `quickdraw` target requires a configured bridge to the MPW tools.
 
 ### Common build settings
 
-Objects and executables are written in the directory where make runs. For an
-out-of-tree build, create a build directory, enter it, then run:
+Native-target objects and executables are written in the directory where make
+runs. For an out-of-tree build, create a build directory, enter it, then run:
 
 ```sh
 make -f /path/to/testglobe/src/Makefile SRC=/path/to/testglobe/src
@@ -212,9 +253,11 @@ before changing the compiler or build flags:
 
 | Command | Removes |
 | --- | --- |
-| `make clean` | All build objects, generated build sources, temporary files, and application/helper binaries. |
+| `make clean` | Native-target objects, generated build sources, temporary files, and application/helper binaries. |
 | `make clean-<target>` | That backend's objects, executable, and backend-specific intermediates. Shared data sources and helpers generally remain. |
 | `make clean-earth-data` | Generated `e_data.c`/`m_data.c`/`t_data.c`, converter binaries, and data-generation temporary files. |
+| `make clean-cross` | All four Linux-hosted cross-build directories. |
+| `make clean-<target>-cross` | One cross-build directory; for example, `make clean-gdi-cross`. |
 
 Individual targets are `clean-opengl`, `clean-solaris-opengl`, `clean-apple-opengl`,
 `clean-amiga-opengl`, `clean-irisgl`, `clean-xgl`, `clean-matrox`, `clean-tiga`, `clean-gdi`,
@@ -233,6 +276,70 @@ separate right-button state. Software texture buffers are released when texturin
 disabled; `CPPFLAGS=-DTEXTURE_CACHE_RASTER=1` retains them instead. Use the corresponding
 CPPFLAGS variable for other targets. [Development notes](#shared-rendering-pipelines)
 describe the cache and memory policy.
+
+### Linux-hosted cross-builds
+
+The `gdi-cross`, `quickdraw-cross`, `tiga-cross`, and `matrox-cross` targets build
+historic application formats on a modern Linux host. They require Python 3.8 or
+later and external cross-compilers. The DOS targets also use a host C compiler for
+Earth-data conversion and executable packing; `HOST_CC` defaults to `cc`.
+The original Microsoft C and MPW targets remain available.
+
+Install [OpenWatcom](https://github.com/open-watcom/open-watcom-v2) for the DOS and
+Windows targets, then set its installation directory:
+
+```sh
+export WATCOM=/path/to/openwatcom
+make gdi-cross
+make matrox-cross CROSS_FLAGS="--xgx-root /path/to/matrox-sdk"
+make tiga-cross CROSS_FLAGS="--tiga-root /path/to/TIGA --tiga-tools /path/to/ti-tools"
+```
+
+Matrox needs `XGX1/HEADERS` and `libsv5/lscl.lib` under its SDK root. TIGA needs
+`include` and `libs/ai.lib`; the original SDK archive directory layout is also
+accepted. For TIGA, install DOSBox on the host and place the TI compiler, assembler,
+and linker together in `--tiga-tools`. The build compiles `tga_gsp.c` and
+`tga_ext.asm`, then embeds the resulting module in `testglob.exe`. To use an
+already-built matching module, replace `--tiga-tools` with
+`--tiga-module /path/to/tga_gsp.rlm`. The finished application needs no separate RLM.
+SDKs, compiler installations, and vendor libraries are not included in this repository.
+
+The Watcom DOS builds use huge-model pointers and C stack calling conventions to
+match the SDK bindings. `src/mtx_ow.c` adapts the supplied Microsoft-built LibShell
+library's runtime calls. Baseline application objects use 8086 instructions; the
+386 transform kernel remains separate and guarded by CPU detection. The supplied
+LibShell library itself requires a 286 or later. Floating-point emulation remains
+available without a coprocessor.
+
+Watcom's Windows runtime uses the large memory model. Explicit `TG_HUGE` pointers
+retain normalized mesh and resource access across 64 KiB boundaries, with `SEG86`
+still enabled. The output is a protected-mode Windows 3.1 NE application with all
+Earth resources embedded and loaded on demand.
+
+Install [Retro68](https://github.com/autc04/Retro68) for QuickDraw, including its
+Multiversal interfaces, resource tools, and 68000 runtime:
+
+```sh
+export RETRO68=/path/to/retro68/toolchain
+make quickdraw-cross
+```
+
+QuickDraw retains a 68000 baseline and separately compiled, runtime-guarded
+68020/68881 code. Its MacBinary output preserves the application and Earth resources
+in one resource-fork-aware file. Decode it on the Macintosh before use.
+
+Builds always run in `build/cross/<backend>` under the repository root, whether
+make starts in the root or `src`. Each invocation recompiles the selected backend
+so changed compiler options cannot reuse incompatible objects. Use `CROSS_FLAGS`
+for extra options, such as `--build-dir /path/to/builds`, `--host-cc clang`, or
+`--dosbox /path/to/dosbox`; `python3 src/cross.py --help` lists them all.
+`make clean-cross` removes these build directories without affecting downloaded
+release archives. Native `make clean` does not require Python or cross-toolchains.
+
+The packaged cross-builds have passed executable-structure and embedded-data checks
+using `tests/cross_binary.py`. Host API tests and DOSBox arithmetic checks provide
+additional coverage; Windows/Macintosh desktop
+behavior and Matrox/TIGA hardware rendering still need testing on the target systems.
 
 ### Earth map data
 
@@ -346,7 +453,9 @@ WebGL retains vertex/index buffers and draws latitude strips with native transfo
 depth testing, and back-face culling. Flat shading quantizes UV coordinates to Earth
 patches, then looks up each patch's palette index and RGB color. Texture mapping
 normally uses a separate 512 × 256 RGB image and GPU-generated mipmaps, independently
-of the selected globe resolution. There is no display-list toggle.
+of the selected globe resolution. There is no display-list toggle. The optional
+`c` control retains GPU vertex buffers and textures while selecting front-facing
+strip ranges through an updated index buffer.
 
 Missing map data or allocation shortages at startup can select smaller resolutions.
 A failed resolution change preserves an existing globe; **Retry** requests the chosen
@@ -697,16 +806,25 @@ nmake matrox
 
 The output is `testglob.exe`. For an external SDK use `XGX_ROOT=C:\MATROX`; the default
 is `.` in the root Makefile and `..` in `src/Makefile`. Override `MTX_CC`, `MTX_CFLAGS`,
-`MTX_CPPFLAGS`, `MTX_LIB`, and `MTX_LDFLAGS` as needed, keeping `-AH`. DOS rules use
-backslash paths, 8.3 generated names, and response files for command-line limits.
+`MTX_CPPFLAGS`, `MTX_386FLAGS`, `MTX_LIB`, and `MTX_LDFLAGS` as needed, keeping
+`-AH -G0 -FPi` on baseline objects. Only the guarded `m_386.obj` kernel uses `-G3`.
+DOS rules use backslash paths, 8.3 generated names, and response files for
+command-line limits.
 
 #### Rendering and color
 
 The default globe is key 1; only keys 1 and 2 are available, with no texture controls.
-LibShell performs transforms, orthographic projection, viewport clipping, and filled
-world-coordinate polygons through `v3arwplygn` (`V3ARWPLYGN`). Patches are quads, with
+By default, LibShell transforms, projects, clips, and fills world-coordinate polygons
+through `v3arwplygn` (`V3ARWPLYGN`). Projection is orthographic. Patches are quads, with
 coincident pole vertices collapsed to triangles. All 256 LUT entries come from
 `earth_cmap`, and polygons use the original palette indices.
+
+Press `S` to select host software transforms. This path preserves LibShell's
+orthographic world window, integer-degree rotations and viewport orientation.
+The CPU transforms, projects, clips and culls bounded polygon packets, then sends
+screen-coordinate polygons through `scarwplygn` (`SCARWPLYGN`). LibShell still fills
+the polygons using the same LUT. The driver retains the QUAD traversal and does
+not allocate another complete mesh. Press `S` again to return to LibShell 3D.
 
 #### Platform notes
 
@@ -714,11 +832,22 @@ The host rejects back-facing polygons because the base PG-641 interface document
 neither a depth buffer nor a back-face switch. DOS uses normalized huge pointers,
 `_halloc`/`_hfree`, long mesh counts, and DOS timing.
 
+Matrox and TIGA share `drv_cpu.c` for 8086-class, 286, 386 and 486-or-later detection.
+A usable x87 selects floating-point host transforms; the presence probe supports
+8087/287/387-compatible instructions without identifying the exact coprocessor model.
+Without an x87, 386-or-later CPUs use the separate 386 integer kernel and older CPUs
+use baseline integer code. `NO87=1` forces integer transforms. `/FPi` retains runtime
+emulation for other floating-point work, including mesh generation.
+
 LibShell errors are serviced while waiting for inquiry replies between bounded command
 packets. Diagnostics identify the operation and error bits. Reply polling has a
 ten-second deadline; short malformed replies are drained, while oversized replies or
 timeouts abandon communication. Cleanup restores the palette and error policy when
 communication remains usable and sends no further board commands after abandonment.
+Recoverable errors during native geometry packets can retry the frame with host
+transforms once a valid error reply has been drained. Recovery succeeds only if
+the 2D color and fill commands work. Communication failures and errors in that
+shared drawing path cannot be repaired by changing transform mode.
 
 #### Validation
 
@@ -823,16 +952,19 @@ usable but can flicker and reports its buffering status.
 
 #### CPU and platform notes
 
-CPU detection distinguishes 286, 386, and 486-or-later without requiring CPUID. The
-program remains a 16-bit real-mode executable. Baseline objects use `/G0`; only the
-guarded 386 transform object uses `/G3`, and 486-or-later CPUs use that same path.
+The shared DOS probe distinguishes 8086-class, 286, 386, and 486-or-later without
+requiring CPUID. The program remains a 16-bit real-mode executable. Baseline objects
+use `/G0`; only the guarded 386 transform object uses `/G3`, and 486-or-later CPUs
+use that same path.
 `/FPi` retains the Microsoft emulation runtime for startup, mesh generation, and
 other floating-point work when no coprocessor is available.
 
 The x87 probe checks the BIOS equipment flag and uses bounded, no-wait coprocessor
-status reads. An unreported or unavailable coprocessor selects integer transforms.
-Set `NO87=1` to force that choice. CPU/FPU and buffering details accompany `soft3d`
-in the top OSD. No board-specific addresses or registers are accessed by the host.
+status reads compatible with 8087, 287 and 387 hardware; it reports usable x87
+presence rather than an exact model. An unreported or unavailable coprocessor
+selects integer transforms. Set `NO87=1` to force that choice. CPU/FPU and buffering
+details accompany `soft3d` in the top OSD. No board-specific addresses or registers
+are accessed by the host.
 
 #### Validation
 
@@ -890,9 +1022,19 @@ falls back to a solid palette brush.
 Software transforms, perspective projection, clipping, and culling operate on whole
 quads. Bounded packets reuse adjoining transformed rows and projected corners, then
 retained polygons are grouped by palette index for `PolyPolygon` calls of at most
-64 polygons. Pole vertices collapse to triangles. Visibility relies on the convex
-globe rather than a depth buffer for intersecting geometry. Native Windows messages handle input, resizing,
-palette changes, and window closure.
+64 polygons. Every contour repeats its first vertex, as required by Win16
+`PolyPolygon`. Pole vertices collapse to triangles. Visibility relies on the convex
+globe rather than a depth buffer for intersecting geometry. Native Windows messages
+handle input, resizing, palette changes, and window closure.
+
+A reusable monochrome mask includes polygon fills and one-pixel outlines, then
+applies the selected palette brush across both. This preserves dithering at shared
+edges and avoids Win16's incomplete coverage with `NULL_PEN`. The mask is allocated
+on demand and adds about 9.4 KiB at 320 × 240 or 37.5 KiB at 640 × 480, excluding
+GDI overhead. If unavailable, matching solid fills and outlines retain closed facets;
+pen allocation failure uses stock black or white. Optional-memory recovery releases
+the mask, and resizing allows another allocation attempt.
+
 Failed `PolyPolygon` submission can fall back to individual `Polygon` calls. Brush
 allocation can reclaim cached brushes or use a stock color. Failure to create the
 animation timer leaves manual rotation and keyboard input available.
@@ -1036,8 +1178,10 @@ resource forks, and acceleration require System 7 hardware or a suitable emulato
 The Amiga driver opens a resizable Workbench window on a 68000 or later CPU.
 The native OCS/ECS/AGA path supports AmigaOS 1.3 or later and planar screens with
 1–8 bitplanes. Optional RTG support uses CyberGraphX or Picasso96 on AmigaOS 3.0 or
-later, supporting 8-bit indexed and 15/16/24/32-bit truecolor desktops. The driver
-uses the existing desktop mode without replacing its palette.
+later, supporting 8-bit indexed and 15/16/24/32-bit truecolor desktops. Windowed
+operation uses the existing desktop mode without replacing its palette. Optional
+fullscreen operation requires AmigaOS 3.0 or later and a display mode that supports
+synchronized screen buffers.
 
 Cross-compilation requires VBCC's m68k-amigaos compiler, vasm, vlink, the `kick13`
 target runtime, Amiga NDK headers, and Python 3.8 or later on the build host. The SDK and compiler
@@ -1097,7 +1241,7 @@ the polygons to horizontal spans and submits RGB fills through CyberGraphX's
 fills. Collapsed pole patches become triangles. Native `Text` draws the wrapped OSD,
 including chipset or RTG backend, CPU/math, color depth, and buffering status.
 
-On indexed screens, the driver reads the Workbench palette and maps Earth indices
+On indexed Workbench screens, the driver reads the desktop palette and maps Earth indices
 to available pens at every supported depth (2 through 256 colors). Ordered two-pen
 patterns approximate missing colors by comparing their mixed RGB values. Palettes
 with up to 16 entries use the closest available pair and 1/16 mixture; larger palettes
@@ -1115,7 +1259,7 @@ not provide the native path's ordinary indexed-pixel semantics. Truecolor RTG us
 the Earth palette's RGB values directly, with pixel-format conversion handled by
 the RTG library. OSD text uses available desktop pens.
 
-An optional offscreen bitmap presents through `BltBitMapRastPort`. Native screens
+In windowed mode, an optional offscreen bitmap presents through `BltBitMapRastPort`. Native screens
 use planar Chip RAM; RTG screens use a display-compatible bitmap allocated through
 `AllocBitMap`. Indexed area fills also need a Chip RAM scratch raster, while truecolor
 RTG fills do not. Geometry and other working data use ordinary memory. Back-buffer
@@ -1132,6 +1276,38 @@ limits of 992 × 1024 pixels and require a Workbench bitmap stride of at most
 ECS Agnus or AGA Alice hardware supports larger windows within the coordinate limits.
 These chipset limits do not apply to RTG bitmaps; all paths retain signed-word
 coordinate bounds.
+
+#### Fullscreen
+
+Press `F` or `f` to switch between the Workbench window and a private fullscreen
+screen. `P` or `p` toggles FPS in this driver; other drivers keep their existing
+controls. `Esc` exits the application from either mode. Switching preserves globe
+resolution, orientation, animation, dithering, OSD and FPS settings, and returning
+to Workbench restores the window's position and size.
+
+Fullscreen draws the globe and OSD into an inactive display bitmap, waits for
+blitter completion, then presents it through `ChangeScreenBuffer`. Safe-to-write
+and display-complete messages control buffer reuse. This avoids copying individual
+bitplanes into the displayed frame. A slow render or temporarily blocked swap
+leaves the previous complete frame visible. The OS continues running, including
+Intuition input and reads of Earth data from the executable.
+
+Native fullscreen uses non-interlaced low resolution: 320 × 200 for NTSC or
+320 × 256 for PAL, with 32 colors on OCS/ECS and 256 on AGA. AGA retries with
+32 colors if the larger buffers cannot be allocated. Its private palette is based
+on the Earth colors, with pointer and OSD colors accounted for; Workbench's palette
+is preserved. RTG fullscreen stays on the current graphics backend and requires
+compatible screen buffers.
+Older OS versions and unsupported modes remain windowed. Allocation failure
+preserves or restores windowed operation; fullscreen never falls back to drawing
+directly into the displayed bitmap.
+
+Removing the presentation copy saves bandwidth, but polygon filling and software
+transforms still determine rendering speed. Two planar display buffers plus the
+area-fill scratch raster at 320 × 256 require about 110 KiB for 32 colors or
+170 KiB for 256 colors, in addition to Workbench, application data and OS structures.
+These buffers are required fullscreen resources; memory recovery may release
+optional transform caches without discarding a displayed or pending frame.
 
 #### Platform notes
 
@@ -1163,6 +1339,8 @@ VBCC 0.9h (m68k generator 1.15), vasm 1.9d, vlink 0.17a, NDK 47.5 headers, and t
 Workbench behavior, or performance on actual machines. Native testing remains
 necessary for 68000/accelerated CPUs, OCS/ECS/AGA screens, CyberGraphX/Picasso96
 desktops, Chip RAM pressure, palette patterns, and blitter/window synchronization.
+Fullscreen also needs native checks of buffer-swap timing, screen switching and
+pointer colors; host tests cannot establish tear-free scanout on an RTG driver.
 
 ## Testing and validation
 
@@ -1205,6 +1383,7 @@ All native application targets also define `DRV`; Microsoft C builds use `-AH`. 
 header supplies `GDI` for Windows-specific integration. Primitive/callback-capability
 defines belong in headers, not compiler flags. `TRI` remains a tested reference path.
 `DRV_TRI_COLOR`, `DRV_TRI_RGB`, and `DRV_TRI_UV` expose only implemented callbacks.
+`DRV_CULL` enables the optional CPU band-culling control in OpenGL, IRIS GL, and XGL.
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` describes the
 window's runtime mode. All native drivers except XGL define `DRV_COLORMAP`, even when
 they can draw to RGB windows.
@@ -1217,8 +1396,10 @@ ordered patterns; QuickDraw delegates that work to its native color machinery.
 | `src/drv_*.c` | Singular native callbacks such as `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*`; group color/RGB/UV variants by primitive. |
 | `src/drv.c` | Shared allocation/clock services, input, rotation, FPS/OSD, palette matching, geometry-packet helpers, and Earth-resource traversal. |
 | Driver-private helpers | Backend-prefixed windowing, events, timing, transforms/caches, and drawing state. `src/ogl_ami.c`/`.h` provide the OpenGL driver's MiniGL/Amiga integration. |
-| `src/tga_cpu.c` / `src/tga_gsp.c` | DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
+| `src/drv_cpu.c` / `src/tga_gsp.c` | Shared Matrox/TIGA DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
 | `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader. |
+| `src/cross*.py` | Linux-hosted build orchestration for the existing DOS, Win16, and QuickDraw drivers. |
+| `src/mtx_ow.c` | OpenWatcom runtime adapters for the Microsoft-built LibShell library; excluded from the Microsoft target. |
 | `src/buildio.h` | C89 file validation and safe output publication shared by the Earth converter and TIGA packer; excluded from application binaries. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; generated arrays remain private. |
 | `web/` | Browser frontend, WebGL rendering, and generated palette module; reads canonical `data/` maps. |
@@ -1265,7 +1446,7 @@ radius of 1,000 for their shared fixed-point pipeline. Matrox retains the valida
 1,000-unit range for LibShell's fixed-point transforms. These limits are driver
 capabilities rather than a restriction on every globe.
 
-Triangle strips follow complete interior latitude bands. At key 5, an interior strip
+With CPU culling off, triangle strips follow complete interior latitude bands. At key 5, an interior strip
 has 1,026 vertices and 1,024 triangles. Desktop OpenGL sends 254 such strips plus one
 cap batch: 263,676 submitted vertices for 261,120 triangles, compared with 783,360 vertices for
 independent triangles. Amiga OpenGL splits bands for MiniGL's color and buffer
@@ -1299,13 +1480,16 @@ submission remains available, including Matrox. XGL has separate
 
 ### Shared rendering pipelines
 
-TIGA, GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer IEEE-float decoding,
-fixed-point transforms, projection caches, clipping, and back-face rejection.
-`src/soft3fp.c` provides the corresponding floating-point helpers. Projection validates
-indices against the initialized packet. Whole polygons inside the depth and viewport
-bounds bypass clipping; crossing polygons retain the general path. Backface rejection
-uses the complete rounded polygon, preserving silhouette and collapsed-pole behavior.
-Clearly rejected polygons avoid unnecessary subsequent processing.
+Matrox, TIGA, GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer
+IEEE-float decoding, fixed-point transforms, projection, clipping, and back-face
+rejection. `src/soft3fp.c` provides the corresponding floating-point helpers.
+Matrox uses an orthographic projector and stack packets containing one polygon;
+the other four use perspective projection with bounded packet caches. Indexed
+projection validates indices against the initialized packet. Whole polygons inside
+the depth and viewport bounds bypass clipping; crossing polygons retain the general
+path. Backface rejection uses the complete rounded polygon, preserving silhouette
+and collapsed-pole behavior. Clearly rejected polygons avoid unnecessary subsequent
+processing.
 
 GDI, QuickDraw, and Amiga projection caches are optional and bounded to one packet;
 their absence retains the uncached path. TIGA uses bounded static packet storage.

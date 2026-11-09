@@ -1,5 +1,5 @@
 /*
- * testglobe - 16-bit Windows 3.1 GDI / Microsoft C 7 huge-model driver.
+ * testglobe - 16-bit Windows 3.1 GDI / segmented-memory driver.
  * Copyright (C) 2026 trguhq
  * SPDX-License-Identifier: GPL-3.0-or-later
  */

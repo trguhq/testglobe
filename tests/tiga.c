@@ -19,7 +19,6 @@
 #include "glob_ext.h"
 #include "globe.h"
 #include "soft3d.h"
-#include "tga_cpu.h"
 #include "tga_cmd.h"
 
 static void recorded_error(char *message);
@@ -234,8 +233,8 @@ void _hfree(void *memory)
     free(memory);
 }
 
-int tga_cpu_detect(void) { return selected_cpu; }
-int tga_cpu_has_fpu(void) { return selected_fpu; }
+int drv_cpu_detect(void) { return selected_cpu; }
+int drv_cpu_has_fpu(void) { return selected_fpu; }
 
 static int recorded_fixed_transform(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
@@ -647,10 +646,11 @@ static void initialize_hardware(void)
     memcpy(hardware_palette, original_palette, sizeof(hardware_palette));
     module_missing = is_profile("nomodule");
     bad_module = is_profile("badmodule");
-    if (is_profile("386")) selected_cpu = 386;
+    if (is_profile("386") || is_profile("387")) selected_cpu = 386;
     if (is_profile("486") || is_profile("fpu")) selected_cpu = 486;
-    if (is_profile("8086")) selected_cpu = 86;
-    selected_fpu = is_profile("fpu");
+    if (is_profile("8086") || is_profile("8087")) selected_cpu = 86;
+    selected_fpu = is_profile("fpu") || is_profile("8087") ||
+                   is_profile("287") || is_profile("387");
 }
 
 static void render_frame(void)
@@ -678,6 +678,7 @@ int main(int argc, char **argv)
     application_argv[1] = NULL;
     initialize_hardware();
     drv_ext_init();
+    assert(drv_soft3d_requested && drv_soft3d_active);
     globe_init();
     assert(drv_colormapped && !drv_texture_enabled && !drv_texture_avail);
     assert(strstr(drv_help, "1-2") != NULL && strstr(drv_help, "soft3d") != NULL);
@@ -721,7 +722,7 @@ int main(int argc, char **argv)
         assert(hardware_palette[i].g == earth_cmap[i][1]);
         assert(hardware_palette[i].b == earth_cmap[i][2]);
     }
-    assert(tga_soft3d);
+    assert(drv_soft3d_active);
     assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
     render_frame();
     assert(strstr(osd, "soft3d on") != NULL && module_calls == 0);
@@ -735,12 +736,13 @@ int main(int argc, char **argv)
     software_count = polygon_count;
     memcpy(software_polygons, polygons, polygon_count * sizeof(polygons[0]));
     tga_keyboard('S');
+    assert(!drv_soft3d_requested);
     check_temp_deleted();
     render_frame();
     if (unavailable_payload() || module_missing || bad_module ||
         is_profile("wrongabi") || is_profile("badscreen"))
     {
-        assert(tga_soft3d);
+        assert(drv_soft3d_active);
         if (unavailable_payload()) assert(module_loads == 0 && module_calls == 0);
         else
         {
@@ -750,10 +752,19 @@ int main(int argc, char **argv)
         assert(strstr(osd, "soft3d on") != NULL);
         assert(polygon_count == software_count);
         assert(memcmp(polygons, software_polygons, polygon_count * sizeof(polygons[0])) == 0);
+        /* A failed hardware request leaves software active; another S must
+         * request hardware again, instead of toggling the stale request. */
+        tga_keyboard('S');
+        assert(!drv_soft3d_requested);
+        check_temp_deleted();
+        render_frame();
+        assert(drv_soft3d_active);
+        assert(polygon_count == software_count);
+        assert(memcmp(polygons, software_polygons, polygon_count * sizeof(polygons[0])) == 0);
     }
     else
     {
-        assert(!tga_soft3d && module_calls > 0);
+        assert(!drv_soft3d_active && module_calls > 0);
         assert(strstr(osd, "soft3d off") != NULL);
         if (!selected_fpu)
         {
@@ -761,7 +772,7 @@ int main(int argc, char **argv)
             assert(memcmp(polygons, software_polygons, polygon_count * sizeof(polygons[0])) == 0);
         }
         tga_keyboard('s');
-        assert(tga_soft3d);
+        assert(drv_soft3d_requested && drv_soft3d_active);
         before = module_calls;
         render_frame();
         assert(module_calls == before);
@@ -789,25 +800,25 @@ int main(int argc, char **argv)
     }
     if (is_profile("default"))
     {
-        assert(tga_soft3d && tga_module == 0x0200 && module_loaded);
+        assert(drv_soft3d_active && tga_module == 0x0200 && module_loaded);
         before = module_loads;
         fail_flush = 1;
         drv_release_optional();
-        assert(tga_soft3d && tga_module == 0x0200 && module_loaded);
+        assert(drv_soft3d_active && tga_module == 0x0200 && module_loaded);
         assert(module_flushes == 1U && module_unloads == 0U);
         assert(strstr(drv_get_notice(), "release failed") != NULL);
         render_frame();
         assert(strstr(osd, "soft3d on") != NULL);
         tga_keyboard('s');
-        assert(!tga_soft3d && module_loads == before);
+        assert(!drv_soft3d_active && module_loads == before);
         render_frame();
         drv_release_optional();
-        assert(tga_soft3d && tga_module == -1 && !module_loaded);
+        assert(drv_soft3d_active && tga_module == -1 && !module_loaded);
         assert(module_flushes == 2U && module_unloads == 1U);
         assert(strstr(drv_get_notice(), "module released") != NULL);
         tga_keyboard('s');
         check_temp_deleted();
-        assert(!tga_soft3d && module_loads == before + 1U && module_loaded);
+        assert(!drv_soft3d_active && module_loads == before + 1U && module_loaded);
         render_frame();
         tga_keyboard('s');
         puts("PASS TIGA module release: documented flush result, retained failed-release ownership, host fallback, reuse and reload without export symbols");

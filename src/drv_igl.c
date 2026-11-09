@@ -691,43 +691,51 @@ void drv_render(void)
          * traversal sees flat mode, so the next T still toggles off. */
         drv_texture_active = ready;
         if (!ready) igl_bind_texture(FALSE);
-        if (igl_object >= 0 && (igl_object_revision != globe_revision ||
-                               igl_object_textured != drv_texture_active))
-            igl_invalidate_object();
-        if (igl_object < 0 && !igl_object_blocked)
+        /* Retain the full-mesh object while CPU pre-culling selects new
+         * longitude runs. Reuse it after C is switched off, subject to the
+         * ordinary scene/material revision checks below. */
+        if (drv_cull_enabled)
+            globe_draw_tristrips();
+        else
         {
-            igl_object = genobj();
-            if (igl_object < 0)
+            if (igl_object >= 0 && (igl_object_revision != globe_revision ||
+                                   igl_object_textured != drv_texture_active))
+                igl_invalidate_object();
+            if (igl_object < 0 && !igl_object_blocked)
             {
-                igl_object_blocked = TRUE;
-                drv_notice("Geometry cache unavailable; drawing directly");
-            }
-            else
-            {
-                makeobj(igl_object);
-                globe_draw_tristrips();
-                closeobj();
-                igl_object_revision = globe_revision;
-                igl_object_textured = drv_texture_active;
-                if (drv_frame_failed) igl_invalidate_object();
-                else if (!isobj(igl_object))
+                igl_object = genobj();
+                if (igl_object < 0)
                 {
-                    /* A rejected new object is an allocation/creation failure,
-                     * not an old cache disappearing. Avoid rebuilding it on
-                     * every frame while direct drawing remains usable. */
-                    igl_object = -1;
                     igl_object_blocked = TRUE;
                     drv_notice("Geometry cache unavailable; drawing directly");
                 }
+                else
+                {
+                    makeobj(igl_object);
+                    globe_draw_tristrips();
+                    closeobj();
+                    igl_object_revision = globe_revision;
+                    igl_object_textured = drv_texture_active;
+                    if (drv_frame_failed) igl_invalidate_object();
+                    else if (!isobj(igl_object))
+                    {
+                        /* A rejected new object is an allocation/creation failure,
+                         * not an old cache disappearing. Avoid rebuilding it on
+                         * every frame while direct drawing remains usable. */
+                        igl_object = -1;
+                        igl_object_blocked = TRUE;
+                        drv_notice("Geometry cache unavailable; drawing directly");
+                    }
+                }
             }
-        }
-        if (igl_object >= 0 && isobj(igl_object)) callobj(igl_object);
-        else
-        {
-            /* callobj silently ignores an undefined object. Submit this
-             * frame directly, then rebuild the optional cache next time. */
-            igl_object = -1;
-            globe_draw_tristrips();
+            if (igl_object >= 0 && isobj(igl_object)) callobj(igl_object);
+            else
+            {
+                /* callobj silently ignores an undefined object. Submit this
+                 * frame directly, then rebuild the optional cache next time. */
+                igl_object = -1;
+                globe_draw_tristrips();
+            }
         }
         igl_texture_used = ready && !drv_frame_failed;
     }

@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <float.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #ifdef DRV_EARTH_RESOURCES
@@ -75,6 +76,13 @@ static long drv_fps_history_num;        /* frames in this FPS sample */
 int drv_auto_enabled;                   /* automatically rotate */
 int drv_auto_available;
 int drv_frame_failed;
+#ifdef DRV_CULL
+int drv_cull_enabled;
+#endif
+#ifdef DRV_SOFT3D
+int drv_soft3d_requested;
+int drv_soft3d_active;
+#endif
 static char drv_message[64];
 
 #ifdef GDI
@@ -108,7 +116,11 @@ void TG_HUGE *drv_alloc_items(unsigned long count, unsigned int size)
     return (void *)NewPtr((Size)(count * size));
 #elif defined(SEG86)
     if (!count || !size || count > 0x7fffffffUL / size) return NULL;
+#ifdef __WATCOMC__
+    return halloc((long)count, size);
+#else
     return _halloc((long)count, size);
+#endif
 #else
     if (!count || !size || count > (size_t)-1 / size) return NULL;
     return malloc((size_t)count * size);
@@ -133,7 +145,11 @@ void drv_free_items(void TG_HUGE *memory)
 #elif defined(DRV_QD)
     if (memory != NULL) DisposePtr((Ptr)memory);
 #elif defined(SEG86)
+#ifdef __WATCOMC__
+    if (memory != NULL) hfree(memory);
+#else
     if (memory != NULL) _hfree(memory);
+#endif
 #else
     free(memory);
 #endif
@@ -162,6 +178,32 @@ void drv_append_status(char *buffer, unsigned int capacity, const char *message)
     while (used + 1U < capacity && *message != 0) buffer[used++] = *message++;
     buffer[used] = 0;
 }
+
+#ifdef DRV_SOFT3D
+int drv_soft3d_toggle(void)
+{
+    drv_soft3d_requested = !drv_soft3d_active;
+    drv_reset_timing();
+    return drv_soft3d_requested;
+}
+
+void drv_append_soft3d_status(char *buffer, unsigned int capacity,
+                              const char *backend, int cpu, int has_fpu)
+{
+    if (drv_soft3d_active)
+        drv_append_status(buffer, capacity, ", soft3d on");
+    else
+    {
+        drv_append_status(buffer, capacity, drv_soft3d_requested ?
+                           ", soft3d fail (" : ", soft3d off (");
+        drv_append_status(buffer, capacity, backend == NULL ? "API" : backend);
+        drv_append_status(buffer, capacity, ")");
+    }
+    drv_append_status(buffer, capacity, cpu >= 486 ? ", 486+" :
+                       (cpu >= 386 ? ", 386" : (cpu >= 286 ? ", 286" : ", 8086")));
+    drv_append_status(buffer, capacity, has_fpu ? " + x87" : " integer");
+}
+#endif
 
 void drv_notice(const char *message)
 {
@@ -234,6 +276,10 @@ void drv_format_stats(char *buffer)
     if (drv_fps_enabled)
         sprintf(status + strlen(status), ", %.2f frames per second",
                  (double)drv_fps_average);
+#ifdef DRV_CULL
+    drv_append_status(status, sizeof(status),
+                      drv_cull_enabled ? ", cull on" : ", cull off");
+#endif
 #if DEBUG
     sprintf(status + strlen(status), ", %u B/px, R=%d", drv_bytes_per_pixel,
              drv_rmouse_pressed != FALSE);
@@ -610,6 +656,12 @@ void drv_ext_init(void)
     drv_auto_available = TRUE;
     drv_texture_active = FALSE;
     drv_frame_failed = FALSE;
+#ifdef DRV_CULL
+    drv_cull_enabled = FALSE;
+#endif
+#ifdef DRV_SOFT3D
+    drv_soft3d_requested = drv_soft3d_active = DRV_SOFT3D_DEFAULT;
+#endif
     drv_notice(NULL);
     drv_reset_timing();
     
@@ -741,15 +793,54 @@ void drv_fps_stop(void)
         return;
     }
     drv_fps_history_seconds += (float)seconds;
-    ++drv_fps_history_num;
-    if (drv_fps_history_num >= DRV_FPS_HISTORY)
+    /* Publish while the sample grows: waiting for 60 frames can otherwise
+     * leave a slow renderer at zero or a stale FPS value for many seconds.
+     * Retain zero-tick frames until coarse native clocks actually advance. */
+    if (drv_fps_history_num < LONG_MAX) ++drv_fps_history_num;
+    if (drv_fps_history_seconds > 0)
     {
-        if (drv_fps_history_seconds > 0)
-            drv_fps_average = (float)drv_fps_history_num / drv_fps_history_seconds;
-        drv_fps_history_num = 0;
-        drv_fps_history_seconds = 0;
+        drv_fps_average = (float)drv_fps_history_num / drv_fps_history_seconds;
+        if (drv_fps_history_num >= DRV_FPS_HISTORY ||
+            drv_fps_history_seconds >= 1.0f)
+        {
+            drv_fps_history_num = 0;
+            drv_fps_history_seconds = 0;
+        }
     }
 }
+
+#ifdef DRV_CULL
+int drv_cull_eye(double eye[3])
+{
+    double x, y, cx;
+    if (eye == NULL || !(drv_rot_x >= -FLT_MAX && drv_rot_x <= FLT_MAX) ||
+        !(drv_rot_y >= -FLT_MAX && drv_rot_y <= FLT_MAX)) return FALSE;
+    x = fmod((double)drv_rot_x, 360.0) * (PI / 180.0);
+    y = fmod((double)drv_rot_y, 360.0) * (PI / 180.0);
+    cx = cos(x);
+    /* Invert Rx(x) Ry(y) Rx(-90) Rz(-90) for the finite camera at +Z. */
+    eye[0] = GLOBE_VIEW_DISTANCE * cx * cos(y);
+    eye[1] = -GLOBE_VIEW_DISTANCE * cx * sin(y);
+    eye[2] = GLOBE_VIEW_DISTANCE * sin(x);
+    return TRUE;
+}
+
+int drv_cull_triangle(const Vertex TG_HUGE *a, const Vertex TG_HUGE *b,
+                       const Vertex TG_HUGE *c, const double eye[3])
+{
+    double ax, ay, az, bx, by, bz;
+    if (a == NULL || b == NULL || c == NULL || eye == NULL) return FALSE;
+    ax = (double)b->x - a->x;
+    ay = (double)b->y - a->y;
+    az = (double)b->z - a->z;
+    bx = (double)c->x - a->x;
+    by = (double)c->y - a->y;
+    bz = (double)c->z - a->z;
+    return (ay * bz - az * by) * (eye[0] - a->x) +
+           (az * bx - ax * bz) * (eye[1] - a->y) +
+           (ax * by - ay * bx) * (eye[2] - a->z) > 0.0;
+}
+#endif
 
 /* Apply only application actions; event loops retain native exit, redraw,
  * timer and geometry-cache work after a recognized key. */
@@ -757,6 +848,12 @@ int drv_handle_key(unsigned char key)
 {
     switch (key)
     {
+#ifdef DRV_CULL
+        case 'c': case 'C':
+            drv_cull_enabled = !drv_cull_enabled;
+            drv_reset_timing();
+            return TRUE;
+#endif
 #ifdef EARTH_32
         case '1':
 #endif

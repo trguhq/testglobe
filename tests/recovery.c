@@ -20,6 +20,24 @@ extern Color_Index TG_HUGE *globe_colors;
 int drv_frame_failed;
 int drv_texture_enabled;
 int drv_texture_active;
+#ifdef DRV_CULL
+/* This fixture isolates scene recovery with CPU culling disabled. The real
+ * predicates and filtered traversals are exercised by cull_bands.c. */
+int drv_cull_enabled;
+int drv_cull_eye(double eye[3])
+{
+    (void)eye;
+    assert(!"Recovery fixture must not enter culling");
+    return FALSE;
+}
+int drv_cull_triangle(const Vertex TG_HUGE *a, const Vertex TG_HUGE *b,
+                       const Vertex TG_HUGE *c, const double eye[3])
+{
+    (void)a; (void)b; (void)c; (void)eye;
+    assert(!"Recovery fixture must not enter culling");
+    return FALSE;
+}
+#endif
 static void *blocks[16];
 static unsigned long lengths[16], used, peak, budget = 0xffffffffUL;
 static unsigned long allocations, fail_at, releases, resets, release_budget;

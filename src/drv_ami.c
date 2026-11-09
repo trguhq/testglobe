@@ -1,11 +1,12 @@
 /*
- * testglobe - resizable Amiga Workbench window, native chipset and optional RTG.
+ * testglobe - Amiga Workbench window and synchronized fullscreen, chipset/RTG.
  * Copyright (C) 2026 trguhq
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Compile this object for the original 68000 with software IEEE arithmetic.
  * Only the separately compiled transform/FPU objects may use newer opcodes.
- * The window borrows Workbench's colors; it never alters a shared palette.
+ * The Workbench window borrows desktop colors. Fullscreen uses an owned
+ * screen/palette and synchronized display buffers, keeping AmigaOS running.
  */
 #include "testglob.h"
 #ifdef DRV_AMI
@@ -18,6 +19,8 @@
 #include <graphics/rastport.h>
 #include <graphics/view.h>
 #include <graphics/displayinfo.h>
+#include <graphics/modeid.h>
+#include <graphics/videocontrol.h>
 #include <intuition/intuition.h>
 #include <intuition/intuitionbase.h>
 #include <intuition/screens.h>
@@ -90,6 +93,15 @@ struct GfxBase *GfxBase;
 struct IntuitionBase *IntuitionBase;
 
 static struct Window *ami_window;
+/* Workbench stays open behind the private screen, preserving its exact
+ * placement and providing a usable destination if fullscreen setup fails. */
+static struct Window *ami_workbench_window, *ami_fs_window;
+static struct Screen *ami_fs_screen;
+static struct ScreenBuffer *ami_fs_buffers[2];
+static struct MsgPort *ami_fs_ports[2];
+static int ami_fullscreen, ami_fs_safe, ami_fs_displayed;
+static int ami_fs_pending, ami_fs_retry, ami_fs_exit_requested;
+static unsigned int ami_fs_back, ami_fs_failures;
 static struct BitMap ami_bitmap;
 static struct BitMap *ami_rtg_bitmap;
 static int ami_rtg; /* 0: native, 1: CyberGraphX, 2: Picasso96 */
@@ -133,6 +145,69 @@ static union {
     Soft3d_float_point floating[SOFT3D_MAX_VERTICES];
 } ami_points;
 
+/* Only one swap may be outstanding. A safe message releases the bitmap
+ * which was on screen before that swap; it does not name its new bitmap. */
+static void ami_fs_poll(void)
+{
+    if (ami_fs_ports[0] != NULL)
+        while (GetMsg(ami_fs_ports[0]) != NULL) ami_fs_safe = TRUE;
+    if (ami_fs_ports[1] != NULL)
+        while (GetMsg(ami_fs_ports[1]) != NULL) ami_fs_displayed = TRUE;
+}
+
+static ULONG ami_fs_signals(void)
+{
+    ULONG signals;
+    signals = 0;
+    if (ami_fs_ports[0] != NULL) signals |= 1UL << ami_fs_ports[0]->mp_SigBit;
+    if (ami_fs_ports[1] != NULL) signals |= 1UL << ami_fs_ports[1]->mp_SigBit;
+    return signals;
+}
+
+static void ami_drain_window(struct Window *window)
+{
+    struct Message *message;
+    if (window == NULL) return;
+    while ((message = GetMsg(window->UserPort)) != NULL) ReplyMsg(message);
+}
+
+/* Normal F transitions are deferred until both notifications have arrived.
+ * Program termination also waits for pending display DMA before freeing its
+ * bitmaps. V39 FreeScreenBuffer does not itself wait for the blitter. */
+static void ami_fs_dispose(void)
+{
+    unsigned int i;
+    if (ami_fs_screen == NULL) return;
+    ami_fs_poll();
+    if (!ami_fs_safe || !ami_fs_displayed) ScreenToFront(ami_fs_screen);
+    while (!ami_fs_safe || !ami_fs_displayed)
+    {
+        Wait(ami_fs_signals());
+        ami_fs_poll();
+    }
+    if (ami_fs_window != NULL)
+    {
+        ami_drain_window(ami_fs_window);
+        CloseWindow(ami_fs_window);
+        ami_fs_window = NULL;
+    }
+    WaitBlit();
+    for (i = 0; i < 2; ++i)
+    {
+        if (ami_fs_buffers[i] != NULL)
+            FreeScreenBuffer(ami_fs_screen, ami_fs_buffers[i]);
+        ami_fs_buffers[i] = NULL;
+    }
+    for (i = 0; i < 2; ++i)
+    {
+        if (ami_fs_ports[i] != NULL) DeleteMsgPort(ami_fs_ports[i]);
+        ami_fs_ports[i] = NULL;
+    }
+    CloseScreen(ami_fs_screen);
+    ami_fs_screen = NULL;
+    ami_fs_pending = ami_fs_exit_requested = FALSE;
+}
+
 static void ami_drop_back_buffer(void)
 {
     unsigned int plane;
@@ -174,20 +249,27 @@ void drv_release_optional(void)
     ami_project_cache = NULL;
     drv_quadstream_reset(&ami_stream);
     ami_dirty = TRUE;
-    drv_notice("Amiga direct drawing; optional caches released");
+    drv_notice(ami_fullscreen ? "Amiga fullscreen buffers retained; caches released" :
+                               "Amiga direct drawing; optional caches released");
 }
 
 static void ami_cleanup(void)
 {
-    struct Message *message;
     ami_running = ami_ready = ami_active = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     ami_drop_rasters();
     free(ami_project_cache);
     ami_project_cache = NULL;
+    if (ami_fullscreen)
+    {
+        ami_window = ami_workbench_window;
+        ami_workbench_window = NULL;
+        ami_fullscreen = FALSE;
+    }
+    ami_fs_dispose();
     if (ami_window != NULL)
     {
-        while ((message = GetMsg(ami_window->UserPort)) != NULL) ReplyMsg(message);
+        ami_drain_window(ami_window);
         CloseWindow(ami_window);
         ami_window = NULL;
     }
@@ -523,6 +605,9 @@ static int ami_resize(void)
     int backend;
 #endif
     ULONG bytes;
+    /* Fullscreen dimensions and required presentation bitmaps are fixed for
+     * this screen's lifetime. Never replace them with a window copy buffer. */
+    if (ami_fullscreen) return ami_ready;
     width = ami_window->GZZWidth;
     height = ami_window->GZZHeight;
     if (!ami_screen_format(ami_window->WScreen, ami_window->RPort->BitMap) ||
@@ -676,6 +761,304 @@ unsafe:
 failed:
     if (locked != NULL) UnlockPubScreen(NULL, locked);
     return FALSE;
+}
+
+static void ami_fs_store_color(unsigned int pen, const unsigned char *rgb,
+                               unsigned char *actual)
+{
+    ULONG channels[3];
+    unsigned int i;
+    SetRGB32(&ami_fs_screen->ViewPort, pen,
+             (ULONG)rgb[0] * 0x01010101UL,
+             (ULONG)rgb[1] * 0x01010101UL,
+             (ULONG)rgb[2] * 0x01010101UL);
+    GetRGB32(ami_fs_screen->ViewPort.ColorMap, pen, 1UL, channels);
+    for (i = 0; i < 3; ++i) actual[i] = (unsigned char)(channels[i] >> 24);
+}
+
+/* A private palette is independent of Workbench. Preserve the screen's
+ * initialized hardware-pointer colors and provide black/white for the OSD.
+ * At reduced depths, farthest-color selection covers the Earth colors rather
+ * than depending on their arbitrary order in the source palette. Read back
+ * each installed color so OCS/ECS RGB12 quantization affects that selection. */
+static void ami_fs_palette(unsigned int depth)
+{
+    unsigned char colors[256][3], used[256], rgb[3];
+    unsigned long distance[256], d, maximum;
+    ULONG channels[3], base;
+    struct TagItem tags[2];
+    unsigned int count, pen, color, channel, best, slot;
+    long delta;
+    count = 1U << depth;
+    memset(used, 0, sizeof(used));
+    base = 16;
+    if (depth == 8U && !ami_rtg)
+    {
+        tags[0].ti_Tag = VTAG_SPEVEN_BASE_GET;
+        tags[0].ti_Data = 16;
+        tags[1].ti_Tag = TAG_DONE;
+        tags[1].ti_Data = 0;
+        if (VideoControl(ami_fs_screen->ViewPort.ColorMap, tags) == 0 &&
+            tags[0].ti_Data <= 252UL) base = tags[0].ti_Data;
+    }
+    for (pen = 0; pen < count; ++pen)
+        if (pen > base && pen <= base + 3UL)
+        {
+            used[pen] = 2;
+            GetRGB32(ami_fs_screen->ViewPort.ColorMap, pen, 1UL, channels);
+            for (channel = 0; channel < 3; ++channel)
+                colors[pen][channel] = (unsigned char)(channels[channel] >> 24);
+        }
+    slot = 0;
+    for (color = 0; color < 2; ++color)
+    {
+        while (slot < count && used[slot]) ++slot;
+        if (slot == count) break;
+        rgb[0] = rgb[1] = rgb[2] = color == 0 ? 0 : 255;
+        ami_fs_store_color(slot, rgb, colors[slot]);
+        used[slot++] = 1;
+    }
+    if (depth == 8U)
+    {
+        for (pen = 0; pen < count; ++pen)
+            if (!used[pen]) ami_fs_store_color(pen, earth_cmap[pen], colors[pen]);
+        return;
+    }
+    for (color = 0; color < 256; ++color) distance[color] = 0xffffffffUL;
+    for (pen = 0; pen < count; ++pen)
+        if (used[pen])
+            for (color = 0; color < 256; ++color)
+            {
+                d = 0;
+                for (channel = 0; channel < 3; ++channel)
+                {
+                    delta = (long)earth_cmap[color][channel] - colors[pen][channel];
+                    d += (unsigned long)(delta * delta);
+                }
+                if (d < distance[color]) distance[color] = d;
+            }
+    for (pen = 0; pen < count; ++pen)
+    {
+        if (used[pen]) continue;
+        maximum = 0; best = 0;
+        for (color = 0; color < 256; ++color)
+            if (distance[color] > maximum)
+            {
+                maximum = distance[color]; best = color;
+            }
+        ami_fs_store_color(pen, earth_cmap[best], colors[pen]);
+        for (color = 0; color < 256; ++color)
+        {
+            d = 0;
+            for (channel = 0; channel < 3; ++channel)
+            {
+                delta = (long)earth_cmap[color][channel] - colors[pen][channel];
+                d += (unsigned long)(delta * delta);
+            }
+            if (d < distance[color]) distance[color] = d;
+        }
+    }
+}
+
+static int ami_fs_open(unsigned int width, unsigned int height,
+                       unsigned int requested_depth, ULONG mode)
+{
+    struct TagItem tags[13];
+    struct NewWindow settings;
+    struct RastPort port;
+    unsigned int i, plane, depth, storage;
+    int backend;
+    tags[0].ti_Tag = SA_DisplayID; tags[0].ti_Data = mode;
+    tags[1].ti_Tag = SA_Width; tags[1].ti_Data = width;
+    tags[2].ti_Tag = SA_Height; tags[2].ti_Data = height;
+    tags[3].ti_Tag = SA_Depth; tags[3].ti_Data = requested_depth;
+    tags[4].ti_Tag = SA_Type; tags[4].ti_Data = CUSTOMSCREEN;
+    tags[5].ti_Tag = SA_Quiet; tags[5].ti_Data = TRUE;
+    tags[6].ti_Tag = SA_ShowTitle; tags[6].ti_Data = FALSE;
+    tags[7].ti_Tag = SA_Behind; tags[7].ti_Data = TRUE;
+    tags[8].ti_Tag = SA_Exclusive; tags[8].ti_Data = TRUE;
+    tags[9].ti_Tag = SA_Draggable; tags[9].ti_Data = FALSE;
+    tags[10].ti_Tag = SA_Title; tags[10].ti_Data = (ULONG)"testglobe";
+    tags[11].ti_Tag = TAG_DONE; tags[11].ti_Data = 0;
+    ami_fs_safe = ami_fs_displayed = TRUE;
+    ami_fs_screen = OpenScreenTagList(NULL, tags);
+    if (ami_fs_screen == NULL) return FALSE;
+    if (ami_fs_screen->Width != (WORD)width || ami_fs_screen->Height != (WORD)height ||
+        (!ami_rtg && (ami_fs_screen->ViewPort.Modes & (HAM | EXTRA_HALFBRITE | DUALPF)) != 0))
+        goto failed;
+    if (requested_depth <= 8U &&
+        (ami_fs_screen->ViewPort.ColorMap == NULL ||
+         ami_fs_screen->ViewPort.ColorMap->Count < (1U << requested_depth))) goto failed;
+    for (i = 0; i < 2; ++i)
+    {
+        ami_fs_ports[i] = CreateMsgPort();
+        if (ami_fs_ports[i] == NULL) goto failed;
+        ami_fs_buffers[i] = AllocScreenBuffer(ami_fs_screen, NULL,
+                                              i == 0 ? SB_SCREEN_BITMAP : 0UL);
+        if (ami_fs_buffers[i] == NULL || ami_fs_buffers[i]->sb_DBufInfo == NULL ||
+            !ami_bitmap_format(ami_fs_buffers[i]->sb_BitMap, &backend, &depth, &storage) ||
+            backend != ami_rtg || depth != requested_depth ||
+            (ami_rtg && storage != ami_storage_depth)) goto failed;
+        if (!backend &&
+            (ami_fs_buffers[i]->sb_BitMap->Rows < height ||
+             ami_fs_buffers[i]->sb_BitMap->BytesPerRow < ((width + 15U) / 16U) * 2U ||
+             (i != 0 && (ami_fs_buffers[i]->sb_BitMap->BytesPerRow !=
+                          ami_fs_buffers[0]->sb_BitMap->BytesPerRow ||
+                         ami_fs_buffers[i]->sb_BitMap->Rows !=
+                          ami_fs_buffers[0]->sb_BitMap->Rows)))) goto failed;
+        if (!backend)
+            for (plane = 0; plane < depth; ++plane)
+                if (ami_fs_buffers[i]->sb_BitMap->Planes[plane] == NULL ||
+                    ((ULONG)ami_fs_buffers[i]->sb_BitMap->Planes[plane] & 1UL)) goto failed;
+        ami_fs_buffers[i]->sb_DBufInfo->dbi_SafeMessage.mn_ReplyPort = ami_fs_ports[0];
+        /* The second reply port is created on the next iteration. Assign
+         * both message destinations below before the first swap. */
+    }
+    for (i = 0; i < 2; ++i)
+    {
+        ami_fs_buffers[i]->sb_DBufInfo->dbi_DispMessage.mn_ReplyPort = ami_fs_ports[1];
+        InitRastPort(&port);
+        port.BitMap = ami_fs_buffers[i]->sb_BitMap;
+        SetAPen(&port, 0);
+        RectFill(&port, 0, 0, width - 1U, height - 1U);
+    }
+    WaitBlit();
+    memset(&settings, 0, sizeof(settings));
+    settings.Width = (WORD)width; settings.Height = (WORD)height;
+    settings.IDCMPFlags = CLOSEWINDOW | REFRESHWINDOW | MOUSEBUTTONS | MOUSEMOVE |
+                         VANILLAKEY | ACTIVEWINDOW | INACTIVEWINDOW | INTUITICKS;
+    settings.Flags = BORDERLESS | BACKDROP | GIMMEZEROZERO | SIMPLE_REFRESH |
+                     NOCAREREFRESH | REPORTMOUSE | RMBTRAP;
+    settings.Type = CUSTOMSCREEN;
+    settings.Screen = ami_fs_screen;
+    ami_fs_window = OpenWindow(&settings);
+    if (ami_fs_window == NULL) goto failed;
+    if (requested_depth <= 8U)
+    {
+        ami_scratch = AllocRaster(width, height);
+        if (ami_scratch == NULL) goto failed;
+        InitTmpRas(&ami_tmp_ras, ami_scratch,
+                    ((width + 15UL) / 16UL) * 2UL * height);
+        ami_fs_palette(requested_depth);
+    }
+    ami_raster_width = width; ami_raster_height = height;
+    ami_fs_back = 1;
+    ami_fs_pending = ami_fs_exit_requested = FALSE;
+    ami_fs_retry = TRUE;
+    ami_fs_failures = 0;
+    return TRUE;
+failed:
+    ami_fs_dispose();
+    return FALSE;
+}
+
+static void ami_enter_fullscreen(void)
+{
+    unsigned int width, height, depth;
+    ULONG mode;
+    int opened;
+    if (ami_fullscreen || ami_window == NULL) return;
+    if (GfxBase->LibNode.lib_Version < 39 || IntuitionBase->LibNode.lib_Version < 39)
+    {
+        drv_notice("Fullscreen needs AmigaOS 3.0 or later");
+        ami_dirty = TRUE;
+        return;
+    }
+    if (ami_rtg)
+    {
+        mode = GetVPModeID(&ami_window->WScreen->ViewPort);
+        width = (unsigned int)ami_window->WScreen->Width;
+        height = (unsigned int)ami_window->WScreen->Height;
+        depth = ami_depth;
+    }
+    else
+    {
+        mode = (GfxBase->DisplayFlags & PAL ? PAL_MONITOR_ID : NTSC_MONITOR_ID) | LORES_KEY;
+        width = 320U;
+        height = GfxBase->DisplayFlags & PAL ? 256U : 200U;
+        depth = GfxBase->ChipRevBits0 & GFXF_AA_ALICE ? 8U : 5U;
+    }
+    if (mode == INVALID_ID || width > 32767U || height > 32767U ||
+        width < AMI_MIN_WIDTH || height < AMI_MIN_HEIGHT)
+    {
+        drv_notice("No compatible fullscreen display mode");
+        ami_dirty = TRUE;
+        return;
+    }
+    /* Release only optional Workbench storage before reserving the two
+     * required display bitmaps. Its window and last visible frame survive. */
+    ami_drop_rasters();
+    opened = ami_fs_open(width, height, depth, mode);
+    if (!opened && !ami_rtg && depth == 8U)
+        opened = ami_fs_open(width, height, 5U, mode);
+    if (!opened)
+    {
+        (void)ami_resize();
+        drv_notice("Fullscreen buffers unavailable; keeping Workbench window");
+        return;
+    }
+    ami_workbench_window = ami_window;
+    ami_window = ami_fs_window;
+    ami_fullscreen = TRUE;
+    (void)ami_screen_format(ami_fs_screen, ami_fs_buffers[0]->sb_BitMap);
+    drv_win_width = width; drv_win_height = height;
+    InitRastPort(&ami_back_port);
+    SetFont(&ami_back_port, ami_window->RPort->Font);
+    ami_palette_valid = FALSE;
+    ami_map_palette();
+    ami_pixel_aspect();
+    drv_quadstream_reset(&ami_stream);
+    soft3d_project_cache_reset(ami_project_cache);
+    drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
+    ami_ready = ami_active = ami_dirty = TRUE;
+    ami_paused = FALSE;
+    ami_auto_time = ami_time_now();
+    drv_reset_timing();
+    /* Both bitmaps have known complete contents before this screen becomes
+     * visible. The first globe frame follows through the normal swap path. */
+    ScreenToFront(ami_fs_screen);
+    ActivateWindow(ami_window);
+}
+
+static void ami_leave_fullscreen(void)
+{
+    if (!ami_fullscreen) return;
+    ami_drop_rasters();
+    ami_fs_dispose();
+    ami_window = ami_workbench_window;
+    ami_workbench_window = NULL;
+    ami_fullscreen = FALSE;
+    ami_drain_window(ami_window);
+    ami_palette_valid = FALSE;
+    drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
+    (void)ami_resize();
+    ami_active = TRUE;
+    ScreenToFront(ami_window->WScreen);
+    ActivateWindow(ami_window);
+}
+
+/* A failed Intuition swap is retried on ticks/input, not in a busy loop.
+ * Do not overwrite a completed pending frame or the displayed bitmap. */
+static void ami_fs_present(void)
+{
+    if (!ami_fullscreen || !ami_fs_pending || !ami_fs_displayed ||
+        !ami_fs_retry || !ami_active || ami_fs_exit_requested) return;
+    ami_fs_retry = FALSE;
+    WaitBlit();
+    if (!ChangeScreenBuffer(ami_fs_screen, ami_fs_buffers[ami_fs_back]))
+    {
+        if (++ami_fs_failures >= 30U)
+        {
+            ami_fs_exit_requested = TRUE;
+            drv_notice("Fullscreen swap unavailable; returning to Workbench");
+        }
+        return;
+    }
+    ami_fs_failures = 0;
+    ami_fs_pending = ami_fs_safe = ami_fs_displayed = FALSE;
+    ami_fs_back ^= 1U;
+    if (!ami_paused) drv_fps_stop();
+    else drv_reset_timing();
 }
 
 static void ami_set_color(unsigned char color)
@@ -919,11 +1302,13 @@ void drv_draw_osd(void)
         sprintf(detail, "%s RTG, %u-bit, %d, %s, %s",
                 ami_rtg == 1 ? "CyberGraphX" : "Picasso96", ami_storage_depth, ami_cpu,
                 ami_has_fpu ? ami_fpu_name : "fixed-point",
-                ami_rtg_bitmap != NULL ? "buffered" : "direct");
+                ami_fullscreen ? "fullscreen, double buffered" :
+                (ami_rtg_bitmap != NULL ? "buffered" : "direct"));
     else
         sprintf(detail, "%s, %d, %s, %u colors, %s", ami_chipset, ami_cpu,
                 ami_has_fpu ? ami_fpu_name : "fixed-point", ami_color_count,
-                ami_back_planes != 0 ? "buffered" : "direct");
+                ami_fullscreen ? "fullscreen, double buffered" :
+                (ami_back_planes != 0 ? "buffered" : "direct"));
     (void)ami_text_lines(detail, baseline, TRUE);
     help_height = ami_text_lines(drv_help, 0, FALSE);
     baseline = (int)drv_win_height - help_height + ami_draw_port->TxBaseline - 2;
@@ -938,7 +1323,8 @@ static void ami_render_pass(void)
         drv_notice("Not enough Chip RAM; resize or press a key to retry");
     drv_fps_start();
     ami_rendering = TRUE;
-    ami_draw_port = ami_back_planes != 0 || ami_rtg_bitmap != NULL ?
+    if (ami_fullscreen) ami_back_port.BitMap = ami_fs_buffers[ami_fs_back]->sb_BitMap;
+    ami_draw_port = ami_fullscreen || ami_back_planes != 0 || ami_rtg_bitmap != NULL ?
                     &ami_back_port : ami_window->RPort;
     ami_draw_port->AreaInfo = &ami_area_info;
     ami_draw_port->TmpRas = ami_scratch != NULL ? &ami_tmp_ras : NULL;
@@ -967,12 +1353,17 @@ static void ami_render_pass(void)
     if (!drv_frame_failed)
     {
         if (drv_osd_enabled || ami_paused || !globe_ready()) drv_draw_osd();
-        if (ami_back_planes != 0 || ami_rtg_bitmap != NULL)
+        if (!ami_fullscreen && (ami_back_planes != 0 || ami_rtg_bitmap != NULL))
             BltBitMapRastPort(ami_rtg_bitmap != NULL ? ami_rtg_bitmap : &ami_bitmap, 0, 0, ami_window->RPort, 0, 0,
                               drv_win_width, drv_win_height, 0xc0);
         WaitBlit();
         ami_dirty = FALSE;
-        if (!ami_paused) drv_fps_stop();
+        if (ami_fullscreen)
+        {
+            ami_fs_pending = ami_fs_retry = TRUE;
+            ami_fs_present();
+        }
+        else if (!ami_paused) drv_fps_stop();
         else drv_reset_timing();
     }
     else drv_reset_timing();
@@ -984,6 +1375,20 @@ void drv_render(void)
 {
     int attempt;
     if (ami_window == NULL || ami_rendering) return;
+    if (ami_fullscreen)
+    {
+        ami_fs_poll();
+        if (ami_fs_exit_requested)
+        {
+            if (ami_fs_safe && ami_fs_displayed) ami_leave_fullscreen();
+            else return;
+        }
+        else
+        {
+            ami_fs_present();
+            if (!ami_fs_safe || ami_fs_pending) return;
+        }
+    }
     if (!ami_check_raster_bounds(ami_window->GZZWidth, ami_window->GZZHeight)) return;
     if (!ami_ready) return;
     for (attempt = 0; attempt < 2; ++attempt)
@@ -996,6 +1401,14 @@ void drv_render(void)
     }
     ami_paused = TRUE;
     drv_auto_enabled = FALSE;
+    if (ami_fullscreen)
+    {
+        /* Keep the last complete image. The partially drawn hidden bitmap
+         * is discarded when the safe transition back to Workbench runs. */
+        ami_fs_exit_requested = TRUE;
+        drv_notice("Amiga fullscreen draw failed; returning to Workbench");
+        return;
+    }
     drv_notice("Amiga drawing paused; press a control or resize to retry");
     ami_render_pass();
 }
@@ -1009,6 +1422,19 @@ void drv_close(void)
 static void ami_keyboard(unsigned char key)
 {
     if (key == 27) { drv_close(); return; }
+    if (key == 'f' || key == 'F')
+    {
+        if (ami_fullscreen)
+        {
+            ami_fs_exit_requested = TRUE;
+            ami_fs_poll();
+            if (ami_fs_safe && ami_fs_displayed) ami_leave_fullscreen();
+            else ScreenToFront(ami_fs_screen);
+        }
+        else ami_enter_fullscreen();
+        return;
+    }
+    if (key == 'p' || key == 'P') key = 'f';
     if (key == 'd' || key == 'D')
     {
         ami_dither_enabled = !ami_dither_enabled;
@@ -1023,6 +1449,7 @@ static void ami_keyboard(unsigned char key)
 
 static void ami_event(ULONG kind, UWORD code, WORD mouse_x, WORD mouse_y)
 {
+    if (ami_fullscreen) ami_fs_retry = TRUE;
     switch (kind)
     {
         case CLOSEWINDOW: drv_close(); break;
@@ -1082,12 +1509,39 @@ void drv_loop(void)
     ULONG kind;
     UWORD code;
     WORD x, y;
-    unsigned int count;
+    unsigned int count, dormant;
+    ULONG signals;
     double now;
     if (ami_window == NULL || !ami_ready) return;
     ami_auto_time = ami_time_now();
     while (ami_running)
     {
+        dormant = 0;
+        /* A retained Workbench window can receive refresh/focus messages
+         * while its private screen is in front or the user changes screens.
+         * Drain them so Intuition never waits on an abandoned event port. */
+        if (ami_workbench_window != NULL)
+            for (dormant = 0; dormant < 64U; ++dormant)
+            {
+                message = (struct IntuiMessage *)GetMsg(ami_workbench_window->UserPort);
+                if (message == NULL) break;
+                kind = message->Class;
+                code = message->Code;
+                ReplyMsg((struct Message *)message);
+                if (kind == CLOSEWINDOW) { drv_close(); break; }
+                else if (kind == VANILLAKEY && (code == 'f' || code == 'F' || code == 27))
+                {
+                    /* The user may switch screens through AmigaOS. Let the
+                     * retained window return from fullscreen or quit too. */
+                    ami_keyboard((unsigned char)code);
+                    break; /* F may have released ami_workbench_window. */
+                }
+                else if (kind == REFRESHWINDOW)
+                {
+                    BeginRefresh(ami_workbench_window);
+                    EndRefresh(ami_workbench_window, TRUE);
+                }
+            }
         /* Reply before actions that can allocate, resize, or close the window.
          * A bounded drain lets animation progress during a long mouse drag. */
         for (count = 0; count < 64U && ami_running; ++count)
@@ -1102,6 +1556,13 @@ void drv_loop(void)
             ami_event(kind, code, x, y);
         }
         if (!ami_running) break;
+        if (ami_fullscreen)
+        {
+            ami_fs_poll();
+            if (ami_fs_exit_requested && ami_fs_safe && ami_fs_displayed)
+                ami_leave_fullscreen();
+            else ami_fs_present();
+        }
         now = ami_time_now();
         if (ami_ready && ami_active && drv_auto_enabled && globe_ready() && !ami_paused)
         {
@@ -1110,8 +1571,15 @@ void drv_loop(void)
         }
         ami_auto_time = now;
         if (ami_dirty) drv_render();
-        if (!(ami_ready && ami_active && drv_auto_enabled && globe_ready() && !ami_paused) && count < 64U)
-            Wait(1UL << ami_window->UserPort->mp_SigBit);
+        if (count < 64U && dormant < 64U &&
+            (!(ami_ready && ami_active && drv_auto_enabled && globe_ready() && !ami_paused) ||
+             (ami_fullscreen && (!ami_fs_safe || ami_fs_pending || ami_fs_exit_requested))))
+        {
+            signals = (1UL << ami_window->UserPort->mp_SigBit) | ami_fs_signals();
+            if (ami_workbench_window != NULL)
+                signals |= 1UL << ami_workbench_window->UserPort->mp_SigBit;
+            Wait(signals);
+        }
     }
     ami_cleanup();
 }

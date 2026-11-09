@@ -437,6 +437,71 @@ static unsigned char *earth_data(void)
     }
 }
 
+static void check_culled_strip(Xgl_facet_list *facets, Xgl_pt_list *points)
+{
+    double p[3][3], uv[2], edge[2][3], normal[3], center[3], eye[3];
+    double x, y, u, v, difference;
+    const float *packed;
+    unsigned int i, j, k, slot, latitude, longitude, color;
+    assert(points->num_pts >= 3U && points->num_pts <= 1026U);
+    assert(facets->facet_type == XGL_FACET_COLOR);
+    assert(facets->num_facets == points->num_pts - 2U);
+    assert(points->pt_type == (drv_texture_active ? XGL_PT_DATA_F3D : XGL_PT_F3D));
+    if(drv_texture_active)assert(points->num_data_values == 2U);
+    x = (double)drv_rot_x * PI / 180.0;
+    y = (double)drv_rot_y * PI / 180.0;
+    eye[0] = 3000.0 * cos(x) * cos(y);
+    eye[1] = -3000.0 * cos(x) * sin(y);
+    eye[2] = 3000.0 * sin(x);
+    for(i=0;i<facets->num_facets;++i){
+        for(j=0;j<3U;++j){
+            slot=i+(j<2U?(j^(i&1U)):2U);
+            if(drv_texture_active){
+                packed=(const float *)points->pts.data_f3d+5UL*slot;
+                for(k=0;k<3U;++k)p[j][k]=packed[k];
+                uv[0]=packed[3];uv[1]=packed[4];
+                assert(uv[0]>=0.0&&uv[0]<=1.0&&uv[1]>=0.0&&uv[1]<=1.0);
+                x=sqrt(p[j][0]*p[j][0]+p[j][1]*p[j][1]);
+                v=atan2(x,p[j][2])/PI;
+                assert(fabs(v-uv[1])<1e-5);
+                if(x>0.001){
+                    u=atan2(p[j][1],p[j][0])/(2.0*PI);if(u<0.0)u+=1.0;
+                    difference=fabs(u-uv[0]);if(difference>0.5)difference=1.0-difference;
+                    assert(difference<1e-5);
+                }
+            }else{
+                p[j][0]=points->pts.f3d[slot].x;
+                p[j][1]=points->pts.f3d[slot].y;
+                p[j][2]=points->pts.f3d[slot].z;
+            }
+        }
+        for(k=0;k<3U;++k){
+            edge[0][k]=p[1][k]-p[0][k];edge[1][k]=p[2][k]-p[0][k];
+            center[k]=(p[0][k]+p[1][k]+p[2][k])/3.0;
+        }
+        normal[0]=edge[0][1]*edge[1][2]-edge[0][2]*edge[1][1];
+        normal[1]=edge[0][2]*edge[1][0]-edge[0][0]*edge[1][2];
+        normal[2]=edge[0][0]*edge[1][1]-edge[0][1]*edge[1][0];
+        assert(normal[0]*center[0]+normal[1]*center[1]+normal[2]*center[2]>0.0);
+        assert(normal[0]*(eye[0]-p[0][0])+normal[1]*(eye[1]-p[0][1])+normal[2]*(eye[2]-p[0][2])>0.0);
+        if(drv_texture_active){
+            assert(facets->facets.color_facets[i].color.rgb.r==1.0f&&
+                   facets->facets.color_facets[i].color.rgb.g==1.0f&&
+                   facets->facets.color_facets[i].color.rgb.b==1.0f);
+        }else{
+            u=atan2(center[1],center[0]);if(u<0.0)u+=2.0*PI;
+            v=atan2(sqrt(center[0]*center[0]+center[1]*center[1]),center[2]);
+            longitude=(unsigned int)(u*globe_longitude/(2.0*PI));
+            latitude=(unsigned int)(v*globe_latitude/PI);
+            assert(longitude<(unsigned int)globe_longitude&&latitude<(unsigned int)globe_latitude);
+            color=earth_data()[(unsigned long)latitude*globe_longitude+longitude];
+            assert(fabs(facets->facets.color_facets[i].color.rgb.r-(float)earth_cmap[color][0]/255.0f)<1e-6);
+            assert(fabs(facets->facets.color_facets[i].color.rgb.g-(float)earth_cmap[color][1]/255.0f)<1e-6);
+            assert(fabs(facets->facets.color_facets[i].color.rgb.b-(float)earth_cmap[color][2]/255.0f)<1e-6);
+        }
+    }
+}
+
 void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *points)
 {
     unsigned int i;
@@ -461,6 +526,7 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     assert(context->value[XGL_CTX_CLIP_PLANES] == (XGL_CLIP_XMIN | XGL_CLIP_XMAX |
            XGL_CLIP_YMIN | XGL_CLIP_YMAX | XGL_CLIP_ZMIN | XGL_CLIP_ZMAX));
     assert(frame_facets < globe_tris_num);
+    if(drv_cull_enabled){check_culled_strip(facets,points);goto submitted;}
     polar = FALSE;
     cell = first = 0;
     interior = (globe_latitude - 2UL) * 2UL * globe_longitude;
@@ -523,6 +589,7 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
             assert(fabs(facets->facets.color_facets[i].color.rgb.b - (float)earth_cmap[value][2] / 255.0f) < 0.000001);
         }
     }
+submitted:
     ++frame_bands;
     frame_facets += facets->num_facets;
     if (points->pt_type == XGL_PT_DATA_F3D) frame_texture_facets += facets->num_facets;
@@ -562,6 +629,7 @@ static void check_osd(void)
                (drv_fps_enabled != 0));
         assert(strstr(osd_text, "quads") == NULL);
         assert(strstr(osd_text, "visible") == NULL);
+        assert(strstr(osd_text, drv_cull_enabled ? ", cull on" : ", cull off") != NULL);
         assert(strstr(osd_text, !drv_texture_enabled ? ", texture off" :
                       (frame_texture_facets != 0 && frame_flush_ok ?
                        ", texture on" : ", texture fail")) != NULL);
@@ -637,8 +705,13 @@ static void check_render(void)
     frame_bands = frame_facets = 0;
     before_text = text_calls; before_clear = clear_calls; before_switches = buffer_switches;
     drv_render();
-    assert(frame_bands >= (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
-    assert(frame_facets == globe_tris_num);
+    if (drv_cull_enabled)
+        assert(frame_facets > 0 && frame_facets < globe_tris_num);
+    else
+    {
+        assert(frame_bands >= (unsigned long)globe_latitude - 2UL + 2UL * globe_longitude);
+        assert(frame_facets == globe_tris_num);
+    }
     assert(drv_osd_enabled ? text_calls >= before_text + 2U : text_calls == before_text);
     check_osd();
     assert(clear_calls >= before_clear + 1U && clear_calls <= before_clear + 2U);
@@ -819,6 +892,12 @@ int main(int argc, char **argv)
     send_key(XK_o); assert(drv_osd_enabled); check_render();
     send_key(XK_f); assert(!drv_fps_enabled); check_render();
     send_key(XK_F); assert(drv_fps_enabled); check_render();
+    assert(!drv_cull_enabled);
+    send_key(XK_C); assert(drv_cull_enabled); check_render();
+    send_key(XK_t); assert(!drv_texture_enabled); check_render();
+    send_key(XK_c); assert(!drv_cull_enabled); check_render();
+    send_key(XK_t); assert(drv_texture_enabled); check_render();
+    puts("PASS XGL CPU culling: C/c filters native flat and textured strip submissions and restores complete bands while API backface culling remains active");
     puts("PASS XGL recorded rendering: native strip/facet packets, transforms, depth/cull, RGB texture rows, mipmap descriptor and OSD toggle");
 
     /* A usable window and native texture outlive an empty scene. Recovery

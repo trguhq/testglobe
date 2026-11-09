@@ -48,7 +48,7 @@ def check_tiga_extraction(executable, output):
     """Exercise real files around the driver; TIGA itself is a call recorder."""
     profiles = (
         "default", "single", "nomodule", "smallbuffer", "nomouse", "8086", "386", "486",
-        "fpu", "badmodule", "wrongabi", "badscreen", "nocd", "videoerror", "oldversion",
+        "fpu", "8087", "287", "387", "badmodule", "wrongabi", "badscreen", "nocd", "videoerror", "oldversion",
         "nomode", "modeerror", "primitivesfail", "pagehang", "syncerror",
         "nooverlay", "badcrc", "truncated", "oversized", "badoffset", "reserved",
         "badmagic", "missingexe", "diskfull", "closefail", "notemp", "shortwrite",
@@ -372,7 +372,7 @@ def main():
                         help="Record TIGA 2 calls and execute the TI transform kernel; not Microsoft C ABI, TSR transport or board rendering validation")
     parser.add_argument("--tiga-sdk", default=os.environ.get("TIGA_SDK"),
                         help="Also compile the TIGA driver against original TIGA.H, EXTEND.H and TYPEDEFS.H declarations")
-    parser.add_argument("--tiga-cpu", action="store_true",
+    parser.add_argument("--dos-cpu", "--tiga-cpu", dest="tiga_cpu", action="store_true",
                         help="Run the optional real-mode CPU instruction probe checks (requires GNU as/objcopy and Python unicorn)")
     parser.add_argument("--qd-contract", action="store_true",
                         help="Record Classic Macintosh calls with host declarations; not MPW ABI or QuickDraw rendering validation")
@@ -413,8 +413,8 @@ def main():
             check_driver_api(cc + common + options + api_source, driver,
                              hidden + ("drv_fps_history_num",))
         if args.tiga_cpu:
-            run([sys.executable, str(ROOT / "tests/tga_cpu.py")])
-            print("PASS TIGA CPU probe: optional emulated instructions preserve FLAGS, registers and stack across 8086/286/386/486 profiles")
+            run([sys.executable, str(ROOT / "tests/dos_cpu.py")])
+            print("PASS DOS CPU probe: optional emulated instructions preserve FLAGS, registers and stack across 8086/286/386/486 profiles")
         if args.tiga_contract or args.tiga_sdk:
             tiga = ["-DSEG86", "-DDRV_TGA", "-D_huge=", "-Dfar=", "-D_cdecl=",
                     "-Wno-cast-function-type", "-I" + str(ROOT / "tests/dos_shim")]
@@ -472,6 +472,16 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "strips")])
         run([str(output / "strips")])
+        # Decode every emitted triangle independently of the production band
+        # selector, including palette/RGB strips, separate caps and retained TRI.
+        for name, options in (("cull_ogl", flat), ("cull_tri", flat + tri_mode),
+                              ("cull_xgl", strips),
+                              ("cull_igl", ["-DFLAT", "-DDRV_IGL"])):
+            run(cc + common + options + [str(ROOT / "tests/cull_bands.c"),
+                str(ROOT / "src/e_saved.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / name)])
+            run([str(output / name)])
         gdi = ["-DSEG86", "-DDRV_GDI", "-D_huge=", "-D_far=", "-D_near=",
                "-I" + str(ROOT / "tests/win16_shim")]
         run(cc + common + gdi + [str(ROOT / "tests/driver_helpers.c"),
@@ -587,6 +597,8 @@ def main():
             for mode in ("ocs", "mono", "two", "three", "four", "ecs", "aga", "aga64", "aga128", "020", "fpu", "040",
                          "falsefpu", "aspect", "backfail", "scratchfail", "ham", "oversize", "cachefail", "ocswide", "denisewide", "ecswide",
                          "cgx8", "cgx15", "cgx16", "cgx24", "cgx32", "p968", "p9615", "p9616", "p9624", "p9632",
+                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop", "fs-cgx8", "fs-cgx15", "fs-cgx16", "fs-cgx24", "fs-cgx32",
+                         "fs-p968", "fs-p9615", "fs-p9616", "fs-p9624", "fs-p9632",
                          "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative"):
                 run([str(output / "amiga"), mode])
             run([str(output / "amiga"), "stack"], expected_returncode=1,
@@ -598,7 +610,8 @@ def main():
                 str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga_native")])
-            for mode in ("ocs", "mono", "two", "three", "four", "aga", "aga64", "aga128", "backfail", "ocswide", "nativeunknown"):
+            for mode in ("ocs", "mono", "two", "three", "four", "aga", "aga64", "aga128", "backfail", "ocswide", "nativeunknown",
+                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop"):
                 run([str(output / "amiga_native"), mode])
             # A real packed Hunk file exercises the production DOS resource reader.
             source = output / "amiga-input.hunk"
@@ -824,13 +837,18 @@ def main():
                      "-I" + str(ROOT / "tests/dos_shim"),
                      "-I" + str(output / "sdk")]
         check_production_units(cc, common, segmented, output, "Matrox",
-            ("drv.c", "drv_mtx.c", "err.c", "globe.c", "main.c", "e_saved.c"))
+            ("drv.c", "drv_mtx.c", "err.c", "globe.c", "main.c", "e_saved.c", "soft3d.c", "soft3fp.c"))
+        mtx_optimized = output / "mtx_386.o"
+        run(cc + common + segmented + ["-DSOFT3D_TRANSFORM_386", "-c",
+            str(ROOT / "src/soft3d.c"), "-o", str(mtx_optimized)])
         run(cc + common + segmented + [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+            str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"), str(mtx_optimized),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "matrox")])
         run([str(output / "matrox")])
-        run([str(output / "matrox"), "reporting-off"],
-            required_output="PASS Matrox errors: opcode, parameter, memory and overflow diagnostics; multiple errors drained while awaiting completion")
+        for profile in ("reporting-off", "8086", "286", "386", "486", "8087", "287", "387", "fpu",
+                        "startup-v3", "startup-world"):
+            run([str(output / "matrox"), profile])
         print("PASS host compatibility: strict C89 and supplied SDK prototypes")
 
 

@@ -210,6 +210,14 @@ static void test_input(void)
     assert(drv_fps_enabled);
     assert(drv_handle_key('f') && !drv_fps_enabled);
     assert(drv_handle_key('F') && drv_fps_enabled);
+#ifdef DRV_CULL
+    assert(!drv_cull_enabled);
+    drv_fps_average = 30.0f;
+    assert(drv_handle_key('c') && drv_cull_enabled && drv_fps_average == 0.0f);
+    assert(drv_handle_key('C') && !drv_cull_enabled);
+#else
+    assert(!drv_handle_key('c') && !drv_handle_key('C'));
+#endif
 #ifdef TEXTURE
     assert(!drv_texture_enabled);
     assert(drv_handle_key('t') && drv_texture_enabled);
@@ -313,29 +321,97 @@ static void test_stats(void)
 }
 
 #ifdef GDI
+static void timed_frame(unsigned long idle_ms, unsigned long draw_ms)
+{
+    helper_ticks += idle_ms;
+    drv_fps_start();
+    helper_ticks += draw_ms;
+    drv_fps_stop();
+}
+
 static void test_presentation_timing(void)
 {
     unsigned int i;
     drv_fps_enabled = TRUE;
     drv_reset_timing();
-    drv_fps_start();
-    helper_ticks += 32;
-    drv_fps_stop();
+    /* Subsecond frames must report immediately, even on a slow renderer.
+     * An elapsed-time window also expires before sixty frames at 2-10 FPS. */
+    timed_frame(0UL, 500UL);
+    near_float(drv_fps_average, 2.0f);
+    timed_frame(0UL, 250UL);
+    near_float(drv_fps_average, 2.0f / 0.75f);
+    timed_frame(0UL, 250UL);
+    near_float(drv_fps_average, 3.0f);
+    timed_frame(0UL, 100UL);
+    near_float(drv_fps_average, 10.0f);
+    /* Idle time remains part of observed presentation throughput. Slow
+     * intervals publish immediately and start a fresh averaging window. */
+    timed_frame(2400UL, 100UL);
+    near_float(drv_fps_average, 0.4f);
+    timed_frame(0UL, 100UL);
+    near_float(drv_fps_average, 10.0f);
+    timed_frame(0UL, 1000UL);
+    near_float(drv_fps_average, 1.0f);
+    timed_frame(0UL, 200UL);
+    near_float(drv_fps_average, 5.0f);
+
+    drv_reset_timing();
+    timed_frame(0UL, 32UL);
     for (i = 1; i < DRV_FPS_HISTORY; ++i)
     {
-        helper_ticks += 24; /* Time waiting for the next native event counts. */
-        drv_fps_start();
-        helper_ticks += 8;
-        drv_fps_stop();
+        timed_frame(24UL, 8UL);
+        near_float(drv_fps_average, 31.25f);
     }
-    near_float(drv_fps_average, 31.25f);
+    /* Fast renderers still expire the bounded frame-count window. */
+    drv_reset_timing();
+    for (i = 0; i < DRV_FPS_HISTORY; ++i)
+    {
+        timed_frame(0UL, 10UL);
+        near_float(drv_fps_average, 100.0f);
+    }
+    timed_frame(0UL, 20UL);
+    near_float(drv_fps_average, 50.0f);
+
+    /* Coarse clocks can stamp many frames identically. Keep all of those
+     * presentations until a tick arrives, rather than losing sixty frames. */
+    drv_reset_timing();
+    for (i = 0; i < DRV_FPS_HISTORY + 5U; ++i)
+    {
+        timed_frame(0UL, 0UL);
+        assert(drv_fps_average == 0.0f);
+    }
+    timed_frame(0UL, 20UL);
+    near_float(drv_fps_average, (float)(DRV_FPS_HISTORY + 6U) / 0.02f);
+    timed_frame(0UL, 10UL);
+    near_float(drv_fps_average, 100.0f);
+
     drv_fps_start();
     drv_abort_frame("retry frame");
     drv_fps_stop();
     assert(drv_fps_average == 0.0f);
     drv_frame_failed = FALSE;
     drv_notice(NULL);
-    puts("PASS presentation timing: idle intervals count, failed frames reset the sample");
+    timed_frame(0UL, 20UL);
+    near_float(drv_fps_average, 50.0f);
+    helper_scene_ready = FALSE;
+    timed_frame(0UL, 100UL);
+    assert(drv_fps_average == 0.0f);
+    helper_scene_ready = TRUE;
+    timed_frame(0UL, 20UL);
+    near_float(drv_fps_average, 50.0f);
+    assert(drv_handle_key('f') && !drv_fps_enabled);
+    timed_frame(0UL, 100UL);
+    assert(drv_fps_average == 0.0f);
+    assert(drv_handle_key('F') && drv_fps_enabled);
+    assert(drv_fps_average == 0.0f);
+    timed_frame(0UL, 200UL);
+    near_float(drv_fps_average, 5.0f);
+
+    drv_reset_timing();
+    helper_ticks = 0xfffffff0UL;
+    timed_frame(0UL, 32UL);
+    near_float(drv_fps_average, 31.25f);
+    puts("PASS presentation timing: prompt subsecond FPS, bounded time/frame windows, retained zero-tick frames, wall-time waits, rollover, failure/scene/toggle resets");
 }
 #endif
 

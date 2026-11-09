@@ -81,3 +81,7 @@
 /src/tga_pack.exe
 /src/testglob.tmp
 /src/testglob.bak
+
+# Linux-hosted cross-compilation intermediates (release ZIPs stay tracked).
+/build/cross/
+/src/__pycache__/

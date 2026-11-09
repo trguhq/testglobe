@@ -23,7 +23,7 @@
 #endif
 
 #define DRV_NAME "Amiga"
-#define DRV_HELP "1-5 detail, A rotate, O OSD, F FPS, Esc exit, D dither"
+#define DRV_HELP "1-5 detail, A rotate, O OSD, P FPS, Esc exit, D dither, F fullscreen"
 #define DRV_WIN_X 20
 #define DRV_WIN_Y 20
 #define DRV_WIN_WIDTH 640

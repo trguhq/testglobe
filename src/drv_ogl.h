@@ -37,7 +37,8 @@ extern void ogl_ami_error(char *message);
 #else
 #define DRV_NAME "OpenGL"
 #endif
-#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, F = FPS, Esc = exit, T = texture mapping, D = display list"
+#define DRV_HELP "1-5 = facets, A = auto rotate, O = OSD, F = FPS, C = cull, Esc = exit, T = texture mapping, D = display list"
+#define DRV_CULL
 #define GL_SILENCE_DEPRECATION
 
 #define DRV_WIN_X 100

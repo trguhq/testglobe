@@ -61,6 +61,13 @@ struct Screen {
     struct RastPort RastPort;
     struct BitMap BitMap;
 };
+struct TagItem { ULONG ti_Tag, ti_Data; };
+struct NewScreen { int unused; };
+struct DBufInfo {
+    struct Message dbi_SafeMessage, dbi_DispMessage;
+    ULONG dbi_UserData1, dbi_UserData2;
+};
+struct ScreenBuffer { struct BitMap *sb_BitMap; struct DBufInfo *sb_DBufInfo; };
 struct Window {
     struct Window *NextWindow;
     WORD LeftEdge, TopEdge, Width, Height;
@@ -121,6 +128,8 @@ struct IntuiMessage {
 #define WBENCHSCREEN 1U
 #define PUBLICSCREEN 2U
 #define CUSTOMSCREEN 15U
+#define BORDERLESS 0x00000800UL
+#define BACKDROP 0x00000100UL
 #define WINDOWCLOSE 0x0008UL
 #define WINDOWDRAG 0x0002UL
 #define WINDOWDEPTH 0x0004UL
@@ -174,6 +183,25 @@ struct IntuiMessage {
 #define BMA_WIDTH 8UL
 #define BMA_DEPTH 4UL
 #define BMA_FLAGS 12UL
+#define TAG_DONE 0UL
+#define SA_Dummy (0x80000000UL + 32UL)
+#define SA_Width (SA_Dummy + 3UL)
+#define SA_Height (SA_Dummy + 4UL)
+#define SA_Depth (SA_Dummy + 5UL)
+#define SA_Title (SA_Dummy + 8UL)
+#define SA_Type (SA_Dummy + 13UL)
+#define SA_DisplayID (SA_Dummy + 18UL)
+#define SA_ShowTitle (SA_Dummy + 22UL)
+#define SA_Behind (SA_Dummy + 23UL)
+#define SA_Quiet (SA_Dummy + 24UL)
+#define SA_Draggable (SA_Dummy + 30UL)
+#define SA_Exclusive (SA_Dummy + 31UL)
+#define SB_SCREEN_BITMAP 1UL
+#define SB_COPY_BITMAP 2UL
+#define NTSC_MONITOR_ID 0x00011000UL
+#define PAL_MONITOR_ID 0x00021000UL
+#define LORES_KEY 0UL
+#define VTAG_SPEVEN_BASE_GET 0x80000028UL
 
 extern struct ExecBase *SysBase;
 struct Library *OpenLibrary(CONST_STRPTR, ULONG);
@@ -184,6 +212,8 @@ void FreeMem(APTR, ULONG);
 struct Message *GetMsg(struct MsgPort *);
 void ReplyMsg(struct Message *);
 ULONG Wait(ULONG);
+struct MsgPort *CreateMsgPort(void);
+void DeleteMsgPort(struct MsgPort *);
 void CurrentTime(ULONG *, ULONG *);
 LONG GetScreenData(APTR, ULONG, ULONG, struct Screen *);
 struct Screen *LockPubScreen(CONST_STRPTR);
@@ -192,6 +222,15 @@ struct Window *OpenWindow(const struct NewWindow *);
 void CloseWindow(struct Window *);
 void BeginRefresh(struct Window *);
 void EndRefresh(struct Window *, LONG);
+struct Screen *OpenScreenTagList(const struct NewScreen *, const struct TagItem *);
+BOOL CloseScreen(struct Screen *);
+void ScreenToFront(struct Screen *);
+void ActivateWindow(struct Window *);
+struct ScreenBuffer *AllocScreenBuffer(struct Screen *, struct BitMap *, ULONG);
+void FreeScreenBuffer(struct Screen *, struct ScreenBuffer *);
+ULONG ChangeScreenBuffer(struct Screen *, struct ScreenBuffer *);
+void SetRGB32(struct ViewPort *, ULONG, ULONG, ULONG, ULONG);
+ULONG VideoControl(struct ColorMap *, struct TagItem *);
 void InitBitMap(struct BitMap *, LONG, ULONG, ULONG);
 struct BitMap *AllocBitMap(ULONG, ULONG, ULONG, ULONG, const struct BitMap *);
 void FreeBitMap(struct BitMap *);
