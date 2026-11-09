@@ -292,6 +292,26 @@ int main(int argc, char **argv)
     ogl_keyboard('t', 0, 0); drv_render();
     assert(strstr(osd, "texture on") && strstr(osd, "dlist on") && texture_uploads == 1);
     before = list_count; drv_render(); assert(list_count == before && list_calls >= 2);
+    {
+        unsigned int calls;
+        GLuint saved;
+        assert(!drv_cull_enabled && ogl_dlist_enabled);
+        calls = list_calls; saved = dlist;
+        ogl_keyboard('C', 0, 0); drv_render();
+        assert(drv_cull_enabled && ogl_dlist_enabled && !ogl_dlist_used);
+        assert(dlist == saved && list_count == before && list_calls == calls);
+        assert(strstr(osd, "cull on") && strstr(osd, "dlist off") && strstr(osd, "texture on"));
+        ogl_keyboard('c', 0, 0); drv_render();
+        assert(!drv_cull_enabled && ogl_dlist_used && dlist == saved);
+        assert(list_count == before && list_calls == calls + 1U);
+        ogl_keyboard('C', 0, 0); ogl_keyboard('d', 0, 0); drv_render();
+        assert(drv_cull_enabled && !ogl_dlist_enabled && !ogl_dlist_used);
+        ogl_keyboard('c', 0, 0); drv_render();
+        assert(!drv_cull_enabled && !ogl_dlist_enabled && !ogl_dlist_used);
+        ogl_keyboard('d', 0, 0); drv_render();
+        assert(ogl_dlist_enabled && ogl_dlist_used);
+        puts("PASS Amiga OpenGL CPU culling: direct band submissions override lists without changing the saved D preference");
+    }
     ogl_keyboard('d', 0, 0); fail_lists = 1; ogl_keyboard('d', 0, 0);
     drv_render(); assert(strstr(osd, "dlist fail"));
     fail_lists = 0; ogl_keyboard('d', 0, 0); ogl_keyboard('d', 0, 0);

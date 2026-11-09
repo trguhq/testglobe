@@ -210,6 +210,14 @@ static void test_input(void)
     assert(drv_fps_enabled);
     assert(drv_handle_key('f') && !drv_fps_enabled);
     assert(drv_handle_key('F') && drv_fps_enabled);
+#ifdef DRV_CULL
+    assert(!drv_cull_enabled);
+    drv_fps_average = 30.0f;
+    assert(drv_handle_key('c') && drv_cull_enabled && drv_fps_average == 0.0f);
+    assert(drv_handle_key('C') && !drv_cull_enabled);
+#else
+    assert(!drv_handle_key('c') && !drv_handle_key('C'));
+#endif
 #ifdef TEXTURE
     assert(!drv_texture_enabled);
     assert(drv_handle_key('t') && drv_texture_enabled);

@@ -66,6 +66,148 @@ export function globe_build_mesh(width) {
     return { width, height, vertices, indices, vertexCount, triangleCount };
 }
 
+/* Keep the regular grid factored into rows and longitudes for CPU culling.
+ * Boundary vertices reproduce the uploaded Float32 coordinates exactly; no
+ * second full vertex grid or Earth map is retained by the WebGL driver. */
+export function globe_cull_profile(mesh) {
+    const { width, height, vertices } = mesh;
+    const rows = new Float64Array(2 * (height + 1));
+    const longitude = new Float32Array(2 * (width + 1));
+    const step = Math.fround(2 * Math.PI / width);
+    for (let column = 0; column <= width; ++column) {
+        const angle = Math.fround(column * step);
+        longitude[2 * column] = Math.fround(Math.cos(angle));
+        longitude[2 * column + 1] = Math.fround(Math.sin(angle));
+    }
+    for (let row = 0; row <= height; ++row) {
+        const first = row * (width + 1) * 5;
+        const radius = vertices[first], z = vertices[first + 2];
+        rows[2 * row] = radius;
+        rows[2 * row + 1] = z;
+        for (let column = 0; column <= width; ++column) {
+            const index = first + column * 5;
+            if (vertices[index] !== Math.fround(radius * longitude[2 * column]) ||
+                vertices[index + 1] !== Math.fround(radius * longitude[2 * column + 1]) ||
+                vertices[index + 2] !== z) return null;
+        }
+    }
+    return { width, height, rows, longitude, indexCapacity: mesh.indices.length };
+}
+
+/* Integer longitude cells whose midpoint lies inside a cyclic angular range.
+ * These are constant-size ranges, including a possible split at the UV seam. */
+function globe_cull_longitudes(width, phase, threshold) {
+    if (threshold <= -1) return [[0, width]];
+    if (threshold >= 1) return [];
+    const step = 2 * Math.PI / width;
+    const center = phase / step - 0.5;
+    const half = Math.acos(threshold) / step;
+    const ranges = [];
+    for (let turn = -1; turn <= 1; ++turn) {
+        const first = Math.max(0, Math.floor(center - half + turn * width) + 1);
+        const end = Math.min(width, Math.ceil(center + half + turn * width));
+        if (first < end) ranges.push([first, end]);
+    }
+    return ranges.sort((a, b) => a[0] - b[0]);
+}
+
+function globe_cull_front(profile, row, facet, eye, points) {
+    const column = row === 0 || row === profile.height - 1 ? facet : facet >> 1;
+    const second = row === 0 || (row !== profile.height - 1 && (facet & 1));
+    const corners = second ? [[row, column + 1], [row + 1, column], [row + 1, column + 1]] :
+        [[row, column], [row + 1, column], [row, column + 1]];
+    for (let corner = 0; corner < 3; ++corner) {
+        const [r, c] = corners[corner], radius = profile.rows[2 * r];
+        points[3 * corner] = Math.fround(radius * profile.longitude[2 * c]);
+        points[3 * corner + 1] = Math.fround(radius * profile.longitude[2 * c + 1]);
+        points[3 * corner + 2] = profile.rows[2 * r + 1];
+    }
+    const ax = points[3] - points[0], ay = points[4] - points[1], az = points[5] - points[2];
+    const bx = points[6] - points[0], by = points[7] - points[1], bz = points[8] - points[2];
+    return (ay * bz - az * by) * (eye[0] - points[0]) +
+           (az * bx - ax * bz) * (eye[1] - points[1]) +
+           (ax * by - ay * bx) * (eye[2] - points[2]) > 0;
+}
+
+/* Solve each latitude band's face-plane inequality before visiting vertices.
+ * Definite front/back ranges need no per-triangle tests. Only uncertainty
+ * near the limb is checked against the actual Float32 triangles. A band
+ * exactly grazing an axial view may require checking the entire band. */
+export function globe_cull_indices(profile, eye, storage = null) {
+    if (!profile || eye.length !== 3 || !eye.every(Number.isFinite)) {
+        throw new RangeError("Invalid globe culling view");
+    }
+    const { width, height, rows } = profile;
+    let indices = storage || new Uint32Array(profile.indexCapacity);
+    let count = 0, triangleCount = 0, triangleTests = 0;
+    const points = new Float64Array(9);
+    const phase = Math.atan2(eye[1], eye[0]);
+    const horizontal = Math.hypot(eye[0], eye[1]);
+    const halfCosine = Math.cos(Math.PI / width);
+    const radius = Math.max(Math.abs(rows[1]), Math.abs(rows[2 * height + 1]));
+    const epsilon = 64 * 2 ** -23 * radius * (Math.hypot(...eye) + radius);
+    const stride = width + 1;
+    const append = value => {
+        if (count === indices.length) {
+            const larger = new Uint32Array(Math.max(16, indices.length * 2));
+            larger.set(indices);
+            indices = larger;
+        }
+        indices[count++] = value;
+    };
+    const restart = () => { if (count) append(0xffffffff); };
+    for (let row = 0; row < height; ++row) {
+        const top = row * stride, bottom = top + stride;
+        const cap = row === 0 || row === height - 1;
+        const facets = cap ? 1 : 2;
+        const rt = rows[2 * row], zt = rows[2 * row + 1];
+        const rb = rows[2 * row + 2], zb = rows[2 * row + 3];
+        const nh = (zt - zb) / halfCosine, nz = rb - rt;
+        const amplitude = nh * horizontal;
+        const offset = nz * eye[2] - (rb * zt - rt * zb);
+        const outer = amplitude === 0 ? (offset >= -epsilon ? [[0, width]] : []) :
+            globe_cull_longitudes(width, phase, (-offset - epsilon) / amplitude);
+        const inner = amplitude === 0 ? (offset > epsilon ? [[0, width]] : []) :
+            globe_cull_longitudes(width, phase, (-offset + epsilon) / amplitude);
+        const edges = [...new Set([0, width, ...outer.flat(), ...inner.flat()])].sort((a, b) => a - b);
+        let run = -1;
+        const emit = end => {
+            if (run < 0) return;
+            triangleCount += end - run;
+            if (cap) {
+                for (let column = run; column < end; ++column) {
+                    restart();
+                    append(top + column + (row === 0 ? 1 : 0));
+                    append(bottom + column);
+                    append(row === 0 ? bottom + column + 1 : top + column + 1);
+                }
+            } else {
+                const vertex = i => (i & 1 ? bottom : top) + (i >> 1);
+                restart();
+                // Restart resets winding. One degenerate vertex restores an
+                // odd-start run's original parity without adding a facet.
+                if (run & 1) append(vertex(run));
+                for (let i = run; i < end + 2; ++i) append(vertex(i));
+            }
+            run = -1;
+        };
+        for (let segment = 0; segment + 1 < edges.length; ++segment) {
+            const first = edges[segment], end = edges[segment + 1];
+            const inRange = ranges => ranges.some(([a, b]) => first >= a && first < b);
+            if (!inRange(outer)) { emit(first * facets); continue; }
+            if (inRange(inner)) { if (run < 0) run = first * facets; continue; }
+            for (let facet = first * facets; facet < end * facets; ++facet) {
+                ++triangleTests;
+                if (globe_cull_front(profile, row, facet, eye, points)) {
+                    if (run < 0) run = facet;
+                } else emit(facet);
+            }
+        }
+        emit(width * facets);
+    }
+    return { indices, count, triangleCount, triangleTests };
+}
+
 function earth_check_abort(signal) {
     if (signal?.aborted) {
         throw signal.reason === undefined ?

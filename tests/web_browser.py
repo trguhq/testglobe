@@ -154,6 +154,8 @@ async def controls(browser, url):
         await page.goto(url)
         await ready(page, 512)
         await expect(page.get_by_test_id("texture")).to_have_attribute("aria-pressed", "false")
+        await expect(page.get_by_test_id("cull")).to_have_attribute("aria-pressed", "false")
+        await expect(page.get_by_test_id("status")).to_contain_text("cull off")
         await check_counts(page, 512)
         assert_globe(await image_sample(page))
         for key, level in enumerate(LEVELS, 1):
@@ -183,6 +185,15 @@ async def controls(browser, url):
         await expect(page.get_by_test_id("fps")).to_have_attribute("aria-pressed", "false")
         await page.keyboard.press("f")
         await expect(page.get_by_test_id("fps")).to_have_attribute("aria-pressed", "true")
+        await page.keyboard.press("c")
+        await expect(page.get_by_test_id("cull")).to_have_attribute("aria-pressed", "true")
+        await expect(page.get_by_test_id("status")).to_contain_text("cull on")
+        await page.keyboard.press("C")
+        await expect(page.get_by_test_id("cull")).to_have_attribute("aria-pressed", "false")
+        await page.get_by_test_id("cull").click()
+        await expect(page.get_by_test_id("cull")).to_have_attribute("aria-pressed", "true")
+        await page.get_by_test_id("cull").click()
+        await expect(page.get_by_test_id("status")).to_contain_text("cull off")
         await page.get_by_test_id("reset").click()
         original = await image_sample(page)
         bounds = await page.get_by_test_id("globe").bounding_box()
@@ -216,11 +227,12 @@ async def controls(browser, url):
             const input = document.createElement('input'); input.id = 'outside-editor';
             document.body.appendChild(input); input.focus();
         }""")
-        await page.keyboard.type("ta15of")
-        assert await page.locator("#outside-editor").input_value() == "ta15of"
+        await page.keyboard.type("ta15ofcC")
+        assert await page.locator("#outside-editor").input_value() == "ta15ofcC"
         assert await active_level(page) == 32
         await expect(page.get_by_test_id("auto")).to_have_attribute("aria-pressed", "false")
         await expect(page.get_by_test_id("texture")).to_have_attribute("aria-pressed", "false")
+        await expect(page.get_by_test_id("cull")).to_have_attribute("aria-pressed", "false")
         await page.locator("#outside-editor").evaluate("element => element.remove()")
         await page.set_viewport_size({"width": 860, "height": 650})
         await ready(page, 32)
@@ -462,6 +474,8 @@ async def context_recovery(browser, url):
         await ready(page, 128)
         await page.get_by_test_id("texture").click()
         await expect(page.get_by_test_id("status")).to_contain_text(re.compile(r"texture\s+on", re.I))
+        await page.get_by_test_id("cull").click()
+        await expect(page.get_by_test_id("cull")).to_have_attribute("aria-pressed", "true")
         await page.get_by_test_id("auto").click()
         extension = await page.get_by_test_id("globe").evaluate_handle(
             "canvas => canvas.getContext('webgl2').getExtension('WEBGL_lose_context')")
@@ -475,6 +489,8 @@ async def context_recovery(browser, url):
         await ready(page, 128)
         await expect(page.get_by_test_id("texture")).to_have_attribute("aria-pressed", "true")
         await expect(page.get_by_test_id("auto")).to_have_attribute("aria-pressed", "true")
+        await expect(page.get_by_test_id("cull")).to_have_attribute("aria-pressed", "true")
+        await expect(page.get_by_test_id("status")).to_contain_text("cull on")
         await expect(page.get_by_test_id("status")).to_contain_text(re.compile(r"texture\s+on", re.I))
         assert_globe(await image_sample(page))
         assert_no_errors(errors)
@@ -559,6 +575,159 @@ async def driver_contract(browser, url):
         await context.close()
 
 
+async def cull_contract(browser, url):
+    context, page, errors = await context_page(browser)
+    try:
+        await page.route("**/web/cull-contract", lambda route: route.fulfill(
+            status=200, content_type="text/html", body="<!doctype html><canvas></canvas>"))
+        await page.goto(url + "cull-contract")
+        result = await page.evaluate("""async () => {
+            const { drv_create } = await import('/web/drv_wgl.js');
+            const { globe_build_mesh, earth_load } = await import('/web/globe.js');
+            const check = (ok, why) => { if (!ok) throw new Error(why); };
+            const canvas = document.querySelector('canvas'), driver = drv_create(canvas);
+            const gl = canvas.getContext('webgl2');
+            const bufferData = gl.bufferData, bufferSubData = gl.bufferSubData;
+            const drawElements = gl.drawElements;
+            const createBuffer = gl.createBuffer, deleteBuffer = gl.deleteBuffer;
+            const liveBuffers = new Set();
+            let vertexUploads = 0, indexUploads = 0, draws = [];
+            gl.createBuffer = function() {
+                const buffer = createBuffer.call(this);
+                if (buffer) liveBuffers.add(buffer);
+                return buffer;
+            };
+            gl.deleteBuffer = function(buffer) {
+                check(liveBuffers.delete(buffer), 'A globe buffer was deleted twice or was not owned');
+                return deleteBuffer.call(this, buffer);
+            };
+            const upload = target => {
+                if (target === gl.ARRAY_BUFFER) ++vertexUploads;
+                if (target === gl.ELEMENT_ARRAY_BUFFER) ++indexUploads;
+            };
+            gl.bufferData = function(target, ...args) {
+                upload(target); return bufferData.call(this, target, ...args);
+            };
+            gl.bufferSubData = function(target, ...args) {
+                upload(target); return bufferSubData.call(this, target, ...args);
+            };
+            gl.drawElements = function(mode, count, type, offset) {
+                draws.push({ count, buffer: gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING) });
+                return drawElements.call(this, mode, count, type, offset);
+            };
+            let comparisons = 0, changedPixels = 0;
+            try {
+                driver.setTexture(512, await earth_load(512));
+                for (const level of [32, 64, 128, 256, 512]) {
+                    driver.setScene(globe_build_mesh(level), await earth_load(level));
+                    const uploadedVertices = vertexUploads;
+                    for (const [width, height] of [[320, 240], [160, 320]]) {
+                        driver.resize(width, height);
+                        const read = options => {
+                            draws = [];
+                            driver.draw(options);
+                            const pixels = new Uint8Array(width * height * 4);
+                            gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+                            return pixels;
+                        };
+                        for (const [rotationX, rotationY] of [[0, 180], [19, 37], [90, 0], [271, 359.8]]) {
+                            for (const textured of [false, true]) {
+                                const pose = { rotationX, rotationY, textured };
+                                const original = read(pose);
+                                check(draws.length === 1 && draws[0].count === driver.scene.indexCount,
+                                    'Default culling changed the original full-strip draw');
+                                const originalBuffer = draws[0].buffer;
+                                const culled = read({ ...pose, cull: true });
+                                check(draws.length > 0 && draws.reduce((sum, draw) => sum + draw.count, 0) <
+                                      driver.scene.indexCount, 'Pre-culling did not reduce submitted indices');
+                                check(gl.isEnabled(gl.CULL_FACE), 'CPU filtering disabled native backface culling');
+                                let different = 0;
+                                for (let pixel = 0; pixel < width * height; ++pixel) {
+                                    const offset = pixel * 4;
+                                    if (Math.max(...[0, 1, 2].map(channel =>
+                                        Math.abs(original[offset + channel] - culled[offset + channel]))) <= 4) continue;
+                                    ++different;
+                                    const x = pixel % width, y = Math.floor(pixel / width);
+                                    let silhouette = false;
+                                    for (let dy = -1; dy <= 1; ++dy) for (let dx = -1; dx <= 1; ++dx) {
+                                        const nx = x + dx, ny = y + dy;
+                                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                                        const neighbor = (ny * width + nx) * 4;
+                                        if (original[neighbor] === 0 && original[neighbor + 1] === 0 &&
+                                            original[neighbor + 2] === 0) silhouette = true;
+                                    }
+                                    check(silhouette, `Pre-culling changed an interior pixel: ${level}, ${rotationX}, ${rotationY}`);
+                                }
+                                check(different <= Math.max(8, width * height * .001),
+                                    `Pre-culling changed too many silhouette pixels: ${different}`);
+                                changedPixels += different;
+                                const uploads = indexUploads;
+                                driver.draw({ ...pose, cull: true });
+                                check(indexUploads === uploads, 'An unchanged culled pose reuploaded indices');
+                                const restored = read({ ...pose, cull: false });
+                                check(draws.length === 1 && draws[0].buffer === originalBuffer,
+                                    'Disabling culling did not restore the original index buffer');
+                                check(restored.every((value, index) => value === original[index]),
+                                    'Disabling culling did not restore the original rendered pixels');
+                                ++comparisons;
+                            }
+                        }
+                    }
+                    check(vertexUploads === uploadedVertices, 'Culling reuploaded the static vertex grid');
+                }
+                // Optional CPU tables must not make the default GPU path
+                // unavailable when JavaScript cannot allocate those tables.
+                const mesh = globe_build_mesh(32), map = await earth_load(32);
+                driver.resize(320, 240);
+                driver.setScene(mesh, map);
+                const pose = { rotationX: 0, rotationY: 180, cull: false };
+                const readDefault = () => {
+                    driver.draw(pose);
+                    const pixels = new Uint8Array(320 * 240 * 4);
+                    gl.readPixels(0, 0, 320, 240, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+                    return pixels;
+                };
+                const expected = readDefault();
+                const Float64Array = globalThis.Float64Array;
+                let allocationAttempts = 0;
+                globalThis.Float64Array = function() {
+                    ++allocationAttempts;
+                    throw new RangeError('Injected cull-profile allocation failure');
+                };
+                try { driver.setScene(mesh, map); }
+                finally { globalThis.Float64Array = Float64Array; }
+                check(allocationAttempts > 0 && driver.scene.width === 32,
+                    'Optional cull-profile allocation discarded the uploaded scene');
+                check(readDefault().every((value, index) => value === expected[index]),
+                    'Optional cull-profile allocation changed default GPU rendering');
+                let cullFailure = null;
+                try { driver.draw({ ...pose, cull: true }); }
+                catch (error) { cullFailure = error; }
+                check(cullFailure?.code === 'OUT_OF_MEMORY',
+                    'Unavailable cull-profile data did not report its allocation failure');
+                check(readDefault().every((value, index) => value === expected[index]),
+                    'Failed culling prevented returning to the default GPU path');
+                driver.setScene(mesh, map);
+                draws = [];
+                driver.draw({ ...pose, cull: true });
+                check(draws.length > 0 && draws.reduce((sum, draw) => sum + draw.count, 0) <
+                      driver.scene.indexCount, 'Rebuilding did not restore pre-culling after allocation failure');
+                check(gl.getError() === gl.NO_ERROR, 'Culling left a WebGL error');
+                return { comparisons, changedPixels };
+            } finally {
+                gl.bufferData = bufferData; gl.bufferSubData = bufferSubData; gl.drawElements = drawElements;
+                driver.dispose(); driver.dispose();
+                check(liveBuffers.size === 0, 'Disposal leaked a static or culled globe buffer');
+                gl.createBuffer = createBuffer; gl.deleteBuffer = deleteBuffer;
+            }
+        }""")
+        assert result["comparisons"] == 80
+        assert_no_errors(errors)
+        print("PASS browser pre-culling: 80 flat/textured comparisons across five LODs, four poses and two aspects; reduced indices, retained vertices, unchanged-pose reuse, original-buffer restoration, optional allocation recovery and buffer cleanup")
+    finally:
+        await context.close()
+
+
 async def touch_controls(browser, url):
     context, page, errors = await context_page(browser, mobile=True)
     try:
@@ -613,6 +782,7 @@ async def run_browser(url):
             await context_recovery(browser, url)
             await unavailable_webgl(browser, url)
             await driver_contract(browser, url)
+            await cull_contract(browser, url)
             await touch_controls(browser, url)
         finally:
             await browser.close()

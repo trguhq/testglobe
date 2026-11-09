@@ -18,11 +18,12 @@ const buttons = {
   auto: document.querySelector("#toggle-auto"),
   osd: document.querySelector("#toggle-osd"),
   fps: document.querySelector("#toggle-fps"),
+  cull: document.querySelector("#toggle-cull"),
   reset: document.querySelector("#reset-view"),
 };
 const state = {
   requestedWidth: 512, rotationX: 0, rotationY: 180,
-  auto: false, osd: true, fps: true,
+  auto: false, osd: true, fps: true, cull: false,
   textureRequested: false, texturePending: false, textureFailed: false, textureUsed: false,
   scenePending: false, ready: false, lost: false, paused: false,
 };
@@ -62,6 +63,7 @@ function app_update() {
   buttons.auto.setAttribute("aria-pressed", String(state.auto));
   buttons.osd.setAttribute("aria-pressed", String(state.osd));
   buttons.fps.setAttribute("aria-pressed", String(state.fps));
+  buttons.cull.setAttribute("aria-pressed", String(state.cull));
   osd.hidden = !state.osd;
   viewport.setAttribute("aria-busy", String(state.scenePending));
   loading.hidden = !state.scenePending || state.lost;
@@ -78,6 +80,7 @@ function app_update() {
     `${scene.width} × ${scene.height} map`,
   ];
   if (state.fps) pieces.push(`${fps === null ? "—" : fps.toFixed(1)} FPS`);
+  pieces.push(`cull ${state.cull ? "on" : "off"}`);
   let texture = "texture off";
   if (state.textureRequested) {
     if (state.texturePending || (driver.hasTexture && !state.textureUsed &&
@@ -106,6 +109,7 @@ function app_frame(timestamp) {
   lastTick = timestamp;
   try {
     state.textureUsed = driver.draw({ rotationX: state.rotationX, rotationY: state.rotationY,
+      cull: state.cull,
       textured: state.textureRequested && !state.texturePending &&
         !state.textureFailed && driver.hasTexture });
   } catch (error) {
@@ -328,6 +332,12 @@ buttons.fps.addEventListener("click", () => {
   state.fps = !state.fps;
   app_reset_timing(); app_update(); app_schedule();
 });
+buttons.cull.addEventListener("click", () => {
+  state.cull = !state.cull;
+  app_reset_timing();
+  app_update();
+  app_schedule();
+});
 buttons.reset.addEventListener("click", () => {
   app_pause();
   state.rotationX = 0; state.rotationY = 180;
@@ -350,6 +360,7 @@ document.addEventListener("keydown", event => {
   else if (key === "a") buttons.auto.click();
   else if (key === "o") buttons.osd.click();
   else if (key === "f") buttons.fps.click();
+  else if (key === "c") buttons.cull.click();
   else return;
   event.preventDefault();
 });

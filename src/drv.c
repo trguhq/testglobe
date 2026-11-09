@@ -76,6 +76,9 @@ static long drv_fps_history_num;        /* frames in this FPS sample */
 int drv_auto_enabled;                   /* automatically rotate */
 int drv_auto_available;
 int drv_frame_failed;
+#ifdef DRV_CULL
+int drv_cull_enabled;
+#endif
 #ifdef DRV_SOFT3D
 int drv_soft3d_requested;
 int drv_soft3d_active;
@@ -273,6 +276,10 @@ void drv_format_stats(char *buffer)
     if (drv_fps_enabled)
         sprintf(status + strlen(status), ", %.2f frames per second",
                  (double)drv_fps_average);
+#ifdef DRV_CULL
+    drv_append_status(status, sizeof(status),
+                      drv_cull_enabled ? ", cull on" : ", cull off");
+#endif
 #if DEBUG
     sprintf(status + strlen(status), ", %u B/px, R=%d", drv_bytes_per_pixel,
              drv_rmouse_pressed != FALSE);
@@ -649,6 +656,9 @@ void drv_ext_init(void)
     drv_auto_available = TRUE;
     drv_texture_active = FALSE;
     drv_frame_failed = FALSE;
+#ifdef DRV_CULL
+    drv_cull_enabled = FALSE;
+#endif
 #ifdef DRV_SOFT3D
     drv_soft3d_requested = drv_soft3d_active = DRV_SOFT3D_DEFAULT;
 #endif
@@ -799,12 +809,51 @@ void drv_fps_stop(void)
     }
 }
 
+#ifdef DRV_CULL
+int drv_cull_eye(double eye[3])
+{
+    double x, y, cx;
+    if (eye == NULL || !(drv_rot_x >= -FLT_MAX && drv_rot_x <= FLT_MAX) ||
+        !(drv_rot_y >= -FLT_MAX && drv_rot_y <= FLT_MAX)) return FALSE;
+    x = fmod((double)drv_rot_x, 360.0) * (PI / 180.0);
+    y = fmod((double)drv_rot_y, 360.0) * (PI / 180.0);
+    cx = cos(x);
+    /* Invert Rx(x) Ry(y) Rx(-90) Rz(-90) for the finite camera at +Z. */
+    eye[0] = GLOBE_VIEW_DISTANCE * cx * cos(y);
+    eye[1] = -GLOBE_VIEW_DISTANCE * cx * sin(y);
+    eye[2] = GLOBE_VIEW_DISTANCE * sin(x);
+    return TRUE;
+}
+
+int drv_cull_triangle(const Vertex TG_HUGE *a, const Vertex TG_HUGE *b,
+                       const Vertex TG_HUGE *c, const double eye[3])
+{
+    double ax, ay, az, bx, by, bz;
+    if (a == NULL || b == NULL || c == NULL || eye == NULL) return FALSE;
+    ax = (double)b->x - a->x;
+    ay = (double)b->y - a->y;
+    az = (double)b->z - a->z;
+    bx = (double)c->x - a->x;
+    by = (double)c->y - a->y;
+    bz = (double)c->z - a->z;
+    return (ay * bz - az * by) * (eye[0] - a->x) +
+           (az * bx - ax * bz) * (eye[1] - a->y) +
+           (ax * by - ay * bx) * (eye[2] - a->z) > 0.0;
+}
+#endif
+
 /* Apply only application actions; event loops retain native exit, redraw,
  * timer and geometry-cache work after a recognized key. */
 int drv_handle_key(unsigned char key)
 {
     switch (key)
     {
+#ifdef DRV_CULL
+        case 'c': case 'C':
+            drv_cull_enabled = !drv_cull_enabled;
+            drv_reset_timing();
+            return TRUE;
+#endif
 #ifdef EARTH_32
         case '1':
 #endif

@@ -53,6 +53,15 @@ extern int drv_auto_enabled;
 extern int drv_auto_available;
 extern int drv_frame_failed;
 
+#ifdef DRV_CULL
+extern int drv_cull_enabled;
+/* Perspective eye in the globe's object coordinates; no transformed mesh. */
+extern int drv_cull_eye(double eye[3]);
+extern int drv_cull_triangle(const Vertex TG_HUGE *a,
+                              const Vertex TG_HUGE *b,
+                              const Vertex TG_HUGE *c, const double eye[3]);
+#endif
+
 #ifdef DRV_SOFT3D
 /* Selection is distinct from the active path. After a failed native request,
  * S retries that request from the actual software fallback, as on TIGA. */

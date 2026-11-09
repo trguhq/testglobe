@@ -30,7 +30,8 @@
 #endif
 
 #define DRV_NAME "IRIS GL"
-#define DRV_HELP "1-5 = facets, A = auto rotate, F = FPS, O = OSD, T = texture mapping, Esc = exit"
+#define DRV_HELP "1-5 = facets, A = auto rotate, F = FPS, O = OSD, C = cull, T = texture mapping, Esc = exit"
+#define DRV_CULL
 
 #define DRV_WIN_X 100
 #define DRV_WIN_Y 100

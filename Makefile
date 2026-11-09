@@ -12,6 +12,7 @@ CFLAGS = -O
 SYS_FLAGS = -DNO_SINF
 LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
 # drv_ogl.h selects latitude strips with separately batched pole triangles.
+# OpenGL, IRIS GL and XGL headers enable the runtime C band-culling control.
 OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
 OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o texsoft.o e_data.o
 OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \

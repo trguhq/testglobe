@@ -472,6 +472,16 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/err.c"), "-lm", "-o", str(output / "strips")])
         run([str(output / "strips")])
+        # Decode every emitted triangle independently of the production band
+        # selector, including palette/RGB strips, separate caps and retained TRI.
+        for name, options in (("cull_ogl", flat), ("cull_tri", flat + tri_mode),
+                              ("cull_xgl", strips),
+                              ("cull_igl", ["-DFLAT", "-DDRV_IGL"])):
+            run(cc + common + options + [str(ROOT / "tests/cull_bands.c"),
+                str(ROOT / "src/e_saved.c"), str(ROOT / "src/globe.c"),
+                str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / name)])
+            run([str(output / name)])
         gdi = ["-DSEG86", "-DDRV_GDI", "-D_huge=", "-D_far=", "-D_near=",
                "-I" + str(ROOT / "tests/win16_shim")]
         run(cc + common + gdi + [str(ROOT / "tests/driver_helpers.c"),

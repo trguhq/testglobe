@@ -32,12 +32,12 @@
       <section class="viewer" aria-label="Interactive Earth globe">
         <div id="viewport" class="viewport" aria-busy="true">
           <canvas id="globe" data-testid="globe" tabindex="0"
-            aria-label="Earth globe. Drag to rotate. Keys 1 through 5 change detail; A rotates automatically; T toggles texture; O toggles the overlay; F toggles FPS; Escape pauses.">
+            aria-label="Earth globe. Drag to rotate. Keys 1 through 5 change detail; A rotates automatically; T toggles texture; C toggles CPU culling; O toggles the overlay; F toggles FPS; Escape pauses.">
             This demo needs JavaScript and a browser with WebGL 2 support.
           </canvas>
           <div id="osd" class="osd">
             <p id="stats" data-testid="status">Loading globe…</p>
-            <p class="osd-help">1–5 detail &nbsp; A rotate &nbsp; O overlay &nbsp; F FPS &nbsp; T texture</p>
+            <p class="osd-help">1–5 detail &nbsp; A rotate &nbsp; O overlay &nbsp; F FPS &nbsp; C cull &nbsp; T texture</p>
           </div>
           <div id="loading" class="screen-message" aria-hidden="true">
             <span class="loading-dot"></span><span>Loading Earth data…</span>
@@ -71,6 +71,7 @@
             <button id="toggle-auto" data-testid="auto" type="button" aria-pressed="false" disabled><kbd>A</kbd> Rotate</button>
             <button id="toggle-osd" data-testid="osd" type="button" aria-pressed="true" disabled><kbd>O</kbd> Overlay</button>
             <button id="toggle-fps" data-testid="fps" type="button" aria-pressed="true" disabled><kbd>F</kbd> FPS</button>
+            <button id="toggle-cull" data-testid="cull" type="button" aria-pressed="false" disabled><kbd>C</kbd> Cull</button>
           </div>
         </fieldset>
       </section>

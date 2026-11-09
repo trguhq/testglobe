@@ -177,6 +177,10 @@ colors, nearest solid entries, invalid inputs, and all ordered-pattern levels.
   resolution changes.
 - The independent-triangle reference uses `tests/tri_mode.h`. Normal builds select
   `TRI`, `TRISTRIP`, or `QUAD` in driver headers, not through command-line defines.
+- `tests/cull_bands.c` compares CPU band culling with an independent triangle-facing
+  calculation for OpenGL strips/caps, retained TRI, IRIS GL, and XGL. It checks
+  all five resolutions, seam and pole views, grazing boundaries, custom radii and
+  latitudes, and exact winding, colors, and UVs.
 - `tests/driver_api.c` checks supported declarations, rejects unsupported callbacks,
   and checks XGL's distinct RGB/UV signatures. Plural `globe_draw_*` traversal names
   and singular `drv_draw_*` callbacks are checked as separate interfaces.
@@ -247,9 +251,11 @@ application build dependencies.
   incorrect chunk sizes, and partial or cancelled loads.
 - **Geometry:** all five resolutions match the native triangle topology, including
   nondegenerate pole triangles, outward winding, strip-restart parity, index bounds,
-  and UV coordinates. The frontend retains no global map-data cache.
+  and UV coordinates. CPU band ranges are compared with a per-triangle reference;
+  rendered comparisons permit bounded silhouette-only rounding differences.
+  The frontend retains no global map-data cache.
 - **Browser rendering and controls:** the browser checks exercise the production
-  page, canvas output, resolution selection, texture/rotation/OSD/FPS controls,
+  page, canvas output, resolution selection, texture/rotation/OSD/FPS/culling controls,
   resetting the view, dragging, resizing, and touch input.
 - **Recovery:** browser checks cover unavailable WebGL, failed map requests,
   resolution fallback, competing requests, texture failure and reduction, resize
@@ -284,6 +290,8 @@ python3 tests/run.py --ogl-contract
   compared with the TRI reference at all resolutions, including provoking colors and
   UVs. Display-list checks cover the enabled default, `d`/`D`, redraws, deletion,
   immediate drawing while disabled, lazy rebuilding, and resolution/texture changes.
+  `c`/`C` temporarily disables lists while preserving the saved `d` preference;
+  IRIS GL objects are also bypassed and reused when culling is turned off.
 - **Compatibility and failures:** OpenGL 1.1 declarations and object imports are
   checked. GLUT headers without display-mode availability queries use one RGB,
   double-buffered window request, including old headers without display strings.

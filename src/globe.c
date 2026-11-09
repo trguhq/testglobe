@@ -396,7 +396,220 @@ recovered:
     return TRUE;
 }
 
+#ifdef DRV_CULL
+typedef struct Globe_cull_view
+{
+    double eye[3], horizontal_eye, phase, half_cosine, error;
+} Globe_cull_view;
+
+static int globe_cull_view_init(Globe_cull_view *view)
+{
+    if (!drv_cull_eye(view->eye)) return FALSE;
+    view->horizontal_eye = sqrt(view->eye[0] * view->eye[0] +
+                                  view->eye[1] * view->eye[1]);
+    view->phase = atan2(view->eye[1], view->eye[0]);
+    if (view->phase < 0.0) view->phase += 2.0 * PI;
+    view->half_cosine = cos(PI / globe_longitude);
+    view->error = 64.0 * FLT_EPSILON * (double)globe_radius *
+                    ((double)GLOBE_VIEW_DISTANCE + globe_radius);
+    return TRUE;
+}
+
+/* Two cyclic longitude intervals bound each band's front-facing region.
+ * Their difference is a narrow silhouette neighborhood, checked against
+ * the actual float vertices. No second mesh or per-face visibility array
+ * is retained. A numerically tangent band can require checking the whole
+ * band; ordinary bands skip their hidden and retained interiors in blocks. */
+typedef struct Globe_cull_band
+{
+    const double *eye;
+    int row, per_cell;
+    int possible[2][2], definite[2][2];
+    int possible_count, definite_count;
+} Globe_cull_band;
+
+static int globe_cull_ranges(double amplitude, double bias, double phase,
+                              double margin, int ranges[2][2])
+{
+    double threshold, half, step;
+    int first, last, count;
+    if (amplitude <= 0.0)
+    {
+        if (bias < margin) return 0;
+        ranges[0][0] = 0; ranges[0][1] = globe_longitude;
+        return 1;
+    }
+    threshold = (margin - bias) / amplitude;
+    if (threshold > 1.0) return 0;
+    if (threshold <= -1.0)
+    {
+        ranges[0][0] = 0; ranges[0][1] = globe_longitude;
+        return 1;
+    }
+    half = acos(threshold);
+    step = 2.0 * PI / globe_longitude;
+    first = (int)ceil((phase - half) / step - 0.5);
+    last = (int)floor((phase + half) / step - 0.5) + 1;
+    if (first >= last) return 0;
+    if (last - first >= globe_longitude)
+    {
+        ranges[0][0] = 0; ranges[0][1] = globe_longitude;
+        return 1;
+    }
+    count = 0;
+    if (first < 0)
+    {
+        if (last > 0)
+        { ranges[count][0] = 0; ranges[count++][1] = last; }
+        ranges[count][0] = first + globe_longitude;
+        ranges[count++][1] = globe_longitude;
+    }
+    else if (last > globe_longitude)
+    {
+        ranges[count][0] = 0;
+        ranges[count++][1] = last - globe_longitude;
+        if (first < globe_longitude)
+        { ranges[count][0] = first; ranges[count++][1] = globe_longitude; }
+    }
+    else
+    {
+        ranges[count][0] = first;
+        ranges[count++][1] = last;
+    }
+    return count;
+}
+
+static void globe_cull_band_init(Globe_cull_band *band, int row,
+                                  const Globe_cull_view *view)
+{
+    const Vertex TG_HUGE *top, *bottom;
+    double horizontal, vertical, plane, amplitude, bias;
+    band->eye = view->eye;
+    band->row = row;
+    band->per_cell = row == 0 || row == globe_latitude - 1 ? 1 : 2;
+    top = globe_verts + (unsigned long)row * (globe_longitude + 1UL);
+    bottom = top + globe_longitude + 1;
+    /* A latitude cell lies in n.xy = horizontal*(cos(mid),sin(mid)),
+     * n.z = vertical, n.p = plane. The finite eye handles perspective. */
+    horizontal = ((double)top->z - bottom->z) / view->half_cosine;
+    vertical = (double)bottom->x - top->x;
+    plane = (double)bottom->x * top->z - (double)top->x * bottom->z;
+    amplitude = horizontal * view->horizontal_eye;
+    bias = vertical * view->eye[2] - plane;
+    /* Allow for float trigonometry, vertex rounding and differences between
+     * the two triangles' planes. This only expands the boundary checks. */
+    band->possible_count = globe_cull_ranges(amplitude, bias, view->phase, -view->error,
+                                             band->possible);
+    band->definite_count = globe_cull_ranges(amplitude, bias, view->phase, view->error,
+                                             band->definite);
+    if (globe_radius < FLT_MIN / FLT_EPSILON)
+    {
+        /* Subnormal vertices have no useful relative rounding bound. */
+        band->possible_count = 1;
+        band->possible[0][0] = 0;
+        band->possible[0][1] = globe_longitude;
+        band->definite_count = 0;
+    }
+}
+
+static int globe_cull_boundary(const Globe_cull_band *band, int facet)
+{
+    const Vertex TG_HUGE *top, *bottom;
+    int cell;
+    cell = facet / band->per_cell;
+    top = globe_verts + (unsigned long)band->row * (globe_longitude + 1UL) + cell;
+    bottom = top + globe_longitude + 1;
+    if (band->row == 0 || (band->per_cell == 2 && (facet & 1)))
+        return drv_cull_triangle(top + 1, bottom, bottom + 1, band->eye);
+    return drv_cull_triangle(top, bottom, top + 1, band->eye);
+}
+
+static int globe_cull_step(const Globe_cull_band *band, int facet, int *next)
+{
+    int i, j, first, last;
+    for (i = 0; i < band->possible_count; ++i)
+    {
+        first = band->possible[i][0] * band->per_cell;
+        last = band->possible[i][1] * band->per_cell;
+        if (facet < first) { *next = first; return FALSE; }
+        if (facet >= last) continue;
+        for (j = 0; j < band->definite_count; ++j)
+        {
+            if (facet >= band->definite[j][0] * band->per_cell &&
+                facet < band->definite[j][1] * band->per_cell)
+            {
+                *next = band->definite[j][1] * band->per_cell;
+                if (*next > last) *next = last;
+                return TRUE;
+            }
+        }
+        *next = facet + 1;
+        return globe_cull_boundary(band, facet);
+    }
+    *next = globe_longitude * band->per_cell;
+    return FALSE;
+}
+
+static int globe_cull_next(const Globe_cull_band *band, int cursor,
+                            int *first, int *last)
+{
+    int next, visible, started;
+    started = FALSE;
+    while (cursor < globe_longitude * band->per_cell)
+    {
+        visible = globe_cull_step(band, cursor, &next);
+        if (!visible && started) break;
+        if (visible && !started) { *first = cursor; started = TRUE; }
+        cursor = next;
+    }
+    *last = cursor;
+    return started;
+}
+#endif
+
 #if defined(TRI) || defined(DRV_TRI_CAPS)
+#ifdef DRV_CULL
+static void globe_draw_tri_facet(int row, int facet,
+                                  const unsigned char TG_HUGE *colors)
+{
+    Vertex TG_HUGE *a, TG_HUGE *b, TG_HUGE *c;
+    unsigned long top, bottom;
+    int cell, second;
+#ifndef DRV_COLORMAP
+    Color_RGB color;
+#endif
+#ifdef TEXTURE
+    Coord ca, cb, cc;
+#endif
+    second = row == 0 || (row != globe_latitude - 1 && (facet & 1));
+    cell = row == 0 || row == globe_latitude - 1 ? facet : facet / 2;
+    top = (unsigned long)row * (globe_longitude + 1UL) + cell;
+    bottom = top + globe_longitude + 1UL;
+    a = globe_verts + top + (second ? 1 : 0);
+    b = globe_verts + bottom;
+    c = globe_verts + (second ? bottom : top) + 1;
+#ifdef TEXTURE
+    if (drv_texture_active)
+    {
+        ca.u = (float)(cell + (second ? 1 : 0)) / globe_longitude;
+        ca.v = (float)row / globe_latitude;
+        cb.u = (float)cell / globe_longitude;
+        cb.v = (float)(row + 1) / globe_latitude;
+        cc.u = (float)(cell + 1) / globe_longitude;
+        cc.v = (float)(row + (second ? 1 : 0)) / globe_latitude;
+        drv_draw_tri_flat_uv(a, b, c, &ca, &cb, &cc);
+        return;
+    }
+#endif
+#ifdef DRV_COLORMAP
+    drv_draw_tri_flat_color(a, b, c, colors[cell]);
+#else
+    globe_color_rgb(colors[cell], &color);
+    drv_draw_tri_flat_rgb(a, b, c, &color);
+#endif
+}
+#endif
+
 static void globe_draw_tri_rows(int first, int last)
 {
     const unsigned char TG_HUGE *colors;
@@ -409,12 +622,38 @@ static void globe_draw_tri_rows(int first, int last)
 #endif
     int i, j;
     unsigned long row;
+#ifdef DRV_CULL
+    Globe_cull_view view;
+    Globe_cull_band band;
+    int cursor, retained_first, retained_last, facet;
+#endif
 
     if (!globe_valid || drv_frame_failed || first >= last) return;
+#ifdef DRV_CULL
+    if (drv_cull_enabled && !globe_cull_view_init(&view))
+    { drv_abort_frame("invalid culling view"); return; }
+#endif
     for (i = first; i < last; ++i)
     {
         colors = globe_color_row(i);
         if (colors == NULL) return;
+#ifdef DRV_CULL
+        if (drv_cull_enabled)
+        {
+            globe_cull_band_init(&band, i, &view);
+            cursor = 0;
+            while (globe_cull_next(&band, cursor, &retained_first, &retained_last))
+            {
+                for (facet = retained_first; facet < retained_last; ++facet)
+                {
+                    globe_draw_tri_facet(i, facet, colors);
+                    if (drv_frame_failed) return;
+                }
+                cursor = retained_last;
+            }
+            continue;
+        }
+#endif
         row = (unsigned long)i * (globe_longitude + 1UL);
         v1 = globe_verts + row;
         v1_1 = v1 + 1;
@@ -494,22 +733,125 @@ static void globe_submit_tristrip(unsigned int count)
 #endif
 }
 
+#ifdef DRV_CULL
+static void globe_strip_vertex(unsigned int destination, unsigned long source)
+{
+    globe_strip_verts[destination] = globe_verts[source];
+#ifdef TEXTURE
+    if (drv_texture_active)
+    {
+        globe_strip_coords[destination].u =
+            (float)(source % (globe_longitude + 1UL)) / globe_longitude;
+        globe_strip_coords[destination].v =
+            (float)(source / (globe_longitude + 1UL)) / globe_latitude;
+    }
+#endif
+}
+
+static void globe_strip_color(unsigned int destination, unsigned char color)
+{
+#ifdef DRV_COLORMAP
+    globe_strip_colors[destination] = color;
+#else
+    globe_color_rgb(color, globe_strip_colors + destination);
+#endif
+}
+
+static void globe_draw_culled_strip_row(int row,
+                                         const unsigned char TG_HUGE *colors,
+                                         const Globe_cull_view *view)
+{
+    Globe_cull_band band;
+    unsigned long top, bottom, source;
+    unsigned int i, raw, count;
+    int cursor, first, last;
+#ifndef DRV_TRI_CAPS
+    int j;
+#endif
+    globe_cull_band_init(&band, row, view);
+    top = (unsigned long)row * (globe_longitude + 1UL);
+    bottom = top + globe_longitude + 1UL;
+    cursor = 0;
+    while (globe_cull_next(&band, cursor, &first, &last))
+    {
+        cursor = last;
+        if (band.per_cell == 1)
+        {
+#ifndef DRV_TRI_CAPS
+            for (j = first; j < last; ++j)
+            {
+                globe_strip_vertex(0U, top + j + (row == 0 ? 1UL : 0UL));
+                globe_strip_vertex(1U, bottom + j);
+                globe_strip_vertex(2U, (row == 0 ? bottom : top) + j + 1UL);
+                globe_strip_color(0U, colors[j]);
+                globe_submit_tristrip(3U);
+                if (drv_frame_failed) return;
+            }
+#endif
+            continue;
+        }
+        if (first & 1)
+        {
+            /* Restarting on an odd triangle reverses a strip's winding.
+             * Emit that one triangle in its original order, then resume
+             * the remainder at an even facet with no degenerate padding. */
+            globe_strip_vertex(0U, top + (unsigned int)(first + 1) / 2U);
+            globe_strip_vertex(1U, bottom + (unsigned int)first / 2U);
+            globe_strip_vertex(2U, bottom + (unsigned int)(first + 2) / 2U);
+            globe_strip_color(0U, colors[first / 2]);
+            globe_submit_tristrip(3U);
+            if (drv_frame_failed) return;
+            ++first;
+        }
+        if (first >= last) continue;
+        count = (unsigned int)(last - first + 2);
+        for (i = 0; i < count; ++i)
+        {
+            raw = (unsigned int)first + i;
+            source = (raw & 1U ? bottom : top) + raw / 2U;
+            globe_strip_vertex(i, source);
+            if (i < count - 2U) globe_strip_color(i, colors[raw / 2U]);
+        }
+        globe_submit_tristrip(count);
+        if (drv_frame_failed) return;
+    }
+}
+#endif
+
 void globe_draw_tristrips(void)
 {
     int i, j;
     unsigned int count;
     unsigned long top, bottom;
     const unsigned char TG_HUGE *colors;
+#ifdef DRV_CULL
+    Globe_cull_view view;
+#endif
 #ifndef DRV_TRI_CAPS
     int k;
     unsigned long cap[3];
 #endif
     if (!globe_valid || drv_frame_failed) return;
+#ifdef DRV_CULL
+    if (drv_cull_enabled && !globe_cull_view_init(&view))
+    { drv_abort_frame("invalid culling view"); return; }
+#endif
     count = 2U * ((unsigned int)globe_longitude + 1U);
     for (i = 0; i < globe_latitude; ++i)
     {
         colors = globe_color_row(i);
         if (colors == NULL) return;
+#ifdef DRV_CULL
+        if (drv_cull_enabled)
+        {
+#ifdef DRV_TRI_CAPS
+            if (i == 0 || i == globe_latitude - 1) continue;
+#endif
+            globe_draw_culled_strip_row(i, colors, &view);
+            if (drv_frame_failed) return;
+            continue;
+        }
+#endif
         top = (unsigned long)i * (globe_longitude + 1UL);
         bottom = top + globe_longitude + 1UL;
         if (i == 0 || i == globe_latitude - 1)

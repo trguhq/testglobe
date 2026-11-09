@@ -68,6 +68,7 @@ Letter controls accept either case.
 | `p` | Toggle FPS measurement in the chipset/RTG Amiga driver. |
 | `o` | Toggle the on-screen display (OSD). |
 | `t` | Toggle texture mapping in OpenGL, IRIS GL, Sun XGL, and WebGL. |
+| `c` | Toggle CPU culling by latitude-band longitude ranges in OpenGL, IRIS GL, Sun XGL, and WebGL; starts off. |
 | `d` | Toggle display lists in OpenGL, or palette dithering in native Amiga; both start enabled. |
 | `s` | Switch Matrox or TIGA between host software 3D and board/API transforms. Matrox starts with LibShell transforms; TIGA starts with host transforms. |
 | `Esc` | Exit native applications; in WebGL, pause rotation and release dragging. |
@@ -108,8 +109,9 @@ clock changes, so adjusting the desktop clock does not stall rotation or FPS.
 | `texture loading` | WebGL is fetching or uploading a texture; flat colors remain visible. |
 | `texture fail` | Texturing is enabled but a detected failure prevents its use; recoverable failures draw flat colors. |
 | `dlist on` | OpenGL successfully uses a display list for the current frame. |
-| `dlist off` | Display lists are disabled. |
-| `dlist fail` | Lists are enabled but unavailable, failed, or bypassed. |
+| `dlist off` | Display lists are disabled by `d`, or temporarily disabled while CPU culling is on. |
+| `dlist fail` | Lists are enabled but unavailable, failed, or bypassed by software texturing. |
+| `cull on` / `cull off` | CPU band culling is enabled / disabled; native API backface culling remains enabled in both modes. |
 | `dither on` / `dither off` | Amiga palette dithering is enabled / disabled; off uses the nearest solid palette color. |
 | `dither n/a` | Amiga is drawing directly in RGB on a truecolor RTG screen. |
 | `fullscreen, double buffered` | The chipset/RTG Amiga driver is presenting complete frames on a private screen. |
@@ -122,7 +124,7 @@ Toggle `t` off and on to retry after a recoverable texture failure. OpenGL softw
 texturing bypasses display lists, so enabled lists report `dlist fail` on that path.
 XGL's internal software pipeline still reports `texture on`; IRIS GL cannot detect
 all silent native texture failures. Their driver sections describe these limits.
-OpenGL places `dlist` after FPS and before texture status, with its `d` help last.
+OpenGL places `dlist` before texture status, with its `d` help last.
 QuickDraw appends GWorld status after the other statistics. Matrox and TIGA append
 `soft3d` and CPU/FPU details and place `S` last in their help; TIGA also reports
 buffering. Failed TI module extraction or loading leaves `soft3d on` with a recovery
@@ -138,6 +140,17 @@ QuickDraw clamping its window to the selected screen.
 GDI, QuickDraw, and Amiga resize the projection to the drawable client area. Narrow
 windows clip the globe rather than stretching it. Amiga also accounts for the
 selected display mode's pixel proportions.
+
+CPU culling finds the front-facing longitude ranges of each latitude band and
+submits their triangle-strip runs, with checks near the boundaries to preserve
+the silhouette, winding, and texture coordinates. It uses the perspective camera
+position rather than assuming that exactly half the globe is visible. This option
+can reduce geometry submission, but its performance depends on the platform.
+OpenGL display lists and IRIS GL geometry objects are bypassed while it is on.
+OpenGL remembers the `d` preference, including changes made while culling is on,
+and applies it again when culling is turned off. The displayed polygon total
+continues to describe the complete mesh. Nearly edge-on facets can differ by a
+silhouette pixel because CPU and native transform rounding are not identical.
 
 ### Resource recovery
 
@@ -440,7 +453,9 @@ WebGL retains vertex/index buffers and draws latitude strips with native transfo
 depth testing, and back-face culling. Flat shading quantizes UV coordinates to Earth
 patches, then looks up each patch's palette index and RGB color. Texture mapping
 normally uses a separate 512 × 256 RGB image and GPU-generated mipmaps, independently
-of the selected globe resolution. There is no display-list toggle.
+of the selected globe resolution. There is no display-list toggle. The optional
+`c` control retains GPU vertex buffers and textures while selecting front-facing
+strip ranges through an updated index buffer.
 
 Missing map data or allocation shortages at startup can select smaller resolutions.
 A failed resolution change preserves an existing globe; **Retry** requests the chosen
@@ -1368,6 +1383,7 @@ All native application targets also define `DRV`; Microsoft C builds use `-AH`. 
 header supplies `GDI` for Windows-specific integration. Primitive/callback-capability
 defines belong in headers, not compiler flags. `TRI` remains a tested reference path.
 `DRV_TRI_COLOR`, `DRV_TRI_RGB`, and `DRV_TRI_UV` expose only implemented callbacks.
+`DRV_CULL` enables the optional CPU band-culling control in OpenGL, IRIS GL, and XGL.
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` describes the
 window's runtime mode. All native drivers except XGL define `DRV_COLORMAP`, even when
 they can draw to RGB windows.
@@ -1430,7 +1446,7 @@ radius of 1,000 for their shared fixed-point pipeline. Matrox retains the valida
 1,000-unit range for LibShell's fixed-point transforms. These limits are driver
 capabilities rather than a restriction on every globe.
 
-Triangle strips follow complete interior latitude bands. At key 5, an interior strip
+With CPU culling off, triangle strips follow complete interior latitude bands. At key 5, an interior strip
 has 1,026 vertices and 1,024 triangles. Desktop OpenGL sends 254 such strips plus one
 cap batch: 263,676 submitted vertices for 261,120 triangles, compared with 783,360 vertices for
 independent triangles. Amiga OpenGL splits bands for MiniGL's color and buffer

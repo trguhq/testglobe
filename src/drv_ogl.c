@@ -732,7 +732,10 @@ void drv_render(void)
 #endif
         if (requested && ogl_texture_failed)
             glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
-        if (ogl_dlist_enabled)
+        /* Whole-globe lists cannot select view-dependent longitude runs.
+         * Preserve the requested D setting and cached full mesh while C
+         * temporarily forces direct, pre-culled submissions. */
+        if (ogl_dlist_enabled && !drv_cull_enabled)
             ogl_dlist_used = ogl_draw_dlist();
         if (!ogl_dlist_used) ogl_draw_globe();
         if (ready)
@@ -1314,7 +1317,8 @@ void drv_draw_osd(void)
     
     ogl_draw_string(drv_help, 10, 10);
     drv_format_stats(status_str);
-    drv_append_status(status_str, sizeof(status_str), !ogl_dlist_enabled ? ", dlist off" :
+    drv_append_status(status_str, sizeof(status_str),
+             (!ogl_dlist_enabled || drv_cull_enabled) ? ", dlist off" :
              (ogl_dlist_used ? ", dlist on" : ", dlist fail"));
     drv_append_status(status_str, sizeof(status_str), !drv_texture_enabled ? ", texture off" :
              (ogl_texture_used ? (ogl_indexed ? ", texture soft" : ", texture on") :

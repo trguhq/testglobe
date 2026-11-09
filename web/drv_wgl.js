@@ -1,5 +1,5 @@
 /* testglobe WebGL 2 driver. SPDX-License-Identifier: GPL-3.0-or-later */
-import { earth_palette } from "./globe.js";
+import { earth_palette, globe_cull_profile, globe_cull_indices } from "./globe.js";
 
 const drv_vertex_source = `#version 300 es
 precision highp float;
@@ -171,6 +171,7 @@ function drv_scene_delete(gl, scene) {
     if (scene.vao) gl.deleteVertexArray(scene.vao);
     if (scene.vertices) gl.deleteBuffer(scene.vertices);
     if (scene.indices) gl.deleteBuffer(scene.indices);
+    if (scene.cullBuffer) gl.deleteBuffer(scene.cullBuffer);
     if (scene.colors) gl.deleteTexture(scene.colors);
 }
 
@@ -203,6 +204,38 @@ function drv_matrix(matrix, aspect, rotationX, rotationY) {
     drv_rotate(matrix, 2, 0, rotationY);
     drv_rotate(matrix, 1, 2, -90);
     drv_rotate(matrix, 0, 1, -90);
+}
+
+function drv_cull_scene(gl, scene, rotationX, rotationY) {
+    if (scene.cullProfileFailed) throw drv_failure("Cannot allocate globe culling data", "OUT_OF_MEMORY");
+    if (!scene.cullProfile) throw drv_failure("CPU culling requires a regular globe grid", "BAD_DATA");
+    const x = rotationX % 360, y = rotationY % 360;
+    if (scene.cullPose && scene.cullPose[0] === x && scene.cullPose[1] === y) return;
+    const rx = x * Math.PI / 180, ry = y * Math.PI / 180;
+    // Inverse of the driver's model rotation applied to the finite camera
+    // position. A fixed view direction would incorrectly retain a hemisphere.
+    const eye = [3000 * Math.cos(rx) * Math.cos(ry),
+                 -3000 * Math.cos(rx) * Math.sin(ry), 3000 * Math.sin(rx)];
+    let retained;
+    try {
+        retained = globe_cull_indices(scene.cullProfile, eye, scene.cullStorage);
+    } catch (error) {
+        if (error instanceof RangeError) throw drv_failure("Cannot allocate culled globe indices", "OUT_OF_MEMORY");
+        throw error;
+    }
+    scene.cullStorage = retained.indices;
+    if (!scene.cullBuffer) {
+        scene.cullBuffer = gl.createBuffer();
+        if (!scene.cullBuffer) {
+            drv_check(gl, "Create culled index buffer");
+            throw drv_failure("Cannot allocate culled index buffer", "OUT_OF_MEMORY");
+        }
+    }
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, scene.cullBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, retained.indices.subarray(0, retained.count), gl.DYNAMIC_DRAW);
+    drv_check(gl, "Upload culled globe indices");
+    scene.cullIndexCount = retained.count;
+    scene.cullPose = [x, y];
 }
 
 export function drv_create(canvas) {
@@ -319,6 +352,14 @@ export function drv_create(canvas) {
                     width: mesh.width, height: mesh.height, vertexCount: mesh.vertexCount,
                     triangleCount: mesh.triangleCount, indexCount: mesh.indices.length
                 });
+                try {
+                    replacement.cullProfile = globe_cull_profile(mesh);
+                } catch (error) {
+                    // Culling is optional. Its small CPU tables must not
+                    // invalidate an otherwise usable default GPU scene.
+                    if (!(error instanceof RangeError)) throw error;
+                    replacement.cullProfileFailed = true;
+                }
             } catch (error) {
                 drv_scene_delete(gl, replacement);
                 throw error;
@@ -377,7 +418,7 @@ export function drv_create(canvas) {
             return Object.freeze({ width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, pixelRatio: ratio });
         },
 
-        draw({ rotationX = 0, rotationY = 0, textured = false } = {}) {
+        draw({ rotationX = 0, rotationY = 0, textured = false, cull = false } = {}) {
             drv_alive();
             if (!Number.isFinite(rotationX) || !Number.isFinite(rotationY)) {
                 throw drv_failure("Invalid globe rotation", "BAD_INPUT");
@@ -398,9 +439,12 @@ export function drv_create(canvas) {
             // Every active sampler needs a compatible complete texture even
             // while its shader branch is disabled.
             gl.bindTexture(gl.TEXTURE_2D, texture || palette);
+            if (cull) drv_cull_scene(gl, scene, rotationX, rotationY);
             gl.bindVertexArray(scene.vao);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cull ? scene.cullBuffer : scene.indices);
             // WebGL 2 always enables fixed-index restart for indexed strips.
-            gl.drawElements(gl.TRIANGLE_STRIP, scene.stats.indexCount, gl.UNSIGNED_INT, 0);
+            gl.drawElements(gl.TRIANGLE_STRIP, cull ? scene.cullIndexCount : scene.stats.indexCount,
+                            gl.UNSIGNED_INT, 0);
             gl.bindVertexArray(null);
             drv_check(gl, "Draw globe");
             return useTexture;

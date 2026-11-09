@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { EARTH_LEVELS, earth_palette, globe_build_mesh, earth_load } from "../web/globe.js";
+import { EARTH_LEVELS, earth_palette, globe_build_mesh, earth_load,
+         globe_cull_profile, globe_cull_indices } from "../web/globe.js";
 
 const root = new URL("../", import.meta.url);
 
@@ -99,6 +100,80 @@ function test_mesh(width) {
     }
 }
 
+function* test_strip_triangles(indices, count = indices.length) {
+    let first, second, vertices = 0;
+    for (let i = 0; i < count; ++i) {
+        const third = indices[i];
+        if (third === 0xffffffff) { vertices = 0; continue; }
+        if (vertices >= 2 && first !== second && first !== third && second !== third) {
+            yield vertices & 1 ? [second, first, third] : [first, second, third];
+        }
+        first = second; second = third; ++vertices;
+    }
+}
+
+function test_facing(mesh, tuple, eye) {
+    const [a, b, c] = tuple.map(index => Array.from(test_vertex(mesh, index)));
+    const u = b.map((value, axis) => value - a[axis]);
+    const v = c.map((value, axis) => value - a[axis]);
+    return (u[1]*v[2] - u[2]*v[1]) * (eye[0] - a[0]) +
+           (u[2]*v[0] - u[0]*v[2]) * (eye[1] - a[1]) +
+           (u[0]*v[1] - u[1]*v[0]) * (eye[2] - a[2]) > 0;
+}
+
+function test_culling(width) {
+    const mesh = globe_build_mesh(width), profile = globe_cull_profile(mesh);
+    assert(profile);
+    assert(profile.rows.byteLength + profile.longitude.byteLength < mesh.vertices.byteLength / 10,
+           "culling retains factored rows/longitudes, not another vertex grid");
+    const poses = [[0, 180], [19, 37], [71, 302], [90, 0], [-90, 37],
+                   [247, 121], [0, 0], [89.999, 179.999]];
+    const eyes = poses.map(([x, y]) => {
+        x *= Math.PI / 180; y *= Math.PI / 180;
+        return [3000 * Math.cos(x) * Math.cos(y),
+                -3000 * Math.cos(x) * Math.sin(y), 3000 * Math.sin(x)];
+    });
+    /* An axial camera exactly on a band plane exercises the rare case where
+     * Float32 rounding requires checking a whole ambiguous band. */
+    const row = Math.floor(profile.height / 4);
+    const rt = profile.rows[2 * row], zt = profile.rows[2 * row + 1];
+    const rb = profile.rows[2 * row + 2], zb = profile.rows[2 * row + 3];
+    eyes.push([0, 0, (rb * zt - rt * zb) / (rb - rt)], [0, 0, 0]);
+    let storage = null;
+    for (let pose = 0; pose < eyes.length; ++pose) {
+        const eye = eyes[pose], output = globe_cull_indices(profile, eye, storage);
+        storage = output.indices;
+        const retained = new Uint8Array(width * profile.height);
+        let triangles = 0;
+        for (const tuple of test_strip_triangles(output.indices, output.count)) {
+            test_triangle(mesh, tuple, retained);
+            assert(test_facing(mesh, tuple, eye), "only front-facing triangles submitted");
+            ++triangles;
+        }
+        let expected = 0;
+        for (const tuple of test_strip_triangles(mesh.indices)) {
+            if (!test_facing(mesh, tuple, eye)) continue;
+            const rows = tuple.map(index => Math.floor(index / (width + 1)));
+            const columns = tuple.map(index => index % (width + 1));
+            const row = Math.min(...rows), column = Math.min(...columns);
+            const first = row * (width + 1) + column;
+            const bit = tuple[0] === first ? 1 : 2;
+            assert(retained[row * width + column] & bit, "no front-facing silhouette holes");
+            ++expected;
+        }
+        assert.equal(triangles, expected);
+        assert.equal(output.triangleCount, expected);
+        if (pose < poses.length) {
+            assert(output.triangleTests < mesh.triangleCount / 8,
+                   "normal views classify bands rather than testing every triangle");
+            assert(expected > 0 && expected < mesh.triangleCount / 2);
+        }
+    }
+    const irregular = globe_build_mesh(width);
+    irregular.vertices[5] += 1;
+    assert.equal(globe_cull_profile(irregular), null, "unrelated geometry cannot use globe band bounds");
+}
+
 async function test_data() {
     const originalFetch = globalThis.fetch;
     const requests = [];
@@ -178,6 +253,10 @@ for (const invalid of [0, -1, 33, 1024, NaN, Infinity, "32", null]) {
     assert.throws(() => globe_build_mesh(invalid), RangeError);
 }
 for (const width of EARTH_LEVELS) test_mesh(width);
+for (const width of EARTH_LEVELS) test_culling(width);
+assert.throws(() => globe_cull_indices(null, [0, 0, 3000]), RangeError);
+assert.throws(() => globe_cull_indices(globe_cull_profile(globe_build_mesh(32)), [NaN, 0, 3000]), RangeError);
+console.log("PASS WebGL band culling: all LODs, finite perspective eyes, exact source facets/colors/UV winding, seams/poles, axial grazing, bounded boundary tests and compact geometry");
 const paletteSource = await readFile(new URL("src/e_cmap.h", root), "utf8");
 const paletteRows = [...paletteSource.matchAll(/\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\}/g)];
 assert.equal(paletteRows.length, 256);

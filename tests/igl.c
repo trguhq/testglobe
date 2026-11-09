@@ -14,7 +14,7 @@
 
 static int fail_stage, fail_image, fail_mips, fail_frame, fail_pixels;
 static int fail_capability, fail_object, fail_object_validation, fail_traversal, reduced_texture;
-static unsigned int object_attempts;
+static unsigned int object_attempts, object_calls;
 static void *fixture_malloc(size_t bytes);
 static Drv_result fixture_texture_build(int size);
 static Drv_result fixture_texsoft_texture_take(unsigned int width, unsigned int height,
@@ -278,7 +278,7 @@ void v3f(float v[3])
 void endtmesh(void)
 {
     assert(in_mesh&&mesh_vertices>=3);
-    if(mesh_vertices!=3){
+    if(mesh_vertices!=3&&!drv_cull_enabled){
         assert(mesh_vertices==2U*((unsigned int)globe_longitude+1U));
         if(texture_bound){
             assert(first_uvs[0][0]==0&&first_uvs[1][0]==0);
@@ -356,7 +356,7 @@ void backbuffer(Boolean enabled){assert(enabled==double_mode);}
 long genobj(void){++object_attempts;if(fail_object)return -1;assert(next_object<32);return (long)next_object++;}
 void makeobj(long id){assert(id>0&&id<32&&!current_object);current_object=(unsigned long)id;object_exists[id]=1;object_polygons[id]=object_meshes[id]=object_vertices[id]=0;object_textured[id]=texture_bound&&environment_bound;}
 void closeobj(void){assert(current_object);if(fail_object_validation)object_exists[current_object]=0;current_object=0;}
-void callobj(long id){assert(id>0&&id<32&&object_exists[id]);drawn+=object_polygons[id];drawn_meshes+=object_meshes[id];drawn_vertices+=object_vertices[id];if(object_textured[id]&&texture_bound&&environment_bound)++native_texture_draws;}
+void callobj(long id){assert(id>0&&id<32&&object_exists[id]);++object_calls;drawn+=object_polygons[id];drawn_meshes+=object_meshes[id];drawn_vertices+=object_vertices[id];if(object_textured[id]&&texture_bound&&environment_bound)++native_texture_draws;}
 void delobj(long id){assert(id>0&&id<32&&object_exists[id]);object_exists[id]=0;}
 Boolean isobj(long id){return id>0&&id<32&&object_exists[id];}
 
@@ -408,12 +408,16 @@ static void frame(void)
     rotations=0;drv_render();
     assert(drawn>before||raster_writes>old_writes);
     if(drawn>before){
+        if(drv_cull_enabled){
+            assert(drawn-before<globe_tris_num);
+        }else{
         expected_meshes=(unsigned long)globe_latitude-2UL+2UL*globe_longitude;
         expected_vertices=((unsigned long)globe_latitude-2UL)*2UL*(globe_longitude+1UL)+6UL*globe_longitude;
         assert(drawn-before==globe_tris_num);
         assert(drawn_meshes-old_meshes==expected_meshes);
         assert(drawn_vertices-old_vertices==expected_vertices);
         if(globe_longitude==512){assert(expected_meshes==1278UL&&expected_vertices==263676UL);}
+        }
     }
     assert(rotations==4);
     assert(rotation_axes[0]=='x'&&rotation_values[0]==drv_rot_x);
@@ -446,8 +450,24 @@ static void frame(void)
                (native_texture_draws>old_native?", texture on":", texture fail"));
         /* At the normal 640px window the status fits in one text line. */
         if(drv_win_width>=640U)assert(strstr(recorded_stats,expected_status)!=NULL);
+        assert(strstr(recorded_stats,drv_cull_enabled?", cull on":", cull off")!=NULL);
         assert(strstr(recorded_stats,"texture mapping")==NULL);
     }
+}
+
+static void check_cull_toggle(void)
+{
+    long saved;
+    unsigned int attempts,calls;
+    assert(!drv_cull_enabled);
+    saved=igl_object;attempts=object_attempts;calls=object_calls;
+    igl_keyboard('C');assert(drv_cull_enabled&&igl_dirty);
+    frame();
+    assert(igl_object==saved&&object_attempts==attempts&&object_calls==calls);
+    igl_keyboard('c');frame();
+    assert(!drv_cull_enabled&&igl_object==saved&&object_attempts==attempts);
+    assert(object_calls==calls+((drv_texture_enabled&&!igl_native_texture)?0U:1U));
+    puts("PASS IRIS GL CPU culling: C/c selects band ranges in flat/native/software texture modes without retained object use and restores the previous path");
 }
 
 static int failure_profile(const char *profile)
@@ -576,6 +596,7 @@ int main(int argc,char **argv)
     }
     frame();assert(drawn==globe_tris_num);
     before=emitted;frame();assert(emitted==before);
+    check_cull_toggle();
     /* IRIX ignores callobj on an undefined object. A lost cache must draw
      * directly this frame and rebuild lazily without losing geometry. */
     assert(igl_object>=0&&isobj(igl_object));
@@ -613,6 +634,7 @@ int main(int argc,char **argv)
     before=text_calls;igl_keyboard('o');frame();assert(text_calls==before);igl_keyboard('O');frame();
     igl_keyboard('T');assert(drv_texture_enabled);
     frame();
+    check_cull_toggle();
     if(igl_native_texture){
         assert(igl_object>=0&&isobj(igl_object));
         object_exists[igl_object]=0;
