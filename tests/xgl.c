@@ -18,6 +18,7 @@ extern int globe_longitude, globe_latitude;
 
 struct Test_xgl_object {
     int type, value[64];
+    double font_height;
     Xgl_object device, model, view, texture;
     int pending_destroy;
     Xgl_error_notify error_notify;
@@ -110,7 +111,9 @@ static void attributes(Xgl_object object, int attribute, va_list args)
                 assert(color->rgb.r == 1 && color->rgb.g == 1 && color->rgb.b == 1);
             break;
         case XGL_CTX_STEXT_CHAR_HEIGHT:
-            assert(va_arg(args, double) == 12.0);
+            object->font_height = va_arg(args, double);
+            assert(object->font_height == 10.0 || object->font_height == 12.0 ||
+                   object->font_height == 16.0);
             break;
         case XGL_CTX_LOCAL_MODEL_TRANS:
             object->model = va_arg(args, Xgl_object);
@@ -600,7 +603,7 @@ void xgl_stroke_text_extent(Xgl_ctx context, void *text,
                              Xgl_bounds_f2d *bounds, Xgl_pt_f2d *concatenate)
 {
     const char *character;
-    float width;
+    float width, scale;
     assert(!native_stopped);
     assert(context == xgl_overlay && text != NULL && bounds != NULL &&
            concatenate != NULL);
@@ -610,11 +613,12 @@ void xgl_stroke_text_extent(Xgl_ctx context, void *text,
     for (character = (const char *)text; *character != '\0'; ++character)
         width += *character == 'W' ? 9.0f :
                   (*character == 'i' || *character == ' ' ? 3.0f : 6.0f);
-    bounds->xmin = -1.0f;
-    bounds->xmax = width - 1.0f;
-    bounds->ymin = -2.0f;
-    bounds->ymax = 10.0f;
-    concatenate->x = width;
+    scale = (float)(context->font_height / 12.0);
+    bounds->xmin = -scale;
+    bounds->xmax = (width - 1.0f) * scale;
+    bounds->ymin = -2.0f * scale;
+    bounds->ymax = 10.0f * scale;
+    concatenate->x = width * scale;
     concatenate->y = 0.0f;
     ++extent_calls;
 }
@@ -887,6 +891,22 @@ int main(int argc, char **argv)
     check_render();
     send_key(XK_t); assert(!drv_texture_enabled); check_render();
     send_key(XK_t); assert(drv_texture_enabled); check_render();
+    /* An accepted globe enclosing the camera has no front-facing facets.
+     * Empty successful submission is not a failed native texture resource. */
+    before_mipmaps = mipmap_builds;
+    assert(globe_init_verts(32, 16, 3500.0f));
+    send_key(XK_c);
+    assert(drv_cull_enabled);
+    drv_render();
+    assert(!drv_frame_failed && frame_facets == 0 && frame_texture_facets == 0);
+    assert(drv_texture_loaded && !xgl_texture_failed && !xgl_texture_used);
+    assert(mipmap_builds == before_mipmaps && xgl_mipmap != NULL && xgl_tmap != NULL);
+    assert(strstr(osd_text, ", texture fail") != NULL);
+    send_key(XK_c);
+    assert(globe_init_verts(512, -1, GLOBE_RADIUS));
+    check_render();
+    assert(xgl_texture_used && mipmap_builds == before_mipmaps);
+    puts("PASS XGL empty culling: no submissions preserves native texture resources and later visible frames reuse them");
     assert(mipmap_builds == 1);
     send_key(XK_o); assert(!drv_osd_enabled); check_render();
     send_key(XK_o); assert(drv_osd_enabled); check_render();
@@ -977,8 +997,10 @@ int main(int argc, char **argv)
     XResizeWindow(xgl_display, xgl_window, 800, 600);
     drain_events();
     assert(drv_win_width == 800 && drv_win_height == 600 && resize_calls > 1);
+    assert(xgl_overlay->font_height == 12.0);
     check_render();
     xgl_resize(320, 240);
+    assert(xgl_overlay->font_height == 10.0);
     check_render();
     assert(strstr(osd_text, "T = texture mapping") != NULL);
     before_text = text_calls;
@@ -1003,7 +1025,14 @@ int main(int argc, char **argv)
     assert(text_calls == before_text);
     xgl_resize(800, 600);
     check_render();
-    puts("PASS XGL OSD: measured proportional-font wrapping, bearings, narrow windows, long words and tiny-window guards");
+    xgl_resize(1024, 768);
+    assert(xgl_overlay->font_height == 16.0);
+    check_render();
+    xgl_resize(1024, 240);
+    assert(xgl_overlay->font_height == 10.0);
+    check_render();
+    xgl_resize(800, 600);
+    puts("PASS XGL OSD: small/normal/large native fonts, measured proportional wrapping, bearings, narrow windows, long words and tiny-window guards");
     puts("PASS XGL X11 input: real window/events, all resolution keys, FPS toggle, mouse drag/release and right-button metadata, autorotation, resize and projection");
     memset(&close, 0, sizeof(close));
     close.xclient.type = ClientMessage;

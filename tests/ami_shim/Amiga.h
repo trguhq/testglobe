@@ -257,6 +257,8 @@ void BltBitMapRastPort(const struct BitMap *, LONG, LONG, struct RastPort *, LON
 ULONG GetRGB4(struct ColorMap *, LONG);
 void GetRGB32(struct ColorMap *, ULONG, ULONG, ULONG *);
 void SetFont(struct RastPort *, struct TextFont *);
+struct TextFont *OpenFont(struct TextAttr *);
+void CloseFont(struct TextFont *);
 ULONG GetVPModeID(struct ViewPort *);
 ULONG GetDisplayInfoData(APTR, UBYTE *, ULONG, ULONG, ULONG);
 BOOL AutoRequest(struct Window *, struct IntuiText *, struct IntuiText *, struct IntuiText *, ULONG, ULONG, WORD, WORD);

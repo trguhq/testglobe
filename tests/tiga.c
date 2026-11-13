@@ -87,6 +87,7 @@ static unsigned short mouse_buttons;
 static short mouse_dx, mouse_dy;
 static unsigned int mouse_resets, mouse_polls;
 static char osd[2048];
+static int check_text_bounds, previous_text_bottom;
 static char failure[160];
 static jmp_buf failure_jump;
 static int expected_failure;
@@ -528,6 +529,13 @@ short text_out(short x, short y, char *text)
     size_t used = strlen(osd), length;
     assert(x >= 0 && x < 640 && y >= 0 && y < 480 && text != NULL);
     length = strlen(text);
+    if (check_text_bounds)
+    {
+        assert(y >= previous_text_bottom);
+        assert(y + (int)tga_font_height <= 472);
+        assert(length * tga_font_width <= 624U);
+        previous_text_bottom = y + (int)tga_font_height;
+    }
     assert(length + used + 2U < sizeof(osd));
     memcpy(osd + used, text, length);
     osd[used + length] = '\n'; osd[used + length + 1] = '\0';
@@ -726,6 +734,30 @@ int main(int argc, char **argv)
     assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
     render_frame();
     assert(strstr(osd, "soft3d on") != NULL && module_calls == 0);
+    if (is_profile("default"))
+    {
+        unsigned int width, height;
+        char *separator;
+        check_text_bounds = TRUE;
+        for (width = 8U; width <= 32U; width += 8U)
+            for (height = 8U; height <= 64U; height += 8U)
+            {
+                tga_font_width = width;
+                tga_font_height = height;
+                previous_text_bottom = 0;
+                osd[0] = '\0';
+                drv_draw_osd();
+                assert(strstr(osd, "S = soft3d") != NULL);
+                for (separator = osd; *separator != '\0'; ++separator)
+                    if (*separator == '\n') *separator = ' ';
+                assert(strstr(osd, "soft3d on") != NULL);
+            }
+        check_text_bounds = FALSE;
+        tga_font_width = 8U;
+        tga_font_height = 16U;
+        render_frame();
+        puts("PASS TIGA OSD: measured system-font wrapping retains S help without overlapping status or exceeding screen bounds");
+    }
     assert(temp_creates == 0 && module_loads == 0);
     if (selected_fpu)
         assert(floating_transforms > 0 && !fixed_transforms && !optimized_transforms);

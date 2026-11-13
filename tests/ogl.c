@@ -86,6 +86,8 @@ static void (*keyboard_callback)(unsigned char,int,int);
 static char osd_lines[2][256];
 static unsigned int osd_lengths[2];
 static int osd_line=-1;
+static unsigned int osd_rows;
+static int osd_row_width;
 
 static int texture_profile(const char *name)
 {return texture_injection&&strcmp(profile,name)==0;}
@@ -94,7 +96,10 @@ static int software_profile(void)
 static Drv_result test_texture_build(int size)
 {++staging_attempts;if(texture_profile("stagefail")||((strcmp(profile,"reduced")==0||strcmp(profile,"softreduced")==0)&&size>128))return DRV_NO_MEMORY;return texture_build(size);}
 static Drv_result test_texsoft_texture_take_filtered(unsigned int w,unsigned int h,unsigned char *rgb,int filter)
-{++soft_adoptions;assert(filter==TEXSOFT_BILINEAR);return texsoft_texture_take_filtered(w,h,rgb,filter);}
+{++soft_adoptions;assert(filter==TEXSOFT_BILINEAR);
+ if(texture_profile("softadoptfail")||(strcmp(profile,"softadoptreduced")==0&&w>128U))
+ {free(rgb);return DRV_NO_MEMORY;}
+ return texsoft_texture_take_filtered(w,h,rgb,filter);}
 static int test_texsoft_begin(unsigned int w,unsigned int h,float m[4][4],float p[4][4],int indexed,const unsigned char *c)
 {++soft_frame_attempts;return texture_profile("softframefail")?FALSE:texsoft_begin(w,h,m,p,indexed,c);}
 static unsigned char *test_texsoft_index_pixels(void)
@@ -272,9 +277,18 @@ void glutKeyboardFunc(void (*f)(unsigned char,int,int)){keyboard_callback=f;}
 void glutPostRedisplay(void){++redisplay_posts;}
 void glutSwapBuffers(void){assert(windows[active_window].doubled);++swaps;}
 void glutMainLoop(void){assert(globe_verts!=NULL&&windows[active_window].display==drv_render&&reshape_callback&&mouse_callback&&motion_callback&&keyboard_callback);assert(redisplay_posts>posts_before_loop);++loop_calls;}
+int glutBitmapWidth(void *font,int c)
+{
+    assert(c>0&&c<256);
+    if(font==GLUT_BITMAP_HELVETICA_10)return c==' '?3:5;
+    if(font==GLUT_BITMAP_HELVETICA_12)return c==' '?4:6;
+    assert(font==GLUT_BITMAP_HELVETICA_18);return c==' '?5:9;
+}
 void glutBitmapCharacter(void *font,int c)
 {
     assert(font&&c>0&&c<256&&osd_line>=0&&osd_line<2);
+    osd_row_width+=glutBitmapWidth(font,c);
+    assert(osd_row_width<=(int)drv_win_width-20);
     assert(osd_lengths[osd_line]<sizeof(osd_lines[osd_line])-1U);
     osd_lines[osd_line][osd_lengths[osd_line]++]=(char)c;
     osd_lines[osd_line][osd_lengths[osd_line]]=0;
@@ -310,7 +324,7 @@ void glPopClientAttrib(void){assert(client_depth);unpack_alignment=client_alignm
 void glTexEnvi(GLenum target,GLenum parameter,GLint value){assert(target==GL_TEXTURE_ENV&&parameter==GL_TEXTURE_ENV_MODE&&value==GL_REPLACE);}
 void glGetFloatv(GLenum query,GLfloat *value)
 {unsigned int s;if(query==GL_ZOOM_X){*value=zoom_x;return;}if(query==GL_ZOOM_Y){*value=zoom_y;return;}assert(query==GL_MODELVIEW_MATRIX||query==GL_PROJECTION_MATRIX);s=query==GL_PROJECTION_MATRIX?1U:0U;memcpy(value,matrices[s][stack_depth[s]],16*sizeof(*value));}
-void glClear(GLbitfield mask){assert((mask&GL_COLOR_BUFFER_BIT)!=0);assert(((mask&GL_DEPTH_BUFFER_BIT)!=0)==(windows[active_window].depth>0));memset(&frame_geometry,0,sizeof(frame_geometry));frame_list_successes=frame_texture_pixels=0;++frame_clears;}
+void glClear(GLbitfield mask){osd_lengths[0]=osd_lengths[1]=0;osd_lines[0][0]=osd_lines[1][0]=0;assert((mask&GL_COLOR_BUFFER_BIT)!=0);assert(((mask&GL_DEPTH_BUFFER_BIT)!=0)==(windows[active_window].depth>0));memset(&frame_geometry,0,sizeof(frame_geometry));frame_list_successes=frame_texture_pixels=0;++frame_clears;}
 void glClearColor(GLclampf r,GLclampf g,GLclampf b,GLclampf a){assert(r==0&&g==0&&b==0&&a==1);}
 void glClearIndex(GLfloat index){assert(index>=0&&index<256);last_clear_index=(int)index;}
 void glEnable(GLenum c){if(c==GL_TEXTURE_2D)texture_enabled=1;else if(c==GL_DEPTH_TEST){assert(windows[active_window].depth>0);depth_enabled=1;}else if(c==GL_CULL_FACE)cull_enabled=1;else assert(!"Unexpected glEnable");}
@@ -418,9 +432,10 @@ void glRasterPos2i(GLint x,GLint y)
     assert(x>=0&&x<=(int)drv_win_width&&y>=0&&y<=(int)drv_win_height);
     osd_line=-1;
     if(x==10){
-        assert(y==10||y==(int)drv_win_height-18);
-        osd_line=y==10?0:1;
-        osd_lengths[osd_line]=0;osd_lines[osd_line][0]=0;
+        assert(y-ogl_font_descent>=4&&y+ogl_font_ascent<=(int)drv_win_height-4);
+        osd_line=y>(int)drv_win_height/2?1:0;
+        if(osd_lengths[osd_line]!=0){assert(osd_lengths[osd_line]<255U);osd_lines[osd_line][osd_lengths[osd_line]++]=' ';osd_lines[osd_line][osd_lengths[osd_line]]=0;}
+        osd_row_width=0;++osd_rows;
     }
 }
 void glRasterPos2f(GLfloat x,GLfloat y){assert(x>=-1&&x<=drv_win_width&&y>=-1&&y<=drv_win_height);}
@@ -469,10 +484,52 @@ void gluPerspective(GLdouble fov,GLdouble aspect,GLdouble near_plane,GLdouble fa
 {GLfloat m[16];double f=1/tan(fov*3.14159265358979323846/360.0);memset(m,0,sizeof(m));m[0]=(GLfloat)(f/aspect);m[5]=(GLfloat)f;m[10]=(GLfloat)((far_plane+near_plane)/(near_plane-far_plane));m[11]=-1;m[14]=(GLfloat)(2*far_plane*near_plane/(near_plane-far_plane));postmultiply(m);}
 void gluOrtho2D(GLdouble l,GLdouble r,GLdouble b,GLdouble t)
 {GLfloat m[16];matrix_identity(m);m[0]=(GLfloat)(2/(r-l));m[5]=(GLfloat)(2/(t-b));m[10]=-1;m[12]=(GLfloat)(-(r+l)/(r-l));m[13]=(GLfloat)(-(t+b)/(t-b));postmultiply(m);}
+static void draw_osd_checked(void)
+{
+    GLint previous;
+    glGetIntegerv(GL_MATRIX_MODE,&previous);
+    glMatrixMode(GL_MODELVIEW);glPushMatrix();
+    glMatrixMode(GL_PROJECTION);glPushMatrix();
+    drv_draw_osd();
+    glMatrixMode(GL_PROJECTION);glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);glPopMatrix();
+    glMatrixMode((GLenum)previous);
+}
+
+/* Geometry/raster tests use 64x48 for speed. Check full status semantics in
+ * a separate fitting viewport; tiny-window layout is checked independently. */
+static void capture_osd_full(void)
+{
+    unsigned int width=drv_win_width,height=drv_win_height;
+    drv_win_width=1280;drv_win_height=768;ogl_select_font(1280,768);
+    osd_lengths[0]=osd_lengths[1]=0;osd_lines[0][0]=osd_lines[1][0]=0;
+    draw_osd_checked();
+    drv_win_width=width;drv_win_height=height;ogl_select_font((int)width,(int)height);
+}
+
+static void check_font_layout(void)
+{
+    unsigned int width=drv_win_width,height=drv_win_height;
+    drv_win_width=320;drv_win_height=240;ogl_select_font(320,240);osd_rows=0;osd_lengths[0]=osd_lengths[1]=0;
+    draw_osd_checked();assert(ogl_font==GLUT_BITMAP_HELVETICA_10&&osd_rows>=4);
+    assert(strcmp(osd_lines[0],drv_help)==0);
+    drv_win_width=640;drv_win_height=480;ogl_select_font(640,480);osd_rows=0;osd_lengths[0]=osd_lengths[1]=0;
+    draw_osd_checked();assert(ogl_font==GLUT_BITMAP_HELVETICA_12&&osd_rows>=2);
+    assert(strcmp(osd_lines[0],drv_help)==0);
+    drv_win_width=1280;drv_win_height=768;ogl_select_font(1280,768);osd_rows=0;osd_lengths[0]=osd_lengths[1]=0;
+    draw_osd_checked();assert(ogl_font==GLUT_BITMAP_HELVETICA_18&&osd_rows==2);
+    assert(strcmp(osd_lines[0],drv_help)==0);
+    drv_win_width=16;drv_win_height=32;ogl_select_font(16,32);osd_rows=0;
+    draw_osd_checked();assert(osd_rows==0);
+    drv_win_width=width;drv_win_height=height;ogl_select_font((int)width,(int)height);
+    puts("PASS OpenGL OSD fonts: classic GLUT sizes follow viewport, proportional widths wrap, glyphs stay inside bounds and tiny windows suppress text");
+}
+
 static void check_dlist_osd(void)
 {
     const char *option,*state,*fps,*texture,*expected_state;
     char expected_texture[64],dimensions[24];
+    capture_osd_full();
     option=strstr(osd_lines[0],"T = texture mapping, D = display list");
     assert(option&&strcmp(option,"T = texture mapping, D = display list")==0);
     assert(strcmp(osd_lines[0],drv_help)==0);
@@ -501,6 +558,7 @@ static void check_dlist_osd(void)
 static void render_checked(int indexed)
 {
     unsigned int previous_pixels=draw_pixels_calls;
+    unsigned int previous_osd=osd_rows;
     unsigned int previous_attempts=list_attempts,previous_calls=list_calls;
     unsigned int previous_validations=list_validations;
     drv_render();
@@ -542,7 +600,7 @@ static void render_checked(int indexed)
         strcmp(profile,"callfail")==0))assert(!ogl_dlist_used&&dlist==0);
     assert(!begin_mode&&!current_list);
     if(drv_texture_enabled&&ogl_texture_failed)assert(frame_geometry.textured_vertices==0&&!frame_texture_pixels);
-    if(drv_osd_enabled)check_dlist_osd();
+    if(drv_osd_enabled){assert(osd_rows>previous_osd);check_dlist_osd();}
 }
 
 static void check_failed_frame(void)
@@ -556,9 +614,11 @@ static void check_failed_frame(void)
     for(i=0;i<2U;++i){
         osd_lengths[0]=osd_lengths[1]=0;
         osd_lines[0][0]=osd_lines[1][0]=0;
-        posts=redisplay_posts;
+        posts=redisplay_posts;osd_rows=0;
         drv_render();
+        assert(osd_rows>0);
         assert(globe_ready()&&drv_frame_failed&&redisplay_posts==posts);
+        capture_osd_full();
         assert(strstr(osd_lines[1],"injected traversal failure")!=NULL);
         assert(drv_rot_x==old_x&&drv_rot_y==old_y);
         assert(frame_geometry.vertices==0&&!ogl_texture_used&&!ogl_dlist_used);
@@ -696,6 +756,7 @@ static void check_texture_failure(int indexed)
     assert(texture_id==0&&texture_data==NULL&&!drv_texture_loaded);
     assert(frame_geometry.triangles==globe_tris_num);
     if(strcmp(profile,"uploadfail")==0)assert(direct_texture_uploads==6&&capacity_queries==1);
+    if(strcmp(profile,"softadoptfail")==0)assert(staging_attempts==6&&soft_adoptions==6);
     if(strcmp(profile,"uploadinvalid")==0||strncmp(profile,"uploadmixed",11)==0)assert(direct_texture_uploads==1&&capacity_queries==1);
     if(strcmp(profile,"maxzero")==0||strcmp(profile,"maxtiny")==0)assert(direct_texture_uploads==0&&staging_attempts==0&&capacity_queries==1);
     stages=staging_attempts;adoptions=soft_adoptions;frames=soft_frame_attempts;
@@ -786,6 +847,7 @@ int main(int argc,char **argv)
     if(indexed)assert(last_index==77&&indices>0);
     else assert(last_rgb[0]==earth_cmap[77][0]&&last_rgb[1]==earth_cmap[77][1]&&last_rgb[2]==earth_cmap[77][2]);
     globe_init();texture_init();globe_init_verts(32,-1,1000);ogl_resize(64,48);
+    if(strcmp(profile,"rgba")==0)check_font_layout();
     posts_before_loop=redisplay_posts;
     drv_loop();assert(loop_calls==1&&windows[active_window].display==drv_render);
     mouse_callback(GLUT_RIGHT_BUTTON,GLUT_DOWN,4,5);assert(drv_rmouse_pressed);

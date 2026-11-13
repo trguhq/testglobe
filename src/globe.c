@@ -733,7 +733,7 @@ static void globe_submit_tristrip(unsigned int count)
 #endif
 }
 
-#ifdef DRV_CULL
+#if defined(DRV_CULL) || !defined(DRV_TRI_CAPS)
 static void globe_strip_vertex(unsigned int destination, unsigned long source)
 {
     globe_strip_verts[destination] = globe_verts[source];
@@ -756,7 +756,23 @@ static void globe_strip_color(unsigned int destination, unsigned char color)
     globe_color_rgb(color, globe_strip_colors + destination);
 #endif
 }
+#endif
 
+#ifndef DRV_TRI_CAPS
+/* Both traversal paths retain the original pole triangle's winding and UVs. */
+static void globe_submit_pole_strip(int row, unsigned long top,
+                                     unsigned long bottom, int column,
+                                     unsigned char color)
+{
+    globe_strip_vertex(0U, top + column + (row == 0 ? 1UL : 0UL));
+    globe_strip_vertex(1U, bottom + column);
+    globe_strip_vertex(2U, (row == 0 ? bottom : top) + column + 1UL);
+    globe_strip_color(0U, color);
+    globe_submit_tristrip(3U);
+}
+#endif
+
+#ifdef DRV_CULL
 static void globe_draw_culled_strip_row(int row,
                                          const unsigned char TG_HUGE *colors,
                                          const Globe_cull_view *view)
@@ -780,11 +796,7 @@ static void globe_draw_culled_strip_row(int row,
 #ifndef DRV_TRI_CAPS
             for (j = first; j < last; ++j)
             {
-                globe_strip_vertex(0U, top + j + (row == 0 ? 1UL : 0UL));
-                globe_strip_vertex(1U, bottom + j);
-                globe_strip_vertex(2U, (row == 0 ? bottom : top) + j + 1UL);
-                globe_strip_color(0U, colors[j]);
-                globe_submit_tristrip(3U);
+                globe_submit_pole_strip(row, top, bottom, j, colors[j]);
                 if (drv_frame_failed) return;
             }
 #endif
@@ -827,10 +839,6 @@ void globe_draw_tristrips(void)
 #ifdef DRV_CULL
     Globe_cull_view view;
 #endif
-#ifndef DRV_TRI_CAPS
-    int k;
-    unsigned long cap[3];
-#endif
     if (!globe_valid || drv_frame_failed) return;
 #ifdef DRV_CULL
     if (drv_cull_enabled && !globe_cull_view_init(&view))
@@ -859,38 +867,7 @@ void globe_draw_tristrips(void)
 #ifndef DRV_TRI_CAPS
             for (j = 0; j < globe_longitude; ++j)
             {
-                /* Coincident poles retain each original triangle's UVs. */
-                if (i == 0)
-                {
-                    cap[0] = top + j + 1;
-                    cap[1] = bottom + j;
-                    cap[2] = bottom + j + 1;
-                }
-                else
-                {
-                    cap[0] = top + j;
-                    cap[1] = bottom + j;
-                    cap[2] = top + j + 1;
-                }
-                for (k = 0; k < 3; ++k)
-                {
-                    globe_strip_verts[k] = globe_verts[cap[k]];
-#ifdef TEXTURE
-                    if (drv_texture_active)
-                    {
-                        globe_strip_coords[k].u =
-                            (float)(cap[k] % (globe_longitude + 1UL)) / globe_longitude;
-                        globe_strip_coords[k].v =
-                            (float)(cap[k] / (globe_longitude + 1UL)) / globe_latitude;
-                    }
-#endif
-                }
-#ifdef DRV_COLORMAP
-                globe_strip_colors[0] = colors[j];
-#else
-                globe_color_rgb(colors[j], globe_strip_colors);
-#endif
-                globe_submit_tristrip(3);
+                globe_submit_pole_strip(i, top, bottom, j, colors[j]);
                 if (drv_frame_failed) return;
             }
 #endif

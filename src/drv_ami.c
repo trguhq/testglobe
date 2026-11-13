@@ -17,6 +17,7 @@
 #include <graphics/gfxbase.h>
 #include <graphics/gfxmacros.h>
 #include <graphics/rastport.h>
+#include <graphics/text.h>
 #include <graphics/view.h>
 #include <graphics/displayinfo.h>
 #include <graphics/modeid.h>
@@ -93,6 +94,12 @@ struct GfxBase *GfxBase;
 struct IntuitionBase *IntuitionBase;
 
 static struct Window *ami_window;
+
+/* OpenFont uses resident fonts only: no diskfont library or external assets.
+ * Keep both tiny ROM sizes until cleanup; OSD draws temporarily select one. */
+static struct TextFont *ami_fonts[2];
+
+
 /* Workbench stays open behind the private screen, preserving its exact
  * placement and providing a usable destination if fullscreen setup fails. */
 static struct Window *ami_workbench_window, *ami_fs_window;
@@ -144,6 +151,34 @@ static union {
     Soft3d_fixed_point fixed[SOFT3D_MAX_VERTICES];
     Soft3d_float_point floating[SOFT3D_MAX_VERTICES];
 } ami_points;
+
+static void ami_open_fonts(void)
+{
+    struct TextAttr attributes;
+    unsigned int i;
+    attributes.ta_Name = (STRPTR)"topaz.font";
+    attributes.ta_Style = attributes.ta_Flags = 0;
+    for (i = 0; i < 2U; ++i)
+    {
+        attributes.ta_YSize = (UWORD)(8U + i);
+        ami_fonts[i] = OpenFont(&attributes);
+        if (ami_fonts[i] != NULL &&
+            (ami_fonts[i]->tf_YSize == 0 ||
+             ami_fonts[i]->tf_YSize > attributes.ta_YSize))
+        {
+            CloseFont(ami_fonts[i]);
+            ami_fonts[i] = NULL;
+        }
+    }
+}
+
+static struct TextFont *ami_osd_font(unsigned int width, unsigned int height)
+{
+    if (width >= 480U && height >= 320U && ami_fonts[1] != NULL)
+        return ami_fonts[1];
+    return ami_fonts[0] != NULL ? ami_fonts[0] : ami_fonts[1];
+}
+
 
 /* Only one swap may be outstanding. A safe message releases the bitmap
  * which was on screen before that swap; it does not name its new bitmap. */
@@ -279,6 +314,9 @@ static void ami_cleanup(void)
     if (ami_p96_base != NULL) CloseLibrary(ami_p96_base);
     ami_cgx_base = ami_p96_base = NULL;
 #endif
+    if (ami_fonts[0] != NULL) CloseFont(ami_fonts[0]);
+    if (ami_fonts[1] != NULL) CloseFont(ami_fonts[1]);
+    ami_fonts[0] = ami_fonts[1] = NULL;
     if (GfxBase != NULL) CloseLibrary((struct Library *)GfxBase);
     GfxBase = NULL;
     if (IntuitionBase != NULL) CloseLibrary((struct Library *)IntuitionBase);
@@ -753,6 +791,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     if (locked != NULL) UnlockPubScreen(NULL, locked);
     locked = NULL;
     if (ami_window == NULL) return FALSE;
+    ami_open_fonts();
     ami_project_cache = (Soft3d_project_cache *)malloc(sizeof(Soft3d_project_cache));
     return ami_resize();
 unsafe:
@@ -1262,8 +1301,10 @@ failed:
 static int ami_text_lines(const char *text, int baseline, int draw)
 {
     unsigned int remaining, count;
-    int line_height, margin;
+    int line_height, margin, descent;
     line_height = ami_draw_port->TxHeight + 1;
+    descent = ami_draw_port->TxHeight - ami_draw_port->TxBaseline - 1;
+    if (descent < 0) descent = 0;
     if (line_height < 2) line_height = 9;
     margin = 4;
     while (*text != 0)
@@ -1273,7 +1314,8 @@ static int ami_text_lines(const char *text, int baseline, int draw)
         while (count > 0 && TextLength(ami_draw_port, (STRPTR)text, count) >
                (long)drv_win_width - 2L * margin) --count;
         if (count == 0) break;
-        if (draw && baseline < (int)drv_win_height)
+        if (draw && baseline >= ami_draw_port->TxBaseline &&
+            baseline + descent < (int)drv_win_height - 2)
         {
             Move(ami_draw_port, margin, baseline);
             Text(ami_draw_port, (STRPTR)text, count);
@@ -1287,8 +1329,12 @@ static int ami_text_lines(const char *text, int baseline, int draw)
 void drv_draw_osd(void)
 {
     char status[256], detail[128];
-    int baseline, help_height;
+    int baseline, help_height, next_line, descent, step;
+    struct TextFont *saved_font, *font;
     if (ami_draw_port == NULL) return;
+    saved_font = ami_draw_port->Font;
+    font = ami_osd_font(drv_win_width, drv_win_height);
+    if (font != NULL) SetFont(ami_draw_port, font);
     SetAfPt(ami_draw_port, NULL, 0);
     SetDrMd(ami_draw_port, JAM2);
     SetAPen(ami_draw_port, ami_white);
@@ -1309,10 +1355,15 @@ void drv_draw_osd(void)
                 ami_has_fpu ? ami_fpu_name : "fixed-point", ami_color_count,
                 ami_fullscreen ? "fullscreen, double buffered" :
                 (ami_back_planes != 0 ? "buffered" : "direct"));
-    (void)ami_text_lines(detail, baseline, TRUE);
+    next_line = ami_text_lines(detail, baseline, TRUE);
     help_height = ami_text_lines(drv_help, 0, FALSE);
-    baseline = (int)drv_win_height - help_height + ami_draw_port->TxBaseline - 2;
-    if (baseline > ami_draw_port->TxBaseline) (void)ami_text_lines(drv_help, baseline, TRUE);
+    step = ami_draw_port->TxHeight + 1;
+    if (step < 2) step = 9;
+    descent = ami_draw_port->TxHeight - ami_draw_port->TxBaseline - 1;
+    if (descent < 0) descent = 0;
+    baseline = (int)drv_win_height - 3 - descent - help_height + step;
+    if (baseline >= next_line) (void)ami_text_lines(drv_help, baseline, TRUE);
+    if (saved_font != NULL) SetFont(ami_draw_port, saved_font);
 }
 
 static void ami_render_pass(void)

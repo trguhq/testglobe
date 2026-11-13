@@ -36,6 +36,7 @@ static Xgl_X_window xgl_window_descriptor;
 static Xgl_obj_desc xgl_raster_descriptor;
 static Xgl_ctx xgl_context;
 static Xgl_ctx xgl_overlay;
+static double xgl_font_height = 12.0;
 static Xgl_trans xgl_model;
 static Xgl_trans xgl_view;
 static Xgl_object xgl_mipmap;
@@ -172,10 +173,21 @@ static void xgl_projection(int width, int height)
 
 static void xgl_resize(int width, int height)
 {
+    double font_height;
     /* X11 can send zero geometry while a window is being withdrawn. */
     if (width < 1 || height < 1) return;
     drv_win_width = (unsigned int)width;
     drv_win_height = (unsigned int)height;
+    /* Stroke text scales natively. Choose a stable size on resize; native
+     * extents below still decide wrapping and guard the actual glyph bounds. */
+    font_height = width < 480 || height < 320 ? 10.0 :
+                  (width >= 1024 && height >= 768 ? 16.0 : 12.0);
+    if (xgl_overlay != NULL && font_height != xgl_font_height)
+    {
+        xgl_object_set(xgl_overlay, XGL_CTX_STEXT_CHAR_HEIGHT, font_height, 0);
+        xgl_checkerrors();
+        xgl_font_height = font_height;
+    }
     if (xgl_raster != NULL)
     {
         xgl_window_raster_resize(xgl_raster);
@@ -281,7 +293,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
                                     XGL_CTX_DEVICE, xgl_raster,
                                     XGL_CTX_DEFERRAL_MODE, XGL_DEFER_ASAP,
                                     XGL_CTX_VDC_MAP, XGL_VDC_MAP_DEVICE,
-                                    XGL_CTX_STEXT_CHAR_HEIGHT, 12.0,
+                                    XGL_CTX_STEXT_CHAR_HEIGHT, xgl_font_height,
                                     XGL_CTX_STEXT_COLOR, &white,
                                     XGL_CTX_NEW_FRAME_ACTION,
                                       xgl_double_buffer ?
@@ -883,7 +895,6 @@ static int xgl_animating(void)
 void drv_render(void)
 {
     int requested, ready, scene, native_ok;
-    const char *reason;
     drv_fps_start();
     requested = drv_texture_enabled;
     scene = globe_ready();
@@ -910,19 +921,21 @@ void drv_render(void)
             /* Complete deferred geometry before choosing this frame's status. */
             xgl_context_flush(xgl_context, XGL_FLUSH_SYNCHRONIZE);
             xgl_checkerrors();
-            ready = xgl_texture_check() && xgl_texture_submitted;
+            /* Successful traversal can submit nothing (for example, every
+             * face is culled). Keep resource validity separate from whether
+             * this frame actually used a texture. */
+            ready = xgl_texture_check();
         }
-        reason = xgl_texture_reason;
         native_ok = xgl_texture_end();
         if (!native_ok || (!ready && !drv_frame_failed))
         {
-            xgl_texture_failure(reason != NULL ? reason : "Cannot use XGL texture");
+            xgl_texture_failure("Cannot use XGL texture");
             ready = FALSE;
             xgl_context_new_frame(xgl_context);
             xgl_checkerrors();
             xgl_model_transform();
         }
-        else if (!drv_frame_failed) xgl_texture_used = TRUE;
+        else if (!drv_frame_failed) xgl_texture_used = xgl_texture_submitted;
     }
     if (scene && !ready && !drv_frame_failed)
     {

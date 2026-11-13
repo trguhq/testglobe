@@ -80,6 +80,9 @@ static unsigned int fail_memory_locks;
 static unsigned int mask_blits, mask_clears, mask_bitmaps, pattern_mask_blits;
 static int fail_mask_bitmap, fail_mask_blit, fail_mask_clear, fail_pens;
 static int fail_mask_polygon;
+static unsigned int fail_frame_clears, frame_clears;
+static unsigned int font_creates;
+static int fail_font, fail_font_metrics, substituted_font_height;
 
 static HANDLE object_new(int kind)
 {
@@ -310,6 +313,7 @@ HDC GetDC(HWND window)
     objects[handle].pen = GetStockObject(NULL_PEN);
     objects[handle].bitmap = 903;
     objects[handle].palette = 904;
+    objects[handle].font = GetStockObject(SYSTEM_FONT);
     objects[handle].text_color = RGB(12, 34, 56);
     objects[handle].background_color = RGB(78, 90, 123);
     return handle;
@@ -404,6 +408,39 @@ HPEN CreatePen(int style, int width, COLORREF color)
     objects[pen].color = color;
     return pen;
 }
+HFONT CreateFont(int height, int width, int escapement, int orientation,
+                 int weight, BYTE italic, BYTE underline, BYTE strikeout,
+                 BYTE charset, BYTE output, BYTE clipping, BYTE quality,
+                 BYTE family, LPCSTR face)
+{
+    HFONT font;
+    assert(height == 10 || height == 12 || height == 16);
+    assert(width == 0 && escapement == 0 && orientation == 0 && weight == FW_NORMAL);
+    assert(!italic && !underline && !strikeout && charset == ANSI_CHARSET);
+    assert(output == OUT_DEFAULT_PRECIS && clipping == CLIP_DEFAULT_PRECIS);
+    assert(quality == DEFAULT_QUALITY && family == (VARIABLE_PITCH | FF_SWISS));
+    assert(strcmp(face, "Small Fonts") == 0);
+    ++font_creates;
+    if (fail_font) return 0;
+    font = object_new(OBJ_FONT);
+    objects[font].height = substituted_font_height ? substituted_font_height : height;
+    objects[font].width = objects[font].height / 2;
+    return font;
+}
+BOOL GetTextMetrics(HDC dc, TEXTMETRIC *metrics)
+{
+    RecordedObject *font;
+    assert(objects[dc].kind == OBJ_DC && metrics != NULL);
+    if (fail_font_metrics) return FALSE;
+    font = objects + objects[dc].font;
+    assert(font->kind == OBJ_FONT);
+    memset(metrics, 0, sizeof(*metrics));
+    metrics->tmHeight = (short)font->height;
+    metrics->tmAveCharWidth = (short)font->width;
+    metrics->tmAscent = (short)(font->height - 2);
+    metrics->tmDescent = 2;
+    return TRUE;
+}
 HGDIOBJ SelectObject(HDC dc, HGDIOBJ object)
 {
     HGDIOBJ previous;
@@ -425,6 +462,7 @@ BOOL DeleteObject(HGDIOBJ object)
         if (objects[i].kind != OBJ_DC) continue;
         assert(objects[i].bitmap != object && objects[i].brush != object);
         assert(objects[i].pen != object && objects[i].palette != object);
+        assert(objects[i].font != object);
     }
     object_delete(object);
     return 1;
@@ -437,7 +475,8 @@ HGDIOBJ GetStockObject(int index)
     else if (index == WHITE_BRUSH) { handle = 902; objects[handle].kind = OBJ_BRUSH; }
     else if (index == BLACK_PEN) { handle = 906; objects[handle].kind = OBJ_PEN; }
     else if (index == WHITE_PEN) { handle = 907; objects[handle].kind = OBJ_PEN; }
-    else { assert(index == SYSTEM_FONT); handle = 905; objects[handle].kind = OBJ_FONT; }
+    else { assert(index == SYSTEM_FONT); handle = 905; objects[handle].kind = OBJ_FONT;
+           objects[handle].height = 12; objects[handle].width = 6; }
     objects[901].color = objects[906].color = RGB(0, 0, 0);
     objects[902].color = objects[907].color = RGB(255, 255, 255);
     objects[903].kind = OBJ_BITMAP;
@@ -679,6 +718,8 @@ BOOL BitBlt(HDC dc, int x, int y, int width, int height, HDC source,
 int FillRect(HDC dc, const RECT *rectangle, HBRUSH brush)
 {
     assert(objects[dc].kind == OBJ_DC && rectangle != NULL && brush > 0);
+    ++frame_clears;
+    if (fail_frame_clears) { --fail_frame_clears; return 0; }
     return 1;
 }
 int SetPolyFillMode(HDC dc, int mode)
@@ -737,16 +778,18 @@ BOOL TextOut(HDC dc, int x, int y, LPCSTR text, int length)
 }
 int DrawText(HDC dc, LPCSTR text, int length, RECT *rectangle, UINT flags)
 {
-    int columns, lines;
+    int columns, lines, height;
     assert(objects[dc].kind == OBJ_DC && rectangle != NULL);
     assert(flags & DT_WORDBREAK);
     assert(flags & DT_NOPREFIX);
     if (length < 0) length = (int)strlen(text);
-    columns = (rectangle->right - rectangle->left) / 6;
+    assert(objects[objects[dc].font].kind == OBJ_FONT);
+    height = objects[objects[dc].font].height;
+    columns = (rectangle->right - rectangle->left) / objects[objects[dc].font].width;
     if (columns < 1) columns = 1;
     lines = (length + columns - 1) / columns;
     if (flags & DT_CALCRECT) {
-        rectangle->bottom = (short)(rectangle->top + lines * 12);
+        rectangle->bottom = (short)(rectangle->top + lines * height);
     } else {
         assert(rectangle->left >= 0 && rectangle->right <= (int)drv_win_width);
         assert(rectangle->top >= 0 && rectangle->bottom <= (int)drv_win_height);
@@ -754,7 +797,7 @@ int DrawText(HDC dc, LPCSTR text, int length, RECT *rectangle, UINT flags)
         check_text(text, length);
         ++text_calls;
     }
-    return lines * 12;
+    return lines * height;
 }
 
 HWND SetCapture(HWND window)
@@ -1434,6 +1477,104 @@ static void check_mask_coverage(void)
     puts("PASS GDI boundary coverage: closed Win16 contours, white fill/outline masks, pattern-preserving ROP and DC restoration, bounded mask/batch/pen fallbacks");
 }
 
+static void check_font_sizes(void)
+{
+    unsigned int creates;
+    int width, height;
+    HDC dc;
+    width = (int)drv_win_width; height = (int)drv_win_height;
+    gdi_resize(320, 240);
+    drv_draw_osd();
+    assert(gdi_font != 0 && objects[gdi_font].height == 10);
+    assert(objects[gdi_buffer].font == GetStockObject(SYSTEM_FONT));
+    creates = font_creates;
+    drv_draw_osd();
+    assert(font_creates == creates);
+    gdi_resize(640, 480);
+    drv_draw_osd();
+    assert(gdi_font != 0 && objects[gdi_font].height == 12);
+    gdi_resize(1024, 768);
+    drv_draw_osd();
+    assert(gdi_font != 0 && objects[gdi_font].height == 16);
+    fail_font = TRUE;
+    gdi_resize(320, 240);
+    drv_draw_osd();
+    assert(gdi_font == 0 && objects[gdi_buffer].font == GetStockObject(SYSTEM_FONT));
+    creates = font_creates;
+    drv_draw_osd();
+    assert(font_creates == creates);
+    fail_font = FALSE;
+    fail_font_metrics = TRUE;
+    gdi_resize(640, 480);
+    drv_draw_osd();
+    assert(gdi_font == 0 && objects[gdi_buffer].font == GetStockObject(SYSTEM_FONT));
+    fail_font_metrics = FALSE;
+    substituted_font_height = 40;
+    gdi_resize(1024, 768);
+    drv_draw_osd();
+    assert(gdi_font == 0 && objects[gdi_buffer].font == GetStockObject(SYSTEM_FONT));
+    substituted_font_height = 0;
+    gdi_resize(320, 240);
+    drv_draw_osd();
+    assert(gdi_font != 0 && objects[gdi_font].height == 10);
+    dc = GetDC(main_window);
+    gdi_target = dc;
+    creates = font_creates;
+    drv_draw_osd();
+    assert(objects[dc].font == GetStockObject(SYSTEM_FONT));
+    assert(font_creates == creates);
+    gdi_target = 0;
+    ReleaseDC(main_window, dc);
+    gdi_resize(width, height);
+    puts("PASS GDI native fonts: client-size tiers, cached selection, actual metric validation, bounded allocation fallback and restored buffer/direct DC fonts");
+}
+
+static void check_frame_clears(void)
+{
+    unsigned int blits, clears, polygons, texts;
+    assert(gdi_buffer != 0 && !gdi_draw_paused);
+    stream_polygons = TRUE;
+    drv_render();
+    assert(gdi_buffer_valid);
+    blits = bitblts; polygons = polygon_calls + polypolygon_calls;
+    clears = frame_clears;
+    fail_frame_clears = 1;
+    drv_render();
+    assert(frame_clears == clears + 2U && fail_frame_clears == 0);
+    assert(gdi_draw_paused && drv_frame_failed && drv_fps_average == 0.0f);
+    assert(globe_quads_num_vis == 0 && polygon_calls + polypolygon_calls == polygons);
+    /* A complete diagnostic view may be presented, never stale globe pixels. */
+    assert(gdi_buffer_valid && bitblts == blits + 1U);
+    gdi_keyboard('1');
+    fail_frame_clears = 2;
+    blits = bitblts; texts = text_calls; clears = frame_clears;
+    drv_render();
+    assert(frame_clears == clears + 2U && fail_frame_clears == 0);
+    assert(gdi_draw_paused && drv_frame_failed && !gdi_buffer_valid);
+    assert(bitblts == blits && text_calls == texts && globe_quads_num_vis == 0);
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(bitblts == blits && text_calls == texts);
+    gdi_keyboard('2');
+    drv_render();
+    assert(!gdi_draw_paused && !drv_frame_failed && gdi_buffer_valid);
+    assert(globe_quads_num_vis > 0 && bitblts == blits + 1U);
+    /* Direct drawing cannot retain a hidden frame; do not add polygons or
+     * text when neither the primary nor diagnostic clear succeeded. */
+    gdi_delete_buffer();
+    fail_frame_clears = 2;
+    texts = text_calls; polygons = polygon_calls + polypolygon_calls;
+    drv_render();
+    assert(gdi_draw_paused && drv_frame_failed && globe_quads_num_vis == 0);
+    assert(text_calls == texts && polygon_calls + polypolygon_calls == polygons);
+    gdi_keyboard('2');
+    gdi_make_buffer();
+    drv_render();
+    assert(!gdi_draw_paused && !drv_frame_failed && gdi_buffer_valid);
+    stream_polygons = FALSE;
+    drv_notice(NULL);
+    puts("PASS GDI failed frame clears: no geometry before a successful clear, complete diagnostic fallback, suppressed invalid-buffer presentation and input recovery");
+}
+
 static int run_contract(void)
 {
     int resolution, pose, i;
@@ -1510,6 +1651,8 @@ static int run_contract(void)
     assert(polypolygon_calls > 0 && polygon_calls == 0);
     check_clipping();
     check_mask_coverage();
+    check_font_sizes();
+    check_frame_clears();
     puts("PASS GDI rendering: five Earth resolutions, huge allocations/resources, independent pose checks, bounded palette batches, near/far/screen clipping");
 
     old_x = drv_rot_x; old_y = drv_rot_y;

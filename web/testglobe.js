@@ -51,27 +51,39 @@ function app_reset_timing() {
   sampleFrames = sampleSeconds = 0;
 }
 
+// Animation may change only FPS or texture-use status. Avoid replacing text
+// nodes or rewriting control attributes when their displayed values agree.
+function app_set_property(element, name, value) {
+  if (element[name] !== value) element[name] = value;
+}
+
+function app_set_attribute(element, name, value) {
+  const text = String(value);
+  if (element.getAttribute(name) !== text) element.setAttribute(name, text);
+}
+
 function app_update() {
   const usable = driver !== null && !state.lost;
   for (const button of resolutionButtons) {
-    button.disabled = !usable;
-    button.setAttribute("aria-pressed", String(state.ready &&
-      Number(button.dataset.resolution) === driver?.scene?.width));
+    app_set_property(button, "disabled", !usable);
+    app_set_attribute(button, "aria-pressed", state.ready &&
+      Number(button.dataset.resolution) === driver?.scene?.width);
   }
-  for (const button of Object.values(buttons)) button.disabled = !usable;
-  buttons.texture.setAttribute("aria-pressed", String(state.textureRequested));
-  buttons.auto.setAttribute("aria-pressed", String(state.auto));
-  buttons.osd.setAttribute("aria-pressed", String(state.osd));
-  buttons.fps.setAttribute("aria-pressed", String(state.fps));
-  buttons.cull.setAttribute("aria-pressed", String(state.cull));
-  osd.hidden = !state.osd;
-  viewport.setAttribute("aria-busy", String(state.scenePending));
-  loading.hidden = !state.scenePending || state.lost;
+  for (const button of Object.values(buttons)) app_set_property(button, "disabled", !usable);
+  app_set_attribute(buttons.texture, "aria-pressed", state.textureRequested);
+  app_set_attribute(buttons.auto, "aria-pressed", state.auto);
+  app_set_attribute(buttons.osd, "aria-pressed", state.osd);
+  app_set_attribute(buttons.fps, "aria-pressed", state.fps);
+  app_set_attribute(buttons.cull, "aria-pressed", state.cull);
+  app_set_property(osd, "hidden", !state.osd);
+  app_set_attribute(viewport, "aria-busy", state.scenePending);
+  app_set_property(loading, "hidden", !state.scenePending || state.lost);
   if (driver) {
-    info.textContent = `WebGL 2 · ${driver.width} × ${driver.height} pixels · triangle strips`;
+    app_set_property(info, "textContent",
+      `WebGL 2 · ${driver.width} × ${driver.height} pixels · triangle strips`);
   }
   if (!state.ready || !driver?.scene) {
-    stats.textContent = state.lost ? "Graphics context lost" : "No globe loaded";
+    app_set_property(stats, "textContent", state.lost ? "Graphics context lost" : "No globe loaded");
     return;
   }
   const scene = driver.scene;
@@ -91,7 +103,7 @@ function app_update() {
     } else texture = "texture fail";
   }
   pieces.push(texture);
-  stats.textContent = pieces.join(" · ");
+  app_set_property(stats, "textContent", pieces.join(" · "));
 }
 
 function app_schedule() {

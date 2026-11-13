@@ -227,6 +227,8 @@ int ogl_ami_resize_context(int w, int h)
 }
 void ogl_ami_draw_string(const char *s, int x, int y)
 { assert(presentations && x >= 0 && y >= 0); assert(strlen(osd) + strlen(s) + 2 < sizeof(osd)); strcat(osd, s); strcat(osd, "\n"); ++text_calls; }
+void ogl_ami_draw_osd(const char *status, const char *help)
+{ ogl_ami_draw_string(status, 10, size_height - 18); ogl_ami_draw_string(help, 10, 10); }
 double ogl_ami_time_now(void) { clock_value += 0.016; return clock_value; }
 void ogl_ami_error(char *message) { fprintf(stderr, "Unexpected error: %s\n", message); abort(); }
 void ogl_ami_loop(void (*draw)(void), void (*resize)(int,int), void (*key)(unsigned char,int,int), void (*mouse)(int,int,int,int), void (*motion)(int,int))

@@ -121,6 +121,8 @@ typedef double GLclampd;
 #define GLUT_API_VERSION 4
 #endif
 #define GLUT_BITMAP_HELVETICA_12 ((void *)1)
+#define GLUT_BITMAP_HELVETICA_10 ((void *)2)
+#define GLUT_BITMAP_HELVETICA_18 ((void *)3)
 extern void glutInit(int *argc,char **argv);
 extern void glutInitDisplayMode(unsigned int mode);
 #if GLUT_API_VERSION >= 4
@@ -148,6 +150,7 @@ extern void glutPostRedisplay(void);
 extern void glutSwapBuffers(void);
 extern void glutMainLoop(void);
 extern void glutBitmapCharacter(void *font,int character);
+extern int glutBitmapWidth(void *font,int character);
 extern void glutSetColor(int index,GLfloat red,GLfloat green,GLfloat blue);
 extern GLenum glGetError(void);
 extern const GLubyte *glGetString(GLenum query);
