@@ -158,6 +158,8 @@ static double ami_auto_time;
 static int ami_last_apen, ami_last_bpen, ami_last_mode, ami_last_pattern_known;
 static const UWORD *ami_last_pattern;
 static Soft3d_project_cache *ami_project_cache;
+/* Scene revision of the last optional-storage acquisition attempt. */
+static unsigned long ami_recover_revision;
 static Drv_quad_stream ami_stream;
 static union {
     long fixed[3][3];
@@ -297,17 +299,21 @@ static void ami_drop_rasters(void)
     ami_draw_port = NULL;
 }
 
+#define AMI_RELEASED_NOTICE "Amiga direct drawing; optional caches released"
+#define AMI_FS_RELEASED_NOTICE "Amiga fullscreen buffers retained; caches released"
+
 void drv_release_optional(void)
 {
-    /* The common recovery layer calls this only between frames. */
+    /* The common recovery layer calls this only between frames. Memory is
+     * short in this scene revision, so reacquire only after it changes. */
     if (ami_rendering) return;
     ami_drop_back_buffer();
     free(ami_project_cache);
     ami_project_cache = NULL;
     drv_quadstream_reset(&ami_stream);
+    ami_recover_revision = globe_revision;
     ami_dirty = TRUE;
-    drv_notice(ami_fullscreen ? "Amiga fullscreen buffers retained; caches released" :
-                               "Amiga direct drawing; optional caches released");
+    drv_notice(ami_fullscreen ? AMI_FS_RELEASED_NOTICE : AMI_RELEASED_NOTICE);
 }
 
 static void ami_cleanup(void)
@@ -696,13 +702,80 @@ static int ami_check_raster_bounds(unsigned int width, unsigned int height)
     return TRUE;
 }
 
-static int ami_resize(void)
+/* The optional window back buffer; drawing goes direct without it. */
+static void ami_alloc_back_buffer(void)
 {
-    unsigned int width, height, plane;
+    unsigned int plane;
 #if AMI_RTG
     unsigned int depth, storage;
     int backend;
 #endif
+    if (ami_fullscreen || ami_back_planes != 0 || ami_rtg_bitmap != NULL) return;
+#if AMI_RTG
+    if (ami_rtg)
+    {
+        ami_rtg_bitmap = AllocBitMap(ami_raster_width, ami_raster_height, ami_depth,
+            BMF_MINPLANES | BMF_CLEAR, ami_window->RPort->BitMap);
+        /* A failed or incompatible friend bitmap is optional. Never send
+         * RGB drawing calls to an allocation that fell back to planar.
+         * BMF_CLEAR may still be clearing it when it is rejected. */
+        if (ami_rtg_bitmap != NULL &&
+            (!ami_bitmap_format(ami_rtg_bitmap, &backend, &depth, &storage) ||
+             backend != ami_rtg || depth != ami_depth || storage != ami_storage_depth))
+            ami_drop_back_buffer();
+    }
+    else
+#endif
+    {
+        InitBitMap(&ami_bitmap, ami_depth, ami_raster_width, ami_raster_height);
+        for (plane = 0; plane < ami_depth; ++plane)
+        {
+            ami_bitmap.Planes[plane] = AllocRaster(ami_raster_width, ami_raster_height);
+            if (ami_bitmap.Planes[plane] == NULL) break;
+            ++ami_back_planes;
+        }
+        if (ami_back_planes != ami_depth) ami_drop_back_buffer();
+    }
+    if (ami_back_planes != 0 || ami_rtg_bitmap != NULL)
+    {
+        InitRastPort(&ami_back_port);
+        ami_back_port.BitMap = ami_rtg_bitmap != NULL ? ami_rtg_bitmap : &ami_bitmap;
+        SetFont(&ami_back_port, ami_window->RPort->Font);
+    }
+}
+
+static void ami_alloc_project_cache(void)
+{
+    if (ami_project_cache != NULL) return;
+    ami_project_cache = (Soft3d_project_cache *)malloc(sizeof(Soft3d_project_cache));
+    soft3d_project_cache_reset(ami_project_cache);
+}
+
+/* Reacquire optional storage that is missing after a memory recovery or
+ * an earlier failure: at most once per scene revision and never inside a
+ * render, so a persistent shortage does not cost an attempt every frame. */
+static void ami_recover_optional(void)
+{
+    int buffer_ready;
+    if (ami_rendering || !ami_ready || ami_recover_revision == globe_revision) return;
+    /* Fullscreen draws into its screen buffers; a paused window has none. */
+    buffer_ready = ami_fullscreen || ami_paused || ami_back_planes != 0 || ami_rtg_bitmap != NULL;
+    if (ami_project_cache != NULL && buffer_ready) return;
+    ami_recover_revision = globe_revision;
+    ami_alloc_project_cache();
+    if (!buffer_ready) ami_alloc_back_buffer();
+    /* Clear only this driver's own release notice once nothing is missing. */
+    if (ami_project_cache != NULL &&
+        (ami_fullscreen || ami_back_planes != 0 || ami_rtg_bitmap != NULL) &&
+        (strcmp(drv_get_notice(), AMI_RELEASED_NOTICE) == 0 ||
+         strcmp(drv_get_notice(), AMI_FS_RELEASED_NOTICE) == 0))
+        drv_notice(NULL);
+    ami_dirty = TRUE;
+}
+
+static int ami_resize(void)
+{
+    unsigned int width, height;
     ULONG bytes;
     /* Fullscreen dimensions and required presentation bitmaps are fixed for
      * this screen's lifetime. Never replace them with a window copy buffer. */
@@ -727,40 +800,16 @@ static int ami_resize(void)
     }
     if (!ami_paused)
     {
-#if AMI_RTG
-        if (ami_rtg)
-        {
-            ami_rtg_bitmap = AllocBitMap(width, height, ami_depth,
-                BMF_MINPLANES | BMF_CLEAR, ami_window->RPort->BitMap);
-            /* A failed or incompatible friend bitmap is optional. Never send
-             * RGB drawing calls to an allocation that fell back to planar. */
-            if (ami_rtg_bitmap != NULL &&
-                (!ami_bitmap_format(ami_rtg_bitmap, &backend, &depth, &storage) ||
-                 backend != ami_rtg || depth != ami_depth || storage != ami_storage_depth))
-            {
-                FreeBitMap(ami_rtg_bitmap);
-                ami_rtg_bitmap = NULL;
-            }
-        }
-        else
-#endif
-        {
-            InitBitMap(&ami_bitmap, ami_depth, width, height);
-            for (plane = 0; plane < ami_depth; ++plane)
-            {
-                ami_bitmap.Planes[plane] = AllocRaster(width, height);
-                if (ami_bitmap.Planes[plane] == NULL) break;
-                ++ami_back_planes;
-            }
-            if (ami_back_planes != ami_depth) ami_drop_back_buffer();
-        }
-        if (ami_back_planes != 0 || ami_rtg_bitmap != NULL)
-        {
-            InitRastPort(&ami_back_port);
-            ami_back_port.BitMap = ami_rtg_bitmap != NULL ? ami_rtg_bitmap : &ami_bitmap;
-            SetFont(&ami_back_port, ami_window->RPort->Font);
-        }
-        else drv_notice("Amiga direct drawing; no back buffer");
+        ami_alloc_back_buffer();
+        if (ami_back_planes == 0 && ami_rtg_bitmap == NULL)
+            drv_notice("Amiga direct drawing; no back buffer");
+    }
+    /* Resizing always rebuilds the back buffer; the cache, if missing,
+     * follows the same once-per-revision rule as other recovery. */
+    if (ami_project_cache == NULL && ami_recover_revision != globe_revision)
+    {
+        ami_recover_revision = globe_revision;
+        ami_alloc_project_cache();
     }
     ami_map_palette();
     ami_pixel_aspect();
@@ -852,7 +901,8 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     locked = NULL;
     if (ami_window == NULL) return FALSE;
     ami_open_fonts();
-    ami_project_cache = (Soft3d_project_cache *)malloc(sizeof(Soft3d_project_cache));
+    ami_alloc_project_cache();
+    ami_recover_revision = globe_revision;
     return ami_resize();
 unsafe:
     ami_unsafe_bitmap = TRUE;
@@ -1561,6 +1611,7 @@ void drv_render(void)
     }
     if (!ami_check_raster_bounds(ami_window->GZZWidth, ami_window->GZZHeight)) return;
     if (!ami_ready) return;
+    ami_recover_optional();
     for (attempt = 0; attempt < 2; ++attempt)
     {
         ami_area_failed = FALSE;
@@ -1613,6 +1664,8 @@ static void ami_keyboard(unsigned char key)
     else if (!drv_handle_key(key)) return;
     if ((ami_depth <= 8U && ami_scratch == NULL) || !ami_ready) (void)ami_resize();
     else ami_paused = FALSE;
+    /* A resolution key may have freed memory by replacing the scene. */
+    ami_recover_optional();
     ami_auto_time = ami_time_now();
     ami_dirty = TRUE;
 }

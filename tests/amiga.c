@@ -18,6 +18,7 @@ static void test_set_area_pattern(struct RastPort *port, UWORD *pattern, int siz
 #define SetAfPt(rp,pattern,size) test_set_area_pattern((rp), (pattern), (size))
 static unsigned long baseline_vertices, enhanced_vertices, fpu_vertices;
 static int fail_cache_allocation;
+static unsigned int cache_attempts;
 static void *ami_test_malloc(size_t size);
 static int record_baseline(long matrix[3][3], unsigned int count,
                            const Vertex *vertices, Soft3d_fixed_point *out,
@@ -54,6 +55,7 @@ static int record_palette_match(const unsigned char *rgb, unsigned int count,
 }
 static void *ami_test_malloc(size_t size)
 {
+    if (size == sizeof(Soft3d_project_cache)) ++cache_attempts;
     if (fail_cache_allocation && size == sizeof(Soft3d_project_cache)) return NULL;
     return malloc(size);
 }
@@ -1232,6 +1234,36 @@ static void test_draw_state(void)
     if (!ami_fullscreen) assert(wait_calls == waits);
 }
 
+/* Released optional storage stays released for the rest of that scene
+ * revision, then returns at the next key press or render after the scene
+ * changes. A failing allocation is retried once per revision, not per frame. */
+static void test_recovery(unsigned long reference_hash, unsigned long reference_count)
+{
+    unsigned int attempts, copies;
+    int cache_fails;
+    cache_fails = fail_cache_allocation;
+    drv_release_optional();
+    assert(ami_project_cache == NULL && ami_back_planes == 0 && ami_rtg_bitmap == NULL);
+    assert(strcmp(drv_get_notice(), AMI_RELEASED_NOTICE) == 0);
+    attempts = cache_attempts; copies = copy_calls;
+    test_render(); test_render();
+    assert(rendered_hash == reference_hash && rendered_count == reference_count);
+    ami_keyboard('d'); ami_keyboard('d');
+    assert(copy_calls == copies && cache_attempts == attempts && ami_project_cache == NULL);
+    fail_cache_allocation = 1;
+    ami_keyboard('2');
+    assert(globe_longitude == 64 && cache_attempts == attempts + 1U && ami_project_cache == NULL);
+    assert(ami_back_planes == ami_depth);
+    test_render(); test_render(); assert(cache_attempts == attempts + 1U);
+    fail_cache_allocation = cache_fails;
+    ami_keyboard('1'); assert(cache_attempts == attempts + 2U);
+    assert(cache_fails ? ami_project_cache == NULL : ami_project_cache != NULL);
+    if (!cache_fails) assert(drv_get_notice()[0] == 0);
+    copies = copy_calls; test_render();
+    assert(copy_calls == copies + 1U);
+    assert(rendered_hash == reference_hash && rendered_count == reference_count);
+}
+
 static void test_fpu_integer_conversion(void)
 {
     static const double targets[] = {
@@ -1485,6 +1517,13 @@ static int test_rtg(int argc, char **argv, const char *mode)
     assert(friend_count == 0 && ami_project_cache == NULL);
     test_render(); assert(copy_calls == copies);
     assert(rendered_hash == reference_hash && rendered_count == reference_count);
+    /* The cache and friend bitmap return once the scene revision changes. */
+    ami_keyboard('2'); ami_keyboard('1');
+    assert(ami_project_cache != NULL);
+    assert((friend_failure || friend_incompatible) ? friend_count == 0 : friend_count == 1);
+    copies = copy_calls; test_render();
+    assert(rendered_hash == reference_hash && rendered_count == reference_count);
+    assert(copy_calls == copies + friend_count);
     /* Native OCS dimensions/stride never constrain an identified RTG screen. */
     window_record.GZZWidth = 1200; window_record.GZZHeight = 1100;
     ami_event(NEWSIZE, 0, 0, 0);
@@ -1891,9 +1930,7 @@ int main(int argc, char **argv)
     test_draw_state();
     test_dither_toggle();
     reference_hash = rendered_hash; reference_count = rendered_count;
-    drv_release_optional(); assert(ami_project_cache == NULL && ami_back_planes == 0);
-    test_render(); assert(rendered_hash == reference_hash && rendered_count == reference_count);
-    ami_project_cache = malloc(sizeof(*ami_project_cache)); assert(ami_project_cache != NULL);
+    test_recovery(reference_hash, reference_count);
     /* Each resize replaces obsolete rasters and invalidates coordinates. */
     window_record.GZZWidth = 160; window_record.GZZHeight = 300;
     ami_event(NEWSIZE, 0, 0, 0); assert(drv_win_width == 160 && drv_win_height == 300);

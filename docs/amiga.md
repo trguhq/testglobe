@@ -117,12 +117,15 @@ display-compatible bitmap from `AllocBitMap`. Indexed area fills also need a Chi
 scratch raster, which truecolor RTG fills do not; geometry and other working data use
 ordinary memory. If the back buffer cannot be allocated, the driver draws directly; if
 the indexed scratch raster is missing, filled rendering pauses while controls stay
-available to retry. Buffering hides each polygon's construction but does not
-guarantee tear-free presentation. The window copy does not wait for the blitter:
-`graphics.library` and the RTG libraries order later blits behind it, and the driver
-waits only before freeing a bitmap or swapping fullscreen buffers. Native input handles dragging, keys, close,
-activation, refresh, and resizing. The projection follows the client area and
-corrects the display mode's pixel proportions; RTG uses square pixels.
+available to retry. When memory recovery releases the back buffer and projection
+cache, they are reacquired at the next key press, resize, or frame after the scene
+changes, with at most one attempt per scene revision. Buffering hides each polygon's
+construction but does not guarantee tear-free presentation. The window copy does not
+wait for the blitter: `graphics.library` and the RTG libraries order later blits
+behind it, and the driver waits only before freeing a bitmap or swapping fullscreen
+buffers. Native input handles dragging, keys, close, activation, refresh, and
+resizing. The projection follows the client area and corrects the display mode's pixel
+proportions; RTG uses square pixels.
 
 OCS, and hardware that older OS versions cannot identify, use conservative window
 limits of 992 × 1024 pixels and need a Workbench bitmap stride of at most 128 bytes
@@ -146,13 +149,13 @@ visible. The OS keeps running, including Intuition input and reads of Earth data
 the executable.
 
 Native fullscreen uses low resolution on the Workbench screen's monitor, so a 31 kHz
-monitor driver from `DEVS:Monitors` keeps a visible mode; on PAL or NTSC this is
-320 × 256 or 320 × 200. If that monitor has no available low-resolution mode,
-`BestModeIDA` picks the nearest nominal 320 × 200/256 mode on it without HAM,
-extra-half-brite, or dual playfield, and then the default monitor's low resolution is
-tried. The screen takes its size from the mode's nominal `DimensionInfo` and uses 32
-colors on OCS/ECS or 256 on AGA, within the mode's maximum depth. AGA retries with 32
-colors if the larger buffers cannot be allocated. Its private palette is based on the Earth colors,
+monitor driver from `DEVS:Monitors` keeps a visible mode; on PAL or NTSC this is 320 ×
+256 or 320 × 200. If that monitor has no available low-resolution mode, `BestModeIDA`
+picks the nearest nominal 320 × 200/256 mode on it without HAM, extra-half-brite, or
+dual playfield, and then the default monitor's low resolution is tried. The screen
+takes its size from the mode's nominal `DimensionInfo` and uses 32 colors on OCS/ECS
+or 256 on AGA, within the mode's maximum depth. AGA retries with 32 colors if the
+larger buffers cannot be allocated. Its private palette is based on the Earth colors,
 with pointer and OSD colors accounted for, and Workbench's palette is preserved. RTG
 fullscreen stays on the current graphics backend and needs compatible screen buffers.
 Older OS versions and unsupported modes stay windowed. If allocation fails, windowed
