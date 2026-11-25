@@ -25,6 +25,11 @@ static double texsoft_matrix[4][4];
 static int texsoft_indexed, texsoft_ready, texsoft_format;
 static unsigned char *texsoft_lut;
 static unsigned char texsoft_palette[TEXTURE_PALETTE_BYTES];
+/* Raster pixels outside the dirty rectangle still hold texsoft_background,
+ * so the next frame clears only what the previous one drew. */
+static int texsoft_cleared, texsoft_dirty;
+static unsigned long texsoft_background;
+static int texsoft_dirty_left, texsoft_dirty_right, texsoft_dirty_bottom, texsoft_dirty_top;
 
 static int texsoft_finite(double value)
 {
@@ -37,7 +42,7 @@ void texsoft_release_raster(void)
     free(texsoft_frame); free(texsoft_indices); free(texsoft_depth);
     texsoft_frame = NULL; texsoft_indices = NULL; texsoft_depth = NULL;
     texsoft_width = texsoft_height = 0;
-    texsoft_ready = FALSE;
+    texsoft_ready = texsoft_cleared = texsoft_dirty = FALSE;
 }
 
 static void texsoft_free_mips(void)
@@ -166,14 +171,25 @@ static int texsoft_make_lut(const unsigned char *palette)
     return 1;
 }
 
+static void texsoft_clear(unsigned long first, unsigned long count)
+{
+    unsigned long pixel;
+    for (pixel = first; pixel < first + count; ++pixel)
+    {
+        if (texsoft_indices != NULL) texsoft_indices[pixel] = (unsigned char)texsoft_background;
+        else texsoft_frame[pixel] = texsoft_background;
+        texsoft_depth[pixel] = 2.0f;
+    }
+}
+
 int texsoft_begin(unsigned int width, unsigned int height,
                     float model[4][4], float projection[4][4],
                     int format, const unsigned char *colormap)
 {
-    unsigned long count, pixel;
+    unsigned long count, background;
     void *frame;
     size_t stride;
-    int indexed;
+    int indexed, y;
     float *depth;
     unsigned int i, j, k;
     double matrix[4][4];
@@ -217,12 +233,19 @@ int texsoft_begin(unsigned int width, unsigned int height,
     }
     texsoft_indexed = indexed;
     memcpy(texsoft_matrix, matrix, sizeof(matrix));
-    for (pixel = 0; pixel < count; ++pixel)
+    background = indexed ? texsoft_lut[0] : 0xff000000UL;
+    /* A new buffer or a new palette background needs a full clear. */
+    if (!texsoft_cleared || background != texsoft_background)
     {
-        if (texsoft_indices != NULL) texsoft_indices[pixel] = texsoft_lut[0];
-        else texsoft_frame[pixel] = indexed ? texsoft_lut[0] : 0xff000000UL;
-        texsoft_depth[pixel] = 2.0f;
+        texsoft_background = background;
+        texsoft_clear(0UL, count);
     }
+    else if (texsoft_dirty)
+        for (y = texsoft_dirty_bottom; y <= texsoft_dirty_top; ++y)
+            texsoft_clear((unsigned long)y * width + (unsigned long)texsoft_dirty_left,
+                          (unsigned long)(texsoft_dirty_right - texsoft_dirty_left) + 1UL);
+    texsoft_cleared = TRUE;
+    texsoft_dirty = FALSE;
     texsoft_ready = TRUE;
     return 1;
 }
@@ -266,6 +289,16 @@ static int texsoft_clip(const Texsoft_vertex *in, int count,
     return total;
 }
 
+/* floor() for sampler coordinates. Truncation is exact for any value that
+ * fits a long, so only larger magnitudes need the library call. */
+static double texsoft_floor(double value)
+{
+    double whole;
+    if (!(value > -2147483647.0 && value < 2147483647.0)) return floor(value);
+    whole = (double)(long)value;
+    return whole > value ? whole - 1.0 : whole;
+}
+
 static void texsoft_sample(unsigned int level, double u, double v, double rgb[3])
 {
     int x, y, x0, y0, x1, y1, channel;
@@ -273,10 +306,11 @@ static void texsoft_sample(unsigned int level, double u, double v, double rgb[3]
     unsigned long a, b, c, d;
     double sx, sy, fx, fy;
     width = texsoft_mip_w[level]; height = texsoft_mip_h[level];
-    sx = (u - floor(u)) * width - 0.5; sy = (v - floor(v)) * height - 0.5;
-    x = (int)floor(sx); y = (int)floor(sy); fx = sx - x; fy = sy - y;
-    x0 = (x + (int)width) % (int)width; y0 = (y + (int)height) % (int)height;
-    x1 = (x0 + 1) % (int)width; y1 = (y0 + 1) % (int)height;
+    sx = (u - texsoft_floor(u)) * width - 0.5; sy = (v - texsoft_floor(v)) * height - 0.5;
+    x = (int)texsoft_floor(sx); y = (int)texsoft_floor(sy); fx = sx - x; fy = sy - y;
+    /* Mip sizes are powers of two, and x, y >= -1, so masks wrap as % did. */
+    x0 = (x + (int)width) & (int)(width - 1U); y0 = (y + (int)height) & (int)(height - 1U);
+    x1 = (x0 + 1) & (int)(width - 1U); y1 = (y0 + 1) & (int)(height - 1U);
     a = ((unsigned long)y0 * width + x0) * 3UL;
     b = ((unsigned long)y0 * width + x1) * 3UL;
     c = ((unsigned long)y1 * width + x0) * 3UL;
@@ -321,6 +355,20 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
     if (bottom < 0) bottom = 0;
     if (right >= (int)texsoft_width) right = (int)texsoft_width - 1;
     if (top >= (int)texsoft_height) top = (int)texsoft_height - 1;
+    if (left > right || bottom > top) return;
+    if (!texsoft_dirty)
+    {
+        texsoft_dirty_left = left; texsoft_dirty_right = right;
+        texsoft_dirty_bottom = bottom; texsoft_dirty_top = top;
+        texsoft_dirty = TRUE;
+    }
+    else
+    {
+        if (left < texsoft_dirty_left) texsoft_dirty_left = left;
+        if (right > texsoft_dirty_right) texsoft_dirty_right = right;
+        if (bottom < texsoft_dirty_bottom) texsoft_dirty_bottom = bottom;
+        if (top > texsoft_dirty_top) texsoft_dirty_top = top;
+    }
     dux = duy = dvx = dvy = dqx = dqy = 0.0;
     if (texsoft_levels > 1U)
     {
@@ -388,6 +436,21 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
         }
 }
 
+static int texsoft_project(const Texsoft_vertex *in, Texsoft_screen *out)
+{
+    if (!(in->p[3] > 0)) return 0;
+    out->q = 1.0 / in->p[3];
+    out->x = (in->p[0] * out->q + 1) * texsoft_width / 2.0;
+    out->y = (in->p[1] * out->q + 1) * texsoft_height / 2.0;
+    out->z = in->p[2] * out->q;
+    out->u = in->u * out->q; out->v = in->v * out->q;
+    return texsoft_finite(out->q) && texsoft_finite(out->u) &&
+           texsoft_finite(out->v) &&
+           out->x >= -1.0 && out->x <= texsoft_width + 1.0 &&
+           out->y >= -1.0 && out->y <= texsoft_height + 1.0 &&
+           out->z >= -1.000001 && out->z <= 1.000001;
+}
+
 void texsoft_triangle(const Vertex *a, const Vertex *b, const Vertex *c,
                         const Coord *ua, const Coord *ub, const Coord *uc)
 {
@@ -416,26 +479,24 @@ void texsoft_triangle(const Vertex *a, const Vertex *b, const Vertex *c,
         }
         first[i].u = coords[i]->u; first[i].v = coords[i]->v;
     }
+    /* Every plane would copy a triangle inside all six unchanged, so skip
+     * the clipper: the rasterizer then rejects back faces before any setup,
+     * and the output is exactly that of the clipped path. */
     count = 3;
-    for (plane = 0; plane < 6; plane += 2)
+    for (i = 0; i < 3 && count == 3; ++i)
+        for (plane = 0; plane < 6; ++plane)
+            if (!(texsoft_plane(&first[i], plane) >= 0)) { count = 0; break; }
+    if (count == 0)
     {
-        count = texsoft_clip(first, count, second, plane); if (count < 3) return;
-        count = texsoft_clip(second, count, first, plane + 1); if (count < 3) return;
+        count = 3;
+        for (plane = 0; plane < 6; plane += 2)
+        {
+            count = texsoft_clip(first, count, second, plane); if (count < 3) return;
+            count = texsoft_clip(second, count, first, plane + 1); if (count < 3) return;
+        }
     }
     for (i = 0; i < count; ++i)
-    {
-        if (!(first[i].p[3] > 0)) return;
-        screen[i].q = 1.0 / first[i].p[3];
-        screen[i].x = (first[i].p[0] * screen[i].q + 1) * texsoft_width / 2.0;
-        screen[i].y = (first[i].p[1] * screen[i].q + 1) * texsoft_height / 2.0;
-        screen[i].z = first[i].p[2] * screen[i].q;
-        screen[i].u = first[i].u * screen[i].q; screen[i].v = first[i].v * screen[i].q;
-        if (!texsoft_finite(screen[i].q) || !texsoft_finite(screen[i].u) ||
-            !texsoft_finite(screen[i].v) ||
-            !(screen[i].x >= -1.0 && screen[i].x <= texsoft_width + 1.0) ||
-            !(screen[i].y >= -1.0 && screen[i].y <= texsoft_height + 1.0) ||
-            !(screen[i].z >= -1.000001 && screen[i].z <= 1.000001)) return;
-    }
+        if (!texsoft_project(&first[i], &screen[i])) return;
     for (i = 1; i < count - 1; ++i) texsoft_raster(&screen[0], &screen[i], &screen[i + 1]);
 }
 

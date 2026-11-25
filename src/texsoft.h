@@ -34,7 +34,9 @@ extern Drv_result texsoft_texture_take_filtered(unsigned int width,
  * or a color index for IRIS GL; byte output contains one palette index per
  * pixel for OpenGL. Only the matching accessor returns storage. Changing
  * dimensions or format releases the old raster before allocating its replacement.
- * Host contracts exercise numeric words, not the native IRIX ABI. */
+ * The raster is read-only to callers: a reused raster clears only the pixels
+ * the previous frame drew. Host contracts exercise numeric words, not the
+ * native IRIX ABI. */
 extern int texsoft_begin(unsigned int width, unsigned int height,
                            float model[4][4], float projection[4][4],
                            int format, const unsigned char *colormap);
