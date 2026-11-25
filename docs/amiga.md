@@ -57,7 +57,11 @@ to omit RTG support; changing this setting recompiles the driver.
 The build packs all 13 canonical `data/*.bin` chunks into an executable `HUNK_DEBUG`
 record, so no map files are needed on the Amiga. Keep the packed executable intact:
 stripping its debug records removes the maps. Copy it as binary and keep its
-executable protection bit.
+executable protection bit. The packer accepts only records that Kickstart 1.3's
+`LoadSeg` understands; it rejects `HUNK_RELOC32SHORT` (1020) and `HUNK_DREL32`
+(1015), which need Kickstart 2.0, so link with ordinary 32-bit relocations. Whether
+`LoadSeg` reads or seeks past the 170.5 KiB map record when loading from floppy has
+not been measured.
 
 The program reads its own executable through the Workbench launch lock or the CLI
 program path, loading only the selected map in reads of at most 16 KiB. Later

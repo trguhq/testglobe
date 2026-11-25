@@ -147,8 +147,9 @@ does not use that test-only file I/O.
 `tests/ami_pack.py` checks the Amiga packer without an SDK. It compares all embedded
 chunks and resource IDs with the canonical data, preserves loadable hunks and unrelated
 debug records, and verifies that repacking does not duplicate maps. Malformed hunks,
-incorrect map lengths, and input/output aliases must fail without replacing a valid
-output. These checks run in the baseline suite and can also be run directly:
+Kickstart 2.0 relocation records (`HUNK_RELOC32SHORT` and `HUNK_DREL32`), incorrect
+map lengths, and input/output aliases must fail without replacing a valid output;
+ordinary 32-bit relocations still pack. These checks run in the baseline suite and can also be run directly:
 
 ```sh
 python3 tests/ami_pack.py
