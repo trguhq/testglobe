@@ -62,7 +62,8 @@ static int record_fpu(float matrix[3][3], unsigned int count,
 }
 
 static struct ExecBase exec_base;
-static struct Task task_record;
+static struct Process process_record;
+static struct CommandLineInterface cli_record;
 static unsigned char task_stack[32768];
 struct ExecBase *SysBase = &exec_base;
 static struct GfxBase graphics_base;
@@ -83,7 +84,7 @@ static unsigned int resource_calls, resource_max, resource_first, resource_failu
 static unsigned int area_count;
 static long area_x[16], area_y[16];
 static unsigned long rendered_hash, rendered_count;
-static int blitter_busy, event_outstanding, small_stack;
+static int blitter_busy, event_outstanding, small_stack, cli13_stack;
 static unsigned long clock_micros;
 static unsigned int intuition_clock_calls;
 static struct IntuiMessage messages[8];
@@ -180,8 +181,21 @@ struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
     assert(strcmp(name, "intuition.library") == 0);
     return (struct Library *)&intuition_base;
 }
+/* Host frames never lie inside task_stack, as on a 1.3 CLI. Its process
+ * bounds describe the CLI's own 4000-byte stack, not the command's. */
 struct Task *FindTask(CONST_STRPTR name)
-{ assert(name == NULL); task_record.tc_SPLower = task_stack; task_record.tc_SPUpper = task_stack + (small_stack ? 4096 : sizeof(task_stack)); return &task_record; }
+{
+    assert(name == NULL);
+    process_record.pr_Task.tc_SPLower = task_stack;
+    process_record.pr_Task.tc_SPUpper = task_stack + (cli13_stack ? 4000 : small_stack ? 4096 : sizeof(task_stack));
+    process_record.pr_CLI = 0;
+    if (cli13_stack)
+    {
+        cli_record.cli_DefaultStack = small_stack ? 1024 : 8192;
+        process_record.pr_CLI = (BPTR)((ULONG)&cli_record >> 2);
+    }
+    return &process_record.pr_Task;
+}
 void CloseLibrary(struct Library *library)
 { assert(library != NULL && library_count != 0); --library_count; }
 APTR AllocMem(ULONG size, ULONG flags)
@@ -1159,6 +1173,38 @@ static void test_clock(void)
     drv_reset_timing();
 }
 
+/* Bounds containing the probe are measured from it, leaving room for the
+ * frames above it; otherwise a CLI's configured size is used. */
+static void test_stack_probe(void)
+{
+    struct Process process;
+    struct CommandLineInterface cli;
+    ULONG base;
+    memset(&process, 0, sizeof(process)); memset(&cli, 0, sizeof(cli));
+    base = 0x10000UL;
+    process.pr_Task.tc_SPLower = (APTR)base;
+    process.pr_Task.tc_SPUpper = (APTR)(base + AMI_STACK_BYTES);
+    assert(ami_stack_ok(&process, base + AMI_STACK_BYTES - AMI_STACK_STARTUP));
+    assert(!ami_stack_ok(&process, base + AMI_STACK_BYTES - AMI_STACK_STARTUP - 1UL));
+    assert(ami_stack_ok(&process, base + AMI_STACK_BYTES));
+    /* A large configured stack does not hide one already consumed. */
+    process.pr_Task.tc_SPUpper = (APTR)(base + 4UL * AMI_STACK_BYTES);
+    assert(!ami_stack_ok(&process, base + 4096UL));
+    /* Outside the bounds without a CLI: only the task's own size remains. */
+    assert(ami_stack_ok(&process, base - 4UL) && ami_stack_ok(&process, base));
+    process.pr_Task.tc_SPUpper = (APTR)(base + AMI_STACK_BYTES - 4UL);
+    assert(!ami_stack_ok(&process, base + 8UL * AMI_STACK_BYTES));
+    /* A 1.3 CLI's command stack is cli_DefaultStack longwords. */
+    process.pr_CLI = (BPTR)((ULONG)&cli >> 2);
+    cli.cli_DefaultStack = (LONG)(AMI_STACK_BYTES / 4UL);
+    assert(ami_stack_ok(&process, base + 8UL * AMI_STACK_BYTES));
+    cli.cli_DefaultStack = (LONG)(AMI_STACK_BYTES / 4UL) - 1L;
+    assert(!ami_stack_ok(&process, base + 8UL * AMI_STACK_BYTES));
+    cli.cli_DefaultStack = -1L;
+    assert(!ami_stack_ok(&process, base + 8UL * AMI_STACK_BYTES));
+    assert(!ami_stack_ok(NULL, base));
+}
+
 static void test_fatal_cleanup(void)
 {
     assert(small_stack && library_count == 0 && window_count == 0 && raster_count == 0);
@@ -1520,7 +1566,9 @@ int main(int argc, char **argv)
     oversize_fonts = strcmp(mode, "fontlarge") == 0;
     test_fpu_integer_conversion();
     fail_cache_allocation = strcmp(mode, "cachefail") == 0;
-    if (strcmp(mode, "stack") == 0) { small_stack = 1; assert(atexit(test_fatal_cleanup) == 0); }
+    cli13_stack = strncmp(mode, "cli13", 5) == 0;
+    if (strcmp(mode, "stack") == 0 || strcmp(mode, "cli13stack") == 0)
+    { small_stack = 1; assert(atexit(test_fatal_cleanup) == 0); }
     font.tf_YSize = 8; font.tf_XSize = 8; font.tf_Baseline = 6;
     desktop.Width = 640; desktop.Height = 256;
     desktop.BitMap.Depth = 5;
@@ -1631,6 +1679,7 @@ int main(int argc, char **argv)
         assert(drv_init_window(INT_MAX, INT_MAX, INT_MAX, INT_MAX));
     else assert(drv_init_window(0, 0, 0, 0));
     if (strcmp(mode, "ocs") == 0 || strcmp(mode, "aga") == 0) test_clock();
+    if (strcmp(mode, "ocs") == 0) test_stack_probe();
     assert(window_count == 1 && drv_win_width < (unsigned int)desktop.Width && drv_win_height < 240);
     if (fail_cache_allocation) assert(ami_project_cache == NULL);
     assert(ami_cpu == (strcmp(mode, "040") == 0 ? 68040 : (exec_base.AttnFlags & AFF_68020 ? 68020 : 68000)));

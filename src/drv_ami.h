@@ -55,6 +55,8 @@
 #define DRV_QUAD_BATCH_MAX 64
 /* The kick13 C runtime preserves the stack supplied by Shell/Workbench. */
 #define AMI_STACK_BYTES 32768UL
+/* Startup code, main and drv_init frames already above the stack probe. */
+#define AMI_STACK_STARTUP 1024UL
 
 extern void ami_error(char *message);
 extern double ami_time_now(void);

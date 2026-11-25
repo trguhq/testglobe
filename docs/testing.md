@@ -752,9 +752,10 @@ cross-build uses the [Amiga build instructions](amiga.md#build) separately.
   V36 and later, `TR_GETSYSTIME` with backward adjustment on 1.3, and `CurrentTime`
   fallback after each failed port, request, or device acquisition.
 - **Lifecycle and recovery:** native event input, activation/refresh, close,
-  Chip RAM allocation/release, the 32 KiB stack guard, back-buffer failure selecting
-  direct drawing, scratch-allocation pause/retry, and bounded recovery from area-fill
-  errors. Refresh drawing is deferred outside Intuition's damage-clipping scope;
+  Chip RAM allocation/release, the 32 KiB stack guard (measured below the caller's
+  frame, or from `cli_DefaultStack` on a 1.3 CLI whose stack lies outside the task
+  bounds), back-buffer failure selecting direct drawing, scratch-allocation
+  pause/retry, and bounded recovery from area-fill errors. Refresh drawing is deferred outside Intuition's damage-clipping scope;
   invalid display changes can recover when valid dimensions return.
 - **Executable data:** the production reader opens a real packed Hunk file through
   CLI, Workbench, program-directory, and old CLI search-path cases. Tests compare

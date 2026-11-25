@@ -600,10 +600,12 @@ def main():
                          "cgx8", "cgx15", "cgx16", "cgx24", "cgx32", "p968", "p9615", "p9616", "p9624", "p9632",
                          "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop", "fs-cgx8", "fs-cgx15", "fs-cgx16", "fs-cgx24", "fs-cgx32",
                          "fs-p968", "fs-p9615", "fs-p9616", "fs-p9624", "fs-p9632",
-                         "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative"):
+                         "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative",
+                         "cli13"):
                 run([str(output / "amiga"), mode])
-            run([str(output / "amiga"), "stack"], expected_returncode=1,
-                required_output="PASS Amiga stack guard:")
+            for mode in ("stack", "cli13stack"):
+                run([str(output / "amiga"), mode], expected_returncode=1,
+                    required_output="PASS Amiga stack guard:")
             native_ami = ["-DAMI_RTG=0" if option == "-DAMI_RTG=1" else option for option in ami]
             check_production_units(cc, common, native_ami, output, "Amiga_native",
                 ("drv_ami.c",))

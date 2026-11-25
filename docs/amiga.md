@@ -42,7 +42,10 @@ Stack 32768
 testglobe-amiga
 ```
 
-The driver checks the available stack before opening its window. Override `AMI_CC`,
+The driver checks the available stack before opening its window. When the task's
+stack bounds contain the running program, it measures the space left below its own
+frame. The 1.3 CLI runs commands on a separate stack without updating those bounds, so
+there the CLI's configured `Stack` size is checked instead. Override `AMI_CC`,
 `AMI_CONFIG`, `AMI_CFLAGS`, `AMI_020FLAGS`, `AMI_FPUFLAGS`, `AMI_CPPFLAGS`,
 `AMI_LDFLAGS`, `AMI_LIBS`, or `AMI_PYTHON` for another toolchain. Keep the baseline
 objects at `-cpu=68000 -fpu=0`; `-rmcfg-amiga-softfloat` and `-lmsoft` select IEEE

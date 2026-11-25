@@ -25,7 +25,7 @@ struct WBArg { BPTR wa_Lock; STRPTR wa_Name; };
 struct WBStartup { LONG sm_NumArgs; struct WBArg *sm_ArgList; };
 struct Task { APTR tc_SPLower, tc_SPUpper; };
 struct Process { struct Task pr_Task; BPTR pr_CLI; };
-struct CommandLineInterface { BPTR cli_CommandName, cli_CommandDir; };
+struct CommandLineInterface { BPTR cli_CommandName, cli_CommandDir; LONG cli_DefaultStack; };
 
 struct ExecBase { struct Library LibNode; UWORD AttnFlags; };
 struct GfxBase { struct Library LibNode; UBYTE ChipRevBits0; UWORD DisplayFlags; };

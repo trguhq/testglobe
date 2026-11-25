@@ -13,6 +13,8 @@
 #include <exec/types.h>
 #include <exec/execbase.h>
 #include <exec/tasks.h>
+#include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <graphics/gfx.h>
 #include <graphics/gfxbase.h>
 #include <graphics/gfxmacros.h>
@@ -388,11 +390,29 @@ static void ami_detect_processor(void)
     }
 }
 
+/* The 1.3 CLI runs a command on a separate stack of cli_DefaultStack
+ * longwords without updating tc_SPLower/tc_SPUpper. Trust those bounds only
+ * when they contain the caller's frame, measuring the space below it. */
+static int ami_stack_ok(const struct Process *process, ULONG marker)
+{
+    const struct CommandLineInterface *cli;
+    ULONG lower, upper;
+    if (process == NULL) return FALSE;
+    lower = (ULONG)process->pr_Task.tc_SPLower;
+    upper = (ULONG)process->pr_Task.tc_SPUpper;
+    if (marker > lower && marker <= upper)
+        return marker - lower >= AMI_STACK_BYTES - AMI_STACK_STARTUP;
+    cli = process->pr_CLI != 0 ?
+          (const struct CommandLineInterface *)BADDR(process->pr_CLI) : NULL;
+    if (cli != NULL) return cli->cli_DefaultStack >= (LONG)(AMI_STACK_BYTES / 4UL);
+    /* Neither describes this stack; keep the task's own size check. */
+    return upper >= lower && upper - lower >= AMI_STACK_BYTES;
+}
+
 void drv_init(int *argc, char **argv)
 {
     Drv_result result;
-    struct Task *task;
-    ULONG stack_lower, stack_upper;
+    UBYTE marker;
     ami_ready = ami_rendering = ami_paused = FALSE;
     ami_running = ami_active = ami_dirty = TRUE;
     ami_palette_valid = FALSE;
@@ -403,10 +423,7 @@ void drv_init(int *argc, char **argv)
     if (IntuitionBase == NULL) ami_error("AmigaOS 1.3 or later is required");
     GfxBase = (struct GfxBase *)OpenLibrary("graphics.library", 34UL);
     if (GfxBase == NULL) ami_error("Cannot open graphics.library");
-    task = FindTask(NULL);
-    stack_lower = task == NULL ? 0UL : (ULONG)task->tc_SPLower;
-    stack_upper = task == NULL ? 0UL : (ULONG)task->tc_SPUpper;
-    if (stack_upper < stack_lower || stack_upper - stack_lower < AMI_STACK_BYTES)
+    if (!ami_stack_ok((struct Process *)FindTask(NULL), (ULONG)&marker))
         ami_error("Set the program's Stack to 32768 bytes, then start it again.");
     ami_detect_processor();
 #if AMI_RTG
