@@ -13,7 +13,9 @@
 #endif
 
 /* Keep code/data pointer values clean in either 24- or 32-bit addressing.
- * A failed optional GWorld allocation falls back to drawing in the window. */
+ * A failed optional GWorld allocation falls back to drawing in the window.
+ * The driver installs the required Apple event handlers (quit included)
+ * only after Gestalt reports the Apple Event Manager. */
 resource 'SIZE' (-1) {
     reserved,
     acceptSuspendResumeEvents,
@@ -24,7 +26,7 @@ resource 'SIZE' (-1) {
     dontGetFrontClicks,
     ignoreAppDiedEvents,
     is32BitCompatible,
-    notHighLevelEventAware,
+    isHighLevelEventAware,
     onlyLocalHLEvents,
     notStationeryAware,
     dontUseTextEditServices,
@@ -44,6 +46,19 @@ resource 'ALRT' (128, purgeable) {
         OK, visible, sound1;
         OK, visible, sound1;
         OK, visible, sound1
+    },
+    centerMainScreen
+};
+
+/* Apple menu About box: the same items, shown with NoteAlert, silently. */
+resource 'ALRT' (129, purgeable) {
+    {80, 80, 270, 500},
+    128,
+    {
+        OK, visible, silent;
+        OK, visible, silent;
+        OK, visible, silent;
+        OK, visible, silent
     },
     centerMainScreen
 };

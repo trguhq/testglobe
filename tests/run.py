@@ -532,11 +532,13 @@ def main():
                 str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "qd")])
-            for mode in ("mono", "1", "4", "8", "16", "32", "fpu", "falsefpu",
-                         "oldcolor", "nogworld", "lockfail", "multi", "small640",
+            for mode in ("mono", "mono6", "monofail", "1", "4", "8", "16", "32", "fpu", "falsefpu",
+                         "oldcolor", "qd32", "nogworld", "lockfail", "multi", "small640",
                          "small512", "large800", "tall640", "explicit",
                          "explicitwidth", "explicitheight", "patternfail", "polyfail"):
                 run([str(output / "qd"), mode])
+            run([str(output / "qd"), "fatal"], expected_returncode=1, expected_stderr="",
+                required_output="PASS QuickDraw fatal alert: input and drawing stop, ports restore, the memory reserve is freed for the alert and the watch cursor is cleared")
         if args.gdi_contract:
             check_production_units(cc, common, gdi + ["-Wno-cast-function-type"], output, "GDI",
                 ("drv.c", "drv_gdi.c", "err.c", "globe.c", "main.c", "soft3d.c", "soft3fp.c"))
