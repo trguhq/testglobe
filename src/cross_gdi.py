@@ -1,6 +1,6 @@
 # Copyright (C) 2026 trguhq
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""OpenWatcom cross-build of the existing Windows 3.1 GDI driver."""
+"""OpenWatcom cross-build of the existing Windows 3.0/3.1 GDI driver."""
 import os
 import struct
 
@@ -17,8 +17,9 @@ def verify_binary(executable, root):
         raise ValueError("GDI output is not a 16-bit NE executable")
     flags, = struct.unpack_from("<H", image, ne + 12)
     version, = struct.unpack_from("<H", image, ne + 62)
-    if image[ne + 54] != 2 or version != 0x030a or not flags & 8:
-        raise ValueError("GDI output must require protected-mode Windows 3.1")
+    # Marked for Windows 3.0, which 3.1 also runs; real mode is excluded.
+    if image[ne + 54] != 2 or version != 0x0300 or not flags & 8:
+        raise ValueError("GDI output must require protected-mode Windows 3.0")
 
     resources = {1000: "e32.bin", 1010: "e64.bin", 1020: "e128.bin",
                  1030: "e256_0.bin", 1031: "e256_1.bin"}
@@ -65,7 +66,7 @@ def verify_binary(executable, root):
             found.add(number)
     if not terminated or found != set(resources):
         raise ValueError("Missing embedded Earth resources")
-    print("Verified Windows 3.1 NE image and all 13 embedded Earth resources")
+    print("Verified Windows 3.0 NE image and all 13 embedded Earth resources")
 
 
 def build(config):
@@ -95,7 +96,7 @@ def build(config):
     run(["wrc", "-q", "-r", "-bt=windows", "-fo=gdi.res",
          "-i=" + str(src), "-i=" + str(config["root"] / "data"), src / "gdi.rc"],
         cwd=out, env=env)
-    run(["wrc", "-q", "-31", "-t", "gdi.res", "testglob.exe"], cwd=out, env=env)
+    run(["wrc", "-q", "-30", "-t", "gdi.res", "testglob.exe"], cwd=out, env=env)
     executable = out / "testglob.exe"
     verify_binary(executable, config["root"])
     return executable

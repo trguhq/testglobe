@@ -624,7 +624,8 @@ t_data.obj: t_data.c $(TGA_HEADERS)
 	$(TGA_CC) @t_data.rsp
 
 # Use the 16-bit linker, not the compiler's DOS default startup libraries.
-# RC attaches the Earth data resources and marks protected-mode Windows.
+# RC attaches the Earth data resources and marks a protected-mode Windows
+# 3.0 application, matching EXETYPE in gdi.def; it also runs on 3.1.
 # Relink the selected backend because DOS and Win16 targets share testglob.exe.
 gdi: $(GDI_OBJECTS) g_earth.res $(SRC)\gdi.def FORCE
 	@echo $(GDI_OBJECTS) $(GDI_LDFLAGS) > g_link.rsp
@@ -633,7 +634,7 @@ gdi: $(GDI_OBJECTS) g_earth.res $(SRC)\gdi.def FORCE
 	@echo $(GDI_LIBS) >> g_link.rsp
 	@echo $(SRC)\gdi.def; >> g_link.rsp
 	$(GDI_LINK) @g_link.rsp
-	$(GDI_RC) $(GDI_RCFLAGS) g_earth.res testglob.exe
+	$(GDI_RC) -30 $(GDI_RCFLAGS) g_earth.res testglob.exe
 
 # Resources avoid huge initialized C objects and load in bounded chunks.
 g_earth.res: $(SRC)\gdi.rc $(SRC)\earthres.h $(GDI_RESOURCE_DATA)

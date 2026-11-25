@@ -674,22 +674,41 @@ python3 tests/run.py --gdi-contract
 - **Geometry and resources:** all resolutions, binary resource contents, large global
   heaps, exact palette bytes, quad topology, independent double-precision projection
   references, clipping, and shared-vertex packets. `PolyPolygon` calls are bounded to
-  64 polygons and must explicitly repeat the first point of each contour;
-  lock/unlock/release ownership is checked. Individual and streamed
-  submissions must produce the same polygon/color multiset across poses and resized
-  viewports, including narrow windows that require clipping.
+  64 polygons, run in ascending palette order, and must explicitly repeat the first
+  point of each contour; lock/unlock/release ownership is checked. Individual and
+  streamed submissions must produce the same polygon/color multiset across poses and
+  resized viewports, including narrow windows that require clipping. The shared
+  `soft3d` prepare helper must match a double-precision rotation and reject an
+  unrepresentable angle.
 - **CPU and display:** 80387 selection and fixed-point fallback, including a 286/287
   profile; small-screen defaults, explicit dimensions, foreground/background palettes,
-  buffering, and wrapped OSD statistics.
+  buffering, and wrapped OSD statistics. The recorder's `ShowWindow` activates the
+  window: startup must match the palette exactly once, in the foreground, and an
+  active window must keep its foreground mapping when another application changes
+  the palette. Each paint or render realizes the palette once.
   Font tests cover size tiers, substitution, allocation failure, restoration of
   selected objects, and bounded ownership across resize.
 - **Palette dithering:** realized palette RGBs, exact solid brushes, two-color DIB
   patterns, cache refreshes after palette changes, and solid fallback when queries
   or pattern creation fail. Packed DIB layout, logical palette indices, pattern
   coverage, and GDI/global-memory ownership are checked.
-- **Polygon coverage:** monochrome mask allocation, fill and outline objects, and
-  masked brush-transfer operations preserve the selected pattern across polygon
-  boundaries. Checks cover solid-pen fallback, stock pens, and mask cleanup/retry.
+- **Polygon coverage:** a realized palette with unavailable entries draws dithered
+  colors through the monochrome mask and every other color with a solid brush and a
+  same-index pen. Exact palettes never allocate or use the mask, and every mask blit
+  must use a pattern brush. Checks cover fill and outline objects, pattern-preserving
+  transfers, mask colors set and restored once per frame, one brush/pen selection per
+  batch and one restoration per packet, solid-pen fallback, stock pens, and mask
+  cleanup/retry. Same-index pens are reused, at most 64 are cached, and they are
+  released with the brushes.
+- **Updates and animation:** timer and drag frames must invalidate exactly the
+  previous frame's globe and OSD rectangles, cover everything the new frame draws, and
+  present any overflow from the buffer without drawing again; the overflow strips
+  are checked against covered and drawn areas. Keys, OSD toggles, palette changes,
+  failed frames, and direct drawing invalidate the whole client. The driver's own
+  `PeekMessage` loop runs against a recorded queue: active auto-rotation draws a frame
+  on each empty poll, the following timer tick is skipped and the next one animates,
+  and inactive, iconic, or stopped windows call `WaitMessage`. Iconic timer messages
+  do nothing, and a same-size restore keeps the buffer, mask, and brushes.
 - **Input and lifecycle:** `WinMain`, common startup, keyboard/mouse/resize messages,
   timer rollover, Escape/window close, and heap/GDI-object ownership.
 - **Recovery:** missing back buffers use direct paint; failed `PolyPolygon` calls
@@ -697,18 +716,24 @@ python3 tests/run.py --gdi-contract
   Failed normal and diagnostic clears cannot present stale buffers or count a
   successful frame; a successful diagnostic clear remains displayable.
   Resource failures return typed results, empty scenes still repaint, and timer
-  failure leaves manual input available. Allocation and drawing failure profiles
-  verify recovery. Oversized windows follow the fatal guard: modal paint, timer, and
-  input messages must not touch failed state, and cleanup releases ownership.
+  failure leaves manual input available. With large allocations, the projection
+  cache, and the back buffer failing, key 5 falls back to 64 × 32 in direct drawing.
+  Paints in that scene revision must not allocate again, and once memory returns, key
+  1 must restore the buffer, cache, mask, and brush modes. Allocation and drawing
+  failure profiles verify recovery. Oversized windows follow the fatal guard: modal
+  paint, timer, and input messages must not touch failed state, and cleanup releases
+  ownership.
 
 ### Native validation
 
 The Win16 fixture models 16-bit `POINT` fields and checks explicit polygon closure,
-but does not implement Windows' native polygon rasterizer or reproduce Microsoft C 7
-segmented pointers or callback code generation. Its `MakeProcInstance` casts suppress
-only GCC's corresponding function-cast warning. Microsoft C 7, the Windows 3.1 SDK,
-and Windows must validate loader format, segmentation, FPU-emulator dispatch, palette
-mapping, and rendered pixels.
+but does not implement Windows' native polygon rasterizer, clipping to update
+regions, or task scheduling, and does not reproduce Microsoft C 7 segmented pointers
+or callback code generation. Its `MakeProcInstance` casts suppress only GCC's
+corresponding function-cast warning. Microsoft C 7, the Windows 3.1 SDK, and Windows
+3.0 and 3.1 must validate loader format and version marking, segmentation,
+FPU-emulator dispatch, palette mapping, cooperative yielding of the idle loop, and
+rendered pixels.
 
 ## QuickDraw
 
