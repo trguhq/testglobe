@@ -55,16 +55,31 @@ The default globe is key 1, with all five resolutions and no texture mapping. So
 quad batches reuse transformed rows and projected vertices, then clip and cull whole
 polygons; pole vertices collapse to triangles. QuickDraw fills each retained polygon
 with `PaintPoly`, `FillCPoly`, or `FillPoly`. Batching shares geometry work and does
-not add a native multiple-polygon call. QuickDraw also draws the OSD text.
+not add a native multiple-polygon call. QuickDraw also draws the OSD text. Resolution
+keys show the watch cursor while the mesh is rebuilt.
 
-The driver chooses the highest depth currently configured among the active displays,
-without changing display modes. It supports monochrome and Color QuickDraw: 1-bit
-output uses ordered luminance patterns, 4- and 8-bit output maps Earth RGB colors to
-the device palette, and 16- and 32-bit output draws RGB directly. Color QuickDraw
+The driver opens its window on the highest depth currently configured among the active
+displays, without changing display modes. After a drag, and on activation or resume,
+it follows the window to the deepest display it overlaps (`GetMaxDevice`); drags may
+use the whole gray region, across every monitor. It supports monochrome and Color
+QuickDraw: 1-bit output uses ordered luminance patterns, 2-, 4- and 8-bit output maps
+Earth RGB colors to the device palette, and 16- and 32-bit output draws RGB directly.
+
+Only 8-bit devices take the Earth palette, as a tolerant palette with exact matching
+and its 2- and 4-bit entries inhibited. The luminance-sorted palette would otherwise
+fill a 4-bit color table with near-blacks, recoloring the desktop, so 2- and 4-bit
+devices (and their GWorlds) keep the standard table and dither to it. Color QuickDraw
 receives the original RGB values through `MakeRGBPat` and `FillCPoly`; its native
 ditherer can combine four palette colors and reconverts patterns when the device
-palette or depth changes, so the Amiga two-color matcher is not used here. Monochrome
-keeps its finer 64-step luminance patterns.
+palette or depth changes, so the Amiga two-color matcher is not used here. In an 8-bit
+GWorld built from the Earth table, each index is probed once through `Color2Index` and
+`Index2Color`: colors that come back exactly are painted solid with `RGBForeColor` and
+`PaintPoly`, skipping the pattern build. The inverse table can hide close neighbours
+(the 255 distinct Earth colors share only 125 four-bit cells), so the others keep the
+dithered pattern. Presentation keeps `ditherCopy`, because the screen's table follows
+other applications and is never known to match the GWorld's. Monochrome keeps its
+finer 64-step luminance patterns; the 65 distinct 8 × 8 patterns are built on first
+use and cached, and black on white is set once per pass.
 
 One checked polygon handle is reused for every fill, avoiding a recording allocation
 per polygon. Once per pass, a temporary allocation checks for 8 KiB of contiguous
@@ -74,14 +89,51 @@ space is scarce, and checked allocation failures release optional resources befo
 one retry. Repeated failure pauses drawing until input requests another attempt.
 QuickDraw's own pattern and fill routines can still raise system errors or silently
 skip drawing when their internal allocations fail; these Toolbox calls offer no
-general recoverable-allocation guarantee.
+general recoverable-allocation guarantee, which the memory reserve below covers.
 
-With 32-bit QuickDraw, an optional GWorld provides an offscreen back buffer presented
-through `CopyBits`, using ordinary GWorld pixel memory and whatever display
-acceleration QuickDraw selects. If allocation or pixel locking fails, drawing falls
-back to the window, and the OSD reports the path in use. Activation, resume, and
-completed window drags recheck the device depth and bounds and rebuild display
-resources when they change.
+An optional GWorld provides an offscreen back buffer presented through `CopyBits`,
+using ordinary GWorld pixel memory and whatever display acceleration QuickDraw selects.
+Color QuickDraw needs 32-bit QuickDraw for it; on System 7, monochrome Macintosh Plus,
+SE and Classic systems use a 1-bit basic QuickDraw GWorld. Pixels are reached through
+`GetGWorldPixMap` (a basic QuickDraw GWorld has no `portPixMap`; Color QuickDraw before
+32-bit QuickDraw 1.2 still uses that field), and `CopyBits` receives both ports'
+`portBits`. If allocation or pixel locking fails, drawing falls back to the window,
+and the OSD reports the path in use. Display changes rebuild the palette and GWorld.
+
+After a complete frame the loop validates the window, so a grow, drag or activation
+draws one frame instead of a second one for its update event. An update with no scene
+change copies the frame the GWorld already holds; without a GWorld, or after a change,
+the whole frame is drawn. Failed and paused frames do not validate the window.
+
+## Memory
+
+At startup the driver makes four blocks of master pointers before any handle exists,
+then keeps a 24 KiB reserve handle. A grow-zone procedure, which switches to the
+application's A5 world, empties the reserve for Toolbox allocations that would
+otherwise end in a system error. The driver's own checked allocations (polygon,
+scratch probes, color table, GWorld and mesh storage) never receive it, so their
+recovery still runs. Between frames a spent reserve is taken back after optional
+resources are released; if it still does not fit, drawing pauses until a control
+retries. A fatal alert frees the reserve first.
+
+Optional resources released by recovery (the palette, pattern, and GWorld) come back
+at most once per scene revision, after a successful resolution change or a retry, and
+only when `MaxBlock` leaves 32 KiB of headroom beyond them. The small palette and
+pattern return first; the GWorld needs room of its own. A resize or display change
+allows one more attempt. The projection cache is static and is never released.
+
+## Events and menus
+
+The Apple menu offers About and the desk accessories (Apple Menu Items on System 7);
+the File menu offers Quit. When Gestalt reports the Apple Event Manager, the driver
+installs open-application, open-documents, print-documents, and quit handlers, and
+high-level events go through `AEProcessAppleEvent`. Quit, including from Shut Down,
+uses the same normal exit as File > Quit; testglobe has no documents, so open and
+print requests are declined. Without the Apple Event Manager nothing changes.
+
+`WaitNextEvent` sleeps one tick only while the window is active and animating or
+tracking a drag, 30 ticks when idle, and as long as possible in the background, where
+the window is not redrawn except for update events.
 
 ## Platform notes
 
@@ -98,17 +150,21 @@ Linking uses MPW's startup and runtime, interface, standard C, `Math.o`, and
 and `QD_LIBRARIES` for MPW releases with different runtime filenames.
 
 `src/qd.r` requests an 8 MiB preferred and 512 KiB minimum partition, sets the
-suspend/resume and 24/32-bit addressing flags, and supplies the error alerts. Higher
-resolutions and larger GWorlds need a larger partition. The driver creates its own
-window and menus. Heap allocation and `TickCount` timing use `SEG68`; classic
-Macintosh A5-relative globals and segmented `CODE` resources have their own memory
-model.
+suspend/resume, high-level-event and 24/32-bit addressing flags, and supplies the
+error and About alerts. Higher resolutions and larger GWorlds need a larger partition.
+The driver creates its own window and menus. Heap allocation and `TickCount` timing
+use `SEG68`; classic Macintosh A5-relative globals and segmented `CODE` resources have
+their own memory model. The grow-zone procedure lives in the `QuickDraw` segment,
+which is loaded at startup and never unloaded.
 
-Before a fatal alert, the driver releases pending polygons, unlocks pixels, and
-restores the caller's port and device. Readiness guards prevent reentrant rendering
-during setup, errors, or teardown. GWorld presentation temporarily sets black and
-white destination colors and restores them afterward, including after a fallback to
-direct rendering.
+The OSD wraps text by adding per-character widths rather than remeasuring growing
+prefixes, and caches the help text's line breaks for the current font, size, and width.
+
+Before a fatal alert, the driver unlocks pixels, restores the caller's port and
+device, restores the arrow cursor, and frees the memory reserve. Readiness guards
+prevent reentrant rendering during setup, errors, or teardown. GWorld presentation
+temporarily sets black and white destination colors and restores them afterward,
+including after a fallback to direct rendering.
 
 ## Downloads
 
