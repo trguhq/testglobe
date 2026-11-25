@@ -430,11 +430,23 @@ uses real X11 windows and events under Xvfb; XGL calls use a host recorder.
   orientation matrix, including identity rotation and zero translation. Recoverable
   failures must release partial resources, draw flat colors, preserve the enabled
   request, and allow retry. Nonrecoverable and unrelated errors remain fatal.
+- **Setup and submission:** one `xgl_inquire()` before the window raster, a viewable
+  window with backing store refused before two buffers are requested, ASTI for the
+  globe and ASAP for the overlay, and no clear, text, or buffer switch while globe
+  strips may still be held. CPU culling starts on. Each pass writes one
+  length-preserving model matrix, checked against XGL's documented row-vector
+  rotations and against the culling oracle's eye position.
+- **Sun ZX and diagnostics:** the `leo` profile reports `Sun:LEO`, point-samples both
+  texture filters, and shows `texture on (software)` with its notice. Other profiles
+  keep trilinear/bilinear filters. `TESTGLOBE_XGL_NOCHECK` turns argument checking
+  off, and `0` keeps it on. Error diagnostics include the object, operands, type, and
+  category, and stay readable with an empty error ID.
 - **Input and cleanup:** X11 keyboard, mouse, resize, Escape, and window-manager close.
   Status checks track current-frame use; XGL's internal software rendering is not
   reported as application software texturing.
 - **OSD layout:** native extent queries with proportional widths and negative bearings,
   wrapped status/help at small sizes, long unbroken words, and tiny-window guards.
+  The help wrap is reused until the width, font size, or text changes.
   Resize selects 10/12/16-unit stroke text. A successful empty culled frame must
   retain valid texture resources for subsequent nonempty frames.
 

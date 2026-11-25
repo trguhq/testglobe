@@ -25,7 +25,6 @@ struct Test_xgl_object {
     Xgl_texture_general_desc descriptor;
     Xgl_matrix_d3d matrix;
     void *image;
-    unsigned int rotations;
     struct Test_xgl_object *next;
 };
 
@@ -45,6 +44,9 @@ static int frame_flush_ok;
 static int native_stopped, fail_cleanup;
 static unsigned int allocation_failures;
 static int allocation_failure_type;
+/* Device inquiry, raster setup order, ASTI completion and the model matrix. */
+static unsigned int inquire_calls, model_writes;
+static int backing_store_off, scene_unflushed, leo_device;
 
 static int inject(const char *name)
 {
@@ -101,6 +103,17 @@ static void attributes(Xgl_object object, int attribute, va_list args)
         case XGL_CTX_DEVICE:
             object->device = va_arg(args, Xgl_object);
             assert(object->device->type == XGL_WIN_RAS);
+            break;
+        case XGL_WIN_RAS_BACKING_STORE:
+            /* XGL grants backing store or double buffering, whichever is
+             * requested first: refusing backing store must come first. */
+            assert(va_arg(args, int) == FALSE);
+            backing_store_off = TRUE;
+            break;
+        case XGL_WIN_RAS_BUFFERS_REQUESTED:
+            assert(backing_store_off);
+            object->value[attribute] = va_arg(args, int);
+            assert(object->value[attribute] == 2);
             break;
         case XGL_CTX_BACKGROUND_COLOR:
         case XGL_CTX_STEXT_COLOR:
@@ -160,8 +173,12 @@ static void attributes(Xgl_object object, int attribute, va_list args)
             assert(descriptor->texture_info.mipmap.max_v_freq == 1.0f);
             assert(descriptor->texture_info.mipmap.u_boundary == XGL_TEXTURE_BOUNDARY_WRAP);
             assert(descriptor->texture_info.mipmap.v_boundary == XGL_TEXTURE_BOUNDARY_WRAP);
-            assert(descriptor->texture_info.mipmap.interp_info.filter1 == XGL_TEXTURE_INTERP_MIPMAP_TRILINEAR);
-            assert(descriptor->texture_info.mipmap.interp_info.filter2 == XGL_TEXTURE_INTERP_BILINEAR);
+            /* The Sun ZX textures in software: both filters point-sample. */
+            assert(xgl_texture_software == leo_device);
+            assert(descriptor->texture_info.mipmap.interp_info.filter1 == (leo_device ?
+                   XGL_TEXTURE_INTERP_POINT : XGL_TEXTURE_INTERP_MIPMAP_TRILINEAR));
+            assert(descriptor->texture_info.mipmap.interp_info.filter2 == (leo_device ?
+                   XGL_TEXTURE_INTERP_POINT : XGL_TEXTURE_INTERP_BILINEAR));
             assert(descriptor->texture_info.mipmap.orientation_matrix[0][0] == 1.0f);
             assert(descriptor->texture_info.mipmap.orientation_matrix[1][1] == 1.0f);
             /* Native Xgl_matrix_f2d is three rows by two columns; the
@@ -195,8 +212,34 @@ Xgl_sys_state xgl_open(Xgl_attribute first, ...)
     va_start(args, first);
     attributes(object, first, args);
     va_end(args);
-    assert(object->value[XGL_SYS_ST_ERROR_DETECTION]);
+    /* TESTGLOBE_XGL_NOCHECK turns argument checking off; "0" or empty keeps it. */
+    assert(object->value[XGL_SYS_ST_ERROR_DETECTION] ==
+           (getenv("TESTGLOBE_XGL_NOCHECK") == NULL ||
+            getenv("TESTGLOBE_XGL_NOCHECK")[0] == '\0' ||
+            strcmp(getenv("TESTGLOBE_XGL_NOCHECK"), "0") == 0));
     return object;
+}
+
+Xgl_inquire *xgl_inquire(Xgl_sys_state system, Xgl_obj_desc *descriptor)
+{
+    static char leo[] = "Sun:LEO", recorder[] = "Test:RECORDER";
+    Xgl_X_window *window;
+    Xgl_inquire *inquiry;
+    assert(!native_stopped && system == xgl_system);
+    assert(descriptor != NULL && descriptor->win_ras.type == XGL_WIN_X);
+    window = (Xgl_X_window *)descriptor->win_ras.desc;
+    assert(window->X_display == xgl_display &&
+           window->X_window == (Xgl_usgn32)xgl_window);
+    ++inquire_calls;
+    /* The application owns and frees the returned structure (inq.c). */
+    inquiry = (Xgl_inquire *)calloc(1, sizeof(*inquiry));
+    assert(inquiry != NULL);
+    inquiry->name = leo_device ? leo : recorder;
+    inquiry->dga_flag = TRUE;
+    inquiry->maximum_buffer = single_buffer ? 1 : 2;
+    inquiry->double_buffer = single_buffer ? XGL_INQ_NOT_SUPPORTED : XGL_INQ_HARDWARE;
+    inquiry->true_color = inquiry->hlhsr = inquiry->shading = XGL_INQ_HARDWARE;
+    return inquiry;
 }
 
 Xgl_object xgl_object_create(Xgl_sys_state system, Xgl_obj_type type,
@@ -209,7 +252,13 @@ Xgl_object xgl_object_create(Xgl_sys_state system, Xgl_obj_type type,
     assert(!native_stopped);
     assert(system == xgl_system && system->type == -1);
     if (type == XGL_WIN_RAS) {
+        XWindowAttributes state;
         assert(descriptor != NULL && descriptor->win_ras.type == XGL_WIN_X);
+        /* DGA takes geometry and clipping now: the device has been inquired
+         * and the window is already viewable. */
+        assert(inquire_calls == 1U);
+        assert(XGetWindowAttributes(xgl_display, xgl_window, &state));
+        assert(state.map_state == IsViewable && state.backing_store == NotUseful);
         window = (Xgl_X_window *)descriptor->win_ras.desc;
         assert(window->X_display == xgl_display);
         assert(window->X_window == (Xgl_usgn32)xgl_window);
@@ -276,9 +325,14 @@ void xgl_object_get(Xgl_object object, Xgl_attribute attribute, void *value)
         Xgl_error_info *info = (Xgl_error_info *)value;
         memset(info, 0, sizeof(*info));
         info->type = injected_error_type;
-        info->id = "test-123";
+        info->category = 4;
+        /* Solaris XGL can leave the ID empty; operands may be absent. */
+        info->id = getenv("TEST_XGL_EMPTY_ID") != NULL ? "" : "test-123";
         info->msg = "injected texture failure";
         info->cur_op = "test operator";
+        info->cur_obj = "test object";
+        info->operand1 = "first operand";
+        info->operand2 = getenv("TEST_XGL_EMPTY_ID") != NULL ? NULL : "second operand";
         break;
     }
     case XGL_3D_CTX_SURF_FRONT_TMAP_NUM:
@@ -348,14 +402,88 @@ void xgl_window_raster_resize(Xgl_win_ras raster)
     ++resize_calls;
 }
 
+static void test_matrix_multiply(double result[4][4], double left[4][4],
+                                 double right[4][4])
+{
+    double product[4][4];
+    int i, j, k;
+    for (i = 0; i < 4; ++i)
+        for (j = 0; j < 4; ++j) {
+            product[i][j] = 0.0;
+            for (k = 0; k < 4; ++k) product[i][j] += left[i][k] * right[k][j];
+        }
+    memcpy(result, product, sizeof(product));
+}
+
+/* The Programmer's Guide row-vector forms; postconcatenation multiplies on
+ * the right. An independent oracle for the driver's composed matrix. */
+static void test_postconcat_rotation(double matrix[4][4], double angle, char axis)
+{
+    double rotation[4][4], c, s;
+    int i;
+    memset(rotation, 0, sizeof(rotation));
+    for (i = 0; i < 4; ++i) rotation[i][i] = 1.0;
+    c = cos(angle); s = sin(angle);
+    if (axis == 'z') { rotation[0][0] = c; rotation[0][1] = s; rotation[1][0] = -s; rotation[1][1] = c; }
+    if (axis == 'y') { rotation[0][0] = c; rotation[0][2] = -s; rotation[2][0] = s; rotation[2][2] = c; }
+    if (axis == 'x') { rotation[1][1] = c; rotation[1][2] = s; rotation[2][1] = -s; rotation[2][2] = c; }
+    test_matrix_multiply(matrix, matrix, rotation);
+}
+
+static void check_model_matrix(double m[4][4])
+{
+    double expected[4][4], translation[4][4], eye[4], x, y, dot;
+    int i, j;
+    memset(expected, 0, sizeof(expected));
+    memset(translation, 0, sizeof(translation));
+    for (i = 0; i < 4; ++i) expected[i][i] = translation[i][i] = 1.0;
+    test_postconcat_rotation(expected, -PI / 2.0, 'z');
+    test_postconcat_rotation(expected, -PI / 2.0, 'x');
+    test_postconcat_rotation(expected, (double)drv_rot_y * PI / 180.0, 'y');
+    test_postconcat_rotation(expected, (double)drv_rot_x * PI / 180.0, 'x');
+    translation[3][2] = -3000.0;
+    test_matrix_multiply(expected, expected, translation);
+    for (i = 0; i < 4; ++i)
+        for (j = 0; j < 4; ++j) assert(fabs(m[i][j] - expected[i][j]) < 1e-9);
+    /* LENGTH_PRESERV promises an orthonormal rotation with a translation. */
+    for (i = 0; i < 3; ++i) {
+        assert(m[i][3] == 0.0);
+        for (j = 0; j < 3; ++j) {
+            dot = m[i][0] * m[j][0] + m[i][1] * m[j][1] + m[i][2] * m[j][2];
+            assert(fabs(dot - (i == j ? 1.0 : 0.0)) < 1e-12);
+        }
+    }
+    assert(m[3][3] == 1.0);
+    /* The culling oracle's object-space eye is the view-space origin. */
+    x = (double)drv_rot_x * PI / 180.0;
+    y = (double)drv_rot_y * PI / 180.0;
+    eye[0] = 3000.0 * cos(x) * cos(y);
+    eye[1] = -3000.0 * cos(x) * sin(y);
+    eye[2] = 3000.0 * sin(x);
+    eye[3] = 1.0;
+    for (j = 0; j < 3; ++j)
+        assert(fabs(eye[0] * m[0][j] + eye[1] * m[1][j] + eye[2] * m[2][j] +
+                    eye[3] * m[3][j]) < 1e-6);
+}
+
 void xgl_transform_write_specific(Xgl_trans transform, void *matrix,
                                    Xgl_trans_member membership)
 {
     double (*m)[4];
     double cotangent, near_z, far_z;
     assert(!native_stopped);
-    assert(transform == xgl_view && membership == 0);
+    assert(transform == xgl_view || transform == xgl_model);
     assert(transform->value[XGL_TRANS_DATA_TYPE] == XGL_DATA_DBL);
+    if (transform == xgl_model) {
+        if (inject("fatalmodel")) { native_error(TRUE); return; }
+        /* One write per pass replaces the former five transform operators. */
+        assert(membership == XGL_TRANS_MEMBER_LENGTH_PRESERV);
+        memcpy(transform->matrix, matrix, sizeof(Xgl_matrix_d3d));
+        check_model_matrix(transform->matrix);
+        ++model_writes;
+        return;
+    }
+    assert(membership == 0);
     memcpy(transform->matrix, matrix, sizeof(Xgl_matrix_d3d));
     m = transform->matrix;
     cotangent = 1.0 / tan(PI / 8.0);
@@ -365,38 +493,6 @@ void xgl_transform_write_specific(Xgl_trans transform, void *matrix,
     near_z = (-m[2][2] + m[3][2]);
     far_z = (-10000.0 * m[2][2] + m[3][2]) / 10000.0;
     assert(fabs(near_z - 1.0) < 0.000001 && fabs(far_z) < 0.000001);
-}
-
-void xgl_transform_rotate(Xgl_trans transform, double angle, Xgl_axis axis,
-                           Xgl_trans_update update)
-{
-    double expected;
-    int expected_axis;
-    assert(!native_stopped);
-    assert(transform == xgl_model);
-    if (inject("fatalmodel")) { native_error(TRUE); return; }
-    if (update == XGL_TRANS_REPLACE) transform->rotations = 0;
-    else assert(update == XGL_TRANS_POSTCONCAT);
-    assert(transform->rotations < 4);
-    expected = -PI / 2.0;
-    expected_axis = XGL_AXIS_X;
-    if (transform->rotations == 0) expected_axis = XGL_AXIS_Z;
-    if (transform->rotations == 2) {
-        expected_axis = XGL_AXIS_Y;
-        expected = (double)drv_rot_y * PI / 180.0;
-    }
-    if (transform->rotations == 3) expected = (double)drv_rot_x * PI / 180.0;
-    assert(axis == expected_axis && fabs(angle - expected) < 0.000001);
-    ++transform->rotations;
-}
-
-void xgl_transform_translate(Xgl_trans transform, Xgl_pt *point,
-                              Xgl_trans_update update)
-{
-    assert(!native_stopped);
-    assert(transform == xgl_model && transform->rotations == 4);
-    assert(update == XGL_TRANS_POSTCONCAT && point->pt_type == XGL_PT_F3D);
-    assert(point->pt.f3d->x == 0 && point->pt.f3d->y == 0 && point->pt.f3d->z == -3000);
 }
 
 void xgl_mipmap_texture_build(Xgl_object mipmap, Xgl_mem_ras memory,
@@ -517,6 +613,8 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     Xgl_pt_f3d *plain;
     assert(!native_stopped);
     assert(context == xgl_context);
+    /* ASTI may hold this strip until the Context is flushed. */
+    scene_unflushed = TRUE;
     if (drv_texture_active && inject("drawfail")) { native_error(FALSE); return; }
     assert(context->value[XGL_CTX_SURF_FRONT_COLOR_SELECTOR] == XGL_SURF_COLOR_FACET);
     assert(context->value[XGL_CTX_SURF_FRONT_FILL_STYLE] == XGL_SURF_FILL_SOLID);
@@ -524,7 +622,7 @@ void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets, Xgl_pt_list *po
     assert(context->value[XGL_3D_CTX_SURF_FACE_CULL] == XGL_CULL_BACK);
     assert(context->value[XGL_3D_CTX_HLHSR_MODE] == XGL_HLHSR_Z_BUFFER);
     assert(context->model == xgl_model && context->view == xgl_view);
-    assert(context->value[XGL_CTX_DEFERRAL_MODE] == XGL_DEFER_ASAP);
+    assert(context->value[XGL_CTX_DEFERRAL_MODE] == XGL_DEFER_ASTI);
     assert(context->value[XGL_CTX_GEOM_DATA_IS_VOLATILE]);
     assert(context->value[XGL_CTX_CLIP_PLANES] == (XGL_CLIP_XMIN | XGL_CLIP_XMAX |
            XGL_CLIP_YMIN | XGL_CLIP_YMAX | XGL_CLIP_ZMIN | XGL_CLIP_ZMAX));
@@ -637,6 +735,9 @@ static void check_osd(void)
         assert(strstr(osd_text, !drv_texture_enabled ? ", texture off" :
                       (frame_texture_facets != 0 && frame_flush_ok ?
                        ", texture on" : ", texture fail")) != NULL);
+        /* Only the Sun ZX is known to texture in XGL software. */
+        if (drv_texture_enabled && frame_texture_facets != 0 && frame_flush_ok)
+            assert((strstr(osd_text, ", texture on (software") != NULL) == leo_device);
     } else if (!globe_ready()) {
         assert(strstr(osd_text, "No globe:") == osd_text);
         assert(strstr(osd_text, "retry") != NULL);
@@ -651,6 +752,8 @@ void xgl_stroke_text(Xgl_ctx context, void *text, void *position,
     Xgl_bounds_f2d bounds;
     assert(!native_stopped);
     assert(context == xgl_overlay && direction == NULL);
+    assert(!scene_unflushed);
+    assert(context->value[XGL_CTX_DEFERRAL_MODE] == XGL_DEFER_ASAP);
     if (inject("fatalosd")) { native_error(TRUE); return; }
     point = (Xgl_pt_f2d *)position;
     xgl_stroke_text_extent(context, text, &bounds, &concatenate);
@@ -669,6 +772,8 @@ void xgl_context_new_frame(Xgl_ctx context)
     int action;
     assert(!native_stopped);
     action = context->value[XGL_CTX_NEW_FRAME_ACTION];
+    /* Clearing or switching with held ASTI strips would show stale geometry. */
+    assert(!scene_unflushed);
     if (context == xgl_context) {
         assert(action == (XGL_CTX_NEW_FRAME_CLEAR | XGL_CTX_NEW_FRAME_HLHSR_ACTION));
         ++clear_calls;
@@ -695,20 +800,25 @@ void xgl_context_flush(Xgl_ctx context, int action)
     assert(!native_stopped);
     assert(action == XGL_FLUSH_SYNCHRONIZE);
     if (context == xgl_context && xgl_texture_scope && inject("flushfail")) {
+        /* A recoverable error still completes the attempted flush. */
+        scene_unflushed = FALSE;
         native_error(FALSE);
         return;
     }
     if (context == xgl_overlay && inject("fataloverlay")) native_error(FALSE);
     xgl_context_post(context, TRUE);
-    if (context == xgl_context) frame_flush_ok = TRUE;
+    if (context == xgl_context) { frame_flush_ok = TRUE; scene_unflushed = FALSE; }
 }
 
 static void check_render(void)
 {
-    unsigned int before_text, before_clear, before_switches;
+    unsigned int before_text, before_clear, before_switches, before_models;
     frame_bands = frame_facets = 0;
     before_text = text_calls; before_clear = clear_calls; before_switches = buffer_switches;
+    before_models = model_writes;
     drv_render();
+    /* One model write per pass (a texture failure redraws with a second). */
+    assert(model_writes >= before_models + 1U && model_writes <= before_models + 2U);
     if (drv_cull_enabled)
         assert(frame_facets > 0 && frame_facets < globe_tris_num);
     else
@@ -853,13 +963,15 @@ static void cleanup_checks(void)
 int main(int argc, char **argv)
 {
     int sizes[5], i;
-    unsigned int old_width, old_height, before_text, before_mipmaps;
+    unsigned int old_width, old_height, before_text, before_mipmaps, first_extents;
+    char first_osd[sizeof(osd_text)];
     float old_x, old_y;
     XWindowAttributes geometry;
     XEvent close;
     assert(atexit(cleanup_checks) == 0);
     profile = argc > 1 ? argv[1] : "double";
     single_buffer = strcmp(profile, "single") == 0;
+    leo_device = strcmp(profile, "leo") == 0;
     drv_ext_init();
     assert(!drv_texture_enabled && drv_texture_avail);
     drv_init(&argc, argv);
@@ -867,12 +979,22 @@ int main(int argc, char **argv)
     assert(XGetWindowAttributes(xgl_display, xgl_window, &geometry));
     assert(geometry.width == 640 && geometry.height == 480);
     assert(geometry.depth == 24 && geometry.visual->class == TrueColor);
+    assert(geometry.backing_store == NotUseful);
     assert(xgl_double_buffer == !single_buffer);
+    assert(inquire_calls == 1U && xgl_texture_software == leo_device);
+    assert(strcmp(xgl_device_name, leo_device ? "Sun:LEO" : "Test:RECORDER") == 0);
     globe_init();
     assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
     assert(GLOBE_DEFAULT_LONGITUDE == 128 && globe_longitude == 128);
     texture_init();
     drain_events();
+    /* XGL starts with CPU band culling on: the ZX is bound by submitted
+     * triangles. The complete-band checks below then run with it off. */
+    assert(DRV_CULL_DEFAULT && drv_cull_enabled);
+    check_render();
+    assert(strstr(osd_text, ", cull on") != NULL);
+    send_key(XK_c);
+    assert(!drv_cull_enabled);
     if (strcmp(profile, "flatstripfail") == 0) fault = profile;
     check_render();
     sizes[0] = 32; sizes[1] = 64; sizes[2] = 128; sizes[3] = 256; sizes[4] = 512;
@@ -882,14 +1004,18 @@ int main(int argc, char **argv)
         check_render();
     }
     if (strcmp(profile, "double") != 0 && strcmp(profile, "single") != 0 &&
-        strcmp(profile, "flatstripfail") != 0)
+        strcmp(profile, "flatstripfail") != 0 && !leo_device)
         check_texture_failure();
     send_key(XK_t);
     assert(drv_texture_enabled && drv_texture_loaded);
     assert(mipmap_creates == 1 && tmap_creates == 1 && mipmap_builds == 1 && memory_destroys == 1);
     assert(texture_data == NULL);
+    assert((strcmp(drv_get_notice(), XGL_SOFTWARE_NOTICE) == 0) == leo_device);
     check_render();
+    if (leo_device) assert(strstr(osd_text, XGL_SOFTWARE_NOTICE) != NULL &&
+                           strstr(osd_text, ", texture on (software)") != NULL);
     send_key(XK_t); assert(!drv_texture_enabled); check_render();
+    assert(strstr(osd_text, XGL_SOFTWARE_NOTICE) == NULL);
     send_key(XK_t); assert(drv_texture_enabled); check_render();
     /* An accepted globe enclosing the camera has no front-facing facets.
      * Empty successful submission is not a failed native texture resource. */
@@ -1032,7 +1158,25 @@ int main(int argc, char **argv)
     assert(xgl_overlay->font_height == 10.0);
     check_render();
     xgl_resize(800, 600);
-    puts("PASS XGL OSD: small/normal/large native fonts, measured proportional wrapping, bearings, narrow windows, long words and tiny-window guards");
+    /* The fixed help wrap and line spacing are measured once per width/font:
+     * a repeat draw queries fewer extents, and a fresh layout matches. */
+    xgl_resize(700, 500);
+    xgl_help_valid = xgl_line_valid = FALSE;
+    osd_text[0] = '\0'; extent_calls = 0; drv_draw_osd();
+    first_extents = extent_calls;
+    assert(strstr(osd_text, "T = texture mapping") != NULL);
+    strcpy(first_osd, osd_text);
+    osd_text[0] = '\0'; extent_calls = 0; drv_draw_osd();
+    assert(strcmp(first_osd, osd_text) == 0 && extent_calls < first_extents);
+    xgl_help_valid = xgl_line_valid = FALSE;
+    osd_text[0] = '\0'; extent_calls = 0; drv_draw_osd();
+    assert(strcmp(first_osd, osd_text) == 0 && extent_calls == first_extents);
+    xgl_resize(400, 500);
+    osd_text[0] = '\0'; extent_calls = 0; drv_draw_osd();
+    assert(extent_calls > 0U && xgl_help_width == 380.0f);
+    assert(strstr(osd_text, "Esc = exit") != NULL);
+    xgl_resize(800, 600);
+    puts("PASS XGL OSD: small/normal/large native fonts, measured proportional wrapping, bearings, narrow windows, long words, tiny-window guards and cached help layout");
     puts("PASS XGL X11 input: real window/events, all resolution keys, FPS toggle, mouse drag/release and right-button metadata, autorotation, resize and projection");
     memset(&close, 0, sizeof(close));
     close.xclient.type = ClientMessage;

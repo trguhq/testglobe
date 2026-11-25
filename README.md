@@ -68,7 +68,7 @@ Letter controls accept either case.
 | `p` | Toggle FPS measurement in the chipset/RTG Amiga driver. |
 | `o` | Toggle the on-screen display (OSD). |
 | `t` | Toggle texture mapping in OpenGL, IRIS GL, Sun XGL, and WebGL. |
-| `c` | Toggle CPU culling by latitude-band longitude ranges in OpenGL, IRIS GL, Sun XGL, and WebGL; starts off. |
+| `c` | Toggle CPU culling by latitude-band longitude ranges in OpenGL, IRIS GL, Sun XGL, and WebGL; starts on in Sun XGL and off elsewhere. |
 | `d` | Toggle display lists in OpenGL, or palette dithering in native Amiga; both start enabled. |
 | `s` | Switch Matrox or TIGA between host software 3D and board/API transforms. Matrox starts with LibShell transforms; TIGA starts with host transforms. |
 | `Esc` | Exit native applications; in WebGL, pause rotation and release dragging. |
@@ -105,6 +105,7 @@ clock changes, so adjusting the desktop clock does not stall rotation or FPS.
 | --- | --- |
 | `texture on` | The frame uses the graphics API's texturing path; this does not guarantee hardware acceleration. |
 | `texture soft` | OpenGL or IRIS GL uses the application's software texture rasterizer. |
+| `texture on (software)` | Sun XGL textures on a Sun ZX, which XGL renders in its own software pipeline with point sampling. |
 | `texture off` | Texture mapping is disabled. |
 | `texture loading` | WebGL is fetching or uploading a texture; flat colors remain visible. |
 | `texture fail` | Texturing is enabled but a detected failure prevents its use; recoverable failures draw flat colors. |
@@ -122,7 +123,8 @@ clock changes, so adjusting the desktop clock does not stall rotation or FPS.
 
 Toggle `t` off and on to retry after a recoverable texture failure. OpenGL software
 texturing bypasses display lists, so enabled lists report `dlist fail` on that path.
-XGL's internal software pipeline still reports `texture on`; IRIS GL cannot detect
+XGL reports `texture on (software)` on the Sun ZX, the one device known to texture in XGL's
+internal software pipeline; elsewhere that pipeline still reports `texture on`. IRIS GL cannot detect
 all silent native texture failures. Their driver sections describe these limits.
 OpenGL places `dlist` before texture status, with its `d` help last.
 QuickDraw appends GWorld status after the other statistics. Matrox and TIGA append
@@ -131,7 +133,7 @@ buffering. Failed TI module extraction or loading leaves `soft3d on` with a reco
 notice. Transform status reports the active path; `S` retries an unavailable path
 from the working fallback.
 When a smaller texture is active, its width follows the status, for example
-`texture on (128)` or `texture soft (128)`. GDI reports direct drawing, individual
+`texture on (128)`, `texture on (software, 128)`, or `texture soft (128)`. GDI reports direct drawing, individual
 polygons, reduced colors, or manual rotation when those fallbacks are active.
 
 On displays of 640 × 480 or smaller, GDI and QuickDraw default to a 320 × 240 client
@@ -157,6 +159,7 @@ submits their triangle-strip runs, with checks near the boundaries to preserve
 the silhouette, winding, and texture coordinates. It uses the perspective camera
 position rather than assuming that exactly half the globe is visible. This option
 can reduce geometry submission, but its performance depends on the platform.
+Sun XGL starts with it on because the Sun ZX is limited by submitted triangles.
 OpenGL display lists and IRIS GL geometry objects are bypassed while it is on.
 OpenGL remembers the `d` preference, including changes made while culling is on,
 and applies it again when culling is turned off. The displayed polygon total
@@ -764,25 +767,69 @@ Defaults are `/opt/SUNWits/Graphics-sw/xgl` and `/usr/openwin`. Override
 compiler's 32-bit default is used. When relocating the runtime, also set the shell's
 `XGLHOME` for the installed pipeline and font files.
 
+XGL argument checking (`XGL_SYS_ST_ERROR_DETECTION`) is on by default. Sun notes that
+it costs performance, so it can be turned off for timing runs:
+
+```sh
+TESTGLOBE_XGL_NOCHECK=1 ./testglobe-xgl
+```
+
+With checking off, XGL reports only resource and system errors, so invalid-argument
+and configuration failures that texture recovery would otherwise catch go unreported.
+An empty value or `0` keeps checking on. The startup device line states which is in use.
+
 #### Rendering and color
 
 The default globe is key 3. Each interior latitude band uses `xgl_triangle_strip`;
 polar caps use nondegenerate three-vertex strips. Both triangles of each Earth patch
 share its flat RGB color. XGL performs transforms, clipping, back-face handling,
 depth testing, and texturing. Texture mapping uses REPLACE mode and preserves UV seams.
-X11 handles keyboard, mouse, expose, resize, and window-close events.
+The globe Context uses XGL's default ASTI deferral, which Sun recommends over ASAP;
+each frame flushes it synchronously before the OSD and buffer switch. The model
+matrix is composed on the CPU and written once per frame as a length-preserving
+transform. X11 handles keyboard, mouse, expose, resize, and window-close events.
+The window is mapped before the XGL raster is created, backing store is refused so
+double buffering is granted, and the server is synchronized before each raster resize.
 The OSD wraps using native stroke-font measurements; windows too small for a line
-omit it, and help never overlaps the statistics.
+omit it, and help never overlaps the statistics. The fixed help text is wrapped once
+per window width and font size; only the statistics are measured every frame.
 
 #### Platform notes
 
+At startup the driver prints the device that `xgl_inquire()` reports, for example
+`Sun XGL device: Sun:LEO, direct graphics access, RGB hardware, Z buffer hardware,
+shading hardware, maximum buffers 2, argument checking on`. Missing acceleration is
+reported, not refused, so remote and software-rendered displays still work.
+
 XGL supplies its own software pipeline when hardware cannot accelerate texturing.
-Because the API exposes no reliable per-frame backend query, successful texturing
-reports `texture on` for either internal path. Recoverable texture failures release
-partial resources and draw flat colors. Nonrecoverable errors and unrelated setup,
-native rendering, or OSD errors remain fatal. Native texture rasters are filled from
+The API exposes no texture capability or per-frame backend query, so successful
+texturing reports `texture on` for either internal path, except on the Sun ZX.
+Recoverable texture failures release partial resources and draw flat colors.
+Nonrecoverable errors and unrelated setup, native rendering, or OSD errors remain
+fatal; their diagnostics include the XGL object, operands, error type, and category,
+since Solaris XGL can return an empty error ID. Native texture rasters are filled from
 indexed map rows without an intermediate full RGB image. Packet allocation failures
 use smaller strips, retaining overlap, winding, colors, and UVs.
+
+##### Sun ZX
+
+The Sun ZX (Leo) is reported by XGL as `Sun:LEO`; any device whose model name begins
+with `LEO` is treated the same way. These notes follow measurements that
+[XGLQuake](https://github.com/trguhq/XGLQuake) and its `xglbench` made on a
+SPARCstation 10 with one 60 MHz SM61 SuperSPARC module, Solaris 2.6, XGL 3.3, and a Sun ZX.
+
+- XGL texture mapping runs in software on the ZX: xglbench measured 1.84 seconds for
+  one frame of 512 point-sampled triangles. `t` still works, but uses XGL's cheapest
+  sampling (`XGL_TEXTURE_INTERP_POINT` for both minification and magnification),
+  shows `texture on (software)`, and adds a notice that frames are slow. Keyboard and
+  window events are read only between frames.
+- The ZX is limited by the number of triangles sent, not by their pixels, so XGL starts
+  with CPU culling (`c`) on. XGL's own back-face culling still processes every triangle
+  it receives.
+- A buffer switch waits for vertical retrace (measured at 13.12 ms, about 76 Hz), so the
+  frame rate moves in steps such as 19.1, 15.2, and 12.7 FPS.
+
+Use `TESTGLOBE_XGL_NOCHECK=1` to compare frame rates without argument checking.
 
 #### Validation
 
@@ -1394,7 +1441,8 @@ All native application targets also define `DRV`; Microsoft C builds use `-AH`. 
 header supplies `GDI` for Windows-specific integration. Primitive/callback-capability
 defines belong in headers, not compiler flags. `TRI` remains a tested reference path.
 `DRV_TRI_COLOR`, `DRV_TRI_RGB`, and `DRV_TRI_UV` expose only implemented callbacks.
-`DRV_CULL` enables the optional CPU band-culling control in OpenGL, IRIS GL, and XGL.
+`DRV_CULL` enables the optional CPU band-culling control in OpenGL, IRIS GL, and XGL;
+a driver header may set `DRV_CULL_DEFAULT` to `TRUE` (XGL does) to start with it on.
 `DRV_COLORMAP` selects palette-byte geometry inputs; `drv_colormapped` describes the
 window's runtime mode. All native drivers except XGL define `DRV_COLORMAP`, even when
 they can draw to RGB windows.
@@ -1565,6 +1613,9 @@ boundaries; texture expansion and globe color sampling share those readers.
 - Hardened allocation, file generation, coordinate/packet bounds, input recovery, and
   driver error handling; reduced retained rendering memory.
 - Converted comments to C style and fixed bitmap OSD text in Mesa.
+- Tuned Sun XGL for the Sun ZX: ASTI globe submission, one model transform write per
+  frame, device inquiry, point-sampled software texturing, cached help layout, detailed
+  error diagnostics, CPU culling on by default, and optional argument checking.
 
 ### [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 

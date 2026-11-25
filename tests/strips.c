@@ -182,6 +182,9 @@ int main(void)
     datasets[2] = test_earth_data(128); datasets[3] = test_earth_data(256);
     datasets[4] = test_earth_data(512);
     drv_ext_init();
+    /* XGL starts with CPU band culling on; this oracle checks complete bands. */
+    assert(drv_cull_enabled == DRV_CULL_DEFAULT);
+    drv_cull_enabled = FALSE;
     globe_init();
     assert(GLOBE_DEFAULT_LONGITUDE == 128);
     expected_data = test_earth_data(128);

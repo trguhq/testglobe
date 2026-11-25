@@ -645,9 +645,24 @@ def main():
                  str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                  str(ROOT / "src/err.c")] + xgl_ldflags +
                 ["-lm", "-lX11", "-o", str(output / "xgl")])
-            for mode in ("double", "single", "flatstripfail"):
+            for mode in ("double", "single", "flatstripfail", "leo"):
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
-                     str(output / "xgl"), mode])
+                     str(output / "xgl"), mode],
+                    required_output=("Sun XGL device: Sun:LEO, direct graphics access, "
+                                     "RGB hardware, Z buffer hardware, shading hardware, "
+                                     "maximum buffers 2, argument checking on\n"
+                                     "Sun XGL: Sun ZX texture mapping runs in XGL software; "
+                                     "T uses point sampling\n" if mode == "leo" else
+                                     "Sun XGL device: Test:RECORDER, direct graphics access, "
+                                     "RGB hardware, Z buffer hardware, shading hardware, maximum buffers " +
+                                     ("1" if mode == "single" else "2") +
+                                     ", argument checking on\n"))
+            # Timing runs may turn XGL argument checking off; "0" keeps it on.
+            for value, state in (("1", "off"), ("0", "on")):
+                run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
+                     str(output / "xgl"), "double"],
+                    env=dict(os.environ, TESTGLOBE_XGL_NOCHECK=value),
+                    required_output=", argument checking " + state + "\n")
             for mode in ("rasterfail", "mipmapfail", "stripallocfail"):
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode],
@@ -664,19 +679,30 @@ def main():
                 "flushfail": "Cannot use XGL texture",
                 "unloaded": "XGL texture data is not loaded",
             }
-            xgl_native_error = "XGL error: test-123: injected texture failure (test operator)\n"
+            def xgl_native_error(kind, identifier="test-123", operand2="second operand"):
+                return ("XGL error: " + identifier + ": injected texture failure (test operator)\n"
+                        "  object=test object, operand1=first operand, operand2=" + operand2 +
+                        ", type=" + kind + ", category=4\n")
             for mode, message in xgl_texture_failures.items():
                 native_error = mode in ("buildfail", "mapfail", "configurefail",
                                         "bindfail", "drawfail", "flushfail")
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode],
-                    expected_stderr=(xgl_native_error if native_error else "") +
+                    expected_stderr=(xgl_native_error("recoverable") if native_error else "") +
                                     "Sun XGL texture: " + message + "\n",
                     required_output="PASS XGL recoverable texture failure:")
+            # An empty Solaris error ID and absent operand stay readable.
+            run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
+                 str(output / "xgl"), "buildfail"],
+                env=dict(os.environ, TEST_XGL_EMPTY_ID="1"),
+                expected_stderr=xgl_native_error("recoverable", "unknown", "none") +
+                                "Sun XGL texture: Cannot build XGL mipmap\n",
+                required_output="PASS XGL recoverable texture failure:")
             for mode in ("fataltexture", "fataloverlay", "fatalcleanup", "fatalosd", "fatalmodel"):
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode], expected_returncode=1,
-                    expected_stderr=xgl_native_error +
+                    expected_stderr=xgl_native_error("recoverable" if mode == "fataloverlay"
+                                                     else "nonrecoverable") +
                                     "ERROR - Sun XGL operation failed; see the XGL diagnostic\n",
                     required_output=("PASS XGL recorded cleanup:" if mode == "fataloverlay"
                                      else "PASS XGL nonrecoverable error:"))

@@ -11,8 +11,6 @@ typedef int Xgl_sgn32;
 typedef int Xgl_boolean;
 typedef int Xgl_attribute;
 typedef int Xgl_obj_type;
-typedef int Xgl_axis;
-typedef int Xgl_trans_update;
 typedef unsigned int Xgl_trans_member;
 typedef struct Test_xgl_object *Xgl_object;
 typedef Xgl_object Xgl_sys_state;
@@ -32,10 +30,6 @@ typedef union { Xgl_usgn32 index; struct { float r, g, b; } rgb; } Xgl_color;
 typedef struct { Xgl_color color; } Xgl_color_facet;
 typedef struct {
     int pt_type;
-    union { Xgl_pt_f3d *f3d; Xgl_pt_f2d *f2d; } pt;
-} Xgl_pt;
-typedef struct {
-    int pt_type;
     void *bbox;
     Xgl_usgn32 num_pts, num_data_values;
     union { Xgl_pt_f3d *f3d; Xgl_pt_data_f3d *data_f3d; } pts;
@@ -48,9 +42,23 @@ typedef struct {
 typedef struct { void *X_display; int X_screen; Xgl_usgn32 X_window; } Xgl_X_window;
 typedef union { struct { int type; void *desc; } win_ras; } Xgl_obj_desc;
 typedef int Xgl_error_type;
+typedef int Xgl_error_category;
 #define XGL_ERROR_RECOVERABLE 1
 #define XGL_ERROR_NONRECOVERABLE 2
-typedef struct { Xgl_error_type type; char *id, *msg, *cur_op; } Xgl_error_info;
+/* The Programmer's Guide lists eight fields; their order here is local. */
+typedef struct {
+    Xgl_error_type type;
+    Xgl_error_category category;
+    char *id, *msg, *cur_op, *cur_obj, *operand1, *operand2;
+} Xgl_error_info;
+
+/* Only the xgl_inquire() fields drv_xgl.c reads (Programmer's Guide inq.c). */
+enum { XGL_INQ_NOT_SUPPORTED = 0, XGL_INQ_SOFTWARE, XGL_INQ_HARDWARE };
+typedef struct {
+    char *name;
+    int dga_flag, maximum_buffer;
+    int double_buffer, true_color, hlhsr, shading;
+} Xgl_inquire;
 
 typedef struct {
     int comp, texture_op;
@@ -115,7 +123,8 @@ enum {
     XGL_CTX_DEFERRAL_MODE,
     XGL_3D_CTX_SURF_TMAP_PERSP_CORRECTION,
     XGL_CTX_CLIP_PLANES,
-    XGL_CTX_GEOM_DATA_IS_VOLATILE
+    XGL_CTX_GEOM_DATA_IS_VOLATILE,
+    XGL_WIN_RAS_BACKING_STORE
 };
 enum { XGL_WIN_RAS = 100, XGL_3D_CTX, XGL_2D_CTX, XGL_TRANS,
        XGL_MEM_RAS, XGL_MIPMAP_TEXTURE, XGL_TMAP };
@@ -127,9 +136,9 @@ enum { XGL_WIN_X = 200, XGL_COLOR_RGB, XGL_HLHSR_Z_BUFFER,
        XGL_TEXTURE_BOUNDARY_WRAP, XGL_TEXTURE_TYPE_MIPMAP,
        XGL_TEXTURE_INTERP_MIPMAP_TRILINEAR, XGL_TEXTURE_INTERP_BILINEAR,
        XGL_RENDER_COMP_DIFFUSE_COLOR, XGL_TEXTURE_OP_REPLACE,
-       XGL_DEFER_ASAP, XGL_TEXTURE_PERSP_PIXEL };
-enum { XGL_AXIS_X = 0, XGL_AXIS_Y, XGL_AXIS_Z };
-enum { XGL_TRANS_REPLACE = 0, XGL_TRANS_POSTCONCAT };
+       XGL_DEFER_ASAP, XGL_TEXTURE_PERSP_PIXEL, XGL_DEFER_ASTI,
+       XGL_TEXTURE_INTERP_POINT };
+#define XGL_TRANS_MEMBER_LENGTH_PRESERV 0x40U
 enum { XGL_FLUSH_SYNCHRONIZE = 1 };
 #define XGL_CLIP_XMIN 1
 #define XGL_CLIP_XMAX 2
@@ -143,6 +152,7 @@ enum { XGL_FLUSH_SYNCHRONIZE = 1 };
 
 Xgl_sys_state xgl_open(Xgl_attribute attr, ...);
 void xgl_close(Xgl_sys_state system);
+Xgl_inquire *xgl_inquire(Xgl_sys_state system, Xgl_obj_desc *descriptor);
 Xgl_object xgl_object_create(Xgl_sys_state system, Xgl_obj_type type,
                              Xgl_obj_desc *descriptor, ...);
 void xgl_object_set(Xgl_object object, ...);
@@ -151,10 +161,6 @@ void xgl_object_destroy(Xgl_object object);
 void xgl_window_raster_resize(Xgl_win_ras raster);
 void xgl_transform_write_specific(Xgl_trans transform, void *matrix,
                                    Xgl_trans_member membership);
-void xgl_transform_rotate(Xgl_trans transform, double angle, Xgl_axis axis,
-                           Xgl_trans_update update);
-void xgl_transform_translate(Xgl_trans transform, Xgl_pt *point,
-                              Xgl_trans_update update);
 void xgl_mipmap_texture_build(Xgl_object mipmap, Xgl_mem_ras memory,
                               int u_boundary, int v_boundary);
 void xgl_triangle_strip(Xgl_ctx context, Xgl_facet_list *facets,

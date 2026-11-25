@@ -657,7 +657,7 @@ void drv_ext_init(void)
     drv_texture_active = FALSE;
     drv_frame_failed = FALSE;
 #ifdef DRV_CULL
-    drv_cull_enabled = FALSE;
+    drv_cull_enabled = DRV_CULL_DEFAULT;
 #endif
 #ifdef DRV_SOFT3D
     drv_soft3d_requested = drv_soft3d_active = DRV_SOFT3D_DEFAULT;

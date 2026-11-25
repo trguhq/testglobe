@@ -6,9 +6,13 @@
  * XGL performs the model/view transforms, clipping, back-face rejection,
  * z-buffering, strip filling, texture filtering, text and buffer switching.
  * Its installed device pipeline chooses hardware or XGL's software renderer.
+ * Sun ZX (XGL device Sun:LEO) choices follow XGLQuake/xglbench measurements:
+ * batched (ASTI) globe submission, one model transform write per frame, and
+ * point-sampled textures, which that device renders in XGL software.
  */
 #include "testglob.h"
 #ifdef DRV_XGL
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,6 +70,31 @@ static int xgl_strip_limited;
 static Xgl_pt_f3d xgl_small_points[4];
 static Xgl_color_facet xgl_small_facets[4];
 static float xgl_small_texture_points[20];
+/* xgl_inquire() reports no texture capability. The Sun ZX is known from
+ * measurement to texture in XGL software, at seconds per frame. */
+static char xgl_device_name[64];
+static int xgl_texture_software;
+static int xgl_error_detection = TRUE;
+#define XGL_SOFTWARE_NOTICE "Sun ZX textures use XGL software; frames are slow"
+
+/* The fixed help string is wrapped once per window width and font size;
+ * only the changing statistics are measured every frame. */
+#define XGL_OSD_LINE 160
+#define XGL_HELP_LINES 256
+typedef struct
+{
+    unsigned short start, length;
+    float xmin, ymin, ymax;
+} Osd_line;
+static Osd_line xgl_help_lines[XGL_HELP_LINES];
+static unsigned int xgl_help_count;
+static char xgl_help_text[256];
+static float xgl_help_width;
+static double xgl_help_font;
+static int xgl_help_valid;
+static float xgl_line_height;
+static double xgl_line_font;
+static int xgl_line_valid;
 
 static void xgl_cleanup(void)
 {
@@ -94,7 +123,15 @@ static void xgl_cleanup(void)
     xgl_strip_texture_capacity = 0;
     xgl_mipmap = xgl_tmap = xgl_texture_raster = NULL;
     xgl_texture_used = xgl_texture_failed = FALSE;
+    xgl_help_valid = xgl_line_valid = FALSE;
     drv_texture_loaded = drv_texture_enabled = drv_texture_active = FALSE;
+}
+
+/* Solaris XGL can report an empty ID with only "Error number" as its message;
+ * the object and operands then identify the rejected attribute. */
+static const char *xgl_error_text(const char *text, const char *missing)
+{
+    return text != NULL && text[0] != '\0' ? text : missing;
 }
 
 static Xgl_sgn32 xgl_error_notify(Xgl_sys_state state)
@@ -103,9 +140,16 @@ static Xgl_sgn32 xgl_error_notify(Xgl_sys_state state)
     memset(&info, 0, sizeof(info));
     xgl_object_get(state, XGL_SYS_ST_ERROR_INFO, &info);
     fprintf(stderr, "XGL error: %s: %s (%s)\n",
-            info.id != NULL ? info.id : "unknown",
-            info.msg != NULL ? info.msg : "operation failed",
-            info.cur_op != NULL ? info.cur_op : "unknown operator");
+            xgl_error_text(info.id, "unknown"),
+            xgl_error_text(info.msg, "operation failed"),
+            xgl_error_text(info.cur_op, "unknown operator"));
+    fprintf(stderr, "  object=%s, operand1=%s, operand2=%s, type=%s, category=%d\n",
+            xgl_error_text(info.cur_obj, "none"),
+            xgl_error_text(info.operand1, "none"),
+            xgl_error_text(info.operand2, "none"),
+            info.type == XGL_ERROR_NONRECOVERABLE ? "nonrecoverable" :
+            (info.type == XGL_ERROR_RECOVERABLE ? "recoverable" : "unknown"),
+            (int)info.category);
     /* Do not call exit/close recursively from inside the XGL library. */
     if (info.type == XGL_ERROR_NONRECOVERABLE) xgl_nonrecoverable = TRUE;
     if (xgl_texture_scope && info.type == XGL_ERROR_RECOVERABLE)
@@ -127,12 +171,20 @@ void drv_close(void)
 
 void drv_init(int *argc, char **argv)
 {
+    const char *nocheck;
     (void)argc;
     (void)argv;
     if (atexit(xgl_cleanup) != 0) error("Cannot register XGL cleanup");
     xgl_display = XOpenDisplay(NULL);
     if (xgl_display == NULL) error("Cannot open X display for Sun XGL");
-    xgl_system = xgl_open(XGL_SYS_ST_ERROR_DETECTION, TRUE, 0);
+    /* Argument checking reports USER/CONFIGURATION errors that recovery
+     * relies on; Sun notes it costs performance, so allow timing without it.
+     * XGL reports RESOURCE and SYSTEM errors either way. */
+    nocheck = getenv("TESTGLOBE_XGL_NOCHECK");
+    xgl_error_detection = nocheck == NULL || nocheck[0] == '\0' ||
+                          strcmp(nocheck, "0") == 0;
+    xgl_system = xgl_open(XGL_SYS_ST_ERROR_DETECTION,
+                          xgl_error_detection ? TRUE : FALSE, 0);
     xgl_checkerrors();
     if (xgl_system == NULL) error("Cannot initialize Sun XGL");
     xgl_object_set(xgl_system,
@@ -190,6 +242,9 @@ static void xgl_resize(int width, int height)
     }
     if (xgl_raster != NULL)
     {
+        /* DGA reads the window geometry itself: let the server finish the
+         * resize first (XGL Programmer's Guide, DGA resize tip). */
+        XSync(xgl_display, False);
         xgl_window_raster_resize(xgl_raster);
         xgl_checkerrors();
         xgl_projection(width, height);
@@ -199,11 +254,70 @@ static void xgl_resize(int width, int height)
     xgl_dirty = TRUE;
 }
 
+static Bool xgl_mapped(Display *display, XEvent *event, XPointer window)
+{
+    (void)display;
+    return event->type == MapNotify &&
+           event->xmap.window == *(Window *)window;
+}
+
+static const char *xgl_support(int value)
+{
+    return value == XGL_INQ_HARDWARE ? "hardware" :
+           (value == XGL_INQ_SOFTWARE ? "software" : "none");
+}
+
+/* XGLQuake's Sun ZX reports "Sun:LEO"; match the model after the vendor. */
+static int xgl_device_is_leo(const char *name)
+{
+    const char *model;
+    model = strrchr(name, ':');
+    model = model != NULL ? model + 1 : name;
+    return toupper((unsigned char)model[0]) == 'L' &&
+           toupper((unsigned char)model[1]) == 'E' &&
+           toupper((unsigned char)model[2]) == 'O';
+}
+
+/* Report the device once and decide whether textures are software-only.
+ * Missing acceleration is reported, not refused: XGL also renders through
+ * PEX/Xlib and software pipelines on other displays. */
+static void xgl_inquire_device(Xgl_obj_desc *descriptor)
+{
+    Xgl_inquire *inquiry;
+    strcpy(xgl_device_name, "unknown");
+    xgl_texture_software = FALSE;
+    inquiry = xgl_inquire(xgl_system, descriptor);
+    xgl_checkerrors();
+    if (inquiry == NULL)
+    {
+        printf("Sun XGL device: unknown, argument checking %s\n",
+               xgl_error_detection ? "on" : "off");
+        return;
+    }
+    if (inquiry->name != NULL && inquiry->name[0] != '\0')
+    {
+        strncpy(xgl_device_name, inquiry->name, sizeof(xgl_device_name) - 1U);
+        xgl_device_name[sizeof(xgl_device_name) - 1U] = '\0';
+    }
+    printf("Sun XGL device: %s, %s, RGB %s, Z buffer %s, shading %s, "
+           "maximum buffers %d, argument checking %s\n", xgl_device_name,
+           inquiry->dga_flag ? "direct graphics access" : "X protocol",
+           xgl_support((int)inquiry->true_color), xgl_support((int)inquiry->hlhsr),
+           xgl_support((int)inquiry->shading), (int)inquiry->maximum_buffer,
+           xgl_error_detection ? "on" : "off");
+    free(inquiry);
+    xgl_texture_software = xgl_device_is_leo(xgl_device_name);
+    if (xgl_texture_software)
+        printf("Sun XGL: Sun ZX texture mapping runs in XGL software; "
+               "T uses point sampling\n");
+}
+
 int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 {
     int screen;
     XVisualInfo visual;
     XSetWindowAttributes attributes;
+    XEvent mapped;
     Xgl_usgn32 buffers;
     Xgl_color black;
     Xgl_color white;
@@ -225,30 +339,43 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     attributes.colormap = xgl_colormap;
     attributes.border_pixel = 0;
     attributes.background_pixel = 0;
+    /* Obscured drawing with backing store goes to an unaccelerated memory
+     * raster, and XGL cannot combine it with double buffering. */
+    attributes.backing_store = NotUseful;
     attributes.event_mask = (long)event_mask;
     xgl_window = XCreateWindow(xgl_display, RootWindow(xgl_display, screen),
                                (int)drv_win_x, (int)drv_win_y,
                                drv_win_width, drv_win_height, 0,
                                visual.depth, InputOutput, visual.visual,
                                CWColormap | CWBorderPixel | CWBackPixel |
-                               CWEventMask, &attributes);
+                               CWBackingStore | CWEventMask, &attributes);
     if (xgl_window == 0) error("Cannot create Sun XGL window");
     XStoreName(xgl_display, xgl_window, TESTGLOBE_NAME);
     xgl_wm_delete = XInternAtom(xgl_display, "WM_DELETE_WINDOW", False);
     xgl_wm_protocols = XInternAtom(xgl_display, "WM_PROTOCOLS", False);
     XSetWMProtocols(xgl_display, xgl_window, &xgl_wm_delete, 1);
     XMapWindow(xgl_display, xgl_window);
+    /* A window manager may delay the map. DGA takes the window's geometry
+     * and clipping when the raster is created, so wait for the window to be
+     * mapped, as XGLQuake does; other queued events stay for the loop. */
+    XIfEvent(xgl_display, &mapped, xgl_mapped, (XPointer)&xgl_window);
     XSync(xgl_display, False);
+    xgl_help_valid = xgl_line_valid = FALSE;
 
     memset(&xgl_window_descriptor, 0, sizeof(xgl_window_descriptor));
     memset(&xgl_raster_descriptor, 0, sizeof(xgl_raster_descriptor));
     xgl_window_descriptor.X_display = (void *)xgl_display;
     xgl_window_descriptor.X_screen = screen;
     xgl_window_descriptor.X_window = (Xgl_usgn32)xgl_window;
+    /* The default protocol tries DGA first, then PEX, then Xlib. */
     xgl_raster_descriptor.win_ras.type = XGL_WIN_X;
     xgl_raster_descriptor.win_ras.desc = &xgl_window_descriptor;
+    xgl_inquire_device(&xgl_raster_descriptor);
+    /* XGL enables backing store or double buffering, whichever is asked for
+     * first, so refuse backing store before requesting two buffers. */
     xgl_raster = xgl_object_create(xgl_system, XGL_WIN_RAS, &xgl_raster_descriptor,
                                    XGL_DEV_COLOR_TYPE, XGL_COLOR_RGB,
+                                   XGL_WIN_RAS_BACKING_STORE, FALSE,
                                    XGL_WIN_RAS_BUFFERS_REQUESTED, 2, 0);
     xgl_checkerrors();
     if (xgl_raster == NULL) error("Cannot create Sun XGL raster");
@@ -265,9 +392,13 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     memset(&black, 0, sizeof(black));
     memset(&white, 0, sizeof(white));
     white.rgb.r = white.rgb.g = white.rgb.b = 1.0f;
+    /* ASTI is XGL's default and the Accelerator Guide's advice; ASAP is
+     * slower. Every frame flushes this Context synchronously before its
+     * status, overlay text, recovery clear or buffer switch. The overlay
+     * keeps ASAP, as XGLQuake's native-text Context does on the Sun ZX. */
     xgl_context = xgl_object_create(xgl_system, XGL_3D_CTX, NULL,
                                     XGL_CTX_DEVICE, xgl_raster,
-                                    XGL_CTX_DEFERRAL_MODE, XGL_DEFER_ASAP,
+                                    XGL_CTX_DEFERRAL_MODE, XGL_DEFER_ASTI,
                                     XGL_CTX_GEOM_DATA_IS_VOLATILE, TRUE,
                                     XGL_CTX_CLIP_PLANES,
                                       XGL_CLIP_XMIN | XGL_CLIP_XMAX |
@@ -316,30 +447,44 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     return 1;
 }
 
+/* Postconcatenate XGL's documented row-vector rotation. A rotation about Z
+ * mixes columns 0 and 1, about X columns 1 and 2, and about Y columns 2 and 0. */
+static void xgl_matrix_rotate(Xgl_matrix_d3d matrix, double angle,
+                              unsigned int first)
+{
+    double c, s, a, b;
+    unsigned int i, second;
+    c = cos(angle);
+    s = sin(angle);
+    second = (first + 1U) % 3U;
+    for (i = 0; i < 4U; ++i)
+    {
+        a = matrix[i][first];
+        b = matrix[i][second];
+        matrix[i][first] = a * c - b * s;
+        matrix[i][second] = a * s + b * c;
+    }
+}
+
 static void xgl_model_transform(void)
 {
-    Xgl_pt translation;
-    Xgl_pt_f3d offset;
-    /* Transpose of OpenGL's T * Rx * Ry * Rx(-90) * Rz(-90).
-     * Coordinates remain in object space until XGL processes each strip. */
-    xgl_transform_rotate(xgl_model, -PI / 2.0, XGL_AXIS_Z,
-                          XGL_TRANS_REPLACE);
-    xgl_checkerrors();
-    xgl_transform_rotate(xgl_model, -PI / 2.0, XGL_AXIS_X,
-                          XGL_TRANS_POSTCONCAT);
-    xgl_checkerrors();
-    xgl_transform_rotate(xgl_model, (double)drv_rot_y * PI / 180.0,
-                          XGL_AXIS_Y, XGL_TRANS_POSTCONCAT);
-    xgl_checkerrors();
-    xgl_transform_rotate(xgl_model, (double)drv_rot_x * PI / 180.0,
-                          XGL_AXIS_X, XGL_TRANS_POSTCONCAT);
-    xgl_checkerrors();
-    offset.x = 0.0f;
-    offset.y = 0.0f;
-    offset.z = -GLOBE_VIEW_DISTANCE;
-    translation.pt_type = XGL_PT_F3D;
-    translation.pt.f3d = &offset;
-    xgl_transform_translate(xgl_model, &translation, XGL_TRANS_POSTCONCAT);
+    Xgl_matrix_d3d matrix;
+    unsigned int i;
+    /* Transpose of OpenGL's T * Rx * Ry * Rx(-90) * Rz(-90), composed here
+     * and written once: each model transform change costs about 0.5 ms on
+     * the Sun ZX. Rotations and a translation preserve lengths, which lets
+     * XGL take its faster matrix-group path. Coordinates remain in object
+     * space until XGL processes each strip. */
+    memset(matrix, 0, sizeof(matrix));
+    for (i = 0; i < 4U; ++i) matrix[i][i] = 1.0;
+    xgl_matrix_rotate(matrix, -PI / 2.0, 0U);
+    xgl_matrix_rotate(matrix, -PI / 2.0, 1U);
+    xgl_matrix_rotate(matrix, (double)drv_rot_y * PI / 180.0, 2U);
+    xgl_matrix_rotate(matrix, (double)drv_rot_x * PI / 180.0, 1U);
+    /* Postconcatenating a translation fills only the last row here. */
+    matrix[3][2] = -(double)GLOBE_VIEW_DISTANCE;
+    xgl_transform_write_specific(xgl_model, matrix,
+                                 XGL_TRANS_MEMBER_LENGTH_PRESERV);
     xgl_checkerrors();
 }
 
@@ -508,10 +653,12 @@ static Drv_result xgl_texture_load_size(unsigned int size)
     descriptor.texture_info.mipmap.max_v_freq = 1.0f;
     descriptor.texture_info.mipmap.u_boundary = XGL_TEXTURE_BOUNDARY_WRAP;
     descriptor.texture_info.mipmap.v_boundary = XGL_TEXTURE_BOUNDARY_WRAP;
-    descriptor.texture_info.mipmap.interp_info.filter1 =
-        XGL_TEXTURE_INTERP_MIPMAP_TRILINEAR;
-    descriptor.texture_info.mipmap.interp_info.filter2 =
-        XGL_TEXTURE_INTERP_BILINEAR;
+    /* XGL's cheapest sampling, one base-level texel, shortens software
+     * frames on the Sun ZX; other devices keep trilinear minification. */
+    descriptor.texture_info.mipmap.interp_info.filter1 = xgl_texture_software ?
+        XGL_TEXTURE_INTERP_POINT : XGL_TEXTURE_INTERP_MIPMAP_TRILINEAR;
+    descriptor.texture_info.mipmap.interp_info.filter2 = xgl_texture_software ?
+        XGL_TEXTURE_INTERP_POINT : XGL_TEXTURE_INTERP_BILINEAR;
     descriptor.texture_info.mipmap.orientation_matrix[0][0] = 1.0f;
     descriptor.texture_info.mipmap.orientation_matrix[1][1] = 1.0f;
     descriptor.comp_info.color_info.num_render_comp_desc = 1;
@@ -590,6 +737,8 @@ void drv_texture_enable(void)
         xgl_texture_failure("XGL texture is not active");
         return;
     }
+    /* Escape and window events are read only between frames. */
+    if (xgl_texture_software) drv_notice(XGL_SOFTWARE_NOTICE);
 }
 
 void drv_texture_disable(void)
@@ -599,6 +748,7 @@ void drv_texture_disable(void)
     xgl_texture_pending = FALSE;
     xgl_texture_failed = xgl_texture_used = FALSE;
     xgl_dirty = TRUE;
+    if (strcmp(drv_get_notice(), XGL_SOFTWARE_NOTICE) == 0) drv_notice(NULL);
     xgl_texture_begin();
     xgl_texture_switch(FALSE);
     if (!xgl_texture_end())
@@ -799,92 +949,171 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
 }
 
 /* Measure native stroke-font extents, including bearings, rather than
- * assuming that every glyph occupies the same number of pixels. The bounded
- * local line also handles help strings longer than the statistics buffer. */
+ * assuming that every glyph occupies the same number of pixels. Fit the next
+ * line of text into width; return its length (0 when not even one glyph
+ * fits) and, in *used, that length plus the spaces that follow it. */
+static unsigned int xgl_osd_fit(const char *text, float width, char *line,
+                                 Xgl_bounds_f2d *fitted, unsigned int *used)
+{
+    Xgl_bounds_f2d bounds;
+    Xgl_pt_f2d concatenate;
+    unsigned int count, fit, space, low, high, middle;
+    for (count = 0; text[count] != '\0' && count < XGL_OSD_LINE - 1U; ++count)
+        line[count] = text[count];
+    fit = space = 0;
+    low = 1U;
+    high = count;
+    /* Binary search keeps per-frame font queries bounded even when a long
+     * status wraps across several lines. */
+    while (low <= high)
+    {
+        middle = low + (high - low) / 2U;
+        line[middle] = '\0';
+        xgl_stroke_text_extent(xgl_overlay, line, &bounds, &concatenate);
+        xgl_checkerrors();
+        line[middle] = text[middle];
+        if (bounds.xmax - bounds.xmin <= width)
+        {
+            fit = middle;
+            low = middle + 1U;
+        }
+        else high = middle - 1U;
+    }
+    /* Even one glyph does not fit. Avoid drawing outside the window or
+     * repeatedly reconsidering the same character in a tiny drawable. */
+    if (fit == 0U) return 0U;
+    for (count = 0; count < fit; ++count)
+        if (text[count] == ' ') space = count;
+    if (text[fit] != '\0' && space > 0U) fit = space;
+    line[fit] = '\0';
+    xgl_stroke_text_extent(xgl_overlay, line, fitted, &concatenate);
+    xgl_checkerrors();
+    for (count = fit; text[count] == ' '; ++count) {}
+    *used = count;
+    return fit;
+}
+
+static void xgl_osd_draw(char *line, float xmin, float ymin, float ymax,
+                         float baseline)
+{
+    Xgl_pt_f2d position;
+    if (baseline - ymax >= 0.0f && baseline - ymin < (float)drv_win_height)
+    {
+        position.x = 10.0f - xmin;
+        position.y = baseline;
+        xgl_stroke_text(xgl_overlay, line, &position, NULL);
+        xgl_checkerrors();
+    }
+}
+
 static unsigned int xgl_osd_text(const char *text, float baseline, float width,
                                   float line_height, int draw)
 {
-    char line[160];
-    Xgl_bounds_f2d bounds, fitted;
-    Xgl_pt_f2d concatenate, position;
-    unsigned int count, fit, space, lines, low, high, middle;
+    char line[XGL_OSD_LINE];
+    Xgl_bounds_f2d fitted;
+    unsigned int lines, used;
     lines = 0;
     while (*text != '\0')
     {
-        for (count = 0; text[count] != '\0' && count < sizeof(line) - 1U; ++count)
-            line[count] = text[count];
-        fit = space = 0;
-        low = 1U;
-        high = count;
-        /* Binary search keeps per-frame font queries bounded even when a
-         * long status wraps across several lines. */
-        while (low <= high)
-        {
-            middle = low + (high - low) / 2U;
-            line[middle] = '\0';
-            xgl_stroke_text_extent(xgl_overlay, line, &bounds, &concatenate);
-            xgl_checkerrors();
-            line[middle] = text[middle];
-            if (bounds.xmax - bounds.xmin <= width)
-            {
-                fit = middle;
-                low = middle + 1U;
-            }
-            else high = middle - 1U;
-        }
-        /* Even one glyph does not fit. Avoid drawing outside the window or
-         * repeatedly reconsidering the same character in a tiny drawable. */
-        if (fit == 0U) return lines;
-        for (count = 0; count < fit; ++count)
-            if (text[count] == ' ') space = count;
-        if (text[fit] != '\0' && space > 0U) fit = space;
-        line[fit] = '\0';
-        xgl_stroke_text_extent(xgl_overlay, line, &fitted, &concatenate);
-        xgl_checkerrors();
-        if (draw && baseline - fitted.ymax >= 0.0f &&
-            baseline - fitted.ymin < (float)drv_win_height)
-        {
-            position.x = 10.0f - fitted.xmin;
-            position.y = baseline;
-            xgl_stroke_text(xgl_overlay, line, &position, NULL);
-            xgl_checkerrors();
-        }
+        if (xgl_osd_fit(text, width, line, &fitted, &used) == 0U) return lines;
+        if (draw) xgl_osd_draw(line, fitted.xmin, fitted.ymin, fitted.ymax, baseline);
         ++lines;
         baseline += line_height;
-        text += fit;
-        while (*text == ' ') ++text;
+        text += used;
     }
     return lines;
 }
 
-void drv_draw_osd(void)
+/* Line spacing depends only on the stroke font size. */
+static float xgl_osd_line_height(void)
 {
     Xgl_bounds_f2d bounds;
     Xgl_pt_f2d concatenate;
+    if (!xgl_line_valid || xgl_line_font != xgl_font_height)
+    {
+        xgl_stroke_text_extent(xgl_overlay, "Mg", &bounds, &concatenate);
+        xgl_checkerrors();
+        xgl_line_height = bounds.ymax - bounds.ymin + 4.0f;
+        xgl_line_font = xgl_font_height;
+        xgl_line_valid = TRUE;
+    }
+    return xgl_line_height;
+}
+
+/* Wrap the help text again only when its width, font size or text change. */
+static void xgl_help_layout(float width)
+{
+    char line[XGL_OSD_LINE];
+    Xgl_bounds_f2d fitted;
+    const char *text;
+    unsigned int fit, used;
+    Osd_line *layout;
+    if (xgl_help_valid && xgl_help_width == width &&
+        xgl_help_font == xgl_font_height && strcmp(xgl_help_text, drv_help) == 0)
+        return;
+    xgl_help_valid = FALSE;
+    xgl_help_count = 0;
+    strncpy(xgl_help_text, drv_help, sizeof(xgl_help_text) - 1U);
+    xgl_help_text[sizeof(xgl_help_text) - 1U] = '\0';
+    text = xgl_help_text;
+    while (*text != '\0' && xgl_help_count < XGL_HELP_LINES)
+    {
+        fit = xgl_osd_fit(text, width, line, &fitted, &used);
+        if (fit == 0U) break;
+        layout = &xgl_help_lines[xgl_help_count++];
+        layout->start = (unsigned short)(text - xgl_help_text);
+        layout->length = (unsigned short)fit;
+        layout->xmin = fitted.xmin;
+        layout->ymin = fitted.ymin;
+        layout->ymax = fitted.ymax;
+        text += used;
+    }
+    xgl_help_width = width;
+    xgl_help_font = xgl_font_height;
+    xgl_help_valid = TRUE;
+}
+
+void drv_draw_osd(void)
+{
     float width, line_height, baseline, help_baseline;
-    unsigned int status_lines, help_lines;
+    unsigned int status_lines, help_lines, i;
     char status[160];
     char texture_status[40];
+    char line[XGL_OSD_LINE];
+    const Osd_line *layout;
     if (drv_win_width <= 20U || drv_win_height <= 20U) return;
     drv_format_stats(status);
-    if (xgl_texture_used && texture_size != TEXTURE_DEFAULT_SIZE)
+    if (!drv_texture_enabled)
+        strcpy(texture_status, ", texture off");
+    else if (!xgl_texture_used)
+        strcpy(texture_status, ", texture fail");
+    else if (texture_size != TEXTURE_DEFAULT_SIZE && xgl_texture_software)
+        sprintf(texture_status, ", texture on (software, %u)", texture_size);
+    else if (texture_size != TEXTURE_DEFAULT_SIZE)
         sprintf(texture_status, ", texture on (%u)", texture_size);
     else
-        strcpy(texture_status, !drv_texture_enabled ? ", texture off" :
-                    (xgl_texture_used ? ", texture on" : ", texture fail"));
+        strcpy(texture_status, xgl_texture_software ?
+               ", texture on (software)" : ", texture on");
     drv_append_status(status, sizeof(status), texture_status);
-    xgl_stroke_text_extent(xgl_overlay, "Mg", &bounds, &concatenate);
-    xgl_checkerrors();
-    line_height = bounds.ymax - bounds.ymin + 4.0f;
+    line_height = xgl_osd_line_height();
     if (!(line_height >= 4.0f && line_height < (float)drv_win_height)) return;
     width = (float)drv_win_width - 20.0f;
     baseline = line_height + 2.0f;
     status_lines = xgl_osd_text(status, baseline, width, line_height, TRUE);
-    help_lines = xgl_osd_text(drv_help, 0.0f, width, line_height, FALSE);
+    xgl_help_layout(width);
+    help_lines = xgl_help_count;
     help_baseline = (float)drv_win_height - 10.0f -
                     (float)(help_lines > 0U ? help_lines - 1U : 0U) * line_height;
-    if (help_lines != 0U && help_baseline >= baseline + status_lines * line_height)
-        (void)xgl_osd_text(drv_help, help_baseline, width, line_height, TRUE);
+    if (help_lines == 0U || help_baseline < baseline + status_lines * line_height)
+        return;
+    for (i = 0; i < help_lines; ++i)
+    {
+        layout = &xgl_help_lines[i];
+        memcpy(line, xgl_help_text + layout->start, layout->length);
+        line[layout->length] = '\0';
+        xgl_osd_draw(line, layout->xmin, layout->ymin, layout->ymax,
+                     help_baseline + (float)i * line_height);
+    }
 }
 
 static int xgl_animating(void)
