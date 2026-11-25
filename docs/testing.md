@@ -283,24 +283,41 @@ python3 tests/run.py --ogl-contract
 
 ### Coverage
 
-- **Formats and palette:** RGBA32, RGB24/RGB16, and color-index8; precision before
-  buffering; unknown alpha queries; missing depth buffers; exact palette installation
-  and index-byte facets. Classic GLUT's `rgba` alpha requirement and FreeGLUT's
-  interpretation are modeled separately so both select RGB fallbacks correctly.
+- **Formats and palette:** RGBA32, RGB24/RGB16, 3/3/2 RGB, and color-index8;
+  precision before buffering; color index over RGB with fewer than 12 bits, and
+  shallow RGB only without an index visual; unknown alpha queries; missing depth
+  buffers; exact palette installation and index-byte facets. Classic GLUT's `rgba`
+  alpha requirement and FreeGLUT's interpretation are modeled separately so both
+  select RGB fallbacks correctly. Separate builds model four GLUT headers: API 4 with
+  display strings, GLUT 3.7 (API 3 with Xlib implementation 15, display strings),
+  GLUT 3.2 (API 3 with the availability query only), and FreeGLUT. Without display
+  strings each distinct mode is probed once; FreeGLUT creates no probe windows, only
+  the window it uses, replacing a shallow RGB window by color index.
 - **Geometry and caching:** latitude strips and one polar-cap triangle batch are
   compared with the TRI reference at all resolutions, including provoking colors and
-  UVs. Display-list checks cover the enabled default, `d`/`D`, redraws, deletion,
-  immediate drawing while disabled, lazy rebuilding, and resolution/texture changes.
-  `c`/`C` temporarily disables lists while preserving the saved `d` preference;
-  IRIS GL objects are also bypassed and reused when culling is turned off.
+  UVs. Every strip and batch, including those compiled into lists, must set its first
+  color before its first vertex and never repeat the current color. Display-list
+  checks cover the enabled default, `d`/`D`, redraws, deletion, immediate drawing
+  while disabled, lazy rebuilding, and resolution/texture changes. `c`/`C`
+  temporarily disables lists while preserving the saved `d` preference; IRIS GL
+  objects are also bypassed and reused when culling is turned off.
+- **Synchronous queries and clears:** each steady frame makes exactly one
+  `glGetError`, no `glIsList` (only after compiling), no texture-state queries (only
+  after enabling), no matrix-mode query, and no GLUT glyph or width calls once glyph
+  lists exist. It clears once, or not at all under the full-window software raster,
+  including while a texture failure is latched.
 - **Compatibility and failures:** OpenGL 1.1 declarations and object imports are
-  checked. GLUT headers without display-mode availability queries use one RGB,
-  double-buffered window request, including old headers without display strings.
+  checked. Display strings are imported only by the API 4 and GLUT 3.7 objects. GLUT
+  headers without display-mode availability queries use one RGB, double-buffered
+  window request, including old headers without display strings.
   Base-image uploads and bilinear minification require no later GL entry points.
   Allocation, compilation, validation, and execution failures must delete bad lists
-  and draw complete immediate geometry without retrying failed caches every frame. Texture
-  creation, binding, upload, and transfer failures must release failed state, draw
-  flat colors, and allow off/on retry.
+  and draw complete immediate geometry without retrying failed caches every frame. A
+  one-time list-call error, and a native texture draw error, must be caught by the
+  frame's single error check and redrawn without the list or texture before
+  presentation, with `d`/`t` retry. Texture creation, upload, and transfer failures
+  must release failed state, draw flat colors, and allow off/on retry. A lost object,
+  binding, or enable is injected when the texture is enabled, where it is checked.
   Native and software allocation-pressure profiles select smaller usable images;
   non-memory upload errors stop retries. Invalid or undersized texture limits fail
   without uploading. Both minification and magnification stay bilinear across toggles.
@@ -311,21 +328,29 @@ python3 tests/run.py --ogl-contract
   Checks also cover probe cleanup, final size, FPS toggling, right-button metadata,
   OSD status/help order, and omission of unavailable visibility counts.
   GLUT font tiers, measured wrapping, and full-glyph bounds are checked at small,
-  normal, large, and tiny window sizes.
+  normal, large, and tiny window sizes. Glyph lists must be built once per font
+  size, and every `glCallLists` byte must name a glyph of the font used for
+  measuring; cached help wrapping must follow width changes. Unavailable or failed
+  glyph lists fall back to direct glyphs.
 - **Software texturing:** OpenGL adopts only the base image and samples it bilinearly,
   including strongly minified triangles; IRIS GL retains trilinear mipmaps.
   OpenGL presents the rasterizer's index bytes directly;
   transferred bytes match every framebuffer index, including on 64-bit hosts.
   Nondefault unpack/transfer state must be restored.
   Software texturing bypasses display lists, and both raster-cache policies are
-  exercised. Numerical pixel checks are described under [Shared software pipelines](#shared-software-pipelines).
+  exercised. Its internal CPU culling must produce the same bytes as the full
+  traversal at every resolution and several views, while `c` keeps its setting.
+  Numerical pixel checks are described under [Shared software pipelines](#shared-software-pipelines).
 
 ### Native validation
 
 Actual OpenGL rendering and availability of color-index visuals require GUI checks
 with the installed GL implementation. Apple SDK compilation and Cocoa/GLUT event-loop
 behavior require macOS; the host recorder checks callback ordering without implementing
-that event loop.
+that event loop. Display-list bitmap glyphs, format selection without probe windows,
+and the single per-frame error check were compared with the previous driver under
+Mesa and FreeGLUT 3.4 on Xvfb; SGI GLUT 3.7 (IRIX, Solaris) and Apple's GLUT still
+need native checks of glyph lists and format probing.
 
 ## Amiga OpenGL
 

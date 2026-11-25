@@ -717,14 +717,15 @@ def main():
         if args.ogl_contract:
             ogl = ["-DFLAT", "-DDRV_OGL", "-I" + str(ROOT / "tests/ogl_record")]
             check_production_units(cc, common, ogl, output, "OpenGL",
-                ("drv.c", "drv_ogl.c", "err.c", "globe.c", "main.c", "texture.c", "texsoft.c", "e_saved.c"))
+                ("drv.c", "drv_ogl.c", "ogl_glut.c", "err.c", "globe.c", "main.c", "texture.c", "texsoft.c", "e_saved.c"))
+            # tests/ogl.c includes drv_ogl.c and ogl_glut.c to reach their state.
             ogl_sources = [str(ROOT / "tests/ogl.c"), str(ROOT / "src/e_saved.c"),
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm"]
             run(cc + common + ogl + ogl_sources +
                 ["-o", str(output / "ogl")])
-            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "reduced", "softreduced", "softadoptreduced", "uploadreduced", "framefail"):
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "rgb8", "rgb8only", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "fontlistfail", "reduced", "softreduced", "softadoptreduced", "uploadreduced", "framefail"):
                 run([str(output / "ogl"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl"), mode],
@@ -734,6 +735,15 @@ def main():
                 run([str(output / "ogl"), mode],
                     expected_stderr="OpenGL error: Invalid operation!\n" * 6 if mode == "callfail" else "",
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
+            run([str(output / "ogl"), "callonce"],
+                expected_stderr="OpenGL error: Invalid operation!\n",
+                required_output="PASS OpenGL display-list call recovery:")
+            run([str(output / "ogl"), "texdrawfail"],
+                expected_stderr="OpenGL error: Invalid operation!\nOpenGL texture: Cannot draw OpenGL texture\n",
+                required_output="PASS OpenGL texture draw error:")
+            run([str(output / "ogl"), "fontcompilefail"],
+                expected_stderr="OpenGL error: Out of memory!\n",
+                required_output="PASS OpenGL OSD glyph fallback:")
             texture_failures = {
                 "uploadfail": "Insufficient memory for texture; drawing flat colors",
                 "stagefail": "Insufficient memory for texture; drawing flat colors",
@@ -749,14 +759,17 @@ def main():
                     expected_stderr=("OpenGL error: Invalid operation!\n" if mode == "softtransfererror" else "") +
                                     "OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL recoverable texture failure:")
+            # Lost objects, bindings and enables are injected when the texture
+            # is enabled, the only point where its native state is checked.
             for mode in ("losttexture", "bindinglost", "disabledtexture", "unloadedtexture"):
                 message = "OpenGL texture data is not loaded" if mode == "unloadedtexture" else "OpenGL texture is not active"
                 run([str(output / "ogl"), mode], expected_stderr="OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL actual texture use:")
             modern_ogl = ogl + ["-DTEST_OGL_FREEGLUT"]
             run(cc + common + modern_ogl + ogl_sources + ["-o", str(output / "ogl_modern")])
-            for mode in ("rgba", "rgb24", "rgb16", "limited"):
-                run([str(output / "ogl_modern"), mode])
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "rgb8", "rgb8only", "indexed", "nodepth", "limited"):
+                run([str(output / "ogl_modern"), mode],
+                    required_output="PASS FreeGLUT format selection:")
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl_modern"), mode],
                     expected_stderr="OpenGL error: Out of memory!\n" * 6,
@@ -772,13 +785,30 @@ def main():
                     expected_stderr=("OpenGL error: Out of memory!\n" if mode == "texallocerror" else "OpenGL error: Invalid operation!\n") +
                                     "OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL recoverable texture failure:")
-            for label, options in (("legacy", ogl), ("freeglut", modern_ogl)):
-                obj = output / ("ogl_" + label + ".o")
-                run(cc + common + options + ["-c", str(ROOT / "src/drv_ogl.c"), "-o", str(obj)])
-                symbols = subprocess.run(["nm", "-u", str(obj)], text=True, capture_output=True, check=True).stdout
+            # GLUT 3.7 keeps API 3 but declares display strings from Xlib
+            # implementation 9; GLUT 3.2 has the query without them.
+            for label, define, required in (
+                    ("glut37", "TEST_OGL_GLUT37", "PASS GLUT 3.7 display strings:"),
+                    ("glut32", "TEST_OGL_GLUT32", "PASS GLUT mode-bit probes:")):
+                binary = output / ("ogl_" + label)
+                run(cc + common + ogl + ["-D" + define] + ogl_sources + ["-o", str(binary)])
+                for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "rgb8", "rgb8only", "indexed", "unknownalpha", "nodepth"):
+                    run([str(binary), mode], expected_stderr="", required_output=required)
+            # Only GLUT that honors display-string comparators imports them.
+            for label, options, strings in (("legacy", ogl, True), ("freeglut", modern_ogl, False),
+                                            ("glut37", ogl + ["-DTEST_OGL_GLUT37"], True),
+                                            ("glut32", ogl + ["-DTEST_OGL_GLUT32"], False)):
+                symbols = ""
+                for source in ("drv_ogl.c", "ogl_glut.c"):
+                    obj = output / ("ogl_" + label + "_" + Path(source).stem + ".o")
+                    run(cc + common + options + ["-c", str(ROOT / "src" / source), "-o", str(obj)])
+                    symbols += subprocess.run(["nm", "-u", str(obj)], text=True, capture_output=True, check=True).stdout
                 if any(name in symbols for name in ("glGenerateMipmap", "gluBuild2DMipmaps", "glutGetProcAddress")):
                     raise SystemExit("OpenGL 1.1 object unexpectedly links a later entry point")
-            print("PASS OpenGL 1.1 object linkage: legacy and FreeGLUT builds use base-level uploads without mipmap or extension entry points")
+                if ("glutInitDisplayString" in symbols) != strings:
+                    raise SystemExit("Unexpected display-string use in the " + label + " GLUT objects")
+            print("PASS OpenGL 1.1 object linkage: legacy, GLUT 3.x and FreeGLUT builds use base-level uploads without mipmap or extension entry points")
+            print("PASS GLUT display-string linkage: API 4 and GLUT 3.7 objects use comparators; FreeGLUT and GLUT 3.2 objects send mode bits only")
             for label, define in (("missing_query", "TEST_OGL_NO_MODE_QUERY"),
                                   ("old_glut", "TEST_OGL_OLD_GLUT")):
                 legacy_options = ogl + ["-D" + define]
@@ -787,11 +817,13 @@ def main():
                 for mode in ("legacy-glut", "rgb16"):
                     run([str(binary), mode], expected_stderr="",
                         required_output="PASS legacy GLUT window: one RGB/double request at final size and position, no probes or display strings, actual pixel/depth/buffer attributes validated")
-                obj = output / ("ogl_" + label + ".o")
-                run(cc + common + legacy_options + ["-c", str(ROOT / "src/drv_ogl.c"),
-                    "-o", str(obj)])
-                symbols = subprocess.run(["nm", "-u", str(obj)], text=True,
-                    capture_output=True, check=True).stdout
+                symbols = ""
+                for source in ("drv_ogl.c", "ogl_glut.c"):
+                    obj = output / ("ogl_" + label + "_" + Path(source).stem + ".o")
+                    run(cc + common + legacy_options + ["-c", str(ROOT / "src" / source),
+                        "-o", str(obj)])
+                    symbols += subprocess.run(["nm", "-u", str(obj)], text=True,
+                        capture_output=True, check=True).stdout
                 if "glutInitDisplayString" in symbols:
                     raise SystemExit("Legacy GLUT object unexpectedly imports display-string probing")
             print("PASS legacy GLUT linkage: API 3 and API 4 without mode queries create a validated window and never import glutInitDisplayString")

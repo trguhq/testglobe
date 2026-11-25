@@ -15,12 +15,14 @@ LDFLAGS = -lglut -lGLU -lGL -lXmu -lX11 -lm
 # drv_ogl.h selects latitude strips with separately batched pole triangles.
 # OpenGL, IRIS GL and XGL headers enable the runtime C band-culling control.
 OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
-OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o texsoft.o e_data.o
+OGL_OBJECTS = drv.o drv_ogl.o ogl_glut.o err.o globe.o main.o texture.o texsoft.o e_data.o
 OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_ogl.h $(SRC)/err_ext.h \
     $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h \
     $(SRC)/texture.h $(SRC)/tex_ext.h $(SRC)/texsoft.h \
     $(SRC)/e_cmap.h $(SRC)/earthres.h
+# GLUT windows, formats and text for the desktop builds of drv_ogl.c.
+OGL_GLUT_HEADERS = $(OGL_HEADERS) $(SRC)/ogl_glut.h
 
 # Native Solaris OpenGL/GLUT with the installed OpenWindows headers/libraries.
 # s_ objects keep Solaris compiler and linker options separate from other builds.
@@ -32,7 +34,7 @@ SOLARIS_SYS_FLAGS = -DNO_SINF
 SOLARIS_DEFINES = $(OGL_DEFINES)
 SOLARIS_LDFLAGS = -L$(OPENWINHOME)/lib -R$(OPENWINHOME)/lib \
     -lglut -lGLU -lGL -lXmu -lX11 -lm
-SOLARIS_OBJECTS = s_drv.o s_ogl.o s_err.o s_globe.o s_main.o s_tex.o s_soft.o s_data.o
+SOLARIS_OBJECTS = s_drv.o s_ogl.o s_glut.o s_err.o s_globe.o s_main.o s_tex.o s_soft.o s_data.o
 
 # Native macOS OpenGL/GLUT from the selected Xcode command line tools.
 # Apple objects stay separate from Unix GL/X11 objects. Apple's legacy
@@ -43,7 +45,7 @@ APPLE_CFLAGS = $(CFLAGS)
 APPLE_SYS_FLAGS = -DGLUT_SILENCE_DEPRECATION
 APPLE_DEFINES = $(OGL_DEFINES)
 APPLE_LDFLAGS = -framework GLUT -framework OpenGL -framework Cocoa
-APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o a_data.o
+APPLE_OBJECTS = a_drv.o a_ogl.o a_glut.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o a_data.o
 
 # PiStorm3D through the shared MiniGL V29 / dispatch ABI 5 interface.
 # MINIGL_ROOT is the SDK checkout containing libraryroot/include; the root
@@ -281,8 +283,11 @@ testglobe-opengl: $(OGL_OBJECTS) FORCE
 drv.o: $(SRC)/drv.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/drv.c
 
-drv_ogl.o: $(SRC)/drv_ogl.c $(OGL_HEADERS)
+drv_ogl.o: $(SRC)/drv_ogl.c $(OGL_GLUT_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/drv_ogl.c
+
+ogl_glut.o: $(SRC)/ogl_glut.c $(OGL_GLUT_HEADERS)
+	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/ogl_glut.c
 
 err.o: $(SRC)/err.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/err.c
@@ -310,8 +315,11 @@ s_data.o: e_data.c $(OGL_HEADERS)
 s_drv.o: $(SRC)/drv.c $(OGL_HEADERS)
 	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/drv.c -o s_drv.o
 
-s_ogl.o: $(SRC)/drv_ogl.c $(OGL_HEADERS)
+s_ogl.o: $(SRC)/drv_ogl.c $(OGL_GLUT_HEADERS)
 	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/drv_ogl.c -o s_ogl.o
+
+s_glut.o: $(SRC)/ogl_glut.c $(OGL_GLUT_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/ogl_glut.c -o s_glut.o
 
 s_err.o: $(SRC)/err.c $(OGL_HEADERS)
 	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/err.c -o s_err.o
@@ -339,8 +347,11 @@ a_data.o: e_data.c $(OGL_HEADERS)
 a_drv.o: $(SRC)/drv.c $(OGL_HEADERS)
 	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/drv.c -o a_drv.o
 
-a_ogl.o: $(SRC)/drv_ogl.c $(OGL_HEADERS)
+a_ogl.o: $(SRC)/drv_ogl.c $(OGL_GLUT_HEADERS)
 	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/drv_ogl.c -o a_ogl.o
+
+a_glut.o: $(SRC)/ogl_glut.c $(OGL_GLUT_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/ogl_glut.c -o a_glut.o
 
 a_err.o: $(SRC)/err.c $(OGL_HEADERS)
 	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/err.c -o a_err.o
@@ -773,6 +784,7 @@ clean-opengl:
 	-$(RM) e_data.o
 	-$(RM) drv.o
 	-$(RM) drv_ogl.o
+	-$(RM) ogl_glut.o
 	-$(RM) err.o
 	-$(RM) globe.o
 	-$(RM) main.o
@@ -784,6 +796,7 @@ clean-solaris-opengl:
 	-$(RM) s_data.o
 	-$(RM) s_drv.o
 	-$(RM) s_ogl.o
+	-$(RM) s_glut.o
 	-$(RM) s_err.o
 	-$(RM) s_globe.o
 	-$(RM) s_main.o
@@ -795,6 +808,7 @@ clean-apple-opengl:
 	-$(RM) a_data.o
 	-$(RM) a_drv.o
 	-$(RM) a_ogl.o
+	-$(RM) a_glut.o
 	-$(RM) a_err.o
 	-$(RM) a_globe.o
 	-$(RM) a_main.o
