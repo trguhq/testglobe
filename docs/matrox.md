@@ -52,10 +52,16 @@ perspective view.
 
 Press `S` to switch to host software transforms. This path keeps LibShell's
 orthographic world window, integer-degree rotations (LibShell's `ANGLE` type), and
-viewport orientation. The CPU transforms, projects, clips, and culls bounded polygon
-packets, then sends screen-coordinate polygons through `scarwplygn` (`SCARWPLYGN`).
-LibShell still fills them with the same LUT. The driver keeps the quad traversal and
-allocates no second mesh. Press `S` again to return to LibShell 3D.
+viewport orientation. The CPU transforms, projects, clips, and culls bounded packets
+of up to 64 quads (two latitude rows of at most 65 vertices), then sends
+screen-coordinate polygons through `scarwplygn` (`SCARWPLYGN`). LibShell still fills
+them with the same LUT. Each packet's lower row becomes the next packet's upper row,
+so every mesh vertex is transformed and projected once per frame (561 points at key
+1 rather than 2,048 quad corners). The orthographic kernels compute only x and y,
+with results identical to the full transforms. The packets need about 4.7 KB of
+bounded buffers (2.1 KB from the shared traversal, 2.6 KB of driver points), not a
+second mesh. Native LibShell 3D keeps sending each quad's world vertices. Press `S`
+again to return to LibShell 3D.
 
 ## Platform notes
 

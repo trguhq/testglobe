@@ -295,6 +295,43 @@ int soft3d_float_project_ortho(const Soft3d_float_point *points,
 }
 #endif
 
+#ifdef DRV_MTX
+/* ---- Orthographic x/y transform (Matrox software mode) ----------------
+ * soft3d_float_transform_reuse without its third row: the same validation,
+ * reuse and float stores give identical x and y (precision only affects
+ * z there), and z is stored as zero for the orthographic projector. */
+int soft3d_float_transform_xy_reuse(float matrix[3][3], unsigned int count,
+                                    const Vertex TG_HUGE *vertices,
+                                    Soft3d_float_point *out,
+                                    unsigned int reuse_count)
+{
+    unsigned int i;
+    float x, y, z;
+    if (matrix == NULL || vertices == NULL || out == NULL || count == 0U ||
+        count > SOFT3D_MAX_VERTICES ||
+        (reuse_count != 0U && (count % 2U != 0U || reuse_count != count / 2U)))
+        return FALSE;
+    for (i = 0; i < count; ++i)
+        if (!(vertices[i].x >= -FLT_MAX && vertices[i].x <= FLT_MAX &&
+              vertices[i].y >= -FLT_MAX && vertices[i].y <= FLT_MAX &&
+              vertices[i].z >= -FLT_MAX && vertices[i].z <= FLT_MAX))
+            return FALSE;
+    for (i = 0; i < reuse_count; ++i) out[2U * i] = out[2U * i + 1U];
+    for (i = 0; i < count; ++i)
+    {
+        if (reuse_count != 0U && i % 2U == 0U) continue;
+        x = vertices[i].x;
+        y = vertices[i].y;
+        z = vertices[i].z;
+        out[i].x = matrix[0][0] * x + matrix[0][1] * y + matrix[0][2] * z;
+        out[i].y = matrix[1][0] * x + matrix[1][1] * y + matrix[1][2] * z;
+        out[i].z = 0.0f;
+        if (!soft3d_float_valid(out + i)) return FALSE;
+    }
+    return TRUE;
+}
+#endif /* orthographic x/y transform */
+
 int soft3d_float_project_cached(const Soft3d_float_point *points,
                                 unsigned int point_count,
                                 const unsigned int TG_HUGE *indices,

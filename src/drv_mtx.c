@@ -55,6 +55,14 @@ static unsigned int mtx_pending_fills;
 static int mtx_pending_native, mtx_queue_fills;
 static struct Lutval mtx_saved_palette[256];
 static struct Lutval mtx_palette[256];
+/* Software mode's bounded packet state: transformed and projected points of
+ * the current band, whose lower row the next band of a stream reuses. */
+static Drv_quad_stream mtx_stream;
+static union {
+    Soft3d_fixed_point fixed[SOFT3D_MAX_VERTICES];
+    Soft3d_float_point floating[SOFT3D_MAX_VERTICES];
+} mtx_points;
+static Soft3d_screen_point mtx_screen[SOFT3D_MAX_VERTICES];
 /* The native path uses this eye vector only for visibility rejection.
  * Software mode performs the whole geometry stage before screen filling. */
 static float mtx_eye_x;
@@ -573,80 +581,19 @@ static int mtx_set_transform(void)
     return TRUE;
 }
 
-/* Only a triangle/quad packet is retained on the host. Unlike the perspective
- * drivers, Matrox maps its fixed orthographic world window to the screen. */
-static void mtx_draw_software_color(unsigned short npoints,
-                                    Vertex TG_HUGE *source[],
-                                    unsigned char color)
-{
-    Vertex vertices[4];
-    union {
-        Soft3d_fixed_point fixed[4];
-        Soft3d_float_point floating[4];
-    } points;
-    Soft3d_screen_point screen[SOFT3D_MAX_POLY];
-    struct Phcoord polygon[SOFT3D_MAX_POLY];
-    unsigned int i;
-    int transformed, count;
-    for (i = 0; i < npoints; ++i) vertices[i] = *source[i];
-    if (mtx_has_fpu)
-        transformed = soft3d_float_transform_reuse(mtx_matrix.floating,
-            npoints, vertices, points.floating, 0U, SOFT3D_FLOAT_SINGLE);
-    else if (mtx_cpu >= 386)
-        transformed = soft3d_386_transform_reuse(mtx_matrix.fixed,
-            npoints, vertices, points.fixed, 0U);
-    else
-        transformed = soft3d_fixed_transform_reuse(mtx_matrix.fixed,
-            npoints, vertices, points.fixed, 0U);
-    if (!transformed)
-    {
-        drv_abort_frame("Matrox software coordinate is out of range");
-        return;
-    }
-    if (mtx_has_fpu)
-        count = soft3d_float_project_ortho(points.floating, npoints,
-                    DRV_WIN_WIDTH, DRV_WIN_HEIGHT, 3200U, 2400U, screen);
-    else
-        count = soft3d_fixed_project_ortho(points.fixed, npoints,
-                    DRV_WIN_WIDTH, DRV_WIN_HEIGHT, 3200U, 2400U, screen);
-    if (count == 0)
-    {
-        drv_abort_frame("Matrox software projection failed");
-        return;
-    }
-    count = soft3d_finish_polygon(screen, count, DRV_WIN_WIDTH - 1U,
-                                   DRV_WIN_HEIGHT - 1U);
-    if (count < 3) return;
-    for (i = 0; i < (unsigned int)count; ++i)
-    {
-        polygon[i].x = (short)screen[i].x;
-        polygon[i].y = (short)screen[i].y;
-    }
-    if (!mtx_fill_room(FALSE)) return;
-    (void)mtx_set_color((unsigned short)color);
-    scarwplygn((unsigned short)count, polygon);
-    mtx_fill_sent(FALSE);
-}
-
-static void mtx_draw_flat_color(unsigned short npoints,
-                                Vertex TG_HUGE *source[],
-                                unsigned char color)
+/* Native LibShell 3D: world vertices of one quad, in traversal order. */
+static void mtx_draw_native(const Vertex TG_HUGE *source[4],
+                            unsigned char color)
 {
     struct V3coord vertices[4];
     unsigned short count = 0;
     unsigned short i;
     float ax, ay, az, bx, by, bz;
     float nx, ny, nz;
-    if (drv_frame_failed || mtx_io_failed) return;
-    if (drv_soft3d_active)
-    {
-        mtx_draw_software_color(npoints, source, color);
-        return;
-    }
     /* Tiny contiguous far-data packet for the SDK: never pass huge mesh
      * pointers directly to legacy bindings. Compact repeated pole
      * vertices into three-vertex caps to avoid degenerate quad fills. */
-    for (i = 0; i < npoints; ++i)
+    for (i = 0; i < 4U; ++i)
     {
         if (count != 0 && source[i]->x == vertices[count - 1].x &&
             source[i]->y == vertices[count - 1].y &&
@@ -684,19 +631,138 @@ static void mtx_draw_flat_color(unsigned short npoints,
     mtx_fill_sent(TRUE);
 }
 
+/* Software mode: the host transforms, projects, clips and culls; LibShell
+ * fills screen polygons. Unlike the perspective drivers, Matrox maps its
+ * fixed orthographic world window to the screen. */
+static void mtx_draw_screen(const Soft3d_screen_point *points, int count,
+                            unsigned char color)
+{
+    struct Phcoord polygon[SOFT3D_MAX_POLY];
+    int i;
+    for (i = 0; i < count; ++i)
+    {
+        polygon[i].x = (short)points[i].x;
+        polygon[i].y = (short)points[i].y;
+    }
+    if (!mtx_fill_room(FALSE)) return;
+    (void)mtx_set_color((unsigned short)color);
+    scarwplygn((unsigned short)count, polygon);
+    mtx_fill_sent(FALSE);
+}
+
+static void mtx_software_failed(const char *message)
+{
+    drv_quadstream_reset(&mtx_stream);
+    drv_abort_frame(message);
+}
+
+static int mtx_project(unsigned int first, unsigned int count)
+{
+    int projected;
+    if (mtx_has_fpu)
+        projected = soft3d_float_project_ortho(mtx_points.floating + first, count,
+            DRV_WIN_WIDTH, DRV_WIN_HEIGHT, 3200U, 2400U, mtx_screen + first);
+    else
+        projected = soft3d_fixed_project_ortho(mtx_points.fixed + first, count,
+            DRV_WIN_WIDTH, DRV_WIN_HEIGHT, 3200U, 2400U, mtx_screen + first);
+    if (projected != 0) return TRUE;
+    mtx_software_failed("Matrox software projection failed");
+    return FALSE;
+}
+
+/* Each packet vertex is transformed (x/y only) and projected once; with a
+ * stream's row reuse, the previous band's lower row is not recomputed.
+ * Points are identical to transforming and projecting each quad alone. */
+static int mtx_software_points(unsigned int vertex_count,
+                               const Vertex TG_HUGE *vertices,
+                               unsigned int reuse)
+{
+    unsigned int i;
+    int transformed;
+    if (mtx_has_fpu)
+        transformed = soft3d_float_transform_xy_reuse(mtx_matrix.floating,
+            vertex_count, vertices, mtx_points.floating, reuse);
+    else if (mtx_cpu >= 386)
+        transformed = soft3d_386_transform_xy_reuse(mtx_matrix.fixed,
+            vertex_count, vertices, mtx_points.fixed, reuse);
+    else
+        transformed = soft3d_fixed_transform_xy_reuse(mtx_matrix.fixed,
+            vertex_count, vertices, mtx_points.fixed, reuse);
+    if (!transformed)
+    {
+        mtx_software_failed("Matrox software coordinate is out of range");
+        return FALSE;
+    }
+    if (reuse == 0U) return mtx_project(0U, vertex_count);
+    /* As in the transform, old odd entries become the new even entries. */
+    for (i = 0; i < reuse; ++i) mtx_screen[2U * i] = mtx_screen[2U * i + 1U];
+    for (i = 1U; i < vertex_count; i += 2U)
+        if (!mtx_project(i, 1U)) return FALSE;
+    return TRUE;
+}
+
+void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
+                                   const Vertex TG_HUGE *vertices,
+                                   unsigned int quad_count,
+                                   const unsigned int TG_HUGE *indices,
+                                   const unsigned char TG_HUGE *colors)
+{
+    Drv_quad_context context;
+    Soft3d_screen_point screen[SOFT3D_MAX_POLY];
+    const Vertex TG_HUGE *source[4];
+    unsigned int i, j, reuse;
+    int count;
+    if (drv_frame_failed || mtx_io_failed) return;
+    if (vertices == NULL || colors == NULL ||
+        !drv_validate_quadbatch(vertex_count, quad_count, indices))
+    {
+        mtx_software_failed("Matrox quad batch is out of range");
+        return;
+    }
+    if (!drv_soft3d_active)
+    {
+        /* LibShell transforms world vertices itself: nothing to reuse. */
+        for (i = 0; i < quad_count && !drv_frame_failed && !mtx_io_failed; ++i)
+        {
+            for (j = 0; j < 4U; ++j) source[j] = vertices + indices[4U * i + j];
+            mtx_draw_native(source, colors[i]);
+        }
+        return;
+    }
+    reuse = drv_quadstream_reuse(&mtx_stream, vertex_count, vertices, &context);
+    if (!mtx_software_points(vertex_count, vertices, reuse)) return;
+    drv_quadstream_commit(&mtx_stream, &context);
+    for (i = 0; i < quad_count; ++i)
+    {
+        for (j = 0; j < 4U; ++j) screen[j] = mtx_screen[indices[4U * i + j]];
+        count = soft3d_finish_polygon(screen, 4, DRV_WIN_WIDTH - 1U,
+                                       DRV_WIN_HEIGHT - 1U);
+        if (count < 3) continue;
+        mtx_draw_screen(screen, count, colors[i]);
+        if (drv_frame_failed || mtx_io_failed) return;
+    }
+}
+
 void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1,
                               Vertex TG_HUGE *xyz2,
                               Vertex TG_HUGE *xyz3,
                               Vertex TG_HUGE *xyz4,
                               unsigned char color)
 {
-    Vertex TG_HUGE *source[4];
-    if (xyz1 == NULL || xyz2 == NULL || xyz3 == NULL || xyz4 == NULL) return;
+    const Vertex TG_HUGE *source[4];
+    if (xyz1 == NULL || xyz2 == NULL || xyz3 == NULL || xyz4 == NULL ||
+        drv_frame_failed || mtx_io_failed) return;
+    /* A lone software quad is a one-quad packet without reuse. */
+    if (drv_soft3d_active)
+    {
+        drv_submit_quad_as_batch(xyz1, xyz2, xyz3, xyz4, color);
+        return;
+    }
     source[0] = xyz1;
     source[1] = xyz2;
     source[2] = xyz3;
     source[3] = xyz4;
-    mtx_draw_flat_color(4, source, color);
+    mtx_draw_native(source, color);
 }
 
 /* The selected font is 8x16. Wrap both status and help to the actual screen
@@ -751,6 +817,7 @@ void drv_render(void)
     {
         drv_fps_start();
         mtx_native_failed = FALSE;
+        drv_quadstream_reset(&mtx_stream);
         MTX_COMMAND(krhwcclr(mtx_background), "clear screen");
         mtx_color_valid = FALSE;
         globe_quads_num_vis = 0;
@@ -762,7 +829,9 @@ void drv_render(void)
                 /* Fills are confirmed in groups. Confirm the last group
                  * before any other command, so its faults stay recoverable. */
                 mtx_queue_fills = TRUE;
-                globe_draw_quads();
+                /* Native LibShell needs world vertices, not packet copies. */
+                if (drv_soft3d_active) globe_draw_quadbatches();
+                else globe_draw_quads();
                 mtx_queue_fills = FALSE;
                 (void)mtx_flush_fills();
             }
@@ -806,6 +875,7 @@ static void mtx_keyboard(unsigned char key)
             drv_soft3d_active = FALSE;
             drv_notice(NULL);
         }
+        drv_quadstream_reset(&mtx_stream);
         mtx_dirty = TRUE;
     }
     else if (drv_handle_key(key)) mtx_dirty = TRUE;

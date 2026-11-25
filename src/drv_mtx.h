@@ -43,7 +43,10 @@
 #define GLOBE_DEFAULT_LONGITUDE 32
 
 /* No TEXTURE: the palette supplies polygon colors, not texture mapping. */
-/* render individual quads */
+/* Native LibShell draws individual world quads. Software mode streams
+ * bounded two-row packets so each band reuses its neighbor's points. */
 #define QUAD
+#define DRV_QUAD_BATCH
+#define DRV_QUAD_BATCH_MAX 64
 
 #endif /* drv_mtx_h */

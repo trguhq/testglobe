@@ -484,7 +484,10 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 - **Software transforms:** LibShell is the default; `S`/`s` selects host transforms
   while keeping indexed LibShell polygon filling. An independent orthographic
   reference checks orientation, integer-degree rotation, screen coordinates and
-  viewport bounds. CPU profiles exercise baseline, 386 and floating-point dispatch,
+  viewport bounds. Packet checks match every fill to its quad in order, verify the
+  packet vertices against the mesh, and require each mesh vertex to be transformed
+  and projected once per frame; the x/y kernels must equal the full kernels' x and y,
+  row reuse and rejected inputs. CPU profiles exercise baseline, 386 and floating-point dispatch,
   including 286/287 combinations. The `8086` and `8087` profiles check that the
   supplied 286 binding is rejected before `lsinit`; a second build with
   `MTX_8086_BINDING` runs them through the whole contract. The OSD reports actual

@@ -23,19 +23,27 @@ static int recorded_mtx_fprintf(FILE *stream, const char *format, ...);
 static void check_backward_clock(void);
 static int recorded_fixed_prepare(long matrix[3][3], int yaw, int pitch);
 static int recorded_float_prepare(float matrix[3][3], int yaw, int pitch);
-static int recorded_fixed_transform(long matrix[3][3], unsigned int count,
+static int recorded_fixed_xy(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
-static int recorded_386_transform(long matrix[3][3], unsigned int count,
+static int recorded_386_xy(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
-static int recorded_float_transform(float matrix[3][3], unsigned int count,
-    const Vertex TG_HUGE *vertices, Soft3d_float_point *out,
-    unsigned int reuse, int precision);
+static int recorded_float_xy(float matrix[3][3], unsigned int count,
+    const Vertex TG_HUGE *vertices, Soft3d_float_point *out, unsigned int reuse);
+static int recorded_fixed_project(const Soft3d_fixed_point *points,
+    unsigned int count, unsigned int width, unsigned int height,
+    unsigned int world_width, unsigned int world_height, Soft3d_screen_point *out);
+static int recorded_float_project(const Soft3d_float_point *points,
+    unsigned int count, unsigned int width, unsigned int height,
+    unsigned int world_width, unsigned int world_height, Soft3d_screen_point *out);
 #define drv_draw_quad_flat_color recorded_driver_quad
+#define drv_draw_quadbatch_flat_color recorded_driver_quadbatch
 #define soft3d_fixed_prepare_ortho recorded_fixed_prepare
 #define soft3d_float_prepare_ortho recorded_float_prepare
-#define soft3d_fixed_transform_reuse recorded_fixed_transform
-#define soft3d_386_transform_reuse recorded_386_transform
-#define soft3d_float_transform_reuse recorded_float_transform
+#define soft3d_fixed_transform_xy_reuse recorded_fixed_xy
+#define soft3d_386_transform_xy_reuse recorded_386_xy
+#define soft3d_float_transform_xy_reuse recorded_float_xy
+#define soft3d_fixed_project_ortho recorded_fixed_project
+#define soft3d_float_project_ortho recorded_float_project
 #define error recorded_mtx_error
 #define clock recorded_mtx_clock
 #undef fprintf
@@ -45,11 +53,14 @@ static int recorded_float_transform(float matrix[3][3], unsigned int count,
 #undef clock
 #undef error
 #undef drv_draw_quad_flat_color
+#undef drv_draw_quadbatch_flat_color
 #undef soft3d_fixed_prepare_ortho
 #undef soft3d_float_prepare_ortho
-#undef soft3d_fixed_transform_reuse
-#undef soft3d_386_transform_reuse
-#undef soft3d_float_transform_reuse
+#undef soft3d_fixed_transform_xy_reuse
+#undef soft3d_386_transform_xy_reuse
+#undef soft3d_float_transform_xy_reuse
+#undef soft3d_fixed_project_ortho
+#undef soft3d_float_project_ortho
 
 #ifdef TEXTURE
 #error The Matrox driver must not compile texture mapping support
@@ -114,10 +125,21 @@ static unsigned short mouse_buttons;
 static short mouse_dx, mouse_dy;
 static unsigned int mouse_resets, mouse_polls, mouse_motion_reads;
 static short last_yaw, last_pitch;
-static Vertex *submitted_vertices[4];
+static const Vertex *submitted_vertices[4];
 static unsigned short submitted_color;
 static int selected_cpu = 286, selected_fpu;
 static unsigned int fixed_transforms, optimized_transforms, floating_transforms;
+/* Software packets: points transformed (excluding reused rows) and
+ * projected, and each queued quad's expected fill, matched in order. */
+static unsigned long xy_points, projected_points;
+#define EXPECT_EITHER 0
+#define EXPECT_FILL 1
+#define EXPECT_NONE 2
+static const Vertex *batch_vertices[DRV_QUAD_BATCH_MAX][4];
+static unsigned char batch_colors[DRV_QUAD_BATCH_MAX];
+static int batch_expect[DRV_QUAD_BATCH_MAX];
+static unsigned int batch_count, batch_cursor;
+static int batch_active, direct_quad;
 static unsigned int screen_polygons, world_polygons;
 static unsigned int fail_v3_rotation, fail_v3_polygon, fail_v3_projection;
 static unsigned int fail_world_window, fail_screen_polygon, fail_software_prepare;
@@ -150,24 +172,44 @@ static int recorded_float_prepare(float matrix[3][3], int yaw, int pitch)
     if (fail_software_prepare) { --fail_software_prepare; return 0; }
     return soft3d_float_prepare_ortho(matrix, yaw, pitch);
 }
-static int recorded_fixed_transform(long matrix[3][3], unsigned int count,
+static int recorded_fixed_xy(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
 {
     assert(!selected_fpu && selected_cpu < 386); ++fixed_transforms;
-    return soft3d_fixed_transform_reuse(matrix, count, vertices, out, reuse);
+    xy_points += count - reuse;
+    return soft3d_fixed_transform_xy_reuse(matrix, count, vertices, out, reuse);
 }
-static int recorded_386_transform(long matrix[3][3], unsigned int count,
+static int recorded_386_xy(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
 {
     assert(!selected_fpu && selected_cpu >= 386); ++optimized_transforms;
-    return soft3d_386_transform_reuse(matrix, count, vertices, out, reuse);
+    xy_points += count - reuse;
+    return soft3d_386_transform_xy_reuse(matrix, count, vertices, out, reuse);
 }
-static int recorded_float_transform(float matrix[3][3], unsigned int count,
-    const Vertex TG_HUGE *vertices, Soft3d_float_point *out,
-    unsigned int reuse, int precision)
+static int recorded_float_xy(float matrix[3][3], unsigned int count,
+    const Vertex TG_HUGE *vertices, Soft3d_float_point *out, unsigned int reuse)
 {
     assert(selected_fpu); ++floating_transforms;
-    return soft3d_float_transform_reuse(matrix, count, vertices, out, reuse, precision);
+    xy_points += count - reuse;
+    return soft3d_float_transform_xy_reuse(matrix, count, vertices, out, reuse);
+}
+static int recorded_fixed_project(const Soft3d_fixed_point *points,
+    unsigned int count, unsigned int width, unsigned int height,
+    unsigned int world_width, unsigned int world_height, Soft3d_screen_point *out)
+{
+    assert(!selected_fpu);
+    projected_points += count;
+    return soft3d_fixed_project_ortho(points, count, width, height,
+                                      world_width, world_height, out);
+}
+static int recorded_float_project(const Soft3d_float_point *points,
+    unsigned int count, unsigned int width, unsigned int height,
+    unsigned int world_width, unsigned int world_height, Soft3d_screen_point *out)
+{
+    assert(selected_fpu);
+    projected_points += count;
+    return soft3d_float_project_ortho(points, count, width, height,
+                                      world_width, world_height, out);
 }
 
 static void inject_v3_error(unsigned int *remaining)
@@ -516,6 +558,7 @@ void krhwcclr(unsigned short color)
     assert(color < 256);
     fifo_command(4);
     color_known = 0;
+    batch_active = 0; /* a frame (or retry) starts; drop any aborted packet */
     brightness = earth_cmap[color][0] + earth_cmap[color][1] + earth_cmap[color][2];
     for (i = 0; i < 256; ++i)
         assert(brightness <= (unsigned int)earth_cmap[i][0] + earth_cmap[i][1] +
@@ -578,13 +621,70 @@ static void project_native(const Vertex *point, double *x, double *y)
     *y = (1200.0 - *y) * 479.0 / 2400.0;
 }
 
+/* Floor rounding plus Q14/Q4 transform error stays within one pixel of
+ * the unquantized independent camera. */
+static int near_corner(const struct Phcoord *point, const Vertex *const corners[4])
+{
+    unsigned int j;
+    double x, y;
+    for (j = 0; j < 4; ++j)
+    {
+        project_native(corners[j], &x, &y);
+        if (fabs(point->x - floor(x)) <= 1.0 && fabs(point->y - floor(y)) <= 1.0)
+            return 1;
+    }
+    return 0;
+}
+
+/* Screen rounding can collapse a thin front-facing quad. Require
+ * sufficiently large facets and reject definite back faces using an
+ * independent projected-area error bound, rather than forcing software
+ * pixel counts to equal unrounded native geometry. */
+static int software_expectation(const Vertex *const corners[4])
+{
+    double px[4], py[4], projected_area = 0.0, perimeter = 0.0;
+    int index, next;
+    for (index = 0; index < 4; ++index)
+        project_native(corners[index], px + index, py + index);
+    for (index = 0; index < 4; ++index)
+    {
+        next = (index + 1) % 4;
+        projected_area += px[index] * py[next] - px[next] * py[index];
+        perimeter += fabs(px[next] - px[index]) + fabs(py[next] - py[index]);
+    }
+    if (projected_area < -4.0 * perimeter - 8.0) return EXPECT_FILL;
+    if (projected_area > 4.0 * perimeter + 8.0) return EXPECT_NONE;
+    return EXPECT_EITHER;
+}
+
+/* Packet fills arrive in quad order. Skipped quads must not be definite
+ * front faces; the filled one must not be a definite back face. */
+static void match_batch_fill(const struct Phcoord *polygon, unsigned int count)
+{
+    unsigned int i, j;
+    int match;
+    for (; batch_cursor < batch_count; ++batch_cursor)
+    {
+        match = batch_colors[batch_cursor] == last_color;
+        for (i = 0; i < count && match; ++i)
+            match = near_corner(polygon + i, batch_vertices[batch_cursor]);
+        if (match) break;
+        assert(batch_expect[batch_cursor] != EXPECT_FILL);
+    }
+    assert(batch_cursor < batch_count);
+    assert(batch_expect[batch_cursor] != EXPECT_NONE);
+    for (j = 0; j < 4; ++j) submitted_vertices[j] = batch_vertices[batch_cursor][j];
+    submitted_color = batch_colors[batch_cursor];
+    ++batch_cursor;
+}
+
 void scarwplygn(unsigned short count, struct Phcoord *vertices)
 {
     unsigned int i, j;
-    double x, y;
     long area;
-    int found;
     assert(drv_soft3d_active && count >= 3U && count <= SOFT3D_MAX_POLY);
+    assert(batch_active);
+    match_batch_fill(vertices, count);
     assert(last_color == submitted_color);
     fifo_command(4U + 4U * count);
     ++fills_since_sync;
@@ -594,16 +694,7 @@ void scarwplygn(unsigned short count, struct Phcoord *vertices)
     {
         assert(vertices[i].x >= 0 && vertices[i].x <= 639);
         assert(vertices[i].y >= 0 && vertices[i].y <= 479);
-        found = 0;
-        for (j = 0; j < 4; ++j)
-        {
-            project_native(submitted_vertices[j], &x, &y);
-            /* Floor rounding plus Q14/Q4 transform error stays within
-             * one pixel of the unquantized independent camera. */
-            if (fabs(vertices[i].x - floor(x)) <= 1.0 &&
-                fabs(vertices[i].y - floor(y)) <= 1.0) found = 1;
-        }
-        assert(found);
+        assert(near_corner(vertices + i, submitted_vertices));
         j = (i + 1U) % count;
         area += (long)vertices[i].x * vertices[j].y -
                 (long)vertices[j].x * vertices[i].y;
@@ -620,11 +711,12 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
                             unsigned char color)
 {
     double ux, uy, uz, vx, vy, vz, nx, ny, nz;
-    double angle, model_y, view_z, tolerance, projected_area, perimeter;
-    double px[4], py[4];
+    double angle, model_y, view_z, tolerance;
     unsigned long before_fill;
-    int cap, software, index, next;
+    int cap;
     Vertex *third;
+    /* Software frames stream bounded packets instead of world quads. */
+    assert(!drv_soft3d_active);
     assert(submitted_quads < globe_faces_num);
     {
         unsigned char expected;
@@ -649,10 +741,9 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
      * model Rz(yaw), followed by inverse viewer Rx(-pitch). The resulting
      * positive eye-space Z hemisphere must be the one the SDK receives.
      * This deliberately avoids the driver's object-space eye-dot formula. */
-    software = drv_soft3d_active;
-    angle = (double)(software ? mtx_angle(drv_rot_y) : last_yaw) * PI / 180.0;
+    angle = (double)last_yaw * PI / 180.0;
     model_y = sin(angle) * nx + cos(angle) * ny;
-    angle = (double)(software ? mtx_angle(90.0f + drv_rot_x) : last_pitch) * PI / 180.0;
+    angle = (double)last_pitch * PI / 180.0;
     view_z = -sin(angle) * model_y + cos(angle) * nz;
     tolerance = sqrt(nx * nx + ny * ny + nz * nz) * 0.000001;
     submitted_vertices[0] = a; submitted_vertices[1] = b;
@@ -662,27 +753,6 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
     before_fill = filled_polygons;
     recorded_driver_quad(a, b, c, d, color);
     assert(filled_polygons - before_fill <= 1);
-    if (software)
-    {
-        /* Screen rounding can collapse a thin front-facing quad. Require
-         * sufficiently large facets and reject definite back faces using
-         * an independent projected-area error bound, rather than forcing
-         * software pixel counts to equal unrounded native geometry. */
-        for (index = 0; index < 4; ++index)
-            project_native(submitted_vertices[index], px + index, py + index);
-        projected_area = perimeter = 0.0;
-        for (index = 0; index < 4; ++index)
-        {
-            next = (index + 1) % 4;
-            projected_area += px[index] * py[next] - px[next] * py[index];
-            perimeter += fabs(px[next] - px[index]) + fabs(py[next] - py[index]);
-        }
-        if (projected_area < -4.0 * perimeter - 8.0)
-            assert(filled_polygons - before_fill == 1);
-        else if (projected_area > 4.0 * perimeter + 8.0)
-            assert(filled_polygons == before_fill);
-        return;
-    }
     if (view_z > tolerance) {
         ++expected_visible;
         if (cap) ++expected_caps;
@@ -695,11 +765,85 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
     }
 }
 
+static int same_vertex(const Vertex *a, const Vertex *b)
+{
+    return a->x == b->x && a->y == b->y && a->z == b->z;
+}
+
+/* Called by the shared packet traversal and by drv_submit_quad_as_batch. */
+void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
+                                   const Vertex TG_HUGE *vertices,
+                                   unsigned int quad_count,
+                                   const unsigned int TG_HUGE *indices,
+                                   const unsigned char TG_HUGE *colors)
+{
+    unsigned long quad, row, before;
+    unsigned int i, j;
+    const Vertex *mesh[4];
+    unsigned char expected;
+    double nx, ny, nz;
+    assert(quad_count >= 1U && quad_count <= DRV_QUAD_BATCH_MAX);
+    assert(vertex_count <= 2U * (DRV_QUAD_BATCH_MAX + 1U));
+    /* Native frames draw world quads; only direct calls send packets. */
+    assert(drv_soft3d_active || direct_quad);
+    for (i = 0; i < quad_count; ++i)
+    {
+        for (j = 0; j < 4U; ++j) batch_vertices[i][j] = vertices + indices[4U * i + j];
+        batch_colors[i] = colors[i];
+        batch_expect[i] = EXPECT_EITHER;
+        if (direct_quad) continue;
+        /* Longitudes 32 and 64 fit one packet: quads stay row-major. */
+        quad = submitted_quads++;
+        assert(quad < globe_faces_num);
+        assert(earth_read_data(globe_longitude, quad, 1U, &expected));
+        assert(colors[i] == expected && colors[i] == expected_data[quad]);
+        row = quad / (unsigned long)globe_longitude;
+        mesh[0] = globe_verts + row * (globe_longitude + 1UL) +
+                  quad % (unsigned long)globe_longitude;
+        mesh[1] = mesh[0] + globe_longitude + 1;
+        mesh[2] = mesh[1] + 1;
+        mesh[3] = mesh[0] + 1;
+        for (j = 0; j < 4U; ++j) assert(same_vertex(batch_vertices[i][j], mesh[j]));
+        /* Outward winding, with d at the collapsed south pole. */
+        j = same_vertex(mesh[1], mesh[2]) ? 3U : 2U;
+        nx = (mesh[1]->y - mesh[0]->y) * (mesh[j]->z - mesh[0]->z) -
+             (mesh[1]->z - mesh[0]->z) * (mesh[j]->y - mesh[0]->y);
+        ny = (mesh[1]->z - mesh[0]->z) * (mesh[j]->x - mesh[0]->x) -
+             (mesh[1]->x - mesh[0]->x) * (mesh[j]->z - mesh[0]->z);
+        nz = (mesh[1]->x - mesh[0]->x) * (mesh[j]->y - mesh[0]->y) -
+             (mesh[1]->y - mesh[0]->y) * (mesh[j]->x - mesh[0]->x);
+        assert(nx * mesh[0]->x + ny * mesh[0]->y + nz * mesh[0]->z > 0.0);
+        batch_expect[i] = software_expectation(batch_vertices[i]);
+    }
+    if (!drv_soft3d_active)
+    {
+        /* A direct native packet sends each quad's world vertices. */
+        for (j = 0; j < 4U; ++j) submitted_vertices[j] = batch_vertices[0][j];
+        submitted_color = colors[0];
+    }
+    batch_count = quad_count; batch_cursor = 0; batch_active = 1;
+    before = filled_polygons;
+    recorded_driver_quadbatch(vertex_count, vertices, quad_count, indices, colors);
+    batch_active = 0;
+    assert(filled_polygons - before <= quad_count);
+    if (!drv_soft3d_active) return;
+    for (; batch_cursor < batch_count; ++batch_cursor)
+        assert(batch_expect[batch_cursor] != EXPECT_FILL);
+}
+
+static void direct_driver_quad(Vertex *a, Vertex *b, Vertex *c, Vertex *d,
+                               unsigned char color)
+{
+    direct_quad = 1;
+    recorded_driver_quad(a, b, c, d, color);
+    direct_quad = 0;
+}
+
 static void render_and_check(unsigned long faces, unsigned char *data)
 {
     unsigned int before_sync, before_model, before_view;
     unsigned int before_fill_syncs, before_transform_syncs;
-    unsigned long before_colors;
+    unsigned long before_colors, before_xy, before_projected, points;
     int software;
     submitted_quads = filled_polygons = filled_triangles = 0;
     expected_visible = expected_caps = silhouette_faces = silhouette_caps = 0;
@@ -707,8 +851,16 @@ static void render_and_check(unsigned long faces, unsigned char *data)
     before_sync = sync_calls; before_model = model_calls; before_view = view_calls;
     before_fill_syncs = fill_syncs; before_transform_syncs = transform_syncs;
     before_colors = color_commands;
+    before_xy = xy_points; before_projected = projected_points;
     software = drv_soft3d_active;
     drv_render();
+    if (software && drv_soft3d_active)
+    {
+        /* Row reuse: each mesh vertex is transformed and projected once. */
+        points = (globe_longitude + 1UL) * (globe_latitude + 1UL);
+        assert(xy_points - before_xy == points);
+        assert(projected_points - before_projected == points);
+    }
     /* One checkpoint per four fills, one for the model/view commands and
      * a color command only when the next fill's palette index changes. */
     if (software == drv_soft3d_active)
@@ -970,21 +1122,101 @@ static void check_direct_quad(void)
     before_fill = filled_polygons;
     before_triangles = globe_tris_num_vis;
     before_quads = globe_quads_num_vis;
-    recorded_driver_quad(NULL, b, c, a, color);
-    recorded_driver_quad(a, NULL, c, a, color);
-    recorded_driver_quad(a, b, NULL, a, color);
-    recorded_driver_quad(a, b, c, NULL, color);
+    direct_driver_quad(NULL, b, c, a, color);
+    direct_driver_quad(a, NULL, c, a, color);
+    direct_driver_quad(a, b, NULL, a, color);
+    direct_driver_quad(a, b, c, NULL, color);
     assert(filled_polygons == before_fill &&
            globe_tris_num_vis == before_triangles &&
            globe_quads_num_vis == before_quads);
     before_caps = filled_triangles;
-    recorded_driver_quad(a, b, c, c, color);
+    direct_driver_quad(a, b, c, c, color);
     assert(filled_polygons == before_fill + 1UL);
     assert(filled_triangles == before_caps + 1UL);
     assert(globe_tris_num_vis == before_triangles);
     assert(globe_quads_num_vis == before_quads + 1UL);
     assert(last_color == color);
-    puts("PASS direct quad drawing: NULL corners rejected, repeated corner compacted, original color byte");
+    {
+        /* A direct two-quad packet: the facet and its reverse winding. */
+        static const unsigned int indices[8] = { 0, 1, 2, 3, 3, 2, 1, 0 };
+        unsigned char colors[2];
+        Vertex packet[4];
+        packet[0] = *a; packet[1] = *b; packet[2] = b[1]; packet[3] = *c;
+        colors[0] = colors[1] = color;
+        before_fill = filled_polygons;
+        before_quads = globe_quads_num_vis;
+        direct_quad = 1;
+        drv_submit_quadbatch(4U, packet, 2U, indices, colors, FALSE);
+        direct_quad = 0;
+        assert(filled_polygons == before_fill + 1UL);
+        assert(globe_quads_num_vis == before_quads + 1UL && last_color == color);
+    }
+    puts("PASS direct quad drawing: NULL corners rejected, repeated corner compacted, original color byte, direct packets");
+}
+
+/* Row reuse and rejected inputs match the full kernels, so the x/y kernels
+ * can replace them without changing a packet's outcome. */
+static void check_orthographic_xy(long fixed_matrix[3][3], float floating_matrix[3][3])
+{
+    Vertex vertices[SOFT3D_MAX_VERTICES + 1];
+    Soft3d_fixed_point full[SOFT3D_MAX_VERTICES + 1], xy[SOFT3D_MAX_VERTICES + 1];
+    Soft3d_fixed_point xy386[SOFT3D_MAX_VERTICES + 1];
+    Soft3d_float_point floating[SOFT3D_MAX_VERTICES + 1];
+    Soft3d_float_point floating_xy[SOFT3D_MAX_VERTICES + 1];
+    unsigned int i, pass;
+    for (i = 0; i <= SOFT3D_MAX_VERTICES; ++i)
+    {
+        vertices[i].x = (float)((int)(i * 37U % 1999U) - 999) * 0.75f;
+        vertices[i].y = (float)((int)(i * 53U % 1999U) - 999) * 0.5f;
+        vertices[i].z = (float)((int)(i * 71U % 1999U) - 999) * 0.625f;
+    }
+    for (pass = 0; pass < 2U; ++pass)
+    {
+        /* The second pass reuses the first band's odd row as its even row. */
+        assert(soft3d_fixed_transform_reuse(fixed_matrix, 8, vertices + pass, full, pass * 4U));
+        assert(soft3d_fixed_transform_xy_reuse(fixed_matrix, 8, vertices + pass, xy, pass * 4U));
+        assert(soft3d_386_transform_xy_reuse(fixed_matrix, 8, vertices + pass, xy386, pass * 4U));
+        assert(soft3d_float_transform_reuse(floating_matrix, 8, vertices + pass, floating,
+                                            pass * 4U, SOFT3D_FLOAT_SINGLE));
+        assert(soft3d_float_transform_xy_reuse(floating_matrix, 8, vertices + pass,
+                                               floating_xy, pass * 4U));
+        assert(memcmp(xy, xy386, 8U * sizeof(xy[0])) == 0);
+        for (i = 0; i < 8U; ++i)
+        {
+            assert(xy[i].x == full[i].x && xy[i].y == full[i].y && xy[i].z == 0);
+            assert(floating_xy[i].x == floating[i].x && floating_xy[i].y == floating[i].y);
+            assert(floating_xy[i].z == 0.0f);
+        }
+    }
+    /* Invalid inputs fail in both kernels: radius, counts and reuse. */
+    vertices[2].y = 1000.0625f;
+    assert(!soft3d_fixed_transform_reuse(fixed_matrix, 4, vertices, full, 0));
+    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 4, vertices, xy, 0));
+    assert(!soft3d_386_transform_xy_reuse(fixed_matrix, 4, vertices, xy, 0));
+    vertices[2].y = 0.0f;
+    memset(&vertices[1].z, 0xff, sizeof(vertices[1].z));
+    assert(!soft3d_float_transform_reuse(floating_matrix, 4, vertices, floating, 0,
+                                         SOFT3D_FLOAT_SINGLE));
+    assert(!soft3d_float_transform_xy_reuse(floating_matrix, 4, vertices, floating_xy, 0));
+    vertices[1].z = 0.0f;
+    assert(!soft3d_fixed_transform_xy_reuse(NULL, 4, vertices, xy, 0));
+    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 4, NULL, xy, 0));
+    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 4, vertices, NULL, 0));
+    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, SOFT3D_MAX_VERTICES + 1U, vertices, xy, 0));
+    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 6, vertices, xy, 2));
+    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 5, vertices, xy, 2));
+    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 0, vertices, xy, 1));
+    assert(soft3d_fixed_transform_xy_reuse(fixed_matrix, 0, vertices, xy, 0) ==
+           soft3d_fixed_transform_reuse(fixed_matrix, 0, vertices, full, 0));
+    assert(!soft3d_386_transform_xy_reuse(fixed_matrix, 6, vertices, xy, 2));
+    assert(!soft3d_float_transform_xy_reuse(NULL, 4, vertices, floating_xy, 0));
+    assert(!soft3d_float_transform_xy_reuse(floating_matrix, 0, vertices, floating_xy, 0));
+    assert(!soft3d_float_transform_xy_reuse(floating_matrix, SOFT3D_MAX_VERTICES + 1U,
+                                            vertices, floating_xy, 0));
+    assert(!soft3d_float_transform_xy_reuse(floating_matrix, 6, vertices, floating_xy, 2));
+    assert(soft3d_float_transform_xy_reuse(floating_matrix, SOFT3D_MAX_VERTICES, vertices,
+                                           floating_xy, SOFT3D_MAX_VERTICES / 2U));
+    puts("PASS DOS orthographic x/y kernels: baseline, 386 and float x/y equal the full kernels, with the same row reuse and rejected inputs");
 }
 
 static void check_orthographic_math(void)
@@ -992,8 +1224,8 @@ static void check_orthographic_math(void)
     long fixed_matrix[3][3];
     float floating_matrix[3][3];
     Vertex vertices[4];
-    Soft3d_fixed_point fixed[4], optimized[4];
-    Soft3d_float_point floating[4];
+    Soft3d_fixed_point fixed[4], optimized[4], xy[4], xy386[4];
+    Soft3d_float_point floating[4], floating_xy[4];
     Soft3d_screen_point a[4], b[4], unchanged[4];
     int yaw, pitch, i;
     double cy, sy, cp, sp, x, y;
@@ -1015,6 +1247,21 @@ static void check_orthographic_math(void)
                                                0, SOFT3D_FLOAT_SINGLE));
             assert(soft3d_fixed_project_ortho(fixed, 4, 640, 480, 3200, 2400, a) == 4);
             assert(soft3d_float_project_ortho(floating, 4, 640, 480, 3200, 2400, b) == 4);
+            /* x/y kernels: identical x and y, zero z, identical pixels. */
+            assert(soft3d_fixed_transform_xy_reuse(fixed_matrix, 4, vertices, xy, 0));
+            assert(soft3d_386_transform_xy_reuse(fixed_matrix, 4, vertices, xy386, 0));
+            assert(soft3d_float_transform_xy_reuse(floating_matrix, 4, vertices, floating_xy, 0));
+            assert(memcmp(xy, xy386, sizeof(xy)) == 0);
+            for (i = 0; i < 4; ++i)
+            {
+                assert(xy[i].x == fixed[i].x && xy[i].y == fixed[i].y && xy[i].z == 0);
+                assert(floating_xy[i].x == floating[i].x &&
+                       floating_xy[i].y == floating[i].y && floating_xy[i].z == 0.0f);
+            }
+            assert(soft3d_fixed_project_ortho(xy, 4, 640, 480, 3200, 2400, unchanged) == 4);
+            assert(memcmp(unchanged, a, sizeof(a)) == 0);
+            assert(soft3d_float_project_ortho(floating_xy, 4, 640, 480, 3200, 2400, unchanged) == 4);
+            assert(memcmp(unchanged, b, sizeof(b)) == 0);
             cy = cos(yaw * PI / 180.0); sy = sin(yaw * PI / 180.0);
             cp = cos(pitch * PI / 180.0); sp = sin(pitch * PI / 180.0);
             for (i = 0; i < 4; ++i)
@@ -1059,6 +1306,7 @@ static void check_orthographic_math(void)
     assert(!soft3d_float_project_ortho(floating, 2, 640, 480, 3200, 2400, a));
     assert(!soft3d_fixed_prepare_ortho(NULL, 0, 0));
     assert(!soft3d_float_prepare_ortho(NULL, 0, 0));
+    check_orthographic_xy(fixed_matrix, floating_matrix);
     puts("PASS DOS orthographic math: independent camera oracle, baseline/386 equality, viewport endpoints, integer bounds and transactional invalid-input rejection");
 }
 
@@ -1077,7 +1325,14 @@ static void check_software_controls(void)
     native_before = world_polygons;
     mtx_keyboard('S');
     assert(drv_soft3d_requested && drv_soft3d_active);
-    render_and_check(512, test_earth_data(32));
+    {
+        unsigned long points = xy_points;
+        unsigned int syncs = sync_calls;
+        render_and_check(512, test_earth_data(32));
+        printf("PASS Matrox software packets: a key-1 frame transforms and projects %lu "
+               "points (not 2048 quad corners) with %u checkpoints for %lu fills\n",
+               xy_points - points, sync_calls - syncs, filled_polygons);
+    }
     assert(world_polygons == native_before && screen_polygons > 0);
     assert(strstr(osd_text, "soft3d on") != NULL && strstr(osd_text, "S = soft3d") != NULL);
     check_direct_quad();
@@ -1139,9 +1394,9 @@ static void check_software_clipping(void)
     }
     submitted_color = 129;
     before = screen_polygons;
-    recorded_driver_quad(vertices, vertices + 1, vertices + 2, vertices + 3, 129);
+    direct_driver_quad(vertices, vertices + 1, vertices + 2, vertices + 3, 129);
     assert(screen_polygons == before + 1U && last_color == 129);
-    recorded_driver_quad(vertices + 3, vertices + 2, vertices + 1, vertices, 129);
+    direct_driver_quad(vertices + 3, vertices + 2, vertices + 1, vertices, 129);
     assert(screen_polygons == before + 1U);
     mtx_keyboard('S');
     drv_rot_x = 0.0f; drv_rot_y = 180.0f;

@@ -142,6 +142,25 @@ extern int soft3d_float_project_ortho(const Soft3d_float_point *points,
                                      unsigned int world_height,
                                      Soft3d_screen_point *out);
 #endif
+#ifdef DRV_MTX
+/* ---- Orthographic x/y transforms (Matrox software mode) ----------------
+ * The orthographic projectors read only x and y. These match the x and y
+ * of soft3d_fixed/386/float_transform_reuse (single precision) exactly,
+ * with the same validation and row reuse, skip the third row and store z
+ * as zero. The 386 variant is compiled separately, as above. */
+extern int soft3d_fixed_transform_xy_reuse(long matrix[3][3], unsigned int count,
+                                           const Vertex TG_HUGE *vertices,
+                                           Soft3d_fixed_point *out,
+                                           unsigned int reuse_count);
+extern int soft3d_386_transform_xy_reuse(long matrix[3][3], unsigned int count,
+                                         const Vertex TG_HUGE *vertices,
+                                         Soft3d_fixed_point *out,
+                                         unsigned int reuse_count);
+extern int soft3d_float_transform_xy_reuse(float matrix[3][3], unsigned int count,
+                                           const Vertex TG_HUGE *vertices,
+                                           Soft3d_float_point *out,
+                                           unsigned int reuse_count);
+#endif
 extern int soft3d_float_transform_reuse(float matrix[3][3], unsigned int count,
                                         const Vertex TG_HUGE *vertices,
                                         Soft3d_float_point *out,
