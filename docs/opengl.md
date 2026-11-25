@@ -1,8 +1,8 @@
 # OpenGL
 
 OpenGL is testglobe's original backend. One driver, `drv_ogl.c`, serves desktop
-OpenGL through GLUT on Unix, Solaris, and modern macOS, and Amiga PiStorm3D through
-MiniGL.
+OpenGL through the GLUT adapter `ogl_glut.c` on Unix, Solaris, and modern macOS, and
+Amiga PiStorm3D through MiniGL and the Amiga adapter `ogl_ami.c`.
 
 ## Requirements
 
@@ -75,25 +75,49 @@ warnings; Apple builds include `<GLUT/glut.h>`.
 
 The default globe is key 5. Desktop OpenGL sends each interior latitude band as a
 triangle strip, and both polar caps as one batch of nondegenerate triangles. Flat
-colors, winding, and texture seams match the independent-triangle path. Display lists
-cache the geometry and start enabled; `d` deletes the cache, and enabling it again
-rebuilds it on the next frame.
+colors, winding, and texture seams match the independent-triangle path. Each strip and
+cap batch sets its first facet color, then sends a color only when the facet color
+changes; flat shading takes each triangle's color from its last vertex, so the result
+is the same, also when replayed from a display list. Display lists cache the geometry
+and start enabled; `d` deletes the cache, and enabling it again rebuilds it on the
+next frame.
 
 The driver probes RGBA, RGB, and color-index formats with single/double-buffer and
-depth-buffer alternatives. It prefers RGB(A) over color index, then greater total
-RGB-plus-alpha precision, then double buffering. Requests include 8/8/8/8, 8/8/8,
-5/6/5, 5/5/5, unconstrained RGB(A), and color index with at least eight bits. GLUT
-probes do not enumerate every native visual, and older implementations may offer
-fewer choices; classic GLUT RGB fallbacks do not require an alpha channel. When GLUT
-lacks `GLUT_DISPLAY_MODE_POSSIBLE`, the driver makes the original single RGB,
-double-buffered window request and reads the resulting window attributes. It cannot
-probe alternatives safely there, because an unsupported request may terminate GLUT
-instead of returning a failure.
+depth-buffer alternatives. It prefers RGB(A) with at least 12 RGB bits, then color
+index with at least eight bits, then shallower RGB(A) such as 3/3/2; exact palette
+indices look better than a shallow RGB approximation of the Earth palette. Within a
+class it prefers greater total RGB-plus-alpha precision, then double buffering.
+Requests include 8/8/8/8, 8/8/8, 5/6/5, 5/5/5, unconstrained RGB(A), and color index.
+GLUT probes do not enumerate every native visual, and older implementations may offer
+fewer choices; classic GLUT RGB fallbacks do not require an alpha channel.
+
+How the format is chosen depends on the GLUT header:
+
+- **Display strings** (`GLUT_API_VERSION` 4 or later, or GLUT 3.4 and later, which
+  keep API version 3 but declare `glutInitDisplayString` from
+  `GLUT_XLIB_IMPLEMENTATION` 9): each request class is probed with its comparators in
+  a hidden one-pixel window, and the best actual result is created at full size. This
+  includes SGI GLUT 3.7 on IRIX and Solaris.
+- **Mode bits only** (older GLUT 3 with `GLUT_DISPLAY_MODE_POSSIBLE`): the RGB classes
+  send identical bits, so each distinct request is probed once (at most 12 windows).
+- **FreeGLUT** (`FREEGLUT` defined): FreeGLUT ignores display-string comparators,
+  maps every window when it is created, and destroys windows only from its event
+  loop. The driver walks the distinct mode bits in preference order with
+  `GLUT_DISPLAY_MODE_POSSIBLE` and creates only the window it uses. Because RGB
+  precision is known only after creation, a window with fewer than 12 RGB bits is
+  replaced by a color-index window when one is possible.
+- **No availability query**: the driver makes the original single RGB,
+  double-buffered window request and reads the resulting window attributes. It cannot
+  probe alternatives safely there, because an unsupported request may terminate GLUT
+  instead of returning a failure, so the color-index preference does not apply.
 
 Flat shading keeps each Earth palette byte, converting it to RGB for RGB(A) windows
 or submitting the index directly. Classic OpenGL texturing requires RGB(A), so
 color-index windows use the shared software texture rasterizer, which bypasses display
-lists.
+lists. That raster always skips back-facing bands on the CPU, as `c` does, because the
+rasterizer would discard those triangles anyway; the pixels are the same, and the OSD
+still reports the `c` setting. The raster covers the whole window, so those frames
+need no clear.
 
 All OpenGL targets use OpenGL 1.1 texture uploads (`glTexImage2D`) with bilinear
 minification and magnification, including indexed software texturing. Only the
@@ -104,13 +128,25 @@ entry points, extension lookups, or `NO_GENMIPMAP` flag are needed.
 
 ## Platform notes
 
-Display-list allocation, compilation, validation, and execution are checked with
-OpenGL 1.1 calls, including `glIsList` and `glGetError`; diagnostics do not use modern
-debug extensions. A failed cache is discarded and the geometry drawn immediately.
-Texture-memory shortages and native size limits try smaller images, while other
-texture failures release the failed resources and draw flat colors. Failed lists are
-not rebuilt every frame or on resolution changes; toggling `d` or `t` permits a
-retry.
+Each synchronous query is a round trip on remote or indirect GLX, so a normal desktop
+frame makes one: a `glGetError` just before presentation. A display list is validated with
+`glIsList` once, right after it is compiled, and the texture object, binding, and
+enable once, after the texture is enabled; the driver makes every later change to
+that state itself. If the frame's error check reports an error, the frame is drawn
+again without the list, then without the texture, before it is presented.
+Diagnostics do not use modern debug extensions. A failed cache is discarded and the
+geometry drawn immediately. Texture-memory shortages and native size limits try
+smaller images, while other texture failures release the failed resources and draw
+flat colors. Failed lists are not rebuilt every frame or on resolution changes;
+toggling `d` or `t` permits a retry.
+
+The OSD uses GLUT's bitmap fonts in three sizes chosen from the window size. When a
+size is first used, each glyph is compiled into its own display list, and each text
+line is then drawn with one `glCallLists`. GLUT's `glutBitmapCharacter` sets and
+restores pixel-store state for every glyph (SGI GLUT reads it back with six queries);
+a compiled list keeps only the unpacked bitmap. Glyph widths and the help text's line
+breaks are cached for the font and window width. If glyph lists cannot be allocated
+or compiled, that font is drawn directly with `glutBitmapCharacter`.
 
 ## Amiga OpenGL
 
@@ -191,7 +227,11 @@ material does not depend on the replayed vertex colors.
 
 See the [OpenGL checks](testing.md#opengl). Color-index behavior needs an
 implementation that offers such a visual. Apple SDK compilation and rendering require
-macOS, and Solaris builds need its installed graphics libraries. The
+macOS, and Solaris builds need its installed graphics libraries. Bitmap glyphs
+compiled into display lists, single-pass error checks, and color-change-only strips
+rendered identically to the previous driver with Mesa and FreeGLUT 3.4 on Linux;
+SGI GLUT 3.7 on IRIX and Solaris, and Apple's GLUT, still need native checks of the
+glyph lists and of format selection. The
 [Amiga OpenGL checks](testing.md#amiga-opengl) cover MiniGL submission and Amiga
 events; VBCC/SDK cross-builds check native compilation. PiStorm3D hardware is still
 needed to validate VideoCore rendering, library ABI behavior, and RTG presentation.
