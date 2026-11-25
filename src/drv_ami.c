@@ -38,6 +38,7 @@
 #include <inline/intuition_protos.h>
 #endif
 #include <limits.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include "drv.h"
@@ -1048,6 +1049,53 @@ failed:
     return FALSE;
 }
 
+/* Native fullscreen stays on the Workbench's monitor, so a 31 kHz display
+ * driver keeps a visible mode. Without low resolution there, ask for the
+ * best nominal 320 x 200/256 mode on that monitor without special palette
+ * semantics, then try the default monitor. DimensionInfo gives the
+ * mode's nominal size and its depth limit. Called only on V39. */
+static ULONG ami_fs_native_mode(unsigned int *width, unsigned int *height,
+                                unsigned int *depth)
+{
+    struct DimensionInfo dimensions;
+    struct TagItem tags[7];
+    ULONG workbench, mode;
+    unsigned int tag;
+    workbench = GetVPModeID(&ami_window->WScreen->ViewPort);
+    mode = workbench == INVALID_ID ? INVALID_ID :
+           (workbench & MONITOR_ID_MASK) | LORES_KEY;
+    if (mode == INVALID_ID || ModeNotAvailable(mode) != 0)
+    {
+        tag = 0;
+        tags[tag].ti_Tag = BIDTAG_NominalWidth; tags[tag++].ti_Data = 320UL;
+        tags[tag].ti_Tag = BIDTAG_NominalHeight;
+        tags[tag++].ti_Data = GfxBase->DisplayFlags & PAL ? 256UL : 200UL;
+        tags[tag].ti_Tag = BIDTAG_Depth; tags[tag++].ti_Data = *depth;
+        tags[tag].ti_Tag = BIDTAG_DIPFMustNotHave;
+        tags[tag++].ti_Data = DIPF_IS_HAM | DIPF_IS_EXTRAHALFBRITE | DIPF_IS_DUALPF;
+        if (workbench != INVALID_ID)
+        {
+            tags[tag].ti_Tag = BIDTAG_MonitorID;
+            tags[tag++].ti_Data = workbench & MONITOR_ID_MASK;
+        }
+        tags[tag].ti_Tag = TAG_DONE; tags[tag].ti_Data = 0;
+        mode = BestModeIDA(tags);
+        if (mode == INVALID_ID || ModeNotAvailable(mode) != 0)
+            mode = DEFAULT_MONITOR_ID | LORES_KEY;
+        if (ModeNotAvailable(mode) != 0) return INVALID_ID;
+    }
+    memset(&dimensions, 0, sizeof(dimensions));
+    if (GetDisplayInfoData(NULL, (UBYTE *)&dimensions, sizeof(dimensions), DTAG_DIMS,
+                           mode) < offsetof(struct DimensionInfo, MaxOScan) ||
+        dimensions.Nominal.MaxX < dimensions.Nominal.MinX ||
+        dimensions.Nominal.MaxY < dimensions.Nominal.MinY) return INVALID_ID;
+    *width = (unsigned int)(dimensions.Nominal.MaxX - dimensions.Nominal.MinX) + 1U;
+    *height = (unsigned int)(dimensions.Nominal.MaxY - dimensions.Nominal.MinY) + 1U;
+    if (dimensions.MaxDepth != 0 && *depth > dimensions.MaxDepth)
+        *depth = dimensions.MaxDepth;
+    return mode;
+}
+
 static void ami_enter_fullscreen(void)
 {
     unsigned int width, height, depth;
@@ -1069,10 +1117,9 @@ static void ami_enter_fullscreen(void)
     }
     else
     {
-        mode = (GfxBase->DisplayFlags & PAL ? PAL_MONITOR_ID : NTSC_MONITOR_ID) | LORES_KEY;
-        width = 320U;
-        height = GfxBase->DisplayFlags & PAL ? 256U : 200U;
+        width = height = 0;
         depth = GfxBase->ChipRevBits0 & GFXF_AA_ALICE ? 8U : 5U;
+        mode = ami_fs_native_mode(&width, &height, &depth);
     }
     if (mode == INVALID_ID || width > 32767U || height > 32767U ||
         width < AMI_MIN_WIDTH || height < AMI_MIN_HEIGHT)

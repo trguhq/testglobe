@@ -145,9 +145,14 @@ displayed frame. A slow render or blocked swap leaves the previous complete fram
 visible. The OS keeps running, including Intuition input and reads of Earth data from
 the executable.
 
-Native fullscreen uses non-interlaced low resolution: 320 × 200 for NTSC or 320 × 256
-for PAL, with 32 colors on OCS/ECS and 256 on AGA. AGA retries with 32 colors if the
-larger buffers cannot be allocated. Its private palette is based on the Earth colors,
+Native fullscreen uses low resolution on the Workbench screen's monitor, so a 31 kHz
+monitor driver from `DEVS:Monitors` keeps a visible mode; on PAL or NTSC this is
+320 × 256 or 320 × 200. If that monitor has no available low-resolution mode,
+`BestModeIDA` picks the nearest nominal 320 × 200/256 mode on it without HAM,
+extra-half-brite, or dual playfield, and then the default monitor's low resolution is
+tried. The screen takes its size from the mode's nominal `DimensionInfo` and uses 32
+colors on OCS/ECS or 256 on AGA, within the mode's maximum depth. AGA retries with 32
+colors if the larger buffers cannot be allocated. Its private palette is based on the Earth colors,
 with pointer and OSD colors accounted for, and Workbench's palette is preserved. RTG
 fullscreen stays on the current graphics backend and needs compatible screen buffers.
 Older OS versions and unsupported modes stay windowed. If allocation fails, windowed

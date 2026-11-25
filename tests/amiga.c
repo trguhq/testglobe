@@ -147,6 +147,38 @@ static int fullscreen_incompatible;
 static int private_screen_visible;
 static unsigned int pointer_base = 16;
 static unsigned int fullscreen_loop_script, fullscreen_loop_step, hold_after_safe;
+/* A small display database. Native fullscreen must follow the Workbench
+ * mode's monitor; profiles remove its low resolution to reach BestModeIDA
+ * and then the default monitor. Depth is each mode's DimensionInfo limit. */
+#define TEST_MULTISCAN_ID 0x00031000UL
+typedef struct Test_display_mode
+{
+    ULONG id;
+    unsigned int width, height, depth;
+    int available;
+} Test_display_mode;
+static Test_display_mode display_modes[] = {
+    {PAL_MONITOR_ID | LORES_KEY, 320, 256, 8, 1},
+    {NTSC_MONITOR_ID | LORES_KEY, 320, 200, 8, 1},
+    {TEST_MULTISCAN_ID | LORES_KEY, 320, 480, 4, 1},
+    {TEST_MULTISCAN_ID | 4UL, 320, 240, 4, 1},
+    {DEFAULT_MONITOR_ID | LORES_KEY, 320, 0, 8, 1}
+};
+static ULONG workbench_mode, best_mode = INVALID_ID, expected_fs_mode;
+static unsigned int best_mode_calls;
+
+static Test_display_mode *test_display_mode(ULONG id)
+{
+    unsigned int i;
+    for (i = 0; i < sizeof(display_modes) / sizeof(display_modes[0]); ++i)
+        if (display_modes[i].id == id)
+        {
+            /* The default monitor is PAL or NTSC as the machine boots. */
+            if (id == DEFAULT_MONITOR_ID) display_modes[i].height = (graphics_base.DisplayFlags & PAL) ? 256U : 200U;
+            return display_modes + i;
+        }
+    return NULL;
+}
 
 static unsigned int test_pointer_base(void)
 {
@@ -398,9 +430,12 @@ struct Screen *OpenScreenTagList(const struct NewScreen *settings, const struct 
     }
     else
     {
-        assert(width == 320UL && height == ((graphics_base.DisplayFlags & PAL) ? 256UL : 200UL));
-        assert(fullscreen_mode == ((graphics_base.DisplayFlags & PAL) ? PAL_MONITOR_ID : NTSC_MONITOR_ID));
-        assert(depth == 5UL || ((graphics_base.ChipRevBits0 & GFXF_AA_ALICE) && depth == 8UL));
+        const Test_display_mode *expected;
+        expected = test_display_mode(fullscreen_mode);
+        assert(fullscreen_mode == expected_fs_mode && expected != NULL && expected->available);
+        assert(width == expected->width && height == expected->height);
+        assert(depth == (expected->depth < 5U ? expected->depth : 5UL) ||
+               ((graphics_base.ChipRevBits0 & GFXF_AA_ALICE) && depth == 8UL && expected->depth >= 8U));
     }
     memset(&fullscreen_screen, 0, sizeof(fullscreen_screen));
     fullscreen_screen.Width = (WORD)width; fullscreen_screen.Height = (WORD)height;
@@ -743,11 +778,54 @@ void GetRGB32(struct ColorMap *colors, ULONG first, ULONG count, ULONG *out)
     for (i = 0; i < 3; ++i) out[i] = (ULONG)palette[first][i] * 0x01010101UL;
 }
 ULONG GetVPModeID(struct ViewPort *view)
-{ assert(display_version >= 36 && (view == &desktop.ViewPort || view == &fullscreen_screen.ViewPort)); return view == &fullscreen_screen.ViewPort ? fullscreen_mode : rtg_backend ? 0x50000UL : 0; }
+{ assert(display_version >= 36 && (view == &desktop.ViewPort || view == &fullscreen_screen.ViewPort)); return view == &fullscreen_screen.ViewPort ? fullscreen_mode : rtg_backend ? 0x50000UL : workbench_mode; }
+ULONG ModeNotAvailable(ULONG id)
+{
+    const Test_display_mode *mode;
+    assert(display_version >= 36);
+    mode = test_display_mode(id);
+    return mode != NULL && mode->available ? 0UL : 2UL;
+}
+ULONG BestModeIDA(const struct TagItem *tags)
+{
+    ULONG width, height, depth, excluded, monitor;
+    assert(display_version >= 39 && !rtg_backend);
+    width = height = depth = excluded = 0; monitor = INVALID_ID;
+    for (; tags->ti_Tag != TAG_DONE; ++tags)
+        switch (tags->ti_Tag)
+        {
+            case BIDTAG_NominalWidth: width = tags->ti_Data; break;
+            case BIDTAG_NominalHeight: height = tags->ti_Data; break;
+            case BIDTAG_Depth: depth = tags->ti_Data; break;
+            case BIDTAG_DIPFMustNotHave: excluded = tags->ti_Data; break;
+            case BIDTAG_MonitorID: monitor = tags->ti_Data; break;
+            default: assert(!"Unexpected BestModeIDA tag");
+        }
+    assert(width == 320UL && height == ((graphics_base.DisplayFlags & PAL) ? 256UL : 200UL));
+    assert(depth == ((graphics_base.ChipRevBits0 & GFXF_AA_ALICE) ? 8UL : 5UL));
+    assert(excluded == (DIPF_IS_HAM | DIPF_IS_EXTRAHALFBRITE | DIPF_IS_DUALPF));
+    assert(monitor == (workbench_mode & MONITOR_ID_MASK));
+    ++best_mode_calls;
+    return best_mode;
+}
 ULONG GetDisplayInfoData(APTR handle, UBYTE *buffer, ULONG length, ULONG tag, ULONG id)
 {
     struct DisplayInfo *info;
-    assert(display_version >= 36 && handle == NULL && length == sizeof(*info) && tag == DTAG_DISP && (id == 0 || id == fullscreen_mode));
+    struct DimensionInfo *dimensions;
+    const Test_display_mode *mode;
+    assert(display_version >= 36 && handle == NULL);
+    if (tag == DTAG_DIMS)
+    {
+        mode = test_display_mode(id);
+        assert(display_version >= 39 && length == sizeof(*dimensions) && mode != NULL && mode->available);
+        dimensions = (struct DimensionInfo *)buffer;
+        dimensions->MaxDepth = (UWORD)mode->depth;
+        dimensions->Nominal.MinX = dimensions->Nominal.MinY = 0;
+        dimensions->Nominal.MaxX = (WORD)(mode->width - 1U);
+        dimensions->Nominal.MaxY = (WORD)(mode->height - 1U);
+        return sizeof(*dimensions);
+    }
+    assert(length == sizeof(*info) && tag == DTAG_DISP && (id == workbench_mode || id == fullscreen_mode));
     info = (struct DisplayInfo *)buffer; info->Resolution.x = (WORD)pixel_x; info->Resolution.y = (WORD)pixel_y;
     return sizeof(*info);
 }
@@ -1526,6 +1604,16 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
         puts("PASS Amiga fullscreen legacy: F/f retains windowed mode without newer OS calls; P/p toggles FPS");
         return 0;
     }
+    if (strcmp(mode, "fs-nomode") == 0)
+    {
+        ami_keyboard('f'); test_fullscreen_windowed();
+        assert(screen_calls == 0 && best_mode_calls == 1U);
+        assert(strstr(drv_get_notice(), "No compatible fullscreen display mode") != NULL);
+        test_render(); ami_cleanup(); globe_free();
+        assert(!library_count && !raster_count && !window_count && timer_idle());
+        puts("PASS Amiga fullscreen without an available mode: the Workbench window is retained");
+        return 0;
+    }
     /* Each failed acquisition unwinds its partial graph and preserves the
      * original Workbench window, including its visible contents and palette. */
     if (strcmp(mode, "fs-ocs") == 0)
@@ -1635,6 +1723,7 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
     assert(!pending_safe && !pending_display && !blitter_busy && timer_idle());
     assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
     ami_cleanup(); globe_free();
+    assert((best_mode_calls != 0U) == (strcmp(mode, "fs-bestmode") == 0 || strcmp(mode, "fs-default") == 0));
     printf("PASS Amiga %s: safe fullscreen swaps, independent notifications, palette ownership, failure rollback, input and cleanup\n", mode);
     return 0;
 }
@@ -1737,6 +1826,20 @@ int main(int argc, char **argv)
     desktop.ViewPort.ColorMap = &colormap;
     desktop.ViewPort.Modes = HIRES; graphics_base.DisplayFlags = PAL;
     if (strcmp(mode, "fs-ntsc") == 0) graphics_base.DisplayFlags = 0;
+    workbench_mode = ((graphics_base.DisplayFlags & PAL) ? PAL_MONITOR_ID : NTSC_MONITOR_ID) | HIRES_KEY;
+    expected_fs_mode = workbench_mode & MONITOR_ID_MASK;
+    /* A Workbench on a 31 kHz monitor keeps fullscreen on that monitor. */
+    if (strcmp(mode, "fs-multiscan") == 0 || strcmp(mode, "fs-bestmode") == 0 ||
+        strcmp(mode, "fs-default") == 0 || strcmp(mode, "fs-nomode") == 0)
+    {
+        graphics_base.ChipRevBits0 = GFXF_HR_AGNUS | GFXF_HR_DENISE;
+        workbench_mode = TEST_MULTISCAN_ID | HIRES_KEY;
+        expected_fs_mode = TEST_MULTISCAN_ID | LORES_KEY;
+        if (strcmp(mode, "fs-multiscan") != 0) test_display_mode(expected_fs_mode)->available = 0;
+        if (strcmp(mode, "fs-bestmode") == 0) best_mode = expected_fs_mode = TEST_MULTISCAN_ID | 4UL;
+        if (strcmp(mode, "fs-default") == 0) expected_fs_mode = DEFAULT_MONITOR_ID | LORES_KEY;
+        if (strcmp(mode, "fs-nomode") == 0) test_display_mode(DEFAULT_MONITOR_ID)->available = 0;
+    }
     if (strcmp(mode, "ham") == 0) desktop.ViewPort.Modes |= HAM;
     for (i = 0; i < colormap.Count; ++i)
     {

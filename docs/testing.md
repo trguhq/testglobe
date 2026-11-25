@@ -747,7 +747,10 @@ cross-build uses the [Amiga build instructions](amiga.md#build) separately.
   `F`/`f` switches presentation and `P`/`p` toggles FPS. Tests cover retained scene
   settings, Workbench window restoration, private palettes, older-OS fallback and
   incompatible RTG buffers. Repeated toggles must not rebuild either screen's pen
-  map, while a Workbench palette change made during fullscreen is detected.
+  map, while a Workbench palette change made during fullscreen is detected. Native
+  mode selection follows the Workbench monitor, including a 31 kHz monitor, then
+  `BestModeIDA` and the default monitor, taking size and depth limits from
+  `DimensionInfo`; with no available mode the window is kept.
 - **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch,
   including a reported FPU without a supporting CPU. Cached and uncached drawing
   must retain polygon coordinates and colors, including projection-cache allocation

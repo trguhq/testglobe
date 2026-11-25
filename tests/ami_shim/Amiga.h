@@ -106,6 +106,12 @@ struct NewWindow {
 };
 struct Point { WORD x, y; };
 struct DisplayInfo { struct Point Resolution; };
+struct Rectangle { WORD MinX, MinY, MaxX, MaxY; };
+struct DimensionInfo {
+    UWORD MaxDepth;
+    UWORD MinRasterWidth, MinRasterHeight, MaxRasterWidth, MaxRasterHeight;
+    struct Rectangle Nominal, MaxOScan, VideoOScan, TxtOScan, StdOScan;
+};
 struct IntuiText { UBYTE FrontPen, BackPen, DrawMode; WORD LeftEdge, TopEdge; struct TextAttr *ITextFont; UBYTE *IText; struct IntuiText *NextText; };
 struct IntuiMessage {
     struct Message ExecMessage;
@@ -181,6 +187,10 @@ struct IntuiMessage {
 #define LACE 0x0004U
 #define INVALID_ID 0xffffffffUL
 #define DTAG_DISP 0x80000000UL
+#define DTAG_DIMS 0x80001000UL
+#define DIPF_IS_DUALPF 0x00000002UL
+#define DIPF_IS_HAM 0x00000008UL
+#define DIPF_IS_EXTRAHALFBRITE 0x00001000UL
 #define PAL 0x0004U
 #define GFXF_AA_ALICE 4U
 #define GFXF_HR_AGNUS 1U
@@ -211,9 +221,17 @@ struct IntuiMessage {
 #define SA_Exclusive (SA_Dummy + 31UL)
 #define SB_SCREEN_BITMAP 1UL
 #define SB_COPY_BITMAP 2UL
+#define MONITOR_ID_MASK 0xffff1000UL
+#define DEFAULT_MONITOR_ID 0x00000000UL
 #define NTSC_MONITOR_ID 0x00011000UL
 #define PAL_MONITOR_ID 0x00021000UL
 #define LORES_KEY 0UL
+#define HIRES_KEY 0x8000UL
+#define BIDTAG_DIPFMustNotHave 0x80000002UL
+#define BIDTAG_NominalWidth 0x80000004UL
+#define BIDTAG_NominalHeight 0x80000005UL
+#define BIDTAG_Depth 0x80000008UL
+#define BIDTAG_MonitorID 0x80000009UL
 #define VTAG_SPEVEN_BASE_GET 0x80000028UL
 #define TIMERNAME "timer.device"
 #define UNIT_MICROHZ 0UL
@@ -287,6 +305,8 @@ struct TextFont *OpenFont(struct TextAttr *);
 void CloseFont(struct TextFont *);
 ULONG GetVPModeID(struct ViewPort *);
 ULONG GetDisplayInfoData(APTR, UBYTE *, ULONG, ULONG, ULONG);
+ULONG ModeNotAvailable(ULONG);
+ULONG BestModeIDA(const struct TagItem *);
 BOOL AutoRequest(struct Window *, struct IntuiText *, struct IntuiText *, struct IntuiText *, ULONG, ULONG, WORD, WORD);
 
 BPTR Open(STRPTR, LONG);

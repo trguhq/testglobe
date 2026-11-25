@@ -598,7 +598,8 @@ def main():
             for mode in ("ocs", "fontfail", "fontlarge", "mono", "two", "three", "four", "ecs", "aga", "aga64", "aga128", "020", "fpu", "040",
                          "falsefpu", "aspect", "backfail", "scratchfail", "ham", "oversize", "cachefail", "ocswide", "denisewide", "ecswide",
                          "cgx8", "cgx15", "cgx16", "cgx24", "cgx32", "p968", "p9615", "p9616", "p9624", "p9632",
-                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop", "fs-cgx8", "fs-cgx15", "fs-cgx16", "fs-cgx24", "fs-cgx32",
+                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop",
+                         "fs-multiscan", "fs-bestmode", "fs-default", "fs-nomode", "fs-cgx8", "fs-cgx15", "fs-cgx16", "fs-cgx24", "fs-cgx32",
                          "fs-p968", "fs-p9615", "fs-p9616", "fs-p9624", "fs-p9632",
                          "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative",
                          "p96short", "cli13"):
@@ -615,7 +616,8 @@ def main():
                 str(ROOT / "src/err.c"), str(ROOT / "src/ami_time.c"), str(enhanced),
                 "-lm", "-o", str(output / "amiga_native")])
             for mode in ("ocs", "fontfail", "fontlarge", "mono", "two", "three", "four", "aga", "aga64", "aga128", "backfail", "ocswide", "nativeunknown",
-                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop"):
+                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop",
+                         "fs-multiscan", "fs-bestmode", "fs-default", "fs-nomode"):
                 run([str(output / "amiga_native"), mode])
             # A real packed Hunk file exercises the production DOS resource reader.
             source = output / "amiga-input.hunk"
