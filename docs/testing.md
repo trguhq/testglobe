@@ -489,12 +489,12 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
   reference checks orientation, integer-degree rotation, screen coordinates and
   viewport bounds. Packet checks match every fill to its quad in order, verify the
   packet vertices against the mesh, and require each mesh vertex to be transformed
-  and projected once per frame; the x/y kernels must equal the full kernels' x and y,
-  row reuse and rejected inputs. CPU profiles exercise baseline, 386 and floating-point dispatch,
-  including 286/287 combinations. The `8086` and `8087` profiles check that the
-  supplied 286 binding is rejected before `lsinit`; a second build with
-  `MTX_8086_BINDING` runs them through the whole contract. The OSD reports actual
-  selection and failed requests; the help keeps `S` visible.
+  and projected once per frame; the x/y kernels must equal the full kernels' x and
+  y, row reuse and rejected inputs. CPU profiles exercise baseline, 386 and
+  floating-point dispatch, including 286/287 combinations. The `8086` and `8087`
+  profiles check that the supplied 286 binding is rejected before `lsinit`; a second
+  build with `MTX_8086_BINDING` runs them through the whole contract. The OSD reports
+  actual selection and failed requests; the help keeps `S` visible.
 - **Packets:** the recorder counts command bytes from the manual's formats since the
   last completed reply and requires at most 228 in flight, one checkpoint per four
   fills and per model/view group, and no repeated fill color while the board's color

@@ -898,7 +898,8 @@ void drv_render(void)
                 /* Fills are confirmed in groups. Confirm the last group
                  * before any other command, so its faults stay recoverable. */
                 mtx_queue_fills = TRUE;
-                /* Native LibShell needs world vertices, not packet copies. */
+                /* LibShell transforms world quads itself; copying them into
+                 * packets would only add host work. */
                 if (drv_soft3d_active) globe_draw_quadbatches();
                 else globe_draw_quads();
                 mtx_queue_fills = FALSE;
