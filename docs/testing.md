@@ -506,24 +506,43 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
   triangle/quad statistics, and cleanup. Independent normal transforms check every
-  expected fill and cap count at several noncardinal poses.
+  expected fill and cap count at several noncardinal poses. Without an x87, every
+  facing the integer culling test decides, at 81 poses including cardinal ones, must
+  equal the float test, and the Q14 rows' eye must stay within its assumed error at
+  every integer-degree pose.
 - **Software transforms:** LibShell is the default; `S`/`s` selects host transforms
   while keeping indexed LibShell polygon filling. An independent orthographic
   reference checks orientation, integer-degree rotation, screen coordinates and
-  viewport bounds. CPU profiles exercise baseline, 386 and floating-point dispatch,
-  including 8086/8087 and 286/287 combinations. The OSD reports actual selection
-  and failed requests; the help keeps `S` visible.
+  viewport bounds. Packet checks match every fill to its quad in order, verify the
+  packet vertices against the mesh, and require each mesh vertex to be transformed
+  and projected once per frame; the x/y kernels must equal the full kernels' x and
+  y, row reuse and rejected inputs. CPU profiles exercise baseline, 386 and
+  floating-point dispatch, including 286/287 combinations. The `8086` and `8087`
+  profiles check that the supplied 286 binding is rejected before `lsinit`; a second
+  build with `MTX_8086_BINDING` runs them through the whole contract. The OSD reports
+  actual selection and failed requests; the help keeps `S` visible.
+- **Packets:** the recorder counts command bytes from the manual's formats since the
+  last completed reply and requires at most 228 in flight, one checkpoint per four
+  fills and per model/view group, and no repeated fill color while the board's color
+  is known.
 - **Replies and errors:** `LSINQ` word counts and payload ordering; short malformed
   replies are drained before failure, while replies longer than 16 words abandon the
-  connection. Whole-reply deadlines apply even when words remain ready. Timeouts and
-  oversized replies must prevent further board commands during cleanup.
+  connection. Ready words read no clock; one deadline covers every wait of a reply,
+  and a backward clock step neither adds time nor restarts it. Timeouts and oversized
+  replies must prevent further board commands during cleanup.
+- **Startup:** the `stale` profile leaves two latched errors (the second reported
+  only after the first is read) and old Read FIFO words; startup discards them with
+  a stderr warning. Endless stale data is bounded by count and deadline.
 - **Error policy and recovery:** initially enabled and disabled reporting policies;
   opcode, parameter, board-memory, and overflow diagnostics; multiple errors while
-  awaiting completion; palette and policy restoration while communication is usable.
-  Recoverable native 3D-packet failures retry through host transforms. Shared 2D
-  drawing errors and communication failures retain their failure handling.
-- **Input:** keyboard restrictions and toggles, INT 33h polling, relative motion,
-  left-button dragging, and right-button redraws.
+  awaiting completion; palette, LUT selection, plane mask (`LSINQ` 88, optional) and
+  policy restoration while communication is usable. Recoverable native 3D-packet
+  failures retry through host transforms. Shared 2D drawing errors and communication
+  failures retain their failure handling.
+- **Input and exit:** keyboard restrictions and toggles, INT 33h polling, relative
+  motion, left-button dragging, and right-button redraws. The `ctrl-break` profile
+  runs the installed INT 23h routine and requires the event loop to leave through
+  the board cleanup.
 
 ### Native validation
 

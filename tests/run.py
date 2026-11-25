@@ -409,7 +409,7 @@ def main():
             ("OpenGL", flat, ("drv_draw_quad_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tristrip_flat_rgb", "drv_resize", "drv_texture_load")),
             ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_rgb", "drv_draw_tri_flat_uv", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
             ("Sun XGL", ["-DFLAT", "-DDRV_XGL"], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
-            ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tristrip_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tri_flat_uv", "earth_data_128", "texture_generate")),
+            ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_tri_flat_uv", "drv_draw_quad_flat_rgb", "earth_data_128", "texture_generate")),
             ("TIGA", ["-DSEG86", "-DDRV_TGA", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_128", "texture_generate", "drv_resize")),
             ("GDI", ["-DSEG86", "-DDRV_GDI", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
             ("QuickDraw", ["-DSEG68", "-DDRV_QD"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
@@ -893,14 +893,21 @@ def main():
         mtx_optimized = output / "mtx_386.o"
         run(cc + common + segmented + ["-DSOFT3D_TRANSFORM_386", "-c",
             str(ROOT / "src/soft3d.c"), "-o", str(mtx_optimized)])
-        run(cc + common + segmented + [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_saved.c"),
+        mtx_sources = [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"), str(mtx_optimized),
-            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "matrox")])
+            str(ROOT / "src/err.c"), "-lm"]
+        run(cc + common + segmented + mtx_sources + ["-o", str(output / "matrox")])
         run([str(output / "matrox")])
+        # 8086/8087 profiles check rejection by the supplied 286 binding.
         for profile in ("reporting-off", "8086", "286", "386", "486", "8087", "287", "387", "fpu",
-                        "startup-v3", "startup-world"):
+                        "startup-v3", "startup-world", "stale", "ctrl-break"):
             run([str(output / "matrox"), profile])
+        # An 8086-safe binding opts out of the check and runs everything.
+        run(cc + common + segmented + ["-DMTX_8086_BINDING"] + mtx_sources +
+            ["-o", str(output / "matrox_8086")])
+        for profile in ("8086", "8087"):
+            run([str(output / "matrox_8086"), profile])
         print("PASS host compatibility: strict C89 and supplied SDK prototypes")
 
 

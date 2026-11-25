@@ -190,6 +190,56 @@ int soft3d_fixed_transform_reuse(long matrix[3][3], unsigned int count,
     return 1;
 }
 
+#if defined(DRV_MTX) && !defined(SOFT3D_TRANSFORM_020)
+/* ---- Orthographic x/y transform (Matrox software mode) ----------------
+ * The orthographic projector reads only x and y. This is the transform
+ * above without its third row: the same validation, reuse and rounding
+ * give identical x and y, and z is stored as zero. Like the full kernel,
+ * the same source also builds the separately compiled 386 variant. */
+#ifdef SOFT3D_TRANSFORM_386
+int soft3d_386_transform_xy_reuse(long matrix[3][3], unsigned int count,
+#else
+int soft3d_fixed_transform_xy_reuse(long matrix[3][3], unsigned int count,
+#endif
+                                    const Vertex TG_HUGE *vertices,
+                                    Soft3d_fixed_point *out,
+                                    unsigned int reuse_count)
+{
+    unsigned int i;
+    long x, y, z;
+    if (matrix == NULL || vertices == NULL || out == NULL ||
+        count > SOFT3D_MAX_VERTICES ||
+        (reuse_count != 0U && (count == 0U || (count & 1U) != 0U ||
+                              reuse_count != count / 2U)))
+        return 0;
+    for (i = 0; i < count; ++i)
+    {
+        if (!soft3d_float_fixed(&vertices[i].x, 4, &x) ||
+            !soft3d_float_fixed(&vertices[i].y, 4, &y) ||
+            !soft3d_float_fixed(&vertices[i].z, 4, &z))
+            return 0;
+        if (x < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            x > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            y < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            y > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            z < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
+            z > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE)
+            return 0;
+        if (reuse_count != 0U && (i & 1U) == 0U)
+        {
+            out[i] = out[i + 1U];
+            continue;
+        }
+        out[i].x = (matrix[0][0] * x + matrix[0][1] * y +
+                    matrix[0][2] * z) / SOFT3D_Q14;
+        out[i].y = (matrix[1][0] * x + matrix[1][1] * y +
+                    matrix[1][2] * z) / SOFT3D_Q14;
+        out[i].z = 0;
+    }
+    return 1;
+}
+#endif /* orthographic x/y transform */
+
 #if !defined(SOFT3D_TRANSFORM_020) && !defined(SOFT3D_TRANSFORM_386)
 int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
                             const Vertex TG_HUGE *vertices,

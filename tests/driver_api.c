@@ -9,10 +9,6 @@
 #if !defined(DRV_TRI_COLOR) || !defined(DRV_TRI_RGB) || !defined(DRV_TRI_UV)
 #error OpenGL must advertise retained triangle color, RGB and UV callbacks
 #endif
-#elif defined(DRV_MTX)
-#if !defined(DRV_TRI_COLOR) || defined(DRV_TRI_RGB) || defined(DRV_TRI_UV)
-#error Matrox must advertise its additional indexed triangle callback
-#endif
 #else
 #if defined(DRV_TRI_COLOR) || defined(DRV_TRI_RGB) || defined(DRV_TRI_UV)
 #error This driver does not implement individual triangle callbacks
