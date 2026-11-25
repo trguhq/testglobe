@@ -252,11 +252,13 @@ static void check_strips(void)
         expected_colors = colors; reset_geometry(1, 0);
         drv_draw_tristrip_flat_color(TEST_VERTICES, vertices, colors);
         assert(expected_facet == TEST_VERTICES - 2 && facet_total == TEST_VERTICES - 2 && max_batch <= 256);
+        assert(profile != 0 || max_batch == OGL_AMI_FLAT_FACETS + 2U);
         assert(batch_count > 1);
     }
     reset_geometry(1, 1);
     drv_draw_tristrip_flat_uv(TEST_VERTICES, vertices, coords);
     assert(expected_facet == TEST_VERTICES - 2 && facet_total == TEST_VERTICES - 2 && max_batch <= 256);
+    assert(max_batch == OGL_AMI_UV_FACETS + 2U);
     puts("PASS Amiga OpenGL strips: bounded MiniGL packets, constant-color runs, odd starts, shared-edge winding and UVs at 512-map width");
 }
 
@@ -284,6 +286,10 @@ int main(int argc, char **argv)
     drv_ext_init(); globe_init(); texture_init();
     drv_init(&argc, argv); assert(drv_init_window(0, 0, 0, 0));
     assert(window_creates == 1 && !ogl_indexed && drv_bits_per_pixel >= 24);
+    /* Packet budgets derive from the SDK vertex limit and keep the sizes
+     * used on PiStorm3D: 252 flat or 254 textured facets, 252 vertices. */
+    assert(OGL_AMI_VERTEX_LIMIT == 256U && OGL_AMI_FLAT_FACETS == 252U &&
+           OGL_AMI_UV_FACETS == 254U && OGL_AMI_TRIANGLE_VERTICES == 252U);
     check_strips(); check_globes();
     assert(globe_set_resolution(32, -1, GLOBE_RADIUS));
     drv_auto_enabled = FALSE;
