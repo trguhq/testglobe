@@ -480,7 +480,10 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
   triangle/quad statistics, and cleanup. Independent normal transforms check every
-  expected fill and cap count at several noncardinal poses.
+  expected fill and cap count at several noncardinal poses. Without an x87, every
+  facing the integer culling test decides, at 81 poses including cardinal ones, must
+  equal the float test, and the Q14 rows' eye must stay within its assumed error at
+  every integer-degree pose.
 - **Software transforms:** LibShell is the default; `S`/`s` selects host transforms
   while keeping indexed LibShell polygon filling. An independent orthographic
   reference checks orientation, integer-degree rotation, screen coordinates and

@@ -66,8 +66,14 @@ again to return to LibShell 3D.
 ## Platform notes
 
 The *LIB Shell Command Reference Manual* documents no depth buffer or back-face
-control, so the host rejects back-facing polygons itself. DOS builds use normalized
-huge pointers, `_halloc`/`_hfree`, long mesh counts, and DOS timing.
+control, so the host rejects back-facing polygons itself. Without an x87, native
+mode decides most facings with the integer orthographic transform instead of emulated
+floating point (99% at key 1, 98% at key 2 in the recorder). A proven error bound
+covers the fixed-point rounding and the float test's own rounding; facings within it,
+near the silhouette or at thin pole caps, fall back to the float test, so the
+submitted polygons are exactly those of the float test. Its speed on real hardware
+has not been measured. DOS builds use normalized huge pointers, `_halloc`/`_hfree`,
+long mesh counts, and DOS timing.
 
 Matrox and TIGA share `drv_cpu.c` to detect 8086-class, 286, 386, and 486-or-later
 CPUs. A usable x87 selects floating-point host transforms; the presence probe works

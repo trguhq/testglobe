@@ -23,6 +23,10 @@ static int recorded_mtx_fprintf(FILE *stream, const char *format, ...);
 static void check_backward_clock(void);
 static int recorded_fixed_prepare(long matrix[3][3], int yaw, int pitch);
 static int recorded_float_prepare(float matrix[3][3], int yaw, int pitch);
+static int recorded_fixed_transform(long matrix[3][3], unsigned int count,
+    const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
+static int recorded_386_transform(long matrix[3][3], unsigned int count,
+    const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
 static int recorded_fixed_xy(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
 static int recorded_386_xy(long matrix[3][3], unsigned int count,
@@ -39,6 +43,8 @@ static int recorded_float_project(const Soft3d_float_point *points,
 #define drv_draw_quadbatch_flat_color recorded_driver_quadbatch
 #define soft3d_fixed_prepare_ortho recorded_fixed_prepare
 #define soft3d_float_prepare_ortho recorded_float_prepare
+#define soft3d_fixed_transform_reuse recorded_fixed_transform
+#define soft3d_386_transform_reuse recorded_386_transform
 #define soft3d_fixed_transform_xy_reuse recorded_fixed_xy
 #define soft3d_386_transform_xy_reuse recorded_386_xy
 #define soft3d_float_transform_xy_reuse recorded_float_xy
@@ -56,6 +62,8 @@ static int recorded_float_project(const Soft3d_float_point *points,
 #undef drv_draw_quadbatch_flat_color
 #undef soft3d_fixed_prepare_ortho
 #undef soft3d_float_prepare_ortho
+#undef soft3d_fixed_transform_reuse
+#undef soft3d_386_transform_reuse
 #undef soft3d_fixed_transform_xy_reuse
 #undef soft3d_386_transform_xy_reuse
 #undef soft3d_float_transform_xy_reuse
@@ -132,6 +140,8 @@ static unsigned int fixed_transforms, optimized_transforms, floating_transforms;
 /* Software packets: points transformed (excluding reused rows) and
  * projected, and each queued quad's expected fill, matched in order. */
 static unsigned long xy_points, projected_points;
+/* Native frames without an x87: facings decided by the integer test. */
+static unsigned long cull_transforms;
 #define EXPECT_EITHER 0
 #define EXPECT_FILL 1
 #define EXPECT_NONE 2
@@ -171,6 +181,20 @@ static int recorded_float_prepare(float matrix[3][3], int yaw, int pitch)
 {
     if (fail_software_prepare) { --fail_software_prepare; return 0; }
     return soft3d_float_prepare_ortho(matrix, yaw, pitch);
+}
+static int recorded_fixed_transform(long matrix[3][3], unsigned int count,
+    const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
+{
+    assert(!selected_fpu && selected_cpu < 386 && !drv_soft3d_active);
+    ++fixed_transforms; ++cull_transforms;
+    return soft3d_fixed_transform_reuse(matrix, count, vertices, out, reuse);
+}
+static int recorded_386_transform(long matrix[3][3], unsigned int count,
+    const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
+{
+    assert(!selected_fpu && selected_cpu >= 386 && !drv_soft3d_active);
+    ++optimized_transforms; ++cull_transforms;
+    return soft3d_386_transform_reuse(matrix, count, vertices, out, reuse);
 }
 static int recorded_fixed_xy(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
@@ -843,7 +867,7 @@ static void render_and_check(unsigned long faces, unsigned char *data)
 {
     unsigned int before_sync, before_model, before_view;
     unsigned int before_fill_syncs, before_transform_syncs;
-    unsigned long before_colors, before_xy, before_projected, points;
+    unsigned long before_colors, before_xy, before_projected, before_cull, points;
     int software;
     submitted_quads = filled_polygons = filled_triangles = 0;
     expected_visible = expected_caps = silhouette_faces = silhouette_caps = 0;
@@ -852,8 +876,12 @@ static void render_and_check(unsigned long faces, unsigned char *data)
     before_fill_syncs = fill_syncs; before_transform_syncs = transform_syncs;
     before_colors = color_commands;
     before_xy = xy_points; before_projected = projected_points;
+    before_cull = cull_transforms;
     software = drv_soft3d_active;
     drv_render();
+    /* Native frames without an x87 run the integer facing test per quad. */
+    if (!software && !drv_soft3d_active)
+        assert((cull_transforms > before_cull) == !selected_fpu);
     if (software && drv_soft3d_active)
     {
         /* Row reuse: each mesh vertex is transformed and projected once. */
@@ -1219,6 +1247,79 @@ static void check_orthographic_xy(long fixed_matrix[3][3], float floating_matrix
     puts("PASS DOS orthographic x/y kernels: baseline, 386 and float x/y equal the full kernels, with the same row reuse and rejected inputs");
 }
 
+/* The integer facing bound assumes the Q14 rows' cross product is within
+ * 4/16384 of the exact eye for every integer-degree pose. */
+static void check_integer_eye(void)
+{
+    long matrix[3][3];
+    double cx, cy, cz, ex, ey, ez, error, worst = 0.0;
+    int yaw, pitch;
+    for (yaw = 0; yaw < 360; ++yaw)
+        for (pitch = 0; pitch < 360; ++pitch)
+        {
+            assert(soft3d_fixed_prepare_ortho(matrix, yaw, pitch));
+            cx = (double)matrix[0][1] * matrix[1][2] - (double)matrix[0][2] * matrix[1][1];
+            cy = (double)matrix[0][2] * matrix[1][0] - (double)matrix[0][0] * matrix[1][2];
+            cz = (double)matrix[0][0] * matrix[1][1] - (double)matrix[0][1] * matrix[1][0];
+            ex = -sin(yaw * PI / 180.0) * sin(pitch * PI / 180.0);
+            ey = -cos(yaw * PI / 180.0) * sin(pitch * PI / 180.0);
+            ez = cos(pitch * PI / 180.0);
+            cx = cx / (16384.0 * 16384.0) - ex;
+            cy = cy / (16384.0 * 16384.0) - ey;
+            cz = cz / (16384.0 * 16384.0) - ez;
+            error = sqrt(cx * cx + cy * cy + cz * cz);
+            if (error > worst) worst = error;
+        }
+    assert(worst * 16384.0 < 4.0);
+    printf("PASS Matrox integer eye: Q14 model/view rows cross within %.2f/16384 of "
+           "the exact eye at every integer-degree pose\n", worst * 16384.0);
+}
+
+/* Without an x87, native culling decides most facings with the integer
+ * ortho transform and defers the rest to the float test. Every decision
+ * must equal the float test, so the submitted polygons are unchanged. */
+static void check_integer_culling(void)
+{
+    static const int yaws[] = { 0, 35, 73, 90, 135, 180, 211, 270, 359 };
+    static const int pitches[] = { 0, 8, 49, 90, 103, 180, 225, 270, 300 };
+    const Vertex TG_HUGE *source[4], *kept[4];
+    struct V3coord vertices[4];
+    unsigned long decided = 0, total = 0, row, column, top;
+    unsigned int y, x;
+    float rot_x = drv_rot_x, rot_y = drv_rot_y;
+    int facing;
+    if (selected_fpu) return;
+    assert(!drv_soft3d_active);
+    for (y = 0; y < sizeof(yaws) / sizeof(yaws[0]); ++y)
+        for (x = 0; x < sizeof(pitches) / sizeof(pitches[0]); ++x)
+        {
+            drv_rot_y = (float)yaws[y];
+            drv_rot_x = (float)pitches[x] - 90.0f;
+            assert(mtx_set_transform() && mtx_integer_cull);
+            for (row = 0; row < (unsigned long)globe_latitude; ++row)
+                for (column = 0; column < (unsigned long)globe_longitude; ++column)
+                {
+                    top = row * (globe_longitude + 1UL) + column;
+                    source[0] = globe_verts + top;
+                    source[1] = source[0] + globe_longitude + 1;
+                    source[2] = source[1] + 1;
+                    source[3] = source[0] + 1;
+                    if (mtx_compact(source, vertices, kept) < 3) continue;
+                    facing = mtx_integer_facing(kept);
+                    ++total;
+                    if (facing == 0) continue;
+                    ++decided;
+                    assert((facing > 0) == mtx_float_visible(vertices));
+                }
+        }
+    /* Only facings near the silhouette or at thin pole caps need floats. */
+    assert(decided * 10UL >= total * 9UL);
+    printf("PASS Matrox integer culling: %lu of %lu facings at %d longitudes decided "
+           "without floating point, each equal to the float test\n",
+           decided, total, globe_longitude);
+    drv_rot_x = rot_x; drv_rot_y = rot_y;
+}
+
 static void check_orthographic_math(void)
 {
     long fixed_matrix[3][3];
@@ -1307,6 +1408,7 @@ static void check_orthographic_math(void)
     assert(!soft3d_fixed_prepare_ortho(NULL, 0, 0));
     assert(!soft3d_float_prepare_ortho(NULL, 0, 0));
     check_orthographic_xy(fixed_matrix, floating_matrix);
+    check_integer_eye();
     puts("PASS DOS orthographic math: independent camera oracle, baseline/386 equality, viewport endpoints, integer bounds and transactional invalid-input rejection");
 }
 
@@ -1597,6 +1699,7 @@ int main(int process_argc, char **process_argv)
     render_and_check(512, test_earth_data(32));
     check_direct_quad();
     check_noncardinal_poses(512, test_earth_data(32));
+    check_integer_culling();
     assert(osd_calls > 0);
     {
         unsigned int syncs = sync_calls;
@@ -1610,6 +1713,7 @@ int main(int process_argc, char **process_argv)
     assert(globe_longitude == 64 && globe_faces_num == 2048UL);
     render_and_check(2048, test_earth_data(64));
     check_noncardinal_poses(2048, test_earth_data(64));
+    check_integer_culling();
     for (i = '3'; i <= '5'; ++i) mtx_keyboard((unsigned char)i);
     mtx_keyboard('t');
     assert(globe_longitude == 64 && !drv_texture_enabled);

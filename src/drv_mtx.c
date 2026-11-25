@@ -64,10 +64,13 @@ static union {
 } mtx_points;
 static Soft3d_screen_point mtx_screen[SOFT3D_MAX_VERTICES];
 /* The native path uses this eye vector only for visibility rejection.
- * Software mode performs the whole geometry stage before screen filling. */
+ * Software mode performs the whole geometry stage before screen filling.
+ * Without an x87, native frames also prepare the integer ortho matrix in
+ * mtx_matrix.fixed and decide most facings without emulated floats. */
 static float mtx_eye_x;
 static float mtx_eye_y;
 static float mtx_eye_z = 1.0f;
+static int mtx_integer_cull;
 
 /* LSERROR stalls the shell before a second unread error. A blocking
  * lslibsync() cannot service that register, so use a counted LSINQ reply
@@ -555,6 +558,7 @@ static int mtx_set_transform(void)
     short yaw = mtx_angle(drv_rot_y);
     short pitch = mtx_angle(90.0f + drv_rot_x);
     double yaw_radians, pitch_radians, sin_pitch;
+    mtx_integer_cull = FALSE;
     if (drv_soft3d_active) return mtx_prepare_software(yaw, pitch);
     yaw_radians = (double)yaw * PI / 180.0;
     pitch_radians = (double)pitch * PI / 180.0;
@@ -574,25 +578,27 @@ static int mtx_set_transform(void)
     v3vwrotx(pitch);
     if (!mtx_checkpoint("model/view transform", TRUE)) return FALSE;
     /* Inverse model yaw applied to the viewer's world-space direction.
-     * Use exactly the integer-degree angles sent to LibShell. */
+     * Use exactly the integer-degree angles sent to LibShell. The float
+     * eye stays even without an x87: undecided integer facings use it, so
+     * the submitted polygons are those of the float test alone. */
     mtx_eye_x = (float)(-sin(yaw_radians) * sin_pitch);
     mtx_eye_y = (float)(-cos(yaw_radians) * sin_pitch);
     mtx_eye_z = (float)cos(pitch_radians);
+    if (!mtx_has_fpu)
+        mtx_integer_cull = soft3d_fixed_prepare_ortho(mtx_matrix.fixed, yaw, pitch);
     return TRUE;
 }
 
-/* Native LibShell 3D: world vertices of one quad, in traversal order. */
-static void mtx_draw_native(const Vertex TG_HUGE *source[4],
-                            unsigned char color)
+/* Tiny contiguous far-data packet for the SDK: never pass huge mesh
+ * pointers directly to legacy bindings. Compact repeated pole vertices
+ * into three-vertex caps to avoid degenerate quad fills. kept[] names the
+ * source of each retained vertex. */
+static unsigned short mtx_compact(const Vertex TG_HUGE *source[4],
+                                  struct V3coord vertices[4],
+                                  const Vertex TG_HUGE *kept[4])
 {
-    struct V3coord vertices[4];
     unsigned short count = 0;
     unsigned short i;
-    float ax, ay, az, bx, by, bz;
-    float nx, ny, nz;
-    /* Tiny contiguous far-data packet for the SDK: never pass huge mesh
-     * pointers directly to legacy bindings. Compact repeated pole
-     * vertices into three-vertex caps to avoid degenerate quad fills. */
     for (i = 0; i < 4U; ++i)
     {
         if (count != 0 && source[i]->x == vertices[count - 1].x &&
@@ -602,17 +608,24 @@ static void mtx_draw_native(const Vertex TG_HUGE *source[4],
         vertices[count].x = source[i]->x;
         vertices[count].y = source[i]->y;
         vertices[count].z = source[i]->z;
+        kept[count] = source[i];
         ++count;
     }
     if (count > 1 && vertices[count - 1].x == vertices[0].x &&
         vertices[count - 1].y == vertices[0].y &&
         vertices[count - 1].z == vertices[0].z)
         --count;
-    if (count < 3) return;
-    /* Base LIB Shell fills do not remove hidden surfaces. Rejecting
-     * back faces is sufficient for a convex globe: the retained facets
-     * overlap only at edges. LibShell performs all vertex transforms,
-     * projection, clipping and polygon filling. */
+    return count;
+}
+
+/* Base LIB Shell fills do not remove hidden surfaces. Rejecting back faces
+ * is sufficient for a convex globe: the retained facets overlap only at
+ * edges. LibShell performs all vertex transforms, projection, clipping and
+ * polygon filling. */
+static int mtx_float_visible(const struct V3coord *vertices)
+{
+    float ax, ay, az, bx, by, bz;
+    float nx, ny, nz;
     ax = vertices[1].x - vertices[0].x;
     ay = vertices[1].y - vertices[0].y;
     az = vertices[1].z - vertices[0].z;
@@ -622,8 +635,64 @@ static void mtx_draw_native(const Vertex TG_HUGE *source[4],
     nx = ay * bz - az * by;
     ny = az * bx - ax * bz;
     nz = ax * by - ay * bx;
-    if (nx * mtx_eye_x + ny * mtx_eye_y + nz * mtx_eye_z <= 0.0f)
-        return;
+    return !(nx * mtx_eye_x + ny * mtx_eye_y + nz * mtx_eye_z <= 0.0f);
+}
+
+/* The same facing test without floating point: rows 0 and 1 of the integer
+ * ortho matrix cross to its row 2, the eye, so the eye-space edge cross
+ * product's z is the facing dot product. Return 1 or -1 only when that sign
+ * must equal the float test's; 0 asks the caller to run the float test.
+ *   Each Q4 coordinate is within 2.74 units of the exact image under the
+ * Q14 rows (input truncation below one unit through a row of norm 1, and
+ * output truncation below one), so each edge component is within 6 and
+ * the area within 6(|ux|+|uy|+|vx|+|vy|) + 72. The Q14 rows' cross product
+ * is within 4/16384 of the exact eye, and the float test's own rounding is
+ * below 2^-18 |a|_1 |b|_1; with the 3D edge lengths bounded by lu and lv,
+ * (lu lv) / 2^11 covers both with a factor of two to spare. */
+static int mtx_integer_facing(const Vertex TG_HUGE *kept[4])
+{
+    Vertex corners[3];
+    Soft3d_fixed_point points[3];
+    long ux, uy, vx, vy, lu, lv, area, bound;
+    unsigned int i;
+    int transformed;
+    for (i = 0; i < 3U; ++i) corners[i] = *kept[i];
+    if (mtx_cpu >= 386)
+        transformed = soft3d_386_transform_reuse(mtx_matrix.fixed, 3U,
+                                                 corners, points, 0U);
+    else
+        transformed = soft3d_fixed_transform_reuse(mtx_matrix.fixed, 3U,
+                                                   corners, points, 0U);
+    if (!transformed) return 0;
+    ux = points[1].x - points[0].x;
+    uy = points[1].y - points[0].y;
+    vx = points[2].x - points[0].x;
+    vy = points[2].y - points[0].y;
+    /* Keeps both products, and their difference, within a 32-bit long. */
+    if (labs(ux) > 32767L || labs(uy) > 32767L ||
+        labs(vx) > 32767L || labs(vy) > 32767L) return 0;
+    area = ux * vy - uy * vx;
+    lu = labs(ux) + labs(uy) + labs(points[1].z - points[0].z) + 18L;
+    lv = labs(vx) + labs(vy) + labs(points[2].z - points[0].z) + 18L;
+    bound = 6L * (labs(ux) + labs(uy) + labs(vx) + labs(vy)) + 72L +
+            ((lu >> 5) + 1L) * ((lv >> 6) + 1L);
+    if (area > bound) return 1;
+    if (area < -bound) return -1;
+    return 0;
+}
+
+/* Native LibShell 3D: world vertices of one quad, in traversal order. */
+static void mtx_draw_native(const Vertex TG_HUGE *source[4],
+                            unsigned char color)
+{
+    struct V3coord vertices[4];
+    const Vertex TG_HUGE *kept[4];
+    unsigned short count;
+    int facing = 0;
+    count = mtx_compact(source, vertices, kept);
+    if (count < 3) return;
+    if (mtx_integer_cull) facing = mtx_integer_facing(kept);
+    if (facing < 0 || (facing == 0 && !mtx_float_visible(vertices))) return;
     /* Color (4) and four 16.16 vertices (52); see MTX_FILL_PACKETS. */
     if (!mtx_fill_room(TRUE)) return;
     (void)mtx_set_color((unsigned short)color);
