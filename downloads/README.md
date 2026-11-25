@@ -1,7 +1,7 @@
 # Development binaries
 
 These archives contain builds from the source revision that last updated each archive.
-See the [build instructions](../README.md#linux-hosted-cross-builds) for compilers
+See the [build instructions](../docs/build.md#linux-hosted-cross-builds) for compilers
 and SDK requirements. Each ZIP includes installation notes, a license, and file
 checksums; [SHA256SUMS](SHA256SUMS) covers the ZIPs and standalone executables.
 
