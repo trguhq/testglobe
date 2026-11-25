@@ -40,6 +40,7 @@
 #include "globe.h"
 #include "glob_ext.h"
 #include "tga_cmd.h"
+#include "tga_rlm.h"
 
 /* SDK order matters. Its far-data bindings must see small contiguous
  * packets, never a huge mesh pointer which may cross a segment boundary. */
@@ -112,25 +113,6 @@ static int tga_absolute_path(char *destination, const char *source)
 #endif
 }
 
-static unsigned long tga_payload_u32(const unsigned char *bytes)
-{
-    return (unsigned long)bytes[0] | ((unsigned long)bytes[1] << 8) |
-           ((unsigned long)bytes[2] << 16) | ((unsigned long)bytes[3] << 24);
-}
-
-static unsigned long tga_payload_crc(unsigned long crc,
-                                      const unsigned char *bytes, unsigned int count)
-{
-    unsigned int i, bit;
-    for (i = 0; i < count; ++i)
-    {
-        crc ^= bytes[i];
-        for (bit = 0; bit < 8U; ++bit)
-            crc = (crc >> 1) ^ ((crc & 1UL) != 0UL ? 0xedb88320UL : 0UL);
-    }
-    return crc;
-}
-
 static int tga_remove_temp(void)
 {
     if (tga_temp_path[0] == '\0') return TRUE;
@@ -173,9 +155,8 @@ static int tga_create_temp_at(const char *directory)
 static int tga_extract_module(void)
 {
     FILE *program;
-    unsigned char footer[TGA_RLM_TRAILER_SIZE], header[28], buffer[512];
+    unsigned char footer[TGA_RLM_TRAILER_SIZE], header[TGA_RLM_MZ_HEADER], buffer[512];
     unsigned long offset, length, expected_crc, crc, remaining;
-    unsigned long pages, last_page, image_size, header_size;
     unsigned int chunk, written;
     long size;
     int descriptor = -1, amount, valid = FALSE;
@@ -192,27 +173,21 @@ static int tga_extract_module(void)
     }
     if (fseek(program, 0L, SEEK_END) != 0 || (size = ftell(program)) < 0L ||
         (unsigned long)size > 0x7fffffffUL ||
-        size < 28L + (long)TGA_RLM_TRAILER_SIZE ||
+        size < (long)TGA_RLM_MZ_HEADER + (long)TGA_RLM_TRAILER_SIZE ||
         fseek(program, size - (long)TGA_RLM_TRAILER_SIZE, SEEK_SET) != 0 ||
         fread(footer, 1, sizeof(footer), program) != sizeof(footer)) goto done;
-    if (memcmp(footer, TGA_RLM_MAGIC, 8U) != 0 || tga_payload_u32(footer + 20) != 0UL)
+    if (memcmp(footer, TGA_RLM_MAGIC, 8U) != 0 || TGA_RLM_U32(footer + 20) != 0UL)
         goto done;
-    offset = tga_payload_u32(footer + 8);
-    length = tga_payload_u32(footer + 12);
-    expected_crc = tga_payload_u32(footer + 16);
+    offset = TGA_RLM_U32(footer + 8);
+    length = TGA_RLM_U32(footer + 12);
+    expected_crc = TGA_RLM_U32(footer + 16);
     if (offset < sizeof(header) || offset > (unsigned long)size - TGA_RLM_TRAILER_SIZE ||
         length == 0UL || length > TGA_RLM_MAX_SIZE ||
         length != (unsigned long)size - TGA_RLM_TRAILER_SIZE - offset) goto done;
+    /* The payload must start after the DOS load image, as the packer wrote. */
     if (fseek(program, 0L, SEEK_SET) != 0 ||
         fread(header, 1, sizeof(header), program) != sizeof(header) ||
-        header[0] != 'M' || header[1] != 'Z') goto done;
-    pages = (unsigned long)header[4] | ((unsigned long)header[5] << 8);
-    last_page = (unsigned long)header[2] | ((unsigned long)header[3] << 8);
-    header_size = ((unsigned long)header[8] | ((unsigned long)header[9] << 8)) * 16UL;
-    if (pages == 0UL || last_page > 511UL) goto done;
-    image_size = (pages - 1UL) * 512UL + (last_page != 0UL ? last_page : 512UL);
-    if (header_size < sizeof(header) || header_size > image_size || image_size > offset)
-        goto done;
+        tga_rlm_image_size(header, offset) == 0UL) goto done;
     if (fseek(program, (long)offset, SEEK_SET) != 0) goto done;
     descriptor = tga_create_temp_at(getenv("TEMP"));
     if (descriptor < 0) descriptor = tga_create_temp_at(getenv("TMP"));
@@ -228,7 +203,7 @@ static int tga_extract_module(void)
     {
         chunk = remaining > sizeof(buffer) ? (unsigned int)sizeof(buffer) : (unsigned int)remaining;
         if (fread(buffer, 1, chunk, program) != chunk) goto done;
-        crc = tga_payload_crc(crc, buffer, chunk);
+        crc = tga_rlm_crc(crc, buffer, chunk);
         written = 0;
         while (written < chunk)
         {

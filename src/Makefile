@@ -152,7 +152,7 @@ TGA_OBJECTS = $(TGA_OBJECTS1) $(TGA_OBJECTS2)
 TGA_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_tga.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\tga_cmd.h
+    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\tga_cmd.h $(SRC)\tga_rlm.h
 TGA_SDK_HEADERS = $(TGA_ROOT)\include\tiga.h \
     $(TGA_ROOT)\include\extend.h $(TGA_ROOT)\include\typedefs.h
 
@@ -536,7 +536,7 @@ tiga: $(TGA_OBJECTS) $(TGA_LIB) $(TGA_MODULE) tga_pack.exe FORCE
 	tga_pack.exe tga_host.exe testglob.exe $(TGA_MODULE)
 
 # The packer preserves the MZ load image and publishes the final EXE safely.
-tga_pack.exe: $(SRC)\tga_pack.c $(SRC)\buildio.h $(SRC)\tga_cmd.h
+tga_pack.exe: $(SRC)\tga_pack.c $(SRC)\buildio.h $(SRC)\tga_rlm.h
 	@echo $(TGA_CFLAGS) -Fetga_pack.exe > t_pack.rsp
 	@echo $(SRC)\tga_pack.c >> t_pack.rsp
 	$(TGA_CC) @t_pack.rsp

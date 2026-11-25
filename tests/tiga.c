@@ -108,7 +108,8 @@ static int unavailable_payload(void)
     return is_profile("nooverlay") || is_profile("badcrc") ||
            is_profile("truncated") || is_profile("oversized") ||
            is_profile("badoffset") || is_profile("reserved") ||
-           is_profile("badmagic") || is_profile("missingexe") ||
+           is_profile("badmagic") || is_profile("badimage") ||
+           is_profile("missingexe") ||
            is_profile("diskfull") || is_profile("closefail") ||
            is_profile("notemp");
 }

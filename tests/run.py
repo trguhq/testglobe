@@ -51,7 +51,7 @@ def check_tiga_extraction(executable, output):
         "fpu", "8087", "287", "387", "badmodule", "wrongabi", "badscreen", "nocd", "videoerror", "oldversion",
         "nomode", "modeerror", "primitivesfail", "pagehang", "syncerror",
         "nooverlay", "badcrc", "truncated", "oversized", "badoffset", "reserved",
-        "badmagic", "missingexe", "diskfull", "closefail", "notemp", "shortwrite",
+        "badmagic", "badimage", "missingexe", "diskfull", "closefail", "notemp", "shortwrite",
         "removefail", "collision", "movedcwd", "readonlyexe", "fallbacktmp",
         "longtemp", "moduleioerror", "flushioerror",
     )
@@ -87,6 +87,11 @@ def check_tiga_extraction(executable, output):
             data = data[:-4] + struct.pack("<I", 1)
         elif profile == "badmagic":
             data = data[:-24] + b"TGRLM002" + data[-16:]
+        elif profile == "badimage":
+            # The MZ load image may not extend into the appended module.
+            data = bytearray(data)
+            struct.pack_into("<H", data, 4, 2)
+            data = bytes(data)
         if profile != "missingexe":
             source.write_bytes(data)
         env = dict(os.environ)
