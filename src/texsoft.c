@@ -334,7 +334,7 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
 {
     double area, minx, maxx, miny, maxy, ea, eb, ec, wa, wb, wc;
     double q, u, v, z, dux, duy, dvx, dvy, dqx, dqy, rho, lod, blend;
-    double sx, sy, tx, ty, rgb[3], lower[3];
+    double sx, sy, tx, ty, rgb[3], lower[3], inverse_area, inverse_q;
     unsigned int level, r, g, blue;
     unsigned long index;
     int x, y, left, right, bottom, top;
@@ -369,6 +369,10 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
         if (bottom < texsoft_dirty_bottom) texsoft_dirty_bottom = bottom;
         if (top > texsoft_dirty_top) texsoft_dirty_top = top;
     }
+    /* Divides dominate an R3000's per-pixel cost: take one reciprocal per
+     * triangle and one per pixel. Rounding can move intermediates by an ulp,
+     * which the pixel comparisons have never shown to change a pixel. */
+    inverse_area = 1.0 / area;
     dux = duy = dvx = dvy = dqx = dqy = 0.0;
     if (texsoft_levels > 1U)
     {
@@ -389,24 +393,25 @@ static void texsoft_raster(const Texsoft_screen *a, const Texsoft_screen *b, con
             eb = texsoft_edge(c, a, x + 0.5, y + 0.5);
             ec = texsoft_edge(a, b, x + 0.5, y + 0.5);
             if (!texsoft_edge_inside(ea, b, c) || !texsoft_edge_inside(eb, c, a) || !texsoft_edge_inside(ec, a, b)) continue;
-            wa = ea / area; wb = eb / area; wc = ec / area;
+            wa = ea * inverse_area; wb = eb * inverse_area; wc = ec * inverse_area;
             z = wa * a->z + wb * b->z + wc * c->z;
             if (!(z >= -FLT_MAX && z <= FLT_MAX)) continue;
             index = (unsigned long)y * texsoft_width + x;
             if ((float)z >= texsoft_depth[index]) continue;
             q = wa * a->q + wb * b->q + wc * c->q;
             if (!(q > 0) || !texsoft_finite(q)) continue;
-            u = (wa * a->u + wb * b->u + wc * c->u) / q;
-            v = (wa * a->v + wb * b->v + wc * c->v) / q;
+            inverse_q = 1.0 / q;
+            u = (wa * a->u + wb * b->u + wc * c->u) * inverse_q;
+            v = (wa * a->v + wb * b->v + wc * c->v) * inverse_q;
             if (!texsoft_finite(u) || !texsoft_finite(v)) continue;
             level = 0U;
             blend = 0.0;
             if (texsoft_levels > 1U)
             {
-                sx = (dux - u * dqx) / q * texsoft_mip_w[0];
-                sy = (dvx - v * dqx) / q * texsoft_mip_h[0];
-                tx = (duy - u * dqy) / q * texsoft_mip_w[0];
-                ty = (dvy - v * dqy) / q * texsoft_mip_h[0];
+                sx = (dux - u * dqx) * inverse_q * texsoft_mip_w[0];
+                sy = (dvx - v * dqx) * inverse_q * texsoft_mip_h[0];
+                tx = (duy - u * dqy) * inverse_q * texsoft_mip_w[0];
+                ty = (dvy - v * dqy) * inverse_q * texsoft_mip_h[0];
                 if (!texsoft_finite(sx) || !texsoft_finite(sy) ||
                     !texsoft_finite(tx) || !texsoft_finite(ty)) continue;
                 rho = sx * sx + sy * sy; lod = tx * tx + ty * ty;
