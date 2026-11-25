@@ -401,7 +401,7 @@ def main():
         api_source = ["-fsyntax-only", str(ROOT / "tests/driver_api.c")]
         api_modes = (
             ("OpenGL", flat, ("drv_draw_quad_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tristrip_flat_rgb", "drv_resize", "drv_texture_load")),
-            ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_rgb", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
+            ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_rgb", "drv_draw_tri_flat_uv", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
             ("Sun XGL", ["-DFLAT", "-DDRV_XGL"], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
             ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tristrip_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tri_flat_uv", "earth_data_128", "texture_generate")),
             ("TIGA", ["-DSEG86", "-DDRV_TGA", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_128", "texture_generate", "drv_resize")),
@@ -803,15 +803,22 @@ def main():
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl")])
             for mode in ("double", "single", "indexed", "indexed-single", "noz", "software", "unknown", "affine", "winquit", "winshut",
-                         "rgba", "rgba-single", "rgb-single", "unknown-alpha", "cachefail", "reduced", "softreduced", "framefail", "objectreject"):
+                         "rgba", "alpha-single", "rgb15", "xs24", "rgb11", "entry", "unknown-alpha", "cachefail", "reduced", "softreduced",
+                         "framefail", "objectreject"):
                 run([str(output / "igl"), mode])
+            run([str(output / "igl"), "capabilitylost"], expected_stderr="",
+                required_output="PASS IRIS GL texture capability:")
+            for mode in ("double", "indexed", "software"):
+                run([str(output / "igl"), mode, "signal"], expected_stderr="",
+                    required_output="PASS IRIS GL termination signals:")
+                run([str(output / "igl"), mode, "signalwait"], expected_stderr="",
+                    required_output="PASS IRIS GL signal while idle:")
             igl_texture_failures = {
                 "stagefail": "Insufficient memory for texture; drawing flat colors",
                 "imagefail": "Insufficient memory for texture; drawing flat colors",
                 "softmipfail": "Insufficient memory for texture; drawing flat colors",
                 "softframefail": "Cannot prepare IRIS GL software texture framebuffer",
                 "softpixelsfail": "IRIS GL software texture pixels are unavailable",
-                "capabilitylost": "IRIS GL native texturing is unavailable",
                 "unloadedtexture": "IRIS GL texture data is not loaded",
             }
             for mode, message in igl_texture_failures.items():
@@ -836,6 +843,18 @@ def main():
                 str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "igl_cached")])
             run([str(output / "igl_cached"), "software"])
+            # The default build draws the convex globe without a z-buffer;
+            # IGL_ZBUFFER keeps one where present, cleared with czclear.
+            run(cc + common + igl + ["-DIGL_ZBUFFER=1",
+                str(ROOT / "tests/igl.c"), str(ROOT / "src/e_saved.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / "igl_zbuffer")])
+            for mode in ("double", "noz", "indexed", "software", "framefail"):
+                run([str(output / "igl_zbuffer"), mode])
+            run([str(output / "igl_zbuffer"), "softframefail"],
+                expected_stderr="IRIS GL texture: Cannot prepare IRIS GL software texture framebuffer\n",
+                required_output="PASS IRIS GL recoverable texture failure:")
         if args.igl_contract or args.ogl_contract:
             run(cc + common + ["-DFLAT", "-DDRV_OGL",
                 str(ROOT / "tests/texsoft.c"), str(ROOT / "src/texsoft.c"),
