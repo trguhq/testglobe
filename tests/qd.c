@@ -76,8 +76,11 @@ static unsigned int pattern_calls;
 static unsigned int rgb_pattern_calls, color_fill_calls, solid_fill_calls;
 static RGBColor last_pattern_rgb;
 static unsigned int polygon_calls;
-static int reentry_requested;
-static unsigned int reentry_calls, reentry_width;
+static short selected_font, selected_size = 9;
+static unsigned int available_fonts = 7U;
+static unsigned int font_queries;
+static unsigned int loop_text_calls;
+static short grow_width = 800, grow_height = 600;
 static short find_part = inGoAway;
 static unsigned long ticks;
 static unsigned int window_calls, color_calls, world_calls, copy_calls;
@@ -437,11 +440,6 @@ void LineTo(short h, short v) { pen.h = h; pen.v = v; }
 static void record_polygon(PolyHandle poly, unsigned int black, const RGBColor *color)
 {
     RecordedPolygon *entry;
-    EventRecord event;
-    Vertex *borrowed;
-    unsigned long revision;
-    unsigned int width;
-    int longitude, osd;
     int i, count;
     Point *points;
     Rect bounds;
@@ -462,25 +460,6 @@ static void record_polygon(PolyHandle poly, unsigned int black, const RGBColor *
         if (points[i].v > bounds.bottom) bounds.bottom = points[i].v;
     }
     assert(memcmp(&bounds, &(**poly).polyBBox, sizeof(bounds)) == 0);
-    if (reentry_requested) {
-        reentry_requested = FALSE; ++reentry_calls;
-        assert(qd_rendering);
-        borrowed = globe_verts; revision = globe_revision;
-        longitude = globe_longitude; width = drv_win_width;
-        osd = drv_osd_enabled;
-        qd_keyboard('2');
-        qd_keyboard('o');
-        memset(&event, 0, sizeof(event));
-        event.what = keyDown; event.message = 'o';
-        qd_event(&event);
-        qd_resize((int)reentry_width, (int)drv_win_height);
-        qd_refresh_display();
-        event.what = updateEvt; event.message = (long)qd_window;
-        qd_event(&event);
-        assert(globe_verts == borrowed && globe_revision == revision);
-        assert(globe_longitude == longitude && drv_win_width == width);
-        assert(drv_osd_enabled == osd && qd_rendering);
-    }
     assert(count >= 3 && count <= 10);
     for (i = 0; i < count; ++i) {
         assert(points[i].h != points[(i + 1) % count].h ||
@@ -542,15 +521,38 @@ void RGBForeColor(const RGBColor *color) { color_api(); assert(color != NULL); t
 void RGBBackColor(const RGBColor *color) { color_api(); assert(color != NULL); test_drawing_device(); test_current_colors()->background = *color; }
 void GetForeColor(RGBColor *color) { color_api(); assert(color != NULL); *color = test_current_colors()->foreground; }
 void GetBackColor(RGBColor *color) { color_api(); assert(color != NULL); *color = test_current_colors()->background; }
-void TextFont(short font) { (void)font; }
-void TextSize(short size) { assert(size > 0); }
+void GetFNum(ConstStr255Param name, short *number)
+{
+    assert(name != NULL && name[0] == 6 && memcmp(name + 1, "Geneva", 6) == 0);
+    assert(number != NULL);
+    *number = 3;
+}
+Boolean RealFont(short font, short size)
+{
+    assert(font == 3 && (size == 9 || size == 12 || size == 18));
+    ++font_queries;
+    return (available_fonts & (size == 9 ? 1U : size == 12 ? 2U : 4U)) != 0;
+}
+void TextFont(short font) { assert(font == 0 || font == 3); selected_font = font; }
+void TextSize(short size) { assert(size == 9 || size == 12 || size == 18); selected_size = size; }
+void GetFontInfo(FontInfo *font)
+{
+    assert(font != NULL);
+    font->ascent = selected_size == 18 ? 15 : selected_size == 12 ? 10 : 8;
+    font->descent = selected_size == 18 ? 5 : selected_size == 12 ? 4 : 3;
+    font->leading = selected_size == 18 ? 4 : selected_size == 12 ? 3 : 2;
+    font->widMax = selected_size == 18 ? 11 : selected_size == 12 ? 8 : 6;
+}
 void TextMode(short mode) { (void)mode; }
 short TextWidth(const void *text, short start, short count)
-{ assert(text != NULL && start >= 0 && count >= 0); return (short)(6 * count); }
+{ FontInfo font; assert(text != NULL && start >= 0 && count >= 0); GetFontInfo(&font); return (short)(font.widMax * count); }
 void DrawText(const void *text, short start, short count)
 {
+    FontInfo font;
+    GetFontInfo(&font);
     assert(text != NULL && start >= 0 && count > 0); ++text_calls;
-    assert(pen.h >= 0 && pen.v > 0 && pen.v <= 32767);
+    assert(pen.h >= 0 && pen.v >= font.ascent && pen.v <= 32767);
+    assert((long)pen.v + font.descent <= drv_win_height);
     assert(strstr((const char *)text + start, "texture") == NULL);
     assert(TextWidth(text, start, count) <= (int)drv_win_width - 16);
     assert(strlen(osd_text) + (size_t)count + 2 < sizeof(osd_text));
@@ -695,6 +697,29 @@ Boolean WaitNextEvent(EventMask mask, EventRecord *event, unsigned long sleep, R
             return TRUE;
         case 8:
             assert(!drv_lmouse_pressed && sleep == 30UL);
+            assert(!qd_rendering && !world_locked);
+            event->what = keyDown; event->message = '2';
+            return TRUE;
+        case 9:
+            assert(globe_longitude == 64 && !qd_rendering && !world_locked);
+            event->what = keyDown; event->message = 'o';
+            return TRUE;
+        case 10:
+            loop_text_calls = text_calls;
+            osd_text[0] = 0;
+            event->what = updateEvt; event->message = (long)qd_window;
+            return TRUE;
+        case 11:
+            assert(!qd_rendering && !world_locked);
+            if (drv_osd_enabled) assert(text_calls > loop_text_calls);
+            grow_width = 640; grow_height = 480;
+            find_part = inGrow;
+            event->what = mouseDown;
+            return TRUE;
+        case 12:
+            assert(drv_win_width == 640U && drv_win_height == 480U);
+            assert(!qd_rendering && !world_locked);
+            puts("PASS QuickDraw synchronous events: resolution, OSD, update and resize dispatch between complete drawing passes");
             find_part = inGoAway;
             if (quit_using_key) { event->what = keyDown; event->message = 'q'; event->modifiers = cmdKey; }
             else { event->what = mouseDown; event->where.h = 1; event->where.v = 1; }
@@ -704,7 +729,7 @@ Boolean WaitNextEvent(EventMask mask, EventRecord *event, unsigned long sleep, R
 }
 short FindWindow(Point p, WindowPtr *window) { (void)p; *window = window_live; return find_part; }
 void DragWindow(WindowPtr w, Point p, const Rect *bounds) { assert(w == window_live && bounds != NULL); (void)p; }
-long GrowWindow(WindowPtr w, Point p, const Rect *bounds) { assert(w == window_live && bounds != NULL); (void)p; return (600L << 16) | 800L; }
+long GrowWindow(WindowPtr w, Point p, const Rect *bounds) { assert(w == window_live && bounds != NULL); (void)p; return ((long)grow_height << 16) | grow_width; }
 void SizeWindow(WindowPtr w, short width, short height, Boolean update)
 { assert(w == window_live && width > 0 && height > 0); (void)update; window_port.portRect.right = width; window_port.portRect.bottom = height; }
 Boolean TrackGoAway(WindowPtr w, Point p) { assert(w == window_live); (void)p; return TRUE; }
@@ -1381,7 +1406,9 @@ static void check_osd_boundaries(void)
     unsigned int old_width, old_height, old_texts;
     int old_failure;
     Int next;
-    Int (*wide_text)(const char *, Int, short, int);
+    FontInfo font;
+    Int advance;
+    Int (*wide_text)(const char *, Int, short, const FontInfo *, Int, int);
     old_width = drv_win_width; old_height = drv_win_height;
     old_failure = fail_gworld; fail_gworld = TRUE;
     SizeWindow(qd_window, 32767, 32767, TRUE);
@@ -1391,10 +1418,12 @@ static void check_osd_boundaries(void)
     osd_text[0] = 0;
     old_texts = text_calls;
     wide_text = qd_osd_text;
-    next = wide_text("boundary", 32767L, 32751, TRUE);
-    assert(next == 32779L && text_calls == old_texts + 1U);
-    next = wide_text("outside", next, 32751, TRUE);
-    assert(next == 32791L && text_calls == old_texts + 1U);
+    TextFont(qd_font_id); TextSize(qd_font_size); GetFontInfo(&font);
+    advance = (Int)font.ascent + font.descent + font.leading;
+    next = wide_text("boundary", 32767L - font.descent, 32751, &font, advance, TRUE);
+    assert(next > 32767L && text_calls == old_texts + 1U);
+    next = wide_text("outside", next, 32751, &font, advance, TRUE);
+    assert(next > 32767L && text_calls == old_texts + 1U);
     osd_text[0] = 0;
     drv_draw_osd();
     assert(strstr(osd_text, "GWorld off") != NULL);
@@ -1405,6 +1434,50 @@ static void check_osd_boundaries(void)
     SetPort(&desktop_port);
     if (has_color) SetGDevice(&screen_device_ptr);
     puts("PASS QuickDraw OSD bounds: 32-bit baselines cross 32767 without wrapping and native text coordinates remain in range");
+}
+
+static void check_osd_fonts(void)
+{
+    static const unsigned int widths[3] = { 320U, 640U, 1024U };
+    static const unsigned int heights[3] = { 240U, 480U, 768U };
+    static const short sizes[3] = { 9, 12, 18 };
+    unsigned int old_width, old_height, i, queries;
+    int old_failure;
+    GrafPtr port;
+    GDHandle device;
+    old_width = drv_win_width; old_height = drv_win_height;
+    old_failure = fail_gworld; fail_gworld = TRUE;
+    GetPort(&port); device = has_color ? GetGDevice() : NULL;
+    for (i = 0; i < 3U; ++i) {
+        SizeWindow(qd_window, (short)widths[i], (short)heights[i], TRUE);
+        qd_resize((int)widths[i], (int)heights[i]);
+        SetPort((GrafPtr)qd_window);
+        if (has_color) SetGDevice(qd_device);
+        assert(qd_font_id == 3 && qd_font_size == sizes[i]);
+        queries = font_queries;
+        osd_text[0] = 0;
+        drv_draw_osd();
+        assert(selected_font == 3 && selected_size == sizes[i]);
+        assert(strstr(osd_text, "GWorld off") != NULL && strstr(osd_text, "1-5") != NULL);
+        assert(font_queries == queries); /* No font-resource search per frame. */
+    }
+    available_fonts = 1U;
+    qd_resize(1024, 768);
+    assert(qd_font_id == 3 && qd_font_size == 9);
+    available_fonts = 0U;
+    qd_resize(640, 480);
+    assert(qd_font_id == 0 && qd_font_size == 9);
+    osd_text[0] = 0;
+    drv_draw_osd();
+    assert(selected_font == 0 && selected_size == 9);
+    assert(strstr(osd_text, "1-5") != NULL);
+    available_fonts = 7U;
+    fail_gworld = old_failure;
+    SizeWindow(qd_window, (short)old_width, (short)old_height, TRUE);
+    qd_resize((int)old_width, (int)old_height);
+    SetPort(port);
+    if (has_color) SetGDevice(device);
+    puts("PASS QuickDraw OSD fonts: resize selects real 9/12/18-point bitmaps, unavailable sizes fall back, native ascent/descent/leading bound every line");
 }
 
 static void check_readiness(void)
@@ -1475,40 +1548,6 @@ static void check_display_refresh(void)
     assert(qd_device == (multiple_devices ? &second_device_ptr : &screen_device_ptr));
     assert((qd_palette != NULL) == (original_depth <= 8));
     puts("PASS QuickDraw display refresh: resume and activation rebuild palette/GWorld policy for changed device depth and restore the selected display");
-}
-
-static void check_render_reentry(void)
-{
-    unsigned int old_width, old_height;
-    int old_osd;
-    GrafPtr port;
-    GDHandle device;
-    old_width = drv_win_width; old_height = drv_win_height;
-    old_osd = drv_osd_enabled;
-    GetPort(&port); device = has_color ? GetGDevice() : NULL;
-    event_key('1', 0);
-    drv_osd_enabled = FALSE;
-    reentry_width = old_width - 16U;
-    reentry_requested = TRUE;
-    recorded_count = 0; osd_text[0] = 0;
-    drv_render();
-    assert(!reentry_requested && reentry_calls == 1U);
-    assert(globe_longitude == 32 && drv_win_width == old_width);
-    assert(qd_pending_count == 4U && qd_pending_resize && qd_pending_refresh);
-    assert(current_port == port && current_device == device && !world_locked);
-    SizeWindow(qd_window, (short)reentry_width, (short)old_height, TRUE);
-    recorded_count = 0; osd_text[0] = 0;
-    qd_apply_pending();
-    assert(globe_longitude == 64 && drv_win_width == reentry_width);
-    assert(!drv_osd_enabled && qd_pending_count == 0U);
-    assert(!qd_pending_resize && !qd_pending_refresh && !qd_rendering);
-    assert(current_port == port && current_device == device && !world_locked);
-    SizeWindow(qd_window, (short)old_width, (short)old_height, TRUE);
-    drv_fps_average = 99.0f;
-    qd_resize((int)old_width, (int)old_height);
-    assert(drv_fps_average == 0.0f);
-    drv_osd_enabled = old_osd;
-    puts("PASS QuickDraw reentry: native fill callbacks defer resolution, toggles, resize and updates until mesh borrows and native ports are released; resize resets timing");
 }
 
 static void check_recoverable_resources(void)
@@ -1685,6 +1724,7 @@ static int run_contract(void)
     check_quad_batches();
     check_stream_equivalence();
     check_osd_boundaries();
+    check_osd_fonts();
     check_readiness();
     event_key('2', 0);
     drv_rot_x = 19.0f; drv_rot_y = 37.0f;
@@ -1751,7 +1791,6 @@ static int run_contract(void)
     if (!has_color) assert(color_calls == 0 && world_calls == 0 && palette_calls == 0);
     else if (!fail_gworld && !fail_lock && qd_version >= gestalt32BitQD) assert(copy_calls > 0 && world_calls >= 3);
     if (fail_gworld || fail_lock || qd_version < gestalt32BitQD) assert(copy_calls == 0);
-    check_render_reentry();
     check_recoverable_resources();
     puts("PASS QuickDraw events: adaptive default/explicit window size, 1-5 keys, wrapped OSD and GWorld state, mouse, resize, port restoration and TickCount rollover");
     return 0;

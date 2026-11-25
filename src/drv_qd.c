@@ -120,27 +120,32 @@ static Soft3d_fixed_point qd_fixed_points[QD_MAX_VERTICES];
 static Soft3d_project_cache *qd_project_cache;
 static Drv_quad_stream qd_packet_stream;
 static int qd_packet_active;
-/* A native call may dispatch an event while a packet borrows mesh data.
- * Copy bounded events; process them only at the outer event-loop boundary. */
-#define QD_PENDING_EVENTS 8
-static EventRecord qd_pending_events[QD_PENDING_EVENTS];
-static unsigned int qd_pending_count;
-static int qd_pending_close, qd_pending_refresh, qd_pending_resize;
-static int qd_pending_width, qd_pending_height;
-static int qd_pending_mouse, qd_pending_mouse_x, qd_pending_mouse_y;
+/* Event handlers run synchronously in drv_loop; drawing registers no
+ * native event callbacks. Keep render guards without a second event queue. */
+static short qd_font_family;
+static short qd_font_id, qd_font_size = 9;
 
-static void qd_defer_event(const EventRecord *event)
+/* Prefer real Geneva bitmaps, retaining the existing system-font fallback
+ * when they are absent. Selection changes only with window size. */
+static void qd_select_font(void)
 {
-    unsigned int i;
-    /* Several updates to one window need only one later update scope. */
-    if (event->what == updateEvt)
-        for (i = 0; i < qd_pending_count; ++i)
-            if (qd_pending_events[i].what == updateEvt &&
-                qd_pending_events[i].message == event->message) return;
-    if (qd_pending_count < QD_PENDING_EVENTS)
-        qd_pending_events[qd_pending_count++] = *event;
-    else
-        drv_abort_frame("QuickDraw input queue full; retry control");
+    short size;
+    size = drv_win_width >= 960U && drv_win_height >= 640U ? 18 :
+           (drv_win_width >= 480U && drv_win_height >= 320U ? 12 : 9);
+    qd_font_id = 0;
+    qd_font_size = 9;
+    if (qd_font_family == 0) return;
+    for (;;)
+    {
+        if (RealFont(qd_font_family, size))
+        {
+            qd_font_id = qd_font_family;
+            qd_font_size = size;
+            return;
+        }
+        if (size == 9) return;
+        size = size == 18 ? 12 : 9;
+    }
 }
 
 static void qd_pascal(Str255 result, const char *text)
@@ -222,9 +227,6 @@ static void qd_cleanup(void)
     qd_ready = FALSE;
     qd_running = FALSE;
     qd_active = FALSE;
-    qd_pending_count = 0;
-    qd_pending_close = qd_pending_refresh = qd_pending_resize = FALSE;
-    qd_pending_mouse = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     qd_finish_render();
     if (qd_polygon != NULL) DisposeHandle((Handle)qd_polygon);
@@ -266,11 +268,7 @@ void qd_error(char *message)
 
 void drv_close(void)
 {
-    if (qd_rendering)
-    {
-        qd_pending_close = TRUE;
-        return;
-    }
+    if (qd_rendering) return;
     qd_ready = FALSE;
     qd_running = FALSE;
     qd_active = FALSE;
@@ -281,6 +279,7 @@ void drv_init(int *argc, char **argv)
 {
     long quickdraw_version, processor, fpu;
     static const unsigned char file_title[] = "\004File";
+    static const unsigned char font_name[] = "\006Geneva";
     static const unsigned char quit_item[] = "\006Quit/Q";
     (void)argc; (void)argv;
     qd_ready = FALSE;
@@ -288,12 +287,11 @@ void drv_init(int *argc, char **argv)
     qd_palette_reduced = FALSE;
     qd_frame_paused = FALSE;
     qd_polygon_failed = FALSE;
-    qd_pending_count = 0;
-    qd_pending_close = qd_pending_refresh = qd_pending_resize = FALSE;
-    qd_pending_mouse = FALSE;
     MaxApplZone();
     InitGraf(&qd.thePort);
     InitFonts();
+    qd_font_family = 0;
+    GetFNum(font_name, &qd_font_family);
     InitWindows();
     InitMenus();
     TEInit();
@@ -438,7 +436,7 @@ static void qd_refresh_display(void)
     Rect old_screen;
     int old_depth;
     if (!qd_ready || qd_window == NULL) return;
-    if (qd_rendering) { qd_pending_refresh = TRUE; return; }
+    if (qd_rendering) return;
     old_device = qd_device;
     old_depth = qd_depth;
     old_screen = qd_screen;
@@ -466,16 +464,11 @@ static void qd_refresh_display(void)
 static void qd_resize(int width, int height)
 {
     if (width < 1 || height < 1) return;
-    if (qd_rendering)
-    {
-        qd_pending_width = width;
-        qd_pending_height = height;
-        qd_pending_resize = TRUE;
-        return;
-    }
+    if (qd_rendering) return;
     if (width > 32767 || height > 32767) qd_error("QuickDraw window is too large");
     drv_win_width = (unsigned int)width;
     drv_win_height = (unsigned int)height;
+    qd_select_font();
     if (qd_window != NULL) qd_make_buffer();
     qd_frame_paused = FALSE;
     qd_auto_tick = TickCount();
@@ -515,6 +508,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
                               documentProc, (WindowPtr)-1L, TRUE, 0L);
     if (qd_window == NULL) qd_error("Cannot create QuickDraw window");
     SetPort((GrafPtr)qd_window);
+    qd_select_font();
     if (qd_color_available && qd_depth <= 8) qd_make_palette();
     qd_make_buffer();
     qd_ready = TRUE;
@@ -770,7 +764,8 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
 
 /* Native font metrics keep both the statistics and help readable on a
  * 320-pixel window. A counting pass positions wrapped help at the bottom. */
-static Int qd_osd_text(const char *text, Int baseline, short width, int draw)
+static Int qd_osd_text(const char *text, Int baseline, short width,
+                       const FontInfo *font, Int advance, int draw)
 {
     short count, last_space;
     while (*text != 0)
@@ -782,14 +777,15 @@ static Int qd_osd_text(const char *text, Int baseline, short width, int draw)
             ++count;
         }
         if (text[count] != 0 && last_space > 0) count = last_space;
-        if (count == 0) count = 1;
-        if (draw && baseline > 0L && baseline <= (Int)drv_win_height &&
+        if (count == 0) break;
+        if (draw && baseline >= (Int)font->ascent &&
+            baseline + font->descent <= (Int)drv_win_height &&
             baseline <= 32767L)
         {
             MoveTo(8, (short)baseline);
             DrawText((Ptr)text, 0, count);
         }
-        baseline += 12L;
+        baseline += advance;
         text += count;
         while (*text == ' ') ++text;
     }
@@ -801,7 +797,8 @@ void drv_draw_osd(void)
     char status[224];
     RGBColor white;
     short width;
-    Int next_line, help_baseline;
+    Int advance, next_line, help_baseline, help_height;
+    FontInfo font;
     if (!qd_ready || drv_win_width <= 16 || drv_win_height < 16) return;
     if (qd_depth > 1)
     {
@@ -809,8 +806,12 @@ void drv_draw_osd(void)
         RGBForeColor(&white);
     }
     else ForeColor(blackColor);
-    TextFont(0);
-    TextSize(9);
+    TextFont(qd_font_id);
+    TextSize(qd_font_size);
+    GetFontInfo(&font);
+    advance = (Int)font.ascent + font.descent + font.leading;
+    if (font.ascent <= 0 || font.descent < 0 ||
+        font.leading < 0 || advance <= 0) return;
     TextMode(srcCopy);
     drv_format_stats(status);
     sprintf(status + strlen(status), ", %s, GWorld %s",
@@ -822,10 +823,13 @@ void drv_draw_osd(void)
     if (qd_frame_paused)
         drv_append_status(status, sizeof(status), ", paused; use a control to retry");
     width = (short)(drv_win_width - 16U);
-    next_line = qd_osd_text(status, 14, width, TRUE);
-    help_baseline = (Int)drv_win_height + 4L -
-                    qd_osd_text(drv_help, 0L, width, FALSE);
-    if (help_baseline >= next_line) qd_osd_text(drv_help, help_baseline, width, TRUE);
+    next_line = qd_osd_text(status, 4L + font.ascent, width,
+                            &font, advance, TRUE);
+    help_height = qd_osd_text(drv_help, 0L, width, &font, advance, FALSE);
+    help_baseline = (Int)drv_win_height - 4L - font.descent -
+                     help_height + advance;
+    if (help_baseline >= next_line)
+        qd_osd_text(drv_help, help_baseline, width, &font, advance, TRUE);
 }
 
 static void qd_present(void)
@@ -943,20 +947,7 @@ void drv_render(void)
 
 static void qd_keyboard(unsigned char key)
 {
-    EventRecord event;
-    if (!qd_ready) return;
-    if (qd_rendering)
-    {
-        if (key == 27) qd_pending_close = TRUE;
-        else
-        {
-            memset(&event, 0, sizeof(event));
-            event.what = keyDown;
-            event.message = key;
-            qd_defer_event(&event);
-        }
-        return;
-    }
+    if (!qd_ready || qd_rendering) return;
     if (key == 27) { drv_close(); return; }
     if (!drv_handle_key(key)) return;
     qd_frame_paused = FALSE;
@@ -967,14 +958,7 @@ static void qd_keyboard(unsigned char key)
 
 static void qd_mouse_move(int x, int y)
 {
-    if (!qd_ready) return;
-    if (qd_rendering)
-    {
-        qd_pending_mouse_x = x;
-        qd_pending_mouse_y = y;
-        qd_pending_mouse = TRUE;
-        return;
-    }
+    if (!qd_ready || qd_rendering) return;
     if (drv_lmouse_pressed)
     {
         drv_rotate_drag((long)x - qd_old_x, (long)y - qd_old_y);
@@ -998,8 +982,7 @@ static void qd_event(EventRecord *event)
     long dimensions;
     short part;
     unsigned char key;
-    if (!qd_ready || !qd_running || event == NULL) return;
-    if (qd_rendering) { qd_defer_event(event); return; }
+    if (!qd_ready || !qd_running || qd_rendering || event == NULL) return;
     switch (event->what)
     {
         case mouseDown:
@@ -1091,46 +1074,6 @@ static void qd_event(EventRecord *event)
     }
 }
 
-static void qd_apply_pending(void)
-{
-    EventRecord event;
-    unsigned int remaining;
-    if (qd_rendering || !qd_ready || !qd_running) return;
-    if (qd_pending_close)
-    {
-        qd_pending_close = FALSE;
-        qd_pending_count = 0;
-        drv_close();
-        return;
-    }
-    if (qd_pending_resize)
-    {
-        qd_pending_resize = FALSE;
-        qd_resize(qd_pending_width, qd_pending_height);
-    }
-    if (qd_pending_refresh)
-    {
-        qd_pending_refresh = FALSE;
-        qd_refresh_display();
-    }
-    if (qd_pending_mouse)
-    {
-        qd_pending_mouse = FALSE;
-        qd_mouse_move(qd_pending_mouse_x, qd_pending_mouse_y);
-    }
-    /* Newly dispatched native callbacks cannot create an unbounded drain. */
-    remaining = QD_PENDING_EVENTS;
-    while (qd_pending_count != 0 && remaining-- != 0 && qd_running)
-    {
-        event = qd_pending_events[0];
-        --qd_pending_count;
-        if (qd_pending_count != 0)
-            memmove(qd_pending_events, qd_pending_events + 1,
-                      qd_pending_count * sizeof(EventRecord));
-        qd_event(&event);
-    }
-}
-
 void drv_loop(void)
 {
     EventRecord event;
@@ -1140,11 +1083,9 @@ void drv_loop(void)
     qd_auto_tick = TickCount();
     while (qd_running)
     {
-        qd_apply_pending();
-        if (!qd_running) break;
         if (WaitNextEvent(everyEvent, &event,
                            ((drv_animation_allowed() && !qd_frame_paused) ||
-                            drv_lmouse_pressed || qd_pending_count != 0) ? 1L : 30L, NULL))
+                            drv_lmouse_pressed) ? 1L : 30L, NULL))
             qd_event(&event);
         if (!qd_running) break;
         if (qd_active && drv_lmouse_pressed)
@@ -1164,7 +1105,6 @@ void drv_loop(void)
         }
         else qd_auto_tick = TickCount();
         if (qd_active && qd_dirty) drv_render();
-        qd_apply_pending();
     }
     qd_cleanup();
 }

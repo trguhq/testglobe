@@ -61,6 +61,7 @@ extern void ogl_ami_loop(void (*draw)(void), void (*resize)(int, int),
     void (*key)(unsigned char, int, int), void (*mouse)(int, int, int, int),
     void (*motion)(int, int));
 extern void ogl_ami_draw_string(const char *text, int x, int y);
+extern void ogl_ami_draw_osd(const char *status, const char *help);
 extern double ogl_ami_time_now(void);
 extern void ogl_ami_error(char *message);
 

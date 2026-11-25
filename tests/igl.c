@@ -79,6 +79,9 @@ static int subdivision_enabled;
 static int requested[1024];
 static char recorded_stats[256];
 static int recording_stats;
+static long font_height = 14, text_baseline;
+static int checking_osd_bounds, recording_help;
+static long status_bottom, help_top;
 static float rotation_values[8];
 static char rotation_axes[8];
 static int rotations;
@@ -316,7 +319,7 @@ void tevdef(long id,long np,float *props){assert(id>0&&np>0&&props[np-1]==TV_NUL
 void tevbind(long target,long id){assert(target==TV_ENV0);environment_bound=id!=0;}
 void t2f(float uv[2]){assert(in_mesh&&uv[0]>=0&&uv[0]<=1&&uv[1]>=0&&uv[1]<=1);memcpy(last_uv,uv,sizeof(last_uv));++coordinate_calls;++current_uv;}
 long getplanes(void){return mode_indexed?8:24;}
-long getheight(void){return 14;}
+long getheight(void){return font_height;}
 long strwidth(char *text){return (long)strlen(text)*8;}
 void lrectwrite(Screencoord l,Screencoord b,Screencoord r,Screencoord top,unsigned long *pixels)
 {
@@ -326,17 +329,49 @@ void lrectwrite(Screencoord l,Screencoord b,Screencoord r,Screencoord top,unsign
     assert(changed>100);++raster_writes;
 }
 void font(short index){assert(index==0);}
-void cmov2i(Icoord x,Icoord y){assert(x>=0&&x<(long)drv_win_width&&y>=0&&y<(long)drv_win_height);}
+void cmov2i(Icoord x,Icoord y){assert(x>=0&&x<(long)drv_win_width&&y>=0&&y<(long)drv_win_height);text_baseline=y;}
 void charstr(char *text){
 #ifdef IGL_TEST_SUBDIVIDE
 assert(!subdivision_enabled);
 #endif
 assert(!texture_bound&&!z_enabled);assert(text!=NULL);
+if(checking_osd_bounds){
+    assert(strwidth(text)<=(long)drv_win_width-16L);
+    assert(text_baseline>=font_height&&text_baseline+font_height<(long)drv_win_height);
+    if(strstr(text,"1-5")!=NULL)recording_help=1;
+    if(recording_help){if(text_baseline+font_height>help_top)help_top=text_baseline+font_height;}
+    else if(text_baseline-font_height<status_bottom)status_bottom=text_baseline-font_height;
+}
 if(strstr(text,"1-5")!=NULL)recording_stats=0;
 else if(strstr(text,"triangles")||strstr(text,"scene")){
     recording_stats=1;strncpy(recorded_stats,text,sizeof(recorded_stats)-1);recorded_stats[sizeof(recorded_stats)-1]=0;
 }else if(recording_stats){drv_append_status(recorded_stats,sizeof(recorded_stats)," ");drv_append_status(recorded_stats,sizeof(recorded_stats),text);}
 ++text_calls;}
+
+static void check_osd_layout(void)
+{
+    unsigned int saved_width, saved_height;
+    unsigned long before;
+    saved_width=drv_win_width;saved_height=drv_win_height;
+    checking_osd_bounds=1;
+    drv_win_width=320;drv_win_height=240;
+    recording_help=0;help_top=0;status_bottom=240;
+    drv_draw_osd();
+    assert(recording_help&&help_top+4<=status_bottom);
+    /* Large native fonts and short windows retain bounded statistics,
+     * suppressing help when the complete blocks would overlap. */
+    drv_win_height=100;font_height=32;
+    recording_help=0;help_top=0;status_bottom=100;
+    drv_draw_osd();
+    assert(!recording_help);
+    drv_win_width=18;drv_win_height=240;
+    before=text_calls;
+    drv_draw_osd();
+    assert(text_calls==before);
+    checking_osd_bounds=0;font_height=14;
+    drv_win_width=saved_width;drv_win_height=saved_height;
+    puts("PASS IRIS GL OSD: native font metrics, bounded glyphs, narrow windows and nonoverlapping status/help");
+}
 void qdevice(Device device){assert(device<1024);requested[device]=1;}
 void qreset(void){event_index=event_count;}
 long qtest(void){if(empty_wait_expected)assert(clears<=empty_clear_limit);return event_index<event_count?events[event_index].device:0;}
@@ -653,6 +688,7 @@ int main(int argc,char **argv)
 #endif
     igl_keyboard('a');assert(drv_auto_enabled);igl_keyboard('A');assert(!drv_auto_enabled);
     window_width=500;window_height=300;igl_event(REDRAW,2);assert(drv_win_width==640&&drv_win_height==480);igl_event(REDRAW,1);assert(drv_win_width==500&&drv_win_height==300);frame();
+    check_osd_layout();
     igl_event(RIGHTMOUSE,1);assert(drv_rmouse_pressed);
     igl_event(INPUTCHANGE,0);assert(!drv_lmouse_pressed&&!drv_rmouse_pressed&&!igl_active);igl_event(INPUTCHANGE,1);assert(igl_active);
     igl_event(QFULL,0);assert(event_index==event_count);

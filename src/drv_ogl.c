@@ -41,6 +41,44 @@
 #ifndef OGL_AMIGA
 /* OpenGL font pointer */
 static void *ogl_font;
+static int ogl_font_ascent = 12, ogl_font_descent = 4;
+static int ogl_font_step = 18;
+
+static void ogl_select_font(int width, int height)
+{
+    const unsigned char *text;
+    int tier, extent;
+    tier = width < 480 || height < 320 ? 0 :
+           (width >= 1024 && height >= 600 ? 2 : 1);
+    /* Classic GLUT supplies widths but no bitmap-height query. These stock
+     * font bounds include descenders; keep two pixels between lines. Prefer
+     * a smaller font before wrapping the fixed help text, only on resize. */
+    for (;;)
+    {
+        if (tier == 0)
+        {
+            ogl_font = GLUT_BITMAP_HELVETICA_10;
+            ogl_font_ascent = 11; ogl_font_descent = 3;
+        }
+        else if (tier == 2)
+        {
+            ogl_font = GLUT_BITMAP_HELVETICA_18;
+            ogl_font_ascent = 18; ogl_font_descent = 5;
+        }
+        else
+        {
+            ogl_font = GLUT_BITMAP_HELVETICA_12;
+            ogl_font_ascent = 12; ogl_font_descent = 4;
+        }
+        if (tier == 0) break;
+        extent = 0;
+        for (text = (const unsigned char *)drv_help; *text != 0; ++text)
+            extent += glutBitmapWidth(ogl_font, *text);
+        if (extent <= width - 20) break;
+        --tier;
+    }
+    ogl_font_step = ogl_font_ascent + ogl_font_descent + 2;
+}
 #endif
 
 /* previous mouse pointer location */
@@ -488,7 +526,7 @@ void drv_init(int *argc, char **argv)
 #else
     glutInit(argc, argv);
     if (atexit(ogl_cleanup) != 0) error("Cannot register OpenGL cleanup");
-    ogl_font = GLUT_BITMAP_HELVETICA_12;
+    ogl_select_font((int)drv_win_width, (int)drv_win_height);
 #endif
 }
 
@@ -807,6 +845,7 @@ static void ogl_resize(int width, int height) {
     if (changed == 2) ogl_render_state();
 #else
     if (width < 1 || height < 1) return;
+    ogl_select_font(width, height);
 #endif
     drv_win_width = width;
     drv_win_height = height;
@@ -849,14 +888,67 @@ static void ogl_texture_failure(const char *message)
     drv_reset_timing();
 }
 
-/* load texture */
+/* One complete candidate attempt. Allocation failures leave no partial GPU
+ * image or staging allocation; the caller owns the single retry policy. */
+static Drv_result ogl_texture_attempt(unsigned int size, const char **reason)
+{
+    Drv_result result;
+    unsigned char *rgb;
+    *reason = NULL;
+    result = texture_build((int)size);
+    if (result == DRV_NO_MEMORY) return result;
+    if (result != DRV_OK) error("Invalid embedded OpenGL texture data");
+    if (ogl_indexed)
+    {
+        rgb = texture_take_data();
+        result = texsoft_texture_take_filtered(size, size / 2U, rgb,
+                                               TEXSOFT_BILINEAR);
+        if (result != DRV_OK && result != DRV_NO_MEMORY)
+            error("Invalid OpenGL software texture image");
+        return result;
+    }
+    ogl_checkerror();
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    if (ogl_checkerror() || texture_id == 0)
+    {
+        *reason = "Cannot allocate OpenGL texture";
+        return DRV_NATIVE_FAILED;
+    }
+    result = ogl_upload_texture();
+    if (result == DRV_NO_MEMORY)
+    {
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDeleteTextures(1, &texture_id);
+        texture_id = 0;
+        texture_free();
+        if (ogl_checkerror())
+        {
+            *reason = "Cannot release OpenGL texture";
+            return DRV_NATIVE_FAILED;
+        }
+        return DRV_NO_MEMORY;
+    }
+    if (result != DRV_OK)
+    {
+        *reason = "Cannot upload OpenGL texture";
+        return result;
+    }
+    texture_free();
+    return DRV_OK;
+}
+
+/* Try each supported size, with at most one optional-resource eviction. */
 static int ogl_texture_load(void)
 {
     Drv_result result;
     unsigned int size;
-    unsigned char *rgb;
     GLint maximum;
     int released;
+    const char *reason;
     char message[64];
     released = FALSE;
     size = TEXTURE_DEFAULT_SIZE;
@@ -880,72 +972,18 @@ static int ogl_texture_load(void)
     }
     for (; size >= 32U; size /= 2U)
     {
-retry_image:
-        result = texture_build((int)size);
+        result = ogl_texture_attempt(size, &reason);
         if (result == DRV_NO_MEMORY && !released)
         {
             drv_release_optional();
             released = TRUE;
-            result = texture_build((int)size);
+            result = ogl_texture_attempt(size, &reason);
         }
         if (result == DRV_NO_MEMORY) continue;
-        if (result != DRV_OK) error("Invalid embedded OpenGL texture data");
-        if (ogl_indexed)
+        if (result != DRV_OK)
         {
-            rgb = texture_take_data();
-            result = texsoft_texture_take_filtered(size, size / 2U, rgb,
-                                                   TEXSOFT_BILINEAR);
-            if (result == DRV_NO_MEMORY)
-            {
-                if (!released)
-                {
-                    drv_release_optional();
-                    released = TRUE;
-                    goto retry_image;
-                }
-                continue;
-            }
-            if (result != DRV_OK) error("Invalid OpenGL software texture image");
-        }
-        else
-        {
-            ogl_checkerror();
-            glGenTextures(1, &texture_id);
-            glBindTexture(GL_TEXTURE_2D, texture_id);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-            if (ogl_checkerror() || texture_id == 0)
-            {
-                ogl_texture_failure("Cannot allocate OpenGL texture");
-                return FALSE;
-            }
-            result = ogl_upload_texture();
-            if (result == DRV_NO_MEMORY)
-            {
-                glBindTexture(GL_TEXTURE_2D, 0);
-                glDeleteTextures(1, &texture_id);
-                texture_id = 0;
-                texture_free();
-                if (ogl_checkerror())
-                {
-                    ogl_texture_failure("Cannot release OpenGL texture");
-                    return FALSE;
-                }
-                if (!released)
-                {
-                    drv_release_optional();
-                    released = TRUE;
-                    goto retry_image;
-                }
-                continue;
-            }
-            if (result != DRV_OK)
-            {
-                ogl_texture_failure("Cannot upload OpenGL texture");
-                return FALSE;
-            }
-            texture_free();
+            ogl_texture_failure(reason != NULL ? reason : "Cannot load OpenGL texture");
+            return FALSE;
         }
         drv_texture_loaded = TRUE;
         if (size < TEXTURE_DEFAULT_SIZE)
@@ -1282,17 +1320,42 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
 }
 #endif /* TRISTRIP */
 
-/* Private bitmap text helper stays with the OSD drawing code. */
-static void ogl_draw_string(const char *str, int x, int y)
+#ifndef OGL_AMIGA
+/* Native bitmap widths preserve proportional spacing. Measure and draw the
+ * same word wrapping; no glyph may extend outside the drawable viewport. */
+static int ogl_osd_text(const char *text, int baseline, int draw)
 {
-#ifdef OGL_AMIGA
-    ogl_ami_draw_string(str, x, y);
-#else
-    glRasterPos2i(x, y);
-    while (*str != 0)
-        glutBitmapCharacter(ogl_font, *str++);
-#endif
+    int count, space, width, next, lines;
+    width = (int)drv_win_width - 20;
+    lines = 0;
+    while (*text != 0 && width > 0)
+    {
+        count = space = next = 0;
+        while (text[count] != 0)
+        {
+            next += glutBitmapWidth(ogl_font, (unsigned char)text[count]);
+            if (next > width) break;
+            if (text[count] == ' ') space = count;
+            ++count;
+        }
+        if (text[count] != 0 && space > 0) count = space;
+        if (count == 0) break;
+        if (draw && baseline - ogl_font_descent >= 4 &&
+            baseline + ogl_font_ascent <= (int)drv_win_height - 4)
+        {
+            int i;
+            glRasterPos2i(10, baseline);
+            for (i = 0; i < count; ++i)
+                glutBitmapCharacter(ogl_font, (unsigned char)text[i]);
+        }
+        ++lines;
+        baseline -= ogl_font_step;
+        text += count;
+        while (*text == ' ') ++text;
+    }
+    return lines;
 }
+#endif
 
 /* draw the OSD */
 void drv_draw_osd(void)
@@ -1301,6 +1364,7 @@ void drv_draw_osd(void)
     char dimensions[24];
 
 #ifndef OGL_AMIGA
+    int status_lines, help_lines, top, bottom;
     glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_TEXTURE_2D);
@@ -1315,7 +1379,6 @@ void drv_draw_osd(void)
     else glColor3ub(255, 255, 255);
 #endif
     
-    ogl_draw_string(drv_help, 10, 10);
     drv_format_stats(status_str);
     drv_append_status(status_str, sizeof(status_str),
              (!ogl_dlist_enabled || drv_cull_enabled) ? ", dlist off" :
@@ -1328,9 +1391,16 @@ void drv_draw_osd(void)
         sprintf(dimensions, " (%u)", texture_size);
         drv_append_status(status_str, sizeof(status_str), dimensions);
     }
-    ogl_draw_string(status_str, 10, drv_win_height - 18);
-    
-#ifndef OGL_AMIGA
+#ifdef OGL_AMIGA
+    ogl_ami_draw_osd(status_str, drv_help);
+#else
+    top = (int)drv_win_height - 4 - ogl_font_ascent;
+    status_lines = ogl_osd_text(status_str, top, TRUE);
+    help_lines = ogl_osd_text(drv_help, 0, FALSE);
+    bottom = 4 + ogl_font_descent + (help_lines - 1) * ogl_font_step;
+    if (help_lines > 0 && bottom + ogl_font_ascent + 2 <
+        top - (status_lines - 1) * ogl_font_step - ogl_font_descent)
+        (void)ogl_osd_text(drv_help, bottom, TRUE);
     glPopAttrib();
 #endif
 }

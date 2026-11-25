@@ -688,11 +688,14 @@ static unsigned int tga_text_columns(void)
     return columns != 0U ? columns : 1U;
 }
 
-static void tga_draw_text(short y, const char *text)
+/* Use the same word boundaries to measure and draw. Font zero belongs to
+ * the board: a smaller resident font is not guaranteed by TIGA. */
+static unsigned int tga_text_lines(const char *text, short y, short bottom,
+                                    int draw)
 {
     char line[120];
-    unsigned int n, take, columns = tga_text_columns();
-    while (*text != '\0' && y < (short)(drv_win_height - tga_font_height))
+    unsigned int n, take, lines = 0, columns = tga_text_columns();
+    while (*text != '\0')
     {
         n = 0;
         while (n < columns && text[n] != '\0') ++n;
@@ -702,34 +705,57 @@ static void tga_draw_text(short y, const char *text)
             while (take > 0U && text[take] != ' ') --take;
             if (take == 0U) take = n;
         }
-        memcpy(line, text, take);
-        line[take] = '\0';
-        (void)text_out(8, y, line);
-        if (!tga_check()) return;
+        if (draw && y >= 0 && y + (short)tga_font_height <= bottom)
+        {
+            memcpy(line, text, take);
+            line[take] = '\0';
+            (void)text_out(8, y, line);
+            if (!tga_check()) return lines;
+        }
         text += take;
         while (*text == ' ') ++text;
         y += (short)tga_font_height;
+        ++lines;
     }
+    return lines;
 }
 
 void drv_draw_osd(void)
 {
     char status[256];
-    unsigned int lines, columns;
+    unsigned int lines;
+    short help_top, bottom;
     set_fcolor((long)tga_white);
     if (!tga_check()) return;
     drv_format_stats(status);
     drv_append_soft3d_status(status, sizeof(status), "TI", tga_cpu, tga_has_fpu);
     drv_append_status(status, sizeof(status), tga_config.mode.num_pages >= 2U ?
                        ", double buffer" : ", single page");
-    tga_draw_text(8, status);
-    columns = tga_text_columns();
-    /* Help may wrap at spaces before the column limit; reserve one extra
-     * line so the S option remains visible even with a wide system font. */
-    lines = (unsigned int)strlen(drv_help) / columns + 2U;
-    if (lines * tga_font_height > drv_win_height / 2U)
-        lines = drv_win_height / (2U * tga_font_height);
-    tga_draw_text((short)(drv_win_height - 8U - lines * tga_font_height), drv_help);
+    lines = tga_text_lines(drv_help, 0, 0, FALSE);
+    bottom = (short)(drv_win_height - 8U);
+    help_top = bottom - (short)(lines * tga_font_height);
+    if (help_top < 8) help_top = 8;
+    if (globe_ready() &&
+        8U + tga_text_lines(status, 0, 0, FALSE) * tga_font_height >
+                   (unsigned int)(help_top - 4))
+    {
+        /* Keep the counts, FPS and S state legible before optional hardware
+         * details when the board's system font leaves very few text rows. */
+        sprintf(status, "%lu quads/%lu vis", globe_quads_num, globe_quads_num_vis);
+        if (drv_fps_enabled)
+            sprintf(status + strlen(status), " %.2f FPS", (double)drv_fps_average);
+        drv_append_status(status, sizeof(status),
+                           drv_soft3d_active ? " soft3d on" : " soft3d off");
+        if (drv_get_notice()[0] != '\0')
+        {
+            drv_append_status(status, sizeof(status), "; ");
+            drv_append_status(status, sizeof(status), drv_get_notice());
+        }
+    }
+    /* Reserve the actual help height, even with an oversized system font.
+     * Excess status lines must not overwrite the keyboard controls. */
+    (void)tga_text_lines(status, 8, (short)(help_top - 4), TRUE);
+    if (!tga_io_failed) (void)tga_text_lines(drv_help, help_top, bottom, TRUE);
 }
 
 void drv_render(void)

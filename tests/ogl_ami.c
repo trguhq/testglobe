@@ -21,7 +21,9 @@ static unsigned int bitmap_bytes = 4, bitmap_format = 12;
 static unsigned int allocated_width, allocated_height;
 static int rounded_bitmap, short_bitmap, huge_bitmap;
 static struct BitMap owned_bitmap;
-static struct TextFont font;
+static struct TextFont font, osd_fonts[2];
+static unsigned int font_opens, font_closes, font_draws[2];
+static int fail_fonts, oversize_fonts, check_osd_layout, osd_last_bottom;
 static struct ColorMap palette;
 static struct MsgPort messages_port;
 static struct Task task;
@@ -203,6 +205,33 @@ void SetBPen(struct RastPort *value, ULONG pen)
 { assert(value == &port && pen == 1); port.BgPen = (UBYTE)pen; }
 void SetDrMd(struct RastPort *value, ULONG mode)
 { assert(value == &port && mode == JAM2); port.DrawMode = (UBYTE)mode; }
+struct TextFont *OpenFont(struct TextAttr *attributes)
+{
+    unsigned int slot;
+    assert(strcmp(attributes->ta_Name, "topaz.font") == 0);
+    assert(attributes->ta_YSize == 8U || attributes->ta_YSize == 9U);
+    if (fail_fonts) return NULL;
+    slot = attributes->ta_YSize - 8U;
+    osd_fonts[slot].tf_YSize = oversize_fonts ? 18 : attributes->ta_YSize;
+    osd_fonts[slot].tf_XSize = 8;
+    osd_fonts[slot].tf_Baseline = osd_fonts[slot].tf_YSize - 2;
+    ++font_opens;
+    return osd_fonts + slot;
+}
+void CloseFont(struct TextFont *value)
+{
+    assert(value == osd_fonts || value == osd_fonts + 1);
+    ++font_closes;
+    assert(font_closes <= font_opens);
+}
+void SetFont(struct RastPort *value, struct TextFont *selected)
+{
+    assert(value == &port && selected != NULL);
+    value->Font = selected;
+    value->TxHeight = selected->tf_YSize;
+    value->TxWidth = selected->tf_XSize;
+    value->TxBaseline = selected->tf_Baseline;
+}
 WORD TextLength(struct RastPort *value, CONST_STRPTR text, ULONG length)
 { assert(value == &port && text); return (WORD)(length * 8); }
 void Move(struct RastPort *value, LONG x, LONG y)
@@ -210,6 +239,13 @@ void Move(struct RastPort *value, LONG x, LONG y)
 void Text(struct RastPort *value, CONST_STRPTR text, ULONG length)
 {
     assert(value == &port && text && length && layer_locks == 1);
+    if (check_osd_layout)
+    {
+        assert(port.cp_y - port.TxBaseline > osd_last_bottom);
+        osd_last_bottom = port.cp_y + port.TxHeight - port.TxBaseline - 1;
+    }
+    if (port.Font == osd_fonts) ++font_draws[0];
+    if (port.Font == osd_fonts + 1) ++font_draws[1];
     assert(port.cp_x >= window.BorderLeft && port.cp_y - port.TxBaseline >= window.BorderTop);
     assert(port.cp_x + (long)length * 8 < window.Width - window.BorderRight);
     assert(port.cp_y + port.TxHeight - port.TxBaseline - 1 < window.Height - window.BorderBottom);
@@ -276,6 +312,9 @@ int main(int argc, char **argv)
     unsigned int before;
     double time;
     profile = argc > 1 ? argv[1] : "normal";
+    fail_fonts = strcmp(profile, "fontfail") == 0;
+    oversize_fonts = strcmp(profile, "fontlarge") == 0;
+    font.tf_YSize = 8; font.tf_XSize = 8; font.tf_Baseline = 6;
     set_dispatch();
     screen.Width = 800; screen.Height = 600; screen.RastPort.BitMap = &screen.BitMap;
     palette.Count = 4; screen.ViewPort.ColorMap = &palette;
@@ -326,9 +365,25 @@ int main(int argc, char **argv)
     ogl_ami_draw_string("Bottom line descenders stay inside the client area", 10, 0);
     port.TxHeight = 8; port.TxBaseline = 6;
     assert(text_calls >= 2);
+    check_osd_layout = TRUE; osd_last_bottom = -1;
+    ogl_ami_draw_osd("Status line", "Help line");
+    check_osd_layout = FALSE;
+    assert(port.Font == &font);
+    if (!fail_fonts && !oversize_fonts) assert(font_draws[1] > 0U);
     window.Width = 336; window.Height = 264;
     before = flips; ogl_ami_present(); assert(flips == before + 1 && !layer_locks && !blitter_busy);
     assert(ogl_ami_resize_context(320, 240) == 2 && creates == 2 && deletes == 1);
+    check_osd_layout = TRUE; osd_last_bottom = -1;
+    ogl_ami_draw_osd("Status line", "Help line");
+    check_osd_layout = FALSE;
+    assert(port.Font == &font);
+    if (!fail_fonts && !oversize_fonts) assert(font_draws[0] > 0U);
+    window.Width = 112; window.Height = 104;
+    check_osd_layout = TRUE; osd_last_bottom = -1;
+    ogl_ami_draw_osd("A deliberately long status line occupies the tiny client area",
+                     "Help must not overlap the full status block");
+    check_osd_layout = FALSE;
+    window.Width = 336; window.Height = 264;
     before = creates; fail_context = 1; window.Width = 400;
     assert(ogl_ami_resize_context(384, 240) == 0 && !ogl_ami_ready() && creates == before + 1);
     assert(deletes == 2 && notices > 0); fail_context = 0;
@@ -356,6 +411,7 @@ int main(int argc, char **argv)
     assert(last_mouse_x == 40 && last_mouse_y == 50 && !refreshes && replies == queued && waits == 1);
     ogl_ami_cleanup(); ogl_ami_cleanup();
     assert(!libraries && !windows && !locks && !current_context && !outstanding && !bitmap_count && !blitter_busy);
+    assert(font_opens == font_closes);
     assert(deletes == creates - 1); /* One context creation was injected to fail. */
     puts("PASS MiniGL platform: exact ABI gate, screen/window ownership, context resize/retry, native OSD/input/clock and cleanup");
     return 0;

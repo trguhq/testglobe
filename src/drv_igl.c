@@ -552,14 +552,12 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
 }
 
 /* Font 0 is native GL's built-in bitmap font; no Font Manager is needed. */
-static int igl_osd_text(const char *text, long baseline, long width, int draw)
+static int igl_osd_text(const char *text, long baseline, long width,
+                         long height, int draw)
 {
     char line[256];
     unsigned int count, space;
     int lines;
-    long height;
-    height = getheight();
-    if (height < 1) height = 14;
     lines = 0;
     while (*text != 0)
     {
@@ -572,9 +570,13 @@ static int igl_osd_text(const char *text, long baseline, long width, int draw)
             ++count;
         }
         if (text[count] != 0 && space > 0) count = space;
-        if (count == 0) count = 1;
+        /* Do not draw even a single glyph wider than the drawable. */
+        if (count == 0) return lines;
         memcpy(line, text, count); line[count] = 0;
-        if (draw && baseline >= 0 && baseline < (long)drv_win_height)
+        /* Font 0 has no portable size selector. Its total native height is
+         * also a conservative bound on either side of the baseline. */
+        if (draw && baseline >= height &&
+            baseline + height < (long)drv_win_height)
         {
             cmov2i(8, baseline);
             charstr(line);
@@ -592,8 +594,8 @@ void drv_draw_osd(void)
     Matrix model, projection;
     char status[256];
     char dimensions[24];
-    long height;
-    int help_lines;
+    long height, status_baseline, help_baseline, status_bottom;
+    int help_lines, status_lines;
     if (drv_win_width <= 16 || drv_win_height <= 16) return;
     mmode(MVIEWING); getmatrix(model);
     mmode(MPROJECTION); getmatrix(projection);
@@ -616,11 +618,16 @@ void drv_draw_osd(void)
         sprintf(dimensions, " (%u)", texture_size);
         drv_append_status(status, sizeof(status), dimensions);
     }
-    igl_osd_text(status, (long)drv_win_height - height - 4L,
-                   (long)drv_win_width - 16L, TRUE);
-    help_lines = igl_osd_text(drv_help, 0, (long)drv_win_width - 16L, FALSE);
-    igl_osd_text(drv_help, 8L + (help_lines - 1L) * height,
-                   (long)drv_win_width - 16L, TRUE);
+    status_baseline = (long)drv_win_height - height - 4L;
+    status_lines = igl_osd_text(status, status_baseline,
+                   (long)drv_win_width - 16L, height, TRUE);
+    help_lines = igl_osd_text(drv_help, 0, (long)drv_win_width - 16L,
+                               height, FALSE);
+    status_bottom = status_baseline - (long)status_lines * height;
+    help_baseline = 4L + (long)help_lines * height;
+    if (help_lines > 0 && help_baseline + height + 4L <= status_bottom)
+        igl_osd_text(drv_help, help_baseline, (long)drv_win_width - 16L,
+                       height, TRUE);
     mmode(MPROJECTION); loadmatrix(projection);
     mmode(MVIEWING); loadmatrix(model);
     backface(TRUE);

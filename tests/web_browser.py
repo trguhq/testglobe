@@ -276,6 +276,45 @@ async def fetch_recovery(browser, url):
         await context.close()
 
 
+async def unchanged_overlay(browser, url):
+    context, page, errors = await context_page(browser)
+    try:
+        await page.goto(url)
+        await ready(page, 512)
+        await page.get_by_test_id("resolution-32").click()
+        await ready(page, 32)
+        await page.get_by_test_id("fps").click()
+        await page.get_by_test_id("auto").click()
+        for visible in (True, False):
+            if not visible:
+                await page.get_by_test_id("osd").click()
+            await ready(page, 32)
+            before = await image_sample(page)
+            mutations = await page.evaluate("""() => new Promise(resolve => {
+                let changes = 0, frames = 0;
+                const observer = new MutationObserver(records => { changes += records.length; });
+                observer.observe(document.querySelector('#demo'),
+                    { attributes: true, childList: true, characterData: true, subtree: true });
+                function frame() {
+                    if (++frames < 12) requestAnimationFrame(frame);
+                    else {
+                        changes += observer.takeRecords().length;
+                        observer.disconnect();
+                        resolve(changes);
+                    }
+                }
+                requestAnimationFrame(frame);
+            })""")
+            assert mutations == 0, f"Unchanged controls/OSD were rewritten during animation: {mutations}"
+            after = await image_sample(page)
+            assert after["signature"] != before["signature"], "Animation stopped during DOM update check"
+        await expect(page.get_by_test_id("auto")).to_have_attribute("aria-pressed", "true")
+        assert_no_errors(errors)
+        print("PASS browser unchanged overlay: animation retains control/text nodes with FPS disabled, whether OSD is visible or hidden")
+    finally:
+        await context.close()
+
+
 async def selection_race(browser, url):
     context, page, errors = await context_page(browser)
     gate, requested = asyncio.Event(), asyncio.Event()
@@ -772,6 +811,7 @@ async def run_browser(url):
         browser = await playwright.chromium.launch(**options)
         try:
             await controls(browser, url)
+            await unchanged_overlay(browser, url)
             await fetch_recovery(browser, url)
             await selection_race(browser, url)
             await texture_recovery(browser, url)

@@ -57,6 +57,10 @@ static HDC gdi_buffer;
 static HBITMAP gdi_bitmap;
 static HBITMAP gdi_previous_bitmap;
 static HPALETTE gdi_previous_palette;
+/* A diagnostic-only frame is valid too, but a failed clear never is. */
+static int gdi_buffer_valid;
+static HFONT gdi_font;
+static int gdi_font_size;
 static HDC gdi_mask;
 static HBITMAP gdi_mask_bitmap;
 static HBITMAP gdi_mask_previous;
@@ -175,6 +179,39 @@ static void gdi_delete_buffer(void)
     gdi_bitmap = 0;
     gdi_previous_bitmap = 0;
     gdi_previous_palette = 0;
+    gdi_buffer_valid = FALSE;
+}
+
+/* Select native bitmap text by client size, retaining the DC's font when
+ * Windows substitutes an unsuitable face. One font is cached; a failed
+ * request is retried only when the size tier changes, not every frame. */
+static HFONT gdi_select_font(HDC dc)
+{
+    HFONT previous;
+    TEXTMETRIC metrics;
+    int height;
+    height = drv_win_width < 480U || drv_win_height < 320U ? 10 :
+             drv_win_width >= 960U && drv_win_height >= 640U ? 16 : 12;
+    if (height != gdi_font_size)
+    {
+        if (gdi_font != 0) DeleteObject(gdi_font);
+        gdi_font_size = height;
+        gdi_font = CreateFont(height, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                       ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       DEFAULT_QUALITY, VARIABLE_PITCH | FF_SWISS, "Small Fonts");
+    }
+    if (gdi_font == 0) return 0;
+    previous = (HFONT)SelectObject(dc, gdi_font);
+    if (previous == 0) return 0;
+    if (!GetTextMetrics(dc, &metrics) || metrics.tmHeight < 6 ||
+        metrics.tmHeight > height + 2 || metrics.tmAveCharWidth <= 0)
+    {
+        SelectObject(dc, previous);
+        DeleteObject(gdi_font);
+        gdi_font = 0;
+        return 0;
+    }
+    return previous;
 }
 
 static void gdi_delete_mask(void)
@@ -230,6 +267,8 @@ void drv_release_optional(void)
     }
     gdi_delete_buffer();
     gdi_use_solid_colors();
+    if (gdi_font != 0) DeleteObject(gdi_font);
+    gdi_font = 0; /* Keep the attempted size: low-memory frames use native defaults. */
     drv_free_items(gdi_project_cache);
     gdi_project_cache = NULL;
     gdi_packet_active = FALSE;
@@ -263,6 +302,9 @@ static void TG_ATEXIT_CALL gdi_cleanup(void)
     if (gdi_window != 0) DestroyWindow(gdi_window);
     gdi_delete_buffer();
     gdi_delete_mask();
+    if (gdi_font != 0) DeleteObject(gdi_font);
+    gdi_font = 0;
+    gdi_font_size = 0;
     for (i = 0; i < 256; ++i)
     {
         if (gdi_brushes[i] != 0) DeleteObject(gdi_brushes[i]);
@@ -910,8 +952,10 @@ void drv_draw_osd(void)
     int help_height;
     UINT flags;
     HDC dc;
+    HFONT previous_font;
     dc = gdi_draw_dc();
     if (gdi_failed || dc == 0 || drv_win_width <= 16 || drv_win_height <= 16) return;
+    previous_font = gdi_select_font(dc);
     drv_format_stats(status);
     drv_append_status(status, sizeof(status),
                        gdi_has_fpu ? ", 80387 math" : ", fixed-point math");
@@ -945,13 +989,14 @@ void drv_draw_osd(void)
         DrawText(dc, status, -1, &status_bounds, flags);
     if (help_bounds.bottom > help_bounds.top)
         DrawText(dc, drv_help, -1, &help_bounds, flags);
+    if (previous_font != 0) SelectObject(dc, previous_font);
 }
 
 static void gdi_render_to(HDC dc)
 {
     RECT bounds;
     HPALETTE previous_palette;
-    int pass;
+    int pass, cleared;
     if (gdi_failed || !gdi_ready || gdi_rendering || dc == 0) return;
     gdi_rendering = TRUE;
     gdi_target = dc;
@@ -966,14 +1011,21 @@ static void gdi_render_to(HDC dc)
     bounds.right = (int)drv_win_width;
     bounds.bottom = (int)drv_win_height;
     gdi_frame_failed = FALSE;
+    cleared = FALSE;
+    if (dc == gdi_buffer) gdi_buffer_valid = FALSE;
     /* At most one retry each for mask failure and batched-call failure. */
     for (pass = 0; pass < 3; ++pass)
     {
         drv_frame_failed = FALSE;
         gdi_restart_frame = FALSE;
-        FillRect(dc, &bounds, gdi_brush(gdi_background));
-        SetPolyFillMode(dc, WINDING);
         globe_quads_num_vis = 0;
+        cleared = FillRect(dc, &bounds, gdi_brush(gdi_background)) != 0;
+        if (!cleared)
+        {
+            gdi_frame_failed = TRUE;
+            break;
+        }
+        SetPolyFillMode(dc, WINDING);
         if (globe_ready() && !gdi_draw_paused)
         {
             gdi_set_transform();
@@ -990,11 +1042,13 @@ static void gdi_render_to(HDC dc)
         drv_auto_enabled = FALSE;
         globe_quads_num_vis = 0;
         drv_notice("drawing unavailable; retry a resolution");
-        FillRect(dc, &bounds, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        cleared = FillRect(dc, &bounds, (HBRUSH)GetStockObject(BLACK_BRUSH)) != 0;
     }
     if (gdi_draw_paused)
         drv_abort_frame("drawing unavailable; retry a resolution");
-    if (drv_osd_enabled || !globe_ready() || gdi_draw_paused) drv_draw_osd();
+    if (cleared && (drv_osd_enabled || !globe_ready() || gdi_draw_paused))
+        drv_draw_osd();
+    if (dc == gdi_buffer) gdi_buffer_valid = cleared;
     if (previous_palette != 0) SelectPalette(dc, previous_palette, TRUE);
     gdi_target = 0;
     gdi_rendering = FALSE;
@@ -1032,7 +1086,7 @@ static void gdi_present(HDC dc)
 {
     HPALETTE previous;
     int copied;
-    if (gdi_failed || gdi_buffer == 0) return;
+    if (gdi_failed || gdi_buffer == 0 || !gdi_buffer_valid) return;
     previous = SelectPalette(dc, gdi_palette, !gdi_palette_foreground);
     if (RealizePalette(dc) != 0)
     {

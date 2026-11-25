@@ -71,7 +71,9 @@ static struct ColorMap colormap;
 static struct Window window_record;
 static struct RastPort window_port;
 static struct MsgPort window_messages;
-static struct TextFont font;
+static struct TextFont font, osd_fonts[2];
+static unsigned int font_opens, font_closes, font_draws[2];
+static int fail_fonts, oversize_fonts, check_osd_layout, osd_last_bottom;
 static unsigned char desktop_palette[256][3];
 static unsigned int library_count, window_count, raster_count;
 static unsigned int raster_calls, raster_fail_at, area_calls, area_failures;
@@ -564,6 +566,25 @@ void FreeRaster(PLANEPTR raster, ULONG width, ULONG height)
 }
 void InitRastPort(struct RastPort *port)
 { memset(port, 0, sizeof(*port)); SetFont(port, &font); }
+struct TextFont *OpenFont(struct TextAttr *attributes)
+{
+    unsigned int slot;
+    assert(strcmp(attributes->ta_Name, "topaz.font") == 0);
+    assert(attributes->ta_YSize == 8U || attributes->ta_YSize == 9U);
+    if (fail_fonts) return NULL;
+    slot = attributes->ta_YSize - 8U;
+    osd_fonts[slot].tf_YSize = oversize_fonts ? 18 : attributes->ta_YSize;
+    osd_fonts[slot].tf_XSize = 8;
+    osd_fonts[slot].tf_Baseline = osd_fonts[slot].tf_YSize - 2;
+    ++font_opens;
+    return osd_fonts + slot;
+}
+void CloseFont(struct TextFont *value)
+{
+    assert(value == osd_fonts || value == osd_fonts + 1);
+    ++font_closes;
+    assert(font_closes <= font_opens);
+}
 void SetFont(struct RastPort *port, struct TextFont *value)
 {
     assert(value != NULL); port->Font = value; port->TxHeight = value->tf_YSize;
@@ -599,6 +620,15 @@ void Move(struct RastPort *port, LONG x, LONG y)
 void Text(struct RastPort *port, CONST_STRPTR text, ULONG length)
 {
     size_t used;
+    if (check_osd_layout)
+    {
+        assert(port->cp_y - port->TxBaseline > osd_last_bottom);
+        osd_last_bottom = port->cp_y + port->TxHeight - port->TxBaseline - 1;
+    }
+    if (port->Font == osd_fonts) ++font_draws[0];
+    if (port->Font == osd_fonts + 1) ++font_draws[1];
+    assert(port->cp_y >= port->TxBaseline);
+    assert(port->cp_y + port->TxHeight - port->TxBaseline - 1 < (int)drv_win_height - 2);
     assert(port->cp_x >= 0 && port->cp_y >= 0 && port->cp_y < (WORD)drv_win_height);
     assert((ULONG)port->cp_x + length * 8UL <= drv_win_width);
     test_safe_draw(port);
@@ -765,8 +795,13 @@ static void test_render(void)
 {
     rendered_hash = rendered_count = 0; osd_text[0] = 0;
     baseline_vertices = enhanced_vertices = fpu_vertices = 0;
+    check_osd_layout = TRUE; osd_last_bottom = -1;
     drv_render();
+    check_osd_layout = FALSE;
     assert(!drv_frame_failed && !ami_rendering && ami_draw_port == NULL);
+    assert(window_port.Font == &font);
+    if (ami_back_planes != 0 || ami_rtg_bitmap != NULL || ami_fullscreen)
+        assert(ami_back_port.Font != osd_fonts && ami_back_port.Font != osd_fonts + 1);
     if (rtg_depth > 8) rendered_count = globe_quads_num_vis;
     else assert(rendered_count == globe_quads_num_vis);
 }
@@ -1429,6 +1464,8 @@ int main(int argc, char **argv)
     double time_before;
     const char *mode;
     mode = argc > 1 ? argv[1] : "ocs";
+    fail_fonts = strcmp(mode, "fontfail") == 0;
+    oversize_fonts = strcmp(mode, "fontlarge") == 0;
     test_fpu_integer_conversion();
     fail_cache_allocation = strcmp(mode, "cachefail") == 0;
     if (strcmp(mode, "stack") == 0) { small_stack = 1; assert(atexit(test_fatal_cleanup) == 0); }
@@ -1647,6 +1684,8 @@ int main(int argc, char **argv)
     drv_loop();
     assert(reply_count == 5 && library_count == 0 && window_count == 0 && raster_count == 0);
     assert(!ami_running && !ami_ready && ami_project_cache == NULL);
+    assert(font_opens == font_closes);
+    if (!fail_fonts && !oversize_fonts) assert(font_draws[0] > 0U);
     globe_free();
     printf("PASS Amiga %s: palette-preserving Workbench window, bounded native fills, selected resources, CPU dispatch, cache fallback, resize/input and cleanup\n", mode);
     return 0;

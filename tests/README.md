@@ -257,6 +257,8 @@ application build dependencies.
 - **Browser rendering and controls:** the browser checks exercise the production
   page, canvas output, resolution selection, texture/rotation/OSD/FPS/culling controls,
   resetting the view, dragging, resizing, and touch input.
+  A mutation observer verifies that animation does not rewrite unchanged controls
+  or status text when FPS updates are disabled, with the OSD visible or hidden.
 - **Recovery:** browser checks cover unavailable WebGL, failed map requests,
   resolution fallback, competing requests, texture failure and reduction, resize
   retry, retained resources after failed GPU uploads, and context loss/restoration
@@ -310,6 +312,8 @@ python3 tests/run.py --ogl-contract
   display callback before rendering is ready, including Apple's GLUT ordering.
   Checks also cover probe cleanup, final size, FPS toggling, right-button metadata,
   OSD status/help order, and omission of unavailable visibility counts.
+  GLUT font tiers, measured wrapping, and full-glyph bounds are checked at small,
+  normal, large, and tiny window sizes.
 - **Software texturing:** OpenGL adopts only the base image and samples it bilinearly,
   including strongly minified triangles; IRIS GL retains trilinear mipmaps.
   OpenGL presents the rasterizer's index bytes directly;
@@ -349,6 +353,8 @@ uses the [Amiga OpenGL build instructions](../README.md#amiga-opengl).
   keyboard and mouse events, resize/recovery, and context/bitmap/window/library
   ownership. Presentation bounds follow the allocated RTG bitmap even if the
   window dimensions change before resize handling.
+  Resident-font selection, oversized/missing-font fallback, restoration, and
+  status/help separation are checked across window sizes.
 
 ### Native validation
 
@@ -373,6 +379,8 @@ python3 tests/run.py --igl-contract
   restoration. Key 5 submits 1,278 meshes and 263,676 vertices, with 1,026-vertex interior
   bands and separate pole triangles. The recorder models IRIS GL's implicit projection
   matrix behavior.
+- **OSD layout:** native font-height and string-width measurements bound complete
+  glyphs, suppress text wider than the window, and prevent status/help overlap.
 - **Formats and textures:** RGBA32/RGB24/color-index8, precision before buffering,
   unknown alpha, palette installation/restoration, absent depth buffers, packed
   texture words, missing capabilities, older headers, and affine-texture subdivision.
@@ -427,6 +435,8 @@ uses real X11 windows and events under Xvfb; XGL calls use a host recorder.
   reported as application software texturing.
 - **OSD layout:** native extent queries with proportional widths and negative bearings,
   wrapped status/help at small sizes, long unbroken words, and tiny-window guards.
+  Resize selects 10/12/16-unit stroke text. A successful empty culled frame must
+  retain valid texture resources for subsequent nonempty frames.
 
 ### Native validation
 
@@ -534,6 +544,8 @@ python3 tests/dos_cpu.py
   flipping, safe page reuse, page-wait deadlines, communication errors, and cleanup.
   The recorder rejects drawing into a page that is still displayed in double-buffered
   profiles.
+- **OSD layout:** system-font widths from 8 to 32 pixels and heights from 8 to 64
+  verify measured word wrapping, visible `S` help, and nonoverlapping screen bounds.
 - **Executable packing:** `tests/tiga_pack.py` checks unchanged DOS headers and
   image bytes, exact module bytes and CRC, 64 KiB boundaries through the 1 MiB
   payload limit, software-only copying, and repeated builds. Invalid inputs, file
@@ -590,6 +602,8 @@ python3 tests/run.py --gdi-contract
 - **CPU and display:** 80387 selection and fixed-point fallback, including a 286/287
   profile; small-screen defaults, explicit dimensions, foreground/background palettes,
   buffering, and wrapped OSD statistics.
+  Font tests cover size tiers, substitution, allocation failure, restoration of
+  selected objects, and bounded ownership across resize.
 - **Palette dithering:** realized palette RGBs, exact solid brushes, two-color DIB
   patterns, cache refreshes after palette changes, and solid fallback when queries
   or pattern creation fail. Packed DIB layout, logical palette indices, pattern
@@ -601,6 +615,8 @@ python3 tests/run.py --gdi-contract
   timer rollover, Escape/window close, and heap/GDI-object ownership.
 - **Recovery:** missing back buffers use direct paint; failed `PolyPolygon` calls
   fall back to individual polygons; brush allocation retries or uses a stock color.
+  Failed normal and diagnostic clears cannot present stale buffers or count a
+  successful frame; a successful diagnostic clear remains displayable.
   Resource failures return typed results, empty scenes still repaint, and timer
   failure leaves manual input available. Former allocation/drawing fatal profiles
   now verify recovery. Oversized windows still follow the fatal guard: modal paint,
@@ -649,6 +665,8 @@ python3 tests/run.py --qd-contract
 - **Input and lifecycle:** startup, short drag-poll waits, activation/suspend/resume,
   resize, `TickCount` rollover, animation, window close, Command-Q, and ownership.
   Early drawing and late teardown events must respect readiness guards.
+  Controls are dispatched by the synchronous outer event loop. Font tests cover
+  available Geneva bitmaps, system-font fallback, and measured glyph bounds.
 - **Recovery:** checked polygon allocation and bounded native-scratch preflight
   failures release optional resources before one retry, then pause without repeated
   allocations. Reduced pattern scratch permits nearest-color fallback. A subsequent
@@ -694,6 +712,8 @@ cross-build uses the [Amiga build instructions](../README.md#amiga) separately.
   `D`/`d` switches between mixtures and independently verified nearest solid pens;
   the setting survives palette refreshes, resizing, and resolution changes. Tests
   check OSD/help, unchanged resource ownership, and unaffected truecolor RTG output.
+- **OSD fonts:** resident Topaz sizes, open failure and oversized substitution,
+  selection restoration, glyph bounds, and status/help separation are checked.
 - **RTG:** optional CyberGraphX/Picasso96 detection, indexed and 15/16/24/32-bit
   screens, opaque bitmap attributes, RGB span bounds and colors, and native fallback
   when RTG libraries are absent. The native-only `AMI_RTG=0` build is checked separately.

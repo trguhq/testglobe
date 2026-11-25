@@ -30,6 +30,7 @@ typedef HANDLE HPALETTE;
 typedef HANDLE HBITMAP;
 typedef HANDLE HBRUSH;
 typedef HANDLE HPEN;
+typedef HANDLE HFONT;
 typedef HANDLE HICON;
 typedef HANDLE HCURSOR;
 typedef HANDLE HGDIOBJ;
@@ -77,6 +78,14 @@ typedef struct { BYTE peRed, peGreen, peBlue, peFlags; } PALETTEENTRY;
 typedef struct { WORD palVersion, palNumEntries; PALETTEENTRY palPalEntry[1]; } LOGPALETTE;
 typedef LOGPALETTE *LPLOGPALETTE;
 typedef struct {
+    short tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading;
+    short tmAveCharWidth, tmMaxCharWidth, tmWeight;
+    BYTE tmItalic, tmUnderlined, tmStruckOut;
+    BYTE tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
+    BYTE tmPitchAndFamily, tmCharSet;
+    short tmOverhang, tmDigitizedAspectX, tmDigitizedAspectY;
+} TEXTMETRIC;
+typedef struct {
     DWORD biSize;
     LONG biWidth, biHeight;
     WORD biPlanes, biBitCount;
@@ -113,6 +122,13 @@ typedef struct {
 #define BLACK_BRUSH 4
 #define WHITE_BRUSH 0
 #define SYSTEM_FONT 13
+#define FW_NORMAL 400
+#define ANSI_CHARSET 0
+#define OUT_DEFAULT_PRECIS 0
+#define CLIP_DEFAULT_PRECIS 0
+#define DEFAULT_QUALITY 0
+#define VARIABLE_PITCH 2
+#define FF_SWISS 32
 #define SRCCOPY 0x00CC0020UL
 #define BLACKNESS 0x00000042UL
 #define DT_LEFT 0x0000
@@ -220,6 +236,9 @@ BOOL DeleteDC(HDC);
 HBITMAP CreateCompatibleBitmap(HDC, int, int);
 HBITMAP CreateBitmap(int, int, UINT, UINT, const void *);
 HPEN CreatePen(int, int, COLORREF);
+HFONT CreateFont(int, int, int, int, int, BYTE, BYTE, BYTE, BYTE, BYTE,
+                 BYTE, BYTE, BYTE, LPCSTR);
+BOOL GetTextMetrics(HDC, TEXTMETRIC *);
 HGDIOBJ SelectObject(HDC, HGDIOBJ);
 BOOL DeleteObject(HGDIOBJ);
 HGDIOBJ GetStockObject(int);

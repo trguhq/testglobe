@@ -12,6 +12,7 @@
 #include <graphics/gfxbase.h>
 #include <graphics/gfxmacros.h>
 #include <graphics/rastport.h>
+#include <graphics/text.h>
 #include <intuition/intuition.h>
 #include <intuition/intuitionbase.h>
 #include <intuition/screens.h>
@@ -63,11 +64,45 @@ extern ULONG ogl_ami_cgx_attr(struct Library *base, struct BitMap *bitmap,
 
 static struct Library *ogl_ami_cgx_base;
 static struct Window *ogl_ami_window;
+
+/* OpenFont uses resident fonts only: no diskfont library or external assets.
+ * Keep both tiny ROM sizes until cleanup; OSD draws temporarily select one. */
+static struct TextFont *ogl_ami_fonts[2];
+
+
 static struct BitMap *ogl_ami_bitmap;
 static int ogl_ami_running, ogl_ami_dirty, ogl_ami_active;
 static int ogl_ami_width, ogl_ami_height;
 static int ogl_ami_source_y;
 static unsigned int ogl_ami_white, ogl_ami_black;
+
+static void ogl_ami_open_fonts(void)
+{
+    struct TextAttr attributes;
+    unsigned int i;
+    attributes.ta_Name = (STRPTR)"topaz.font";
+    attributes.ta_Style = attributes.ta_Flags = 0;
+    for (i = 0; i < 2U; ++i)
+    {
+        attributes.ta_YSize = (UWORD)(8U + i);
+        ogl_ami_fonts[i] = OpenFont(&attributes);
+        if (ogl_ami_fonts[i] != NULL &&
+            (ogl_ami_fonts[i]->tf_YSize == 0 ||
+             ogl_ami_fonts[i]->tf_YSize > attributes.ta_YSize))
+        {
+            CloseFont(ogl_ami_fonts[i]);
+            ogl_ami_fonts[i] = NULL;
+        }
+    }
+}
+
+static struct TextFont *ogl_ami_osd_font(unsigned int width, unsigned int height)
+{
+    if (width >= 480U && height >= 320U && ogl_ami_fonts[1] != NULL)
+        return ogl_ami_fonts[1];
+    return ogl_ami_fonts[0] != NULL ? ogl_ami_fonts[0] : ogl_ami_fonts[1];
+}
+
 
 static int ogl_ami_dispatch_valid(const MGLDispatchTable *api)
 {
@@ -144,6 +179,10 @@ void ogl_ami_cleanup(void)
     MiniGLClose();
     if (ogl_ami_cgx_base != NULL) CloseLibrary(ogl_ami_cgx_base);
     ogl_ami_cgx_base = NULL;
+    if (ogl_ami_fonts[0] != NULL || ogl_ami_fonts[1] != NULL) WaitBlit();
+    if (ogl_ami_fonts[0] != NULL) CloseFont(ogl_ami_fonts[0]);
+    if (ogl_ami_fonts[1] != NULL) CloseFont(ogl_ami_fonts[1]);
+    ogl_ami_fonts[0] = ogl_ami_fonts[1] = NULL;
     if (GfxBase != NULL) CloseLibrary((struct Library *)GfxBase);
     GfxBase = NULL;
     if (IntuitionBase != NULL) CloseLibrary((struct Library *)IntuitionBase);
@@ -361,6 +400,7 @@ int ogl_ami_create_window(int x, int y, int width, int height)
     ogl_ami_window = OpenWindow(&settings);
     UnlockPubScreen(NULL, screen);
     if (ogl_ami_window == NULL) return FALSE;
+    ogl_ami_open_fonts();
     ogl_ami_text_pens();
     ogl_ami_get_size(&width, &height);
     return ogl_ami_resize_context(width, height) != 0;
@@ -393,48 +433,97 @@ void ogl_ami_post_redisplay(void)
     ogl_ami_dirty = TRUE;
 }
 
+/* Measure and draw with identical native glyph metrics. The caller owns the
+ * layer lock and font selection; full glyphs stay inside the client area. */
+static int ogl_ami_text_lines(struct RastPort *port, const char *text,
+    int x, int baseline, int width, int height, int draw)
+{
+    unsigned int count;
+    int step, descent;
+    step = port->TxHeight + 1;
+    if (step < 2) step = 9;
+    descent = port->TxHeight - port->TxBaseline - 1;
+    if (descent < 0) descent = 0;
+    while (*text != 0)
+    {
+        count = (unsigned int)strlen(text);
+        while (count > 0 && TextLength(port, (STRPTR)text, count) > width - x - 2) --count;
+        if (count == 0) break;
+        if (draw && baseline >= port->TxBaseline && baseline + descent < height - 2)
+        {
+            Move(port, x + ogl_ami_window->BorderLeft,
+                 baseline + ogl_ami_window->BorderTop);
+            Text(port, (STRPTR)text, count);
+        }
+        baseline += step; text += count;
+    }
+    return baseline;
+}
+
+static void ogl_ami_text_state(struct RastPort *port)
+{
+    SetAfPt(port, NULL, 0);
+    SetDrMd(port, JAM2);
+    SetAPen(port, ogl_ami_white); SetBPen(port, ogl_ami_black);
+}
+
 void ogl_ami_draw_string(const char *text, int x, int y)
 {
     struct RastPort *port;
-    const char *line;
-    unsigned int count;
-    int width, height, baseline, step, lines, descent, bottom;
+    struct TextFont *saved_font, *font;
+    int width, height, baseline, step, span, descent, bottom;
     if (ogl_ami_window == NULL || text == NULL || *text == 0) return;
     port = ogl_ami_window->RPort;
     LockLayerRom(port->Layer);
     ogl_ami_get_size(&width, &height);
+    saved_font = port->Font;
+    font = ogl_ami_osd_font((unsigned int)width, (unsigned int)height);
+    if (font != NULL) SetFont(port, font);
     if (x < 0) x = 0;
     if (x >= width - 2 || width <= 0 || height <= 0) goto done;
     step = port->TxHeight + 1;
     if (step < 2) step = 9;
     descent = port->TxHeight - port->TxBaseline - 1;
     if (descent < 0) descent = 0;
-    bottom = height - 2 - descent;
-    lines = 0; line = text;
-    while (*line != 0)
-    {
-        count = (unsigned int)strlen(line);
-        while (count > 0 && TextLength(port, (STRPTR)line, count) > width - x - 2) --count;
-        if (count == 0) goto done;
-        ++lines; line += count;
-    }
+    bottom = height - 3 - descent;
+    span = ogl_ami_text_lines(port, text, x, 0, width, height, FALSE);
     baseline = height - y;
-    if (baseline + (lines - 1) * step > bottom)
-        baseline = bottom - (lines - 1) * step;
+    if (baseline + span - step > bottom) baseline = bottom - span + step;
     if (baseline < port->TxBaseline) baseline = port->TxBaseline;
-    SetAfPt(port, NULL, 0);
-    SetDrMd(port, JAM2);
-    SetAPen(port, ogl_ami_white); SetBPen(port, ogl_ami_black);
-    while (*text != 0 && baseline <= bottom)
-    {
-        count = (unsigned int)strlen(text);
-        while (count > 0 && TextLength(port, (STRPTR)text, count) > width - x - 2) --count;
-        if (count == 0) break;
-        Move(port, x + ogl_ami_window->BorderLeft, baseline + ogl_ami_window->BorderTop);
-        Text(port, (STRPTR)text, count);
-        baseline += step; text += count;
-    }
+    ogl_ami_text_state(port);
+    (void)ogl_ami_text_lines(port, text, x, baseline, width, height, TRUE);
 done:
+    if (saved_font != NULL) SetFont(port, saved_font);
+    UnlockLayerRom(port->Layer);
+}
+
+void ogl_ami_draw_osd(const char *status, const char *help)
+{
+    struct RastPort *port;
+    struct TextFont *saved_font, *font;
+    int width, height, next, baseline, step, descent, span;
+    if (ogl_ami_window == NULL || status == NULL || help == NULL) return;
+    port = ogl_ami_window->RPort;
+    LockLayerRom(port->Layer);
+    ogl_ami_get_size(&width, &height);
+    saved_font = port->Font;
+    font = ogl_ami_osd_font((unsigned int)width, (unsigned int)height);
+    if (font != NULL) SetFont(port, font);
+    if (width > 12 && height > port->TxHeight + 8)
+    {
+        ogl_ami_text_state(port);
+        next = ogl_ami_text_lines(port, status, 10, port->TxBaseline + 4,
+                                    width, height, TRUE);
+        step = port->TxHeight + 1;
+        if (step < 2) step = 9;
+        descent = port->TxHeight - port->TxBaseline - 1;
+        if (descent < 0) descent = 0;
+        span = ogl_ami_text_lines(port, help, 10, 0, width, height, FALSE);
+        baseline = height - 3 - descent - span + step;
+        if (baseline >= next)
+            (void)ogl_ami_text_lines(port, help, 10, baseline, width, height, TRUE);
+    }
+    if (saved_font != NULL) SetFont(port, saved_font);
     UnlockLayerRom(port->Layer);
 }
 

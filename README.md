@@ -141,6 +141,17 @@ GDI, QuickDraw, and Amiga resize the projection to the drawable client area. Nar
 windows clip the globe rather than stretching it. Amiga also accounts for the
 selected display mode's pixel proportions.
 
+OpenGL, XGL, GDI, and QuickDraw choose small, normal, or large OSD fonts from
+the drawable window dimensions. Both Amiga drivers select resident Topaz 8 or 9
+and retain the existing font if selection fails. Text widths and font bounds determine
+wrapping and spacing; text is kept within the window and status and help do not
+overlap. Very small windows may omit help when there is no room for both.
+WebGL retains its responsive CSS sizes. Matrox keeps its 8×16 font, while IRIS GL
+and TIGA retain their native system fonts. TIGA measures help before placing it,
+so an oversized system font cannot hide the final `S` control behind status text.
+When space is tight, TIGA shortens statistics to retain counts, FPS, and `soft3d`.
+No external font files are required.
+
 CPU culling finds the front-facing longitude ranges of each latitude band and
 submits their triangle-strip runs, with checks near the boundaries to preserve
 the silhouette, winding, and texture coordinates. It uses the perspective camera
