@@ -376,17 +376,39 @@ python3 tests/run.py --igl-contract
   winding, centroid-derived provoking colors, UVs, matrix composition, and OSD state
   restoration. Key 5 submits 1,278 meshes and 263,676 vertices, with 1,026-vertex interior
   bands and separate pole triangles. The recorder models IRIS GL's implicit projection
-  matrix behavior.
+  matrix behavior. Flat meshes must set a color before each first facet's last vertex
+  and then exactly once per change of Earth index, never before the third vertex.
+- **Frame state:** native frames clear once, software frames not at all (their
+  `lrectwrite` replaces the window), and a failed software attempt clears once
+  before its flat fallback. The default build never enables or clears a z-buffer; the
+  `IGL_ZBUFFER=1` build uses one where present and clears it only with `czclear`.
+  Only the software path reads matrices back. With native texturing, a frame binds
+  the texture once and the OSD unbinds it once, with no rebind; without the OSD the
+  binding persists.
 - **OSD layout:** native font-height and string-width measurements bound complete
-  glyphs, suppress text wider than the window, and prevent status/help overlap.
-- **Formats and textures:** RGBA32/RGB24/color-index8, precision before buffering,
-  unknown alpha, palette installation/restoration, absent depth buffers, packed
-  texture words, missing capabilities, older headers, and affine-texture subdivision.
+  glyphs, suppress text wider than the window, and prevent status/help overlap. The
+  OSD must leave the model-view and projection matrices bit-identical without
+  `getmatrix`, measure each glyph once per font height with one-character
+  `strwidth` calls, and reuse the help-text wrap until the width or font changes.
+- **Formats and textures:** RGBA32/RGB24/color-index8, double buffering at 12 or more
+  RGB bits (5/5/5 and 4/4/4 against 8/8/8 single), precision below that (4/4/3, and
+  an Entry's 1/2/1 against 3/3/2), unknown alpha, palette installation/restoration,
+  absent depth buffers, packed texture words, missing capabilities, and native
+  texturing on affine hardware and with older headers, where `scrsubdivide` must not
+  be called. `GD_TEXTURE` is queried once; the `capabilitylost` profile changes the
+  answer afterwards and requires native texturing to continue without another query.
   API and software-texture profiles cover all five resolutions and both raster-cache
   policies.
 - **Input:** keyboard, tied mouse samples, focus, resize, overflow, Escape, and window
   quit. Missing or reversed mouse samples must neither block nor consume later
   keyboard/window events.
+- **Process and signals:** `foreground()` precedes `winopen`. Under the host's
+  strict-C89 `signal()`, which resets handlers on delivery like IRIX 4, repeated
+  SIGTERMs must find the handler re-armed; SIGHUP ignored before startup stays ignored.
+  A pending signal stops the loop before it reads queued input or renders; a signal
+  raised inside a blocking `qread` ends the loop at the next `TIMER0` heartbeat. Both
+  paths must restore the palette (color-index profile), window, and previous
+  handlers before the signal is re-raised with its default action.
 - **Recovery and status:** unavailable geometry objects fall back to complete direct
   drawing; both identifier-allocation and newly compiled-object validation failures
   are latched to avoid repeated failed work. Previously valid objects that disappear
@@ -403,6 +425,10 @@ optional subdivision constants are test-local tags. Native IRIX 4.0 builds must
 validate the 32-bit ABI, packed pixel transfer, fonts, window manager, and graphics
 hardware. IRIS GL texture and pixel-transfer calls return no success value, so checks
 of submission and observable failures cannot detect silent library or hardware errors.
+Hardware checks still needed: limb pixels without a z-buffer (against an
+`IGL_ZBUFFER=1` build), affine texturing at key 1 on a VGX, double-buffered 4/4/4
+dithering, and whether `qread` returns on a signal and `TIMER0` reaches an unfocused
+window.
 
 ## Sun XGL
 
@@ -801,6 +827,18 @@ repeating UVs remain valid. Raster release retains mipmaps and the indexed looku
 table for re-enabling at a resized viewport.
 Byte-index and native-word outputs must agree pixel for pixel. Tests cover ownership
 and allocation when dimensions or output formats change, including same-size reuse.
+
+The rasterizer clears a reused raster only within the previous frame's dirty
+rectangle, and fully for a new buffer or a changed palette background; tests require
+the result, depth included, to equal a full clear. Triangles inside all six planes
+skip the clipper, and back faces that need clipping must still be culled. Wrapping
+uses masks and a truncating floor; integral coordinates beyond the `long` range and
+negative fractions must sample as their wrapped equivalents. The per-pixel
+reciprocals are not identical by construction (an intermediate may differ by an ulp),
+so the speedups were compared against the previous rasterizer: 4,608 hashed globe
+frames (keys 1-5, three window sizes, two distances, both filters, all three
+formats), 200,000 random perspective frames, and every software frame the IRIS GL and
+OpenGL contract fixtures present were pixel-identical.
 
 The same options run `tests/texture.c`, comparing every expanded RGB texel with the
 Earth palette source at all five resolutions. Checks cover same-size allocation reuse,
