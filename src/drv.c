@@ -349,27 +349,29 @@ static void drv_palette_pair(const unsigned char TG_HUGE *rgb,
     }
 }
 
-int drv_match_palette_color(const unsigned char TG_HUGE *rgb,
-                             const unsigned char TG_HUGE *palette,
-                             unsigned int count, Drv_palette_match *match)
+/* exhaustive selects the full pair search; it follows the caller's palette
+ * size, so a de-duplicated palette is searched with the original strategy. */
+static void drv_match_core(const unsigned char TG_HUGE *rgb,
+                           const unsigned char TG_HUGE *palette,
+                           unsigned int count, int exhaustive,
+                           Drv_palette_match *match)
 {
     unsigned int a, b, anchor;
     unsigned long error, candidate, contrast;
-    if (match == NULL) return FALSE;
-    match->first = match->second = match->mix = match->solid = 0;
-    if (rgb == NULL || palette == NULL || count == 0U || count > 256U)
-        return FALSE;
     error = 0xffffffffUL;
     anchor = 0;
     for (a = 0; a < count; ++a)
     {
         candidate = drv_palette_error(rgb, palette, a, a, 0U);
         if (candidate < error) { error = candidate; anchor = a; }
+        /* Ties keep the first index, so an exact entry cannot be beaten. */
+        if (error == 0) break;
     }
     match->first = match->second = match->solid = (unsigned char)anchor;
+    match->mix = 0;
     contrast = 0;
-    if (error == 0) return TRUE;
-    if (count <= 16U)
+    if (error == 0) return;
+    if (exhaustive)
     {
         /* Find the best discrete mixture for small palettes. */
         for (a = 0; a < count; ++a)
@@ -389,6 +391,70 @@ int drv_match_palette_color(const unsigned char TG_HUGE *rgb,
             for (a = 0; a < count; ++a)
                 drv_palette_pair(rgb, palette, anchor, a, &error, &contrast, match);
         }
+    }
+}
+
+int drv_match_palette_color(const unsigned char TG_HUGE *rgb,
+                             const unsigned char TG_HUGE *palette,
+                             unsigned int count, Drv_palette_match *match)
+{
+    if (match == NULL) return FALSE;
+    match->first = match->second = match->mix = match->solid = 0;
+    if (rgb == NULL || palette == NULL || count == 0U || count > 256U)
+        return FALSE;
+    drv_match_core(rgb, palette, count, count <= 16U, match);
+    return TRUE;
+}
+
+/* Match colors RGB triples against one palette. In the bounded search used
+ * above 16 entries, a duplicate entry gives the same result as its first
+ * occurrence and always loses the tie to it, so only first occurrences are
+ * searched and their indices translated back. Results equal per-color
+ * drv_match_palette_color(); a background Windows palette with 40 distinct
+ * colors needs about a sixth of the pair evaluations. */
+int drv_match_palette_colors(const unsigned char TG_HUGE *rgb,
+                              unsigned int colors,
+                              const unsigned char TG_HUGE *palette,
+                              unsigned int count,
+                              Drv_palette_match TG_HUGE *matches)
+{
+    static unsigned char unique[256U * 3U];
+    static unsigned char original[256];
+    const unsigned char TG_HUGE *search;
+    unsigned int a, b, distinct, color;
+    Drv_palette_match match;
+    if (rgb == NULL || palette == NULL || matches == NULL || colors == 0U ||
+        count == 0U || count > 256U)
+        return FALSE;
+    search = palette;
+    distinct = count;
+    if (count > 16U)
+    {
+        distinct = 0;
+        for (a = 0; a < count; ++a)
+        {
+            for (b = 0; b < distinct; ++b)
+                if (unique[3U * b] == palette[3U * a] &&
+                    unique[3U * b + 1U] == palette[3U * a + 1U] &&
+                    unique[3U * b + 2U] == palette[3U * a + 2U]) break;
+            if (b < distinct) continue;
+            unique[3U * distinct] = palette[3U * a];
+            unique[3U * distinct + 1U] = palette[3U * a + 1U];
+            unique[3U * distinct + 2U] = palette[3U * a + 2U];
+            original[distinct++] = (unsigned char)a;
+        }
+        search = unique;
+    }
+    for (color = 0; color < colors; ++color)
+    {
+        drv_match_core(rgb + 3UL * color, search, distinct, count <= 16U, &match);
+        if (search != palette)
+        {
+            match.first = original[match.first];
+            match.second = original[match.second];
+            match.solid = original[match.solid];
+        }
+        matches[color] = match;
     }
     return TRUE;
 }
@@ -980,5 +1046,51 @@ int drv_dos_mouse_poll(int present)
         dirty = TRUE;
     }
     return dirty;
+}
+
+/* While a graphics board owns the display, Ctrl-C/Ctrl-Break (INT 23h) can
+ * end the program without the drivers' cleanup, and a critical disk error
+ * (INT 24h) shows an invisible Abort/Retry/Fail prompt. Interrupt routines
+ * keep one register convention in Microsoft C and OpenWatcom, unlike C
+ * runtime callbacks under OpenWatcom's -ecc stack convention. DOS restores
+ * both vectors from the program segment prefix when the program exits. */
+static volatile int drv_dos_break;
+
+static void _interrupt _far drv_dos_on_break(void)
+{
+    drv_dos_break = TRUE;
+}
+
+/* AL = 3 fails the interrupted DOS call; callers then take their ordinary
+ * file-error paths. */
+#ifdef __WATCOMC__
+static void _interrupt _far drv_dos_on_critical(union INTPACK registers)
+{
+    registers.h.al = 3;
+}
+#else
+static void _interrupt _far drv_dos_on_critical(unsigned es, unsigned ds,
+    unsigned di, unsigned si, unsigned bp, unsigned sp, unsigned bx,
+    unsigned dx, unsigned cx, unsigned ax, unsigned ip, unsigned cs,
+    unsigned flags)
+{
+    (void)es; (void)ds; (void)di; (void)si; (void)bp; (void)sp; (void)bx;
+    (void)dx; (void)cx; (void)ip; (void)cs; (void)flags;
+    ax = (ax & 0xff00U) | 3U;
+}
+#endif
+
+void drv_dos_break_init(void)
+{
+    drv_dos_break = FALSE;
+    _dos_setvect(0x23, drv_dos_on_break);
+    /* The FAIL response exists from DOS 3.1; older versions keep the prompt. */
+    if (_osmajor > 3 || (_osmajor == 3 && _osminor >= 10))
+        _dos_setvect(0x24, drv_dos_on_critical);
+}
+
+int drv_dos_break_pending(void)
+{
+    return drv_dos_break;
 }
 #endif

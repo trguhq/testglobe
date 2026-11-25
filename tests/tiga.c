@@ -264,6 +264,16 @@ void (*_dos_getvect(unsigned int number))(void)
     return is_profile("nomouse") ? NULL : dummy_interrupt;
 }
 
+/* DOS 5 reports 5.0; drv_dos_break_init() installs INT 23h and INT 24h. */
+unsigned char _osmajor = 5, _osminor = 0;
+static void (*test_dos_vectors[256])();
+
+void _dos_setvect(unsigned int number, void (*handler)())
+{
+    assert((number == 0x23 || number == 0x24) && handler != NULL);
+    test_dos_vectors[number] = handler;
+}
+
 int int86(int number, union REGS *input, union REGS *output)
 {
     unsigned short function;

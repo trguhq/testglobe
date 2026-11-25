@@ -443,15 +443,22 @@ static unsigned int ami_nearest(unsigned int red, unsigned int green,
     return best;
 }
 
-static void ami_match_color(unsigned int color)
+/* Match all 256 Earth colors in one pass; above 16 pens the shared matcher
+ * searches each distinct desktop color once. */
+static void ami_match_colors(void)
 {
-    Drv_palette_match match;
-    (void)drv_match_palette_color(&earth_cmap[color][0], &ami_palette[0][0],
-                                  ami_color_count, &match);
-    ami_pen_a[color] = match.first;
-    ami_pen_b[color] = match.second;
-    ami_mix[color] = match.mix;
-    ami_pen_solid[color] = match.solid;
+    static Drv_palette_match matches[256];
+    unsigned int color;
+    if (!drv_match_palette_colors(&earth_cmap[0][0], 256U, &ami_palette[0][0],
+                                  ami_color_count, matches))
+        return;
+    for (color = 0; color < 256U; ++color)
+    {
+        ami_pen_a[color] = matches[color].first;
+        ami_pen_b[color] = matches[color].second;
+        ami_mix[color] = matches[color].mix;
+        ami_pen_solid[color] = matches[color].solid;
+    }
 }
 
 static void ami_map_palette(void)
@@ -459,7 +466,7 @@ static void ami_map_palette(void)
     struct ColorMap *colors;
     ULONG rgb[3], packed;
     unsigned char sample[3];
-    unsigned int color, pen, channel, count;
+    unsigned int pen, channel, count;
     int changed;
     if (ami_window == NULL || ami_depth < 1) return;
     colors = ami_window->WScreen->ViewPort.ColorMap;
@@ -496,8 +503,7 @@ static void ami_map_palette(void)
     {
         ami_black = ami_nearest(0, 0, 0);
         ami_white = ami_nearest(255, 255, 255);
-        for (color = 0; ami_depth <= 8U && color < 256; ++color)
-            ami_match_color(color);
+        if (ami_depth <= 8U) ami_match_colors();
     }
     ami_palette_valid = TRUE;
     drv_bits_per_pixel = ami_storage_depth;

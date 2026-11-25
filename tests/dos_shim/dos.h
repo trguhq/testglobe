@@ -6,4 +6,14 @@ union REGS {
 };
 int int86(int interrupt_number, union REGS *input, union REGS *output);
 void (*_dos_getvect(unsigned int interrupt_number))(void);
+/* Interrupt-routine keywords compile away; tests call the routines directly. */
+#ifndef _interrupt
+#define _interrupt
+#endif
+#ifndef _far
+#define _far
+#endif
+void _dos_setvect(unsigned int interrupt_number, void (*handler)());
+/* Declared by <stdlib.h> in the DOS compilers. */
+extern unsigned char _osmajor, _osminor;
 #endif

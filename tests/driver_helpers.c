@@ -715,6 +715,57 @@ static unsigned long palette_pair_optimum(const unsigned char *rgb,
     return best;
 }
 
+/* The batched matcher de-duplicates large palettes; every result must equal
+ * the single-color matcher, including palettes made mostly of repeats. */
+static void test_palette_batch(void)
+{
+    static const unsigned int counts[] = {1, 7, 16, 17, 20, 64, 256};
+    static unsigned char colors[256][3], palette[256][3];
+    static Drv_palette_match batch[256];
+    Drv_palette_match single;
+    unsigned int test, count, color, a, distinct, layout;
+    for (color = 0; color < 256U; ++color)
+    {
+        colors[color][0] = (unsigned char)(color * 37U + 11U);
+        colors[color][1] = (unsigned char)(color * 101U + 3U);
+        colors[color][2] = (unsigned char)(color * 59U + 7U);
+    }
+    for (layout = 0; layout < 3U; ++layout)
+        for (test = 0; test < sizeof(counts) / sizeof(counts[0]); ++test)
+        {
+            count = counts[test];
+            /* Layouts: all distinct; 40 distinct colors interleaved, as in a
+             * background Windows palette; long runs of one repeated color. */
+            distinct = layout == 0U ? count : (layout == 1U ? 40U : 5U);
+            for (a = 0; a < count; ++a)
+            {
+                color = layout == 2U ? a / 13U % distinct : (a * 7U) % distinct;
+                palette[a][0] = (unsigned char)(color * 61U);
+                palette[a][1] = (unsigned char)(255U - color * 23U);
+                palette[a][2] = (unsigned char)(color * 149U);
+            }
+            if (count > 3U) memcpy(palette[count - 1U], colors[5], 3U);
+            assert(drv_match_palette_colors(&colors[0][0], 256U, &palette[0][0],
+                                            count, batch));
+            for (color = 0; color < 256U; ++color)
+            {
+                assert(drv_match_palette_color(colors[color], &palette[0][0],
+                                               count, &single));
+                assert(batch[color].first == single.first &&
+                       batch[color].second == single.second &&
+                       batch[color].mix == single.mix &&
+                       batch[color].solid == single.solid);
+            }
+            assert(batch[5].mix == 0U || count <= 3U);
+        }
+    assert(!drv_match_palette_colors(NULL, 1U, &palette[0][0], 1U, batch));
+    assert(!drv_match_palette_colors(&colors[0][0], 1U, NULL, 1U, batch));
+    assert(!drv_match_palette_colors(&colors[0][0], 1U, &palette[0][0], 1U, NULL));
+    assert(!drv_match_palette_colors(&colors[0][0], 0U, &palette[0][0], 1U, batch));
+    assert(!drv_match_palette_colors(&colors[0][0], 1U, &palette[0][0], 0U, batch));
+    assert(!drv_match_palette_colors(&colors[0][0], 1U, &palette[0][0], 257U, batch));
+}
+
 static void test_palette_helpers(void)
 {
     static const unsigned int counts[] = {1, 2, 3, 16, 17, 32, 64, 128, 255, 256};
@@ -798,6 +849,7 @@ static void test_palette_helpers(void)
     }
     assert(!drv_match_palette_color(rgb, saved_palette, 1U, NULL));
     assert(!drv_match_palette_color(rgb, saved_palette, UINT_MAX, &result.value));
+    test_palette_batch();
     for (mix = 0; mix <= 16U; ++mix)
     {
         pattern = drv_dither_pattern(mix);

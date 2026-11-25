@@ -14,8 +14,10 @@ make irisgl
 
 `IGL_CC` defaults to `CC`; override `IGL_CPPFLAGS`, `IGL_CFLAGS`, `IGL_SYS_FLAGS`, and
 `IGL_LDFLAGS` for the installed tools. The defaults select `FLAT`, `DRV_IGL`, C89
-math, and `-lc_s -lgl_s -lm`, following the IRIS GL Programming Guide's
-shared-library example. No later MIPS ISA or ABI is imposed.
+math, ANSI C mode (`-xansi`, added to `CFLAGS`), and the shared libraries
+`-lgl_s -lm -lc_s`. These static shared libraries resolve in one pass, so the shared
+C library comes last, after the libraries that call it. No later MIPS ISA or ABI is
+imposed.
 
 ## Rendering and color
 

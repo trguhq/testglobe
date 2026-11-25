@@ -30,7 +30,9 @@ The output is `testglob.exe`. For an SDK elsewhere, set `XGX_ROOT`, for example
 `XGX_ROOT=C:\MATROX`; the default is `.` in the root Makefile and `..` in
 `src/Makefile`. Override `MTX_CC`, `MTX_CFLAGS`, `MTX_CPPFLAGS`, `MTX_386FLAGS`,
 `MTX_LIB`, and `MTX_LDFLAGS` as needed, keeping `-AH -G0 -FPi` on the baseline objects;
-only the guarded `m_386.obj` kernel uses `-G3`. The DOS rules use backslash paths,
+only the guarded `m_386.obj` kernel uses `-G3`. `MTX_HOTFLAGS` (`-Gs`) removes stack
+probes from the per-vertex and per-polygon objects, none of which recurse; the
+OpenWatcom cross-build uses `-s` for the same files. The DOS rules use backslash paths,
 8.3 generated names, and response files to stay within command-line limits.
 
 ## Rendering and color

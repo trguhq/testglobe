@@ -6,11 +6,12 @@
 SRC = .
 
 # Portable Unix cc defaults, including older Solaris math/OpenGL libraries.
+# Libraries follow their users so static GLUT/GLU archives also resolve.
 CC = cc
 CPPFLAGS =
 CFLAGS = -O
 SYS_FLAGS = -DNO_SINF
-LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
+LDFLAGS = -lglut -lGLU -lGL -lXmu -lX11 -lm
 # drv_ogl.h selects latitude strips with separately batched pole triangles.
 # OpenGL, IRIS GL and XGL headers enable the runtime C band-culling control.
 OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
@@ -30,7 +31,7 @@ SOLARIS_CFLAGS = $(CFLAGS)
 SOLARIS_SYS_FLAGS = -DNO_SINF
 SOLARIS_DEFINES = $(OGL_DEFINES)
 SOLARIS_LDFLAGS = -L$(OPENWINHOME)/lib -R$(OPENWINHOME)/lib \
-    -lglut -lGL -lGLU -lX11 -lXmu -lm
+    -lglut -lGLU -lGL -lXmu -lX11 -lm
 SOLARIS_OBJECTS = s_drv.o s_ogl.o s_err.o s_globe.o s_main.o s_tex.o s_soft.o s_data.o
 
 # Native macOS OpenGL/GLUT from the selected Xcode command line tools.
@@ -85,13 +86,15 @@ XGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
 
 # Native IRIS GL on 32-bit MIPS IRIX 4.0. These shared-library names follow
 # the IRIS GL Programming Guide; override for the installed SGI toolchain.
+# -xansi selects IRIX's ANSI C mode. Static shared libraries resolve in one
+# pass, so the shared C library comes last for libgl_s and libm references.
 # i_ objects keep this driver separate from both other Unix backends.
 IGL_CC = $(CC)
 IGL_CPPFLAGS =
-IGL_CFLAGS = $(CFLAGS)
+IGL_CFLAGS = $(CFLAGS) -xansi
 IGL_SYS_FLAGS = -DNO_SINF
 IGL_DEFINES = -DFLAT -DDRV_IGL -DDRV
-IGL_LDFLAGS = -lc_s -lgl_s -lm
+IGL_LDFLAGS = -lgl_s -lm -lc_s
 IGL_OBJECTS = i_drv.o i_igl.o i_err.o i_globe.o i_main.o i_tex.o i_soft.o i_data.o
 IGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_igl.h $(SRC)/texsoft.h $(SRC)/err_ext.h \
@@ -102,13 +105,16 @@ IGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
 MTX_CC = cl
 MTX_CFLAGS = -AH -G0 -FPi -O -W3
 MTX_386FLAGS = -G3 -DSOFT3D_TRANSFORM_386
+# Per-vertex/per-polygon objects omit stack probes; none recurses.
+MTX_HOTFLAGS = -Gs
 MTX_DEFINES = -DSEG86 -DDRV_MTX -DDRV -DNO_SINF
 XGX_ROOT = ..
 MTX_CPPFLAGS = -I$(XGX_ROOT)
 MTX_LIB = $(XGX_ROOT)\libsv5\lscl.lib
 MTX_LDFLAGS = -link /STACK:16384
-MTX_OBJECTS = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj \
-    m_cpu.obj m_soft.obj m_386.obj m_float.obj
+MTX_OBJECTS1 = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj
+MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj
+MTX_OBJECTS = $(MTX_OBJECTS1) $(MTX_OBJECTS2)
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
@@ -125,6 +131,7 @@ MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
 TGA_CC = cl
 TGA_CFLAGS = -AH -G0 -FPi -O -W3
 TGA_386FLAGS = -G3 -DSOFT3D_TRANSFORM_386
+TGA_HOTFLAGS = -Gs
 TGA_DEFINES = -DSEG86 -DDRV_TGA -DDRV -DNO_SINF
 TGA_ROOT = ..\TIGA
 TGA_CPPFLAGS = -I$(TGA_ROOT)\include
@@ -139,7 +146,9 @@ TGA_GSP_LINK = gsplnk
 TGA_GSP_CFLAGS = -c -o -v10
 TGA_GSP_CPPFLAGS = -i$(SRC)
 TGA_GSP_LDFLAGS = -r -cr
-TGA_OBJECTS = t_drv.obj t_tga.obj t_cpu.obj t_err.obj t_globe.obj t_main.obj t_soft.obj t_386.obj t_float.obj t_data.obj
+TGA_OBJECTS1 = t_drv.obj t_tga.obj t_cpu.obj t_err.obj t_globe.obj
+TGA_OBJECTS2 = t_main.obj t_soft.obj t_386.obj t_float.obj t_data.obj
+TGA_OBJECTS = $(TGA_OBJECTS1) $(TGA_OBJECTS2)
 TGA_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_tga.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
@@ -449,7 +458,8 @@ matrox: testglob.exe
 # compiler and linker invocations below DOS's 127-character command limit.
 testglob.exe: $(MTX_OBJECTS) $(MTX_LIB) FORCE
 	@echo -AH -FPi -Fetestglob.exe > link.rsp
-	@echo $(MTX_OBJECTS) >> link.rsp
+	@echo $(MTX_OBJECTS1) >> link.rsp
+	@echo $(MTX_OBJECTS2) >> link.rsp
 	@echo $(MTX_LIB) $(MTX_LDFLAGS) >> link.rsp
 	$(MTX_CC) @link.rsp
 
@@ -466,7 +476,7 @@ drv.obj: $(SRC)\drv.c $(MTX_HEADERS)
 	$(MTX_CC) @drv.rsp
 
 drv_mtx.obj: $(SRC)\drv_mtx.c $(MTX_HEADERS)
-	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > drv_mtx.rsp
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > drv_mtx.rsp
 	@echo $(MTX_CPPFLAGS) -c >> drv_mtx.rsp
 	@echo -Fodrv_mtx.obj $(SRC)\drv_mtx.c >> drv_mtx.rsp
 	$(MTX_CC) @drv_mtx.rsp
@@ -480,20 +490,20 @@ m_cpu.obj: $(SRC)\drv_cpu.c $(MTX_HEADERS)
 	$(MTX_CC) @m_cpu.rsp
 
 m_soft.obj: $(SRC)\soft3d.c $(MTX_HEADERS)
-	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > m_soft.rsp
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > m_soft.rsp
 	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_soft.rsp
 	@echo -Fom_soft.obj $(SRC)\soft3d.c >> m_soft.rsp
 	$(MTX_CC) @m_soft.rsp
 
 m_386.obj: $(SRC)\soft3d.c $(MTX_HEADERS)
 	@echo $(MTX_DEFINES) > m_386.rsp
-	@echo $(MTX_CFLAGS) $(MTX_386FLAGS) >> m_386.rsp
+	@echo $(MTX_CFLAGS) $(MTX_386FLAGS) $(MTX_HOTFLAGS) >> m_386.rsp
 	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_386.rsp
 	@echo -Fom_386.obj $(SRC)\soft3d.c >> m_386.rsp
 	$(MTX_CC) @m_386.rsp
 
 m_float.obj: $(SRC)\soft3fp.c $(MTX_HEADERS)
-	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > m_float.rsp
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > m_float.rsp
 	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_float.rsp
 	@echo -Fom_float.obj $(SRC)\soft3fp.c >> m_float.rsp
 	$(MTX_CC) @m_float.rsp
@@ -519,7 +529,8 @@ main.obj: $(SRC)\main.c $(MTX_HEADERS)
 # Relink because the selected DOS/Win16 target shares the 8.3 output name.
 tiga: $(TGA_OBJECTS) $(TGA_LIB) $(TGA_MODULE) tga_pack.exe FORCE
 	@echo -AH -FPi -Fetga_host.exe > t_link.rsp
-	@echo $(TGA_OBJECTS) >> t_link.rsp
+	@echo $(TGA_OBJECTS1) >> t_link.rsp
+	@echo $(TGA_OBJECTS2) >> t_link.rsp
 	@echo $(TGA_LIB) $(TGA_LDFLAGS) >> t_link.rsp
 	$(TGA_CC) @t_link.rsp
 	tga_pack.exe tga_host.exe testglob.exe $(TGA_MODULE)
@@ -540,7 +551,7 @@ tga_gsp.obj: $(SRC)\tga_gsp.c $(SRC)\tga_cmd.h
 	$(TGA_GSP_CC) $(TGA_GSP_CFLAGS) $(TGA_GSP_CPPFLAGS) $(SRC)\tga_gsp.c
 
 tga_ext.obj: $(SRC)\tga_ext.asm
-	$(TGA_GSP_CC) -c $(SRC)\tga_ext.asm
+	$(TGA_GSP_CC) $(TGA_GSP_CFLAGS) $(SRC)\tga_ext.asm
 
 t_drv.obj: $(SRC)\drv.c $(TGA_HEADERS)
 	@echo $(TGA_DEFINES) > t_drv.rsp
@@ -551,7 +562,7 @@ t_drv.obj: $(SRC)\drv.c $(TGA_HEADERS)
 
 t_tga.obj: $(SRC)\drv_tga.c $(TGA_HEADERS) $(TGA_SDK_HEADERS)
 	@echo $(TGA_DEFINES) > t_tga.rsp
-	@echo $(TGA_CFLAGS) >> t_tga.rsp
+	@echo $(TGA_CFLAGS) $(TGA_HOTFLAGS) >> t_tga.rsp
 	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_tga.rsp
 	@echo -Fot_tga.obj $(SRC)\drv_tga.c >> t_tga.rsp
 	$(TGA_CC) @t_tga.rsp
@@ -586,21 +597,21 @@ t_main.obj: $(SRC)\main.c $(TGA_HEADERS)
 
 t_soft.obj: $(SRC)\soft3d.c $(TGA_HEADERS)
 	@echo $(TGA_DEFINES) > t_soft.rsp
-	@echo $(TGA_CFLAGS) >> t_soft.rsp
+	@echo $(TGA_CFLAGS) $(TGA_HOTFLAGS) >> t_soft.rsp
 	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_soft.rsp
 	@echo -Fot_soft.obj $(SRC)\soft3d.c >> t_soft.rsp
 	$(TGA_CC) @t_soft.rsp
 
 t_386.obj: $(SRC)\soft3d.c $(TGA_HEADERS)
 	@echo $(TGA_DEFINES) > t_386.rsp
-	@echo $(TGA_CFLAGS) $(TGA_386FLAGS) >> t_386.rsp
+	@echo $(TGA_CFLAGS) $(TGA_386FLAGS) $(TGA_HOTFLAGS) >> t_386.rsp
 	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_386.rsp
 	@echo -Fot_386.obj $(SRC)\soft3d.c >> t_386.rsp
 	$(TGA_CC) @t_386.rsp
 
 t_float.obj: $(SRC)\soft3fp.c $(TGA_HEADERS)
 	@echo $(TGA_DEFINES) > t_float.rsp
-	@echo $(TGA_CFLAGS) >> t_float.rsp
+	@echo $(TGA_CFLAGS) $(TGA_HOTFLAGS) >> t_float.rsp
 	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_float.rsp
 	@echo -Fot_float.obj $(SRC)\soft3fp.c >> t_float.rsp
 	$(TGA_CC) @t_float.rsp

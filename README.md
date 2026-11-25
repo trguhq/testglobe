@@ -45,7 +45,7 @@ To build and run the desktop OpenGL version on Linux or Unix (Debian/Ubuntu pack
 shown):
 
 ```sh
-sudo apt-get install freeglut3-dev
+sudo apt-get install freeglut3-dev libxmu-dev
 make
 ./testglobe-opengl
 ```

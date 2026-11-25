@@ -118,6 +118,13 @@ typedef struct Drv_palette_match
 extern int drv_match_palette_color(const unsigned char TG_HUGE *rgb,
                                     const unsigned char TG_HUGE *palette,
                                     unsigned int count, Drv_palette_match *match);
+/* Match colors consecutive RGB triples at once, de-duplicating the palette
+ * first; results equal drv_match_palette_color() for each color. */
+extern int drv_match_palette_colors(const unsigned char TG_HUGE *rgb,
+                                     unsigned int colors,
+                                     const unsigned char TG_HUGE *palette,
+                                     unsigned int count,
+                                     Drv_palette_match TG_HUGE *matches);
 /* Borrow four immutable 16-bit rows of a repeated 4x4 Bayer pattern.
  * Clear bits select the second color; invalid coverage returns NULL. */
 extern const unsigned short TG_HUGE *drv_dither_pattern(unsigned int mix);
@@ -293,6 +300,10 @@ extern void drv_globe_rotate(void);
  * Poll drains motion even with no button down; true means redraw is needed. */
 extern int drv_dos_mouse_init(void);
 extern int drv_dos_mouse_poll(int present);
+/* Catch Ctrl-C/Ctrl-Break and fail critical disk errors; the event loop
+ * checks drv_dos_break_pending() and exits through normal cleanup. */
+extern void drv_dos_break_init(void);
+extern int drv_dos_break_pending(void);
 #endif
 
 #endif /* drv_ext_h */

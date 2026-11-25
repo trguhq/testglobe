@@ -48,7 +48,8 @@ RLM embeds it without rebuilding the TI code.
 Override `TGA_CC`, `TGA_CFLAGS`, `TGA_386FLAGS`, `TGA_CPPFLAGS`, `TGA_LIB`, and
 `TGA_LDFLAGS` for the host installation, and `TGA_GSP_CC`, `TGA_GSP_LINK`,
 `TGA_GSP_CFLAGS`, `TGA_GSP_CPPFLAGS`, and `TGA_GSP_LDFLAGS` for the TI tools. Keep
-`-AH` and the separate baseline/386 object settings. The default `TGA_ROOT` is `TIGA`
+`-AH` and the separate baseline/386 object settings. `TGA_HOTFLAGS` (`-Gs`) removes
+stack probes from the per-vertex and per-polygon objects. The default `TGA_ROOT` is `TIGA`
 in the root Makefile and `..\TIGA` in `src/Makefile`. The executable embeds only the
 32- and 64-wide Earth maps.
 

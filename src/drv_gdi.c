@@ -151,9 +151,10 @@ static int gdi_refresh_colors(HDC dc)
     {
         gdi_release_brushes();
         memcpy(gdi_realized_colors, colors, sizeof(colors));
-        for (i = 0; i < 256U; ++i)
-            (void)drv_match_palette_color(earth_cmap[i],
-                          &gdi_realized_colors[0][0], 256U, &gdi_color_matches[i]);
+        /* One de-duplicated pass: a background palette often realizes
+         * only a few dozen distinct colors among its 256 entries. */
+        (void)drv_match_palette_colors(&earth_cmap[0][0], 256U,
+                          &gdi_realized_colors[0][0], 256U, gdi_color_matches);
         gdi_pattern_unavailable = FALSE;
         gdi_palette_valid = TRUE;
     }

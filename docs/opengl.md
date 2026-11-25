@@ -10,7 +10,7 @@ The desktop targets need OpenGL 1.1, GLU, and GLUT, with a legacy or compatibili
 context. On Debian or Ubuntu, install the development libraries with:
 
 ```sh
-sudo apt-get install freeglut3-dev
+sudo apt-get install freeglut3-dev libxmu-dev
 ```
 
 Archived Solaris GLUT packages are available for
@@ -30,7 +30,9 @@ make opengl
 ```
 
 The default compiler is `cc` with `-O`. Override `CC`, `CPPFLAGS`, `CFLAGS`,
-`SYS_FLAGS`, and `LDFLAGS` for the installed compiler and libraries.
+`SYS_FLAGS`, and `LDFLAGS` for the installed compiler and libraries. The default
+libraries are `-lglut -lGLU -lGL -lXmu -lX11 -lm`, each after the libraries that use
+it, so static GLUT and GLU archives also link.
 
 ### Solaris (`solaris-opengl`)
 
@@ -49,7 +51,7 @@ generic target are:
 
 ```sh
 make opengl CC=cc CPPFLAGS=-I/usr/openwin/include \
-  LDFLAGS="-L/usr/openwin/lib -R/usr/openwin/lib -lglut -lGL -lGLU -lX11 -lXmu -lm"
+  LDFLAGS="-L/usr/openwin/lib -R/usr/openwin/lib -lglut -lGLU -lGL -lXmu -lX11 -lm"
 ```
 
 ### Modern macOS (`apple-opengl`)

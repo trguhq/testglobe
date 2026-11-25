@@ -239,8 +239,9 @@ int globe_init_verts(int longitude, int latitude, float radius)
     int i, j;
     float x, y, z, xy;
     float longitude_step, latitude_step;
-    float longitude_angle, latitude_angle;
+    float longitude_angle, latitude_angle, cosine, sine;
     Vertex TG_HUGE *vertex_ptr;
+    Vertex TG_HUGE *columns;
 #ifdef DRV_EARTH_RESOURCES
     unsigned long row, source_row;
     unsigned char TG_HUGE *destination;
@@ -291,6 +292,17 @@ int globe_init_verts(int longitude, int latitude, float radius)
     vertex_ptr = globe_verts;
     longitude_step = (float)(2.0 * PI / longitude);
     latitude_step = (float)(PI / latitude);
+    /* Every row shares each column's longitude cosine and sine. Stage them
+     * in the south-pole row, which is written last and read before it is
+     * overwritten, instead of calling (often software) trigonometry for
+     * every vertex: 263,682 calls become 1,026 at the 512-wide map. */
+    columns = globe_verts + (unsigned long)latitude * (unsigned long)(longitude + 1);
+    for (j = 0; j <= longitude; ++j)
+    {
+        longitude_angle = j * longitude_step;
+        columns[j].x = (float)COS(longitude_angle);
+        columns[j].y = (float)SIN(longitude_angle);
+    }
     for (i = 0; i <= latitude; ++i)
     {
         latitude_angle = (float)(PI / 2.0) - i * latitude_step;
@@ -303,9 +315,10 @@ int globe_init_verts(int longitude, int latitude, float radius)
         }
         for (j = 0; j <= longitude; ++j)
         {
-            longitude_angle = j * longitude_step;
-            x = xy * (float)COS(longitude_angle);
-            y = xy * (float)SIN(longitude_angle);
+            cosine = columns[j].x;
+            sine = columns[j].y;
+            x = xy * cosine;
+            y = xy * sine;
             vertex_ptr->x = x;
             vertex_ptr->y = y;
             vertex_ptr->z = z;
