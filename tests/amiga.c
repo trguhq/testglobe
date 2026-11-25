@@ -33,6 +33,7 @@ static int record_fpu(float matrix[3][3], unsigned int count,
 #undef soft3d_fixed_transform_reuse
 #undef soft3d_020_transform_reuse
 #undef soft3d_float_transform_reuse
+#include "ami_shim/timer_record.h"
 static void *ami_test_malloc(size_t size)
 {
     if (fail_cache_allocation && size == sizeof(Soft3d_project_cache)) return NULL;
@@ -84,6 +85,7 @@ static long area_x[16], area_y[16];
 static unsigned long rendered_hash, rendered_count;
 static int blitter_busy, event_outstanding, small_stack;
 static unsigned long clock_micros;
+static unsigned int intuition_clock_calls;
 static struct IntuiMessage messages[8];
 static unsigned int message_count, message_next;
 static struct IntuiMessage fullscreen_events[8];
@@ -303,7 +305,13 @@ void DeleteMsgPort(struct MsgPort *port)
     assert(pending_display == NULL || pending_display->mn_ReplyPort != port);
     reply_port_alive[i] = 0; --reply_port_count;
 }
+/* Intuition's clock is only the fallback while timer.device is closed. */
 void CurrentTime(ULONG *seconds, ULONG *micros)
+{
+    assert(!timer_opens); ++intuition_clock_calls;
+    clock_micros += 16667UL; *seconds = clock_micros / 1000000UL; *micros = clock_micros % 1000000UL;
+}
+static void test_timer_systime(ULONG *seconds, ULONG *micros)
 { clock_micros += 16667UL; *seconds = clock_micros / 1000000UL; *micros = clock_micros % 1000000UL; }
 LONG GetScreenData(APTR out, ULONG size, ULONG kind, struct Screen *screen)
 {
@@ -1108,9 +1116,53 @@ static void test_fpu_integer_conversion(void)
     }
 }
 
+/* timer.device supplies the animation clock: the E-clock from V36, system
+ * time on 1.3. Each failed acquisition step falls back to CurrentTime. */
+static void test_clock(void)
+{
+    unsigned int calls, eclock, systime, fail;
+    double before, after;
+    assert(timer_opens == 1U && timer_requests == 1U && timer_ports == 1U);
+    eclock = timer_eclock_calls; systime = timer_systime_calls; calls = intuition_clock_calls;
+    if (timer_version >= 36U)
+    {
+        /* Consecutive samples crossing the low word carry exactly one step. */
+        timer_eclock_hi = 0; timer_eclock_lo = 0xffffffffUL - timer_eclock_step - 1UL;
+        before = ami_time_now(); after = ami_time_now();
+        assert(timer_eclock_hi == 1UL && timer_eclock_lo == timer_eclock_step - 2UL);
+        assert(fabs(after - before - (double)timer_eclock_step / timer_eclock_rate) < 1e-9);
+        assert(timer_eclock_calls == eclock + 2U && timer_systime_calls == systime);
+    }
+    else
+    {
+        /* System time may be adjusted backward; progress resumes from there. */
+        clock_micros = 100000000UL;
+        before = ami_time_now();
+        clock_micros = 90000000UL;
+        assert(ami_time_now() == before);
+        clock_micros = 91000000UL;
+        assert(fabs(ami_time_now() - before - 1.0) < 0.000001);
+        assert(timer_systime_calls == systime + 3U && timer_eclock_calls == eclock);
+    }
+    assert(intuition_clock_calls == calls);
+    for (fail = 1U; fail <= 3U; ++fail)
+    {
+        timer_fail = fail; ami_clock_open(); assert(timer_idle());
+        calls = intuition_clock_calls;
+        before = ami_time_now(); after = ami_time_now();
+        assert(intuition_clock_calls == calls + 2U && after > before);
+    }
+    timer_fail = 0; ami_clock_open();
+    assert(timer_opens == 1U && timer_requests == 1U && timer_ports == 1U);
+    before = ami_time_now(); assert(ami_time_now() > before);
+    ami_auto_time = ami_time_now();
+    drv_reset_timing();
+}
+
 static void test_fatal_cleanup(void)
 {
     assert(small_stack && library_count == 0 && window_count == 0 && raster_count == 0);
+    assert(timer_idle());
     puts("PASS Amiga stack guard: insufficient startup stack reports a native error and closes libraries before exit");
 }
 
@@ -1223,7 +1275,7 @@ static int test_rtg(int argc, char **argv, const char *mode)
     {
         assert(!drv_init_window(0, 0, 0, 0)); ami_cleanup();
         assert(library_count == 0 && window_count == 0 && raster_count == 0);
-        assert(friend_count == 0 && pubscreen_locks == 0);
+        assert(friend_count == 0 && pubscreen_locks == 0 && timer_idle());
         assert(area_calls == 0 && span_calls == 0 && rect_calls == 0);
         printf("PASS Amiga %s: unsupported RTG screen is rejected before drawing and releases resources\n", mode);
         return 0;
@@ -1285,6 +1337,7 @@ static int test_rtg(int argc, char **argv, const char *mode)
     for (i = 0; i < 2; ++i) ami_cleanup();
     assert(library_count == 0 && window_count == 0 && raster_count == 0);
     assert(friend_count == 0 && pubscreen_locks == 0 && ami_project_cache == NULL);
+    assert(timer_idle());
     globe_free();
     printf("PASS Amiga %s: opaque RTG bitmaps, RGB/palette rendering, exact span coverage, direct fallback, resize and cleanup\n", mode);
     return 0;
@@ -1326,7 +1379,7 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
         assert(fullscreen_loop_step == 5U && reply_count == 6U && swap_successes >= 2U);
         assert(!screen_count && !screenbuffer_count && !reply_port_count && !fullscreen_window_count);
         assert(!window_count && !library_count && !raster_count && !friend_count);
-        assert(!pending_safe && !pending_display && !blitter_busy);
+        assert(!pending_safe && !pending_display && !blitter_busy && timer_idle());
         assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
         globe_free();
         puts("PASS Amiga fullscreen event loop: delayed display/safe notifications, combined wait masks, scene changes and retained-window F");
@@ -1339,7 +1392,7 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
         assert(screen_calls == 0 && reply_port_calls == 0 && drv_fps_enabled == old_fps);
         test_render();
         ami_cleanup(); globe_free();
-        assert(!library_count && !raster_count && !window_count);
+        assert(!library_count && !raster_count && !window_count && timer_idle());
         puts("PASS Amiga fullscreen legacy: F/f retains windowed mode without newer OS calls; P/p toggles FPS");
         return 0;
     }
@@ -1448,7 +1501,7 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
     assert(notification_waits > calls);
     assert(!screen_count && !screenbuffer_count && !reply_port_count && !fullscreen_window_count);
     assert(!window_count && !library_count && !raster_count && !friend_count);
-    assert(!pending_safe && !pending_display && !blitter_busy);
+    assert(!pending_safe && !pending_display && !blitter_busy && timer_idle());
     assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
     ami_cleanup(); globe_free();
     printf("PASS Amiga %s: safe fullscreen swaps, independent notifications, palette ownership, failure rollback, input and cleanup\n", mode);
@@ -1461,7 +1514,6 @@ int main(int argc, char **argv)
     unsigned char saved_palette[sizeof(desktop_palette)];
     unsigned long reference_hash, reference_count;
     float old_rotation;
-    double time_before;
     const char *mode;
     mode = argc > 1 ? argv[1] : "ocs";
     fail_fonts = strcmp(mode, "fontfail") == 0;
@@ -1546,6 +1598,7 @@ int main(int argc, char **argv)
     }
 #endif
     graphics_base.LibNode.lib_Version = intuition_base.LibNode.lib_Version = (UWORD)display_version;
+    timer_version = display_version;
     colormap.Count = rtg_backend ? 256U : (UWORD)(1U << desktop.BitMap.Depth);
     desktop.ViewPort.ColorMap = &colormap;
     desktop.ViewPort.Modes = HIRES; graphics_base.DisplayFlags = PAL;
@@ -1569,7 +1622,7 @@ int main(int argc, char **argv)
     if (strcmp(mode, "ham") == 0 || strcmp(mode, "ocswide") == 0 || strcmp(mode, "denisewide") == 0 || strcmp(mode, "nativeunknown") == 0)
     {
         assert(!drv_init_window(0, 0, 0, 0)); ami_cleanup();
-        assert(library_count == 0 && window_count == 0 && raster_count == 0);
+        assert(library_count == 0 && window_count == 0 && raster_count == 0 && timer_idle());
         assert(area_calls == 0 && copy_calls == 0 && rect_calls == 0);
         puts("PASS Amiga unsupported desktop: special palette modes and unsafe OCS stride are rejected before drawing");
         return 0;
@@ -1577,17 +1630,7 @@ int main(int argc, char **argv)
     if (strcmp(mode, "oversize") == 0)
         assert(drv_init_window(INT_MAX, INT_MAX, INT_MAX, INT_MAX));
     else assert(drv_init_window(0, 0, 0, 0));
-    if (strcmp(mode, "ocs") == 0)
-    {
-        clock_micros = 100000000UL;
-        time_before = ami_time_now();
-        clock_micros = 90000000UL;
-        assert(ami_time_now() == time_before);
-        clock_micros = 91000000UL;
-        assert(fabs(ami_time_now() - time_before - 1.0) < 0.000001);
-        ami_auto_time = ami_time_now();
-        drv_reset_timing();
-    }
+    if (strcmp(mode, "ocs") == 0 || strcmp(mode, "aga") == 0) test_clock();
     assert(window_count == 1 && drv_win_width < (unsigned int)desktop.Width && drv_win_height < 240);
     if (fail_cache_allocation) assert(ami_project_cache == NULL);
     assert(ami_cpu == (strcmp(mode, "040") == 0 ? 68040 : (exec_base.AttnFlags & AFF_68020 ? 68020 : 68000)));
@@ -1683,6 +1726,7 @@ int main(int argc, char **argv)
     messages[4].Class = CLOSEWINDOW; message_count = 5;
     drv_loop();
     assert(reply_count == 5 && library_count == 0 && window_count == 0 && raster_count == 0);
+    assert(timer_idle());
     assert(!ami_running && !ami_ready && ami_project_cache == NULL);
     assert(font_opens == font_closes);
     if (!fail_fonts && !oversize_fonts) assert(font_draws[0] > 0U);

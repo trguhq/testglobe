@@ -171,6 +171,13 @@ uses only basic arithmetic and bounded IEEE conversion, avoiding transcendental 
 integer-conversion opcodes that later FPUs lack. Mesh construction and shared
 bookkeeping still use the baseline software floating-point runtime.
 
+Animation and FPS timing read `timer.device`: the free-running E-clock through
+`ReadEClock` on AmigaOS 2.0 and later, or `TR_GETSYSTIME` through `DoIO` on 1.3.
+Intuition's `CurrentTime`, which advances only with input and vertical-blank updates,
+remains the fallback if the device cannot be opened. The device is opened at startup
+and closed at exit; the [PiStorm3D target](opengl.md#amiga-opengl) shares the same
+clock helper, `src/ami_time.c`.
+
 ## Validation
 
 See the [Amiga checks](testing.md#amiga). A cross-build was checked with VBCC 0.9h

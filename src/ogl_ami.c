@@ -29,6 +29,7 @@
 #include "drv.h"
 #include "drv_ext.h"
 #include "ogl_ami.h"
+#include "ami_time.h"
 
 /* These SDK wrapper macros have the same spelling as their table fields. */
 #undef mglChooseVertexBufferSize
@@ -177,6 +178,7 @@ void ogl_ami_cleanup(void)
         ogl_ami_window = NULL;
     }
     MiniGLClose();
+    ami_clock_close();
     if (ogl_ami_cgx_base != NULL) CloseLibrary(ogl_ami_cgx_base);
     ogl_ami_cgx_base = NULL;
     if (ogl_ami_fonts[0] != NULL || ogl_ami_fonts[1] != NULL) WaitBlit();
@@ -230,16 +232,12 @@ void ogl_ami_init(int *argc, char **argv)
         ogl_ami_error("PiStorm3D requires cybergraphics.library V40 or later");
     if (!MiniGLOpen())
         ogl_ami_error("PiStorm3D minigl.library V29 with dispatch ABI 5 is required");
+    ami_clock_open();
 }
 
 double ogl_ami_time_now(void)
 {
-    ULONG seconds, micros;
-    static Drv_clock clock;
-    if (IntuitionBase == NULL) return clock.elapsed;
-    CurrentTime(&seconds, &micros);
-    return drv_elapsed_time(&clock, (double)seconds +
-                                      (double)micros / 1000000.0);
+    return ami_clock_now();
 }
 
 void ogl_ami_get_size(int *width, int *height)

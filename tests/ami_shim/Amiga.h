@@ -30,8 +30,21 @@ struct CommandLineInterface { BPTR cli_CommandName, cli_CommandDir; };
 struct ExecBase { struct Library LibNode; UWORD AttnFlags; };
 struct GfxBase { struct Library LibNode; UBYTE ChipRevBits0; UWORD DisplayFlags; };
 struct IntuitionBase { struct Library LibNode; };
+struct Device { struct Library dd_Library; };
+struct Unit { int unused; };
+struct EClockVal { ULONG ev_hi, ev_lo; };
 struct Message { struct Node mn_Node; struct MsgPort *mn_ReplyPort; UWORD mn_Length; };
 struct MsgPort { struct Node mp_Node; UBYTE mp_Flags, mp_SigBit; APTR mp_SigTask; };
+struct IORequest {
+    struct Message io_Message;
+    struct Device *io_Device;
+    struct Unit *io_Unit;
+    UWORD io_Command;
+    UBYTE io_Flags;
+    BYTE io_Error;
+};
+/* The NDK names this member's type struct timeval, which POSIX hosts own. */
+struct timerequest { struct IORequest tr_node; struct { ULONG tv_secs, tv_micro; } tr_time; };
 struct TextFont { UWORD tf_YSize; UBYTE tf_Style, tf_Flags; UWORD tf_XSize, tf_Baseline; };
 struct TextAttr { STRPTR ta_Name; UWORD ta_YSize; UBYTE ta_Style, ta_Flags; };
 struct BitMap { UWORD BytesPerRow, Rows; UBYTE Flags, Depth; UWORD pad; PLANEPTR Planes[8]; };
@@ -202,8 +215,13 @@ struct IntuiMessage {
 #define PAL_MONITOR_ID 0x00021000UL
 #define LORES_KEY 0UL
 #define VTAG_SPEVEN_BASE_GET 0x80000028UL
+#define TIMERNAME "timer.device"
+#define UNIT_MICROHZ 0UL
+#define UNIT_VBLANK 1UL
+#define TR_GETSYSTIME 10U
 
 extern struct ExecBase *SysBase;
+extern struct IntuitionBase *IntuitionBase;
 struct Library *OpenLibrary(CONST_STRPTR, ULONG);
 void CloseLibrary(struct Library *);
 struct Task *FindTask(CONST_STRPTR);
@@ -214,6 +232,14 @@ void ReplyMsg(struct Message *);
 ULONG Wait(ULONG);
 struct MsgPort *CreateMsgPort(void);
 void DeleteMsgPort(struct MsgPort *);
+BYTE OpenDevice(CONST_STRPTR, ULONG, struct IORequest *, ULONG);
+void CloseDevice(struct IORequest *);
+BYTE DoIO(struct IORequest *);
+/* amiga.lib */
+struct MsgPort *CreatePort(CONST_STRPTR, LONG);
+void DeletePort(struct MsgPort *);
+struct IORequest *CreateExtIO(struct MsgPort *, LONG);
+void DeleteExtIO(struct IORequest *);
 void CurrentTime(ULONG *, ULONG *);
 LONG GetScreenData(APTR, ULONG, ULONG, struct Screen *);
 struct Screen *LockPubScreen(CONST_STRPTR);

@@ -42,6 +42,7 @@
 #include "drv_ext.h"
 #include "globe.h"
 #include "glob_ext.h"
+#include "ami_time.h"
 
 /* Optional libraries are called through their documented m68k ABI. Keeping
  * these four private veneers here avoids imposing an RTG SDK on native builds.
@@ -309,6 +310,7 @@ static void ami_cleanup(void)
         ami_window = NULL;
     }
     ami_data_close();
+    ami_clock_close();
 #if AMI_RTG
     if (ami_cgx_base != NULL) CloseLibrary(ami_cgx_base);
     if (ami_p96_base != NULL) CloseLibrary(ami_p96_base);
@@ -346,12 +348,7 @@ void ami_error(char *message)
 
 double ami_time_now(void)
 {
-    ULONG seconds, micros;
-    static Drv_clock clock;
-    if (IntuitionBase == NULL) return clock.elapsed;
-    CurrentTime(&seconds, &micros);
-    return drv_elapsed_time(&clock, (double)seconds +
-                                      (double)micros / 1000000.0);
+    return ami_clock_now();
 }
 
 static void ami_detect_processor(void)
@@ -420,6 +417,7 @@ void drv_init(int *argc, char **argv)
         ami_p96_base = OpenLibrary("Picasso96API.library", 2UL);
     }
 #endif
+    ami_clock_open();
     result = ami_data_init(argc == NULL ? 0 : *argc, argv);
     if (result != DRV_OK) drv_notice("Earth data unavailable; select a level to retry");
 }

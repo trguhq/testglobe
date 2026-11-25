@@ -349,8 +349,8 @@ uses the [Amiga OpenGL build instructions](opengl.md#amiga-opengl).
   and reupload, textured display lists, and flat-colored list bypass. Native OSD
   text must follow presentation so it remains visible.
 - **Amiga integration:** runtime library/dispatch validation, window creation,
-  keyboard and mouse events, resize/recovery, and context/bitmap/window/library
-  ownership. Presentation bounds follow the allocated RTG bitmap even if the
+  keyboard and mouse events, resize/recovery, the shared `timer.device` E-clock and
+  its `CurrentTime` fallback, and context/bitmap/window/library/device ownership. Presentation bounds follow the allocated RTG bitmap even if the
   window dimensions change before resize handling.
   Resident-font selection, oversized/missing-font fallback, restoration, and
   status/help separation are checked across window sizes.
@@ -748,6 +748,9 @@ cross-build uses the [Amiga build instructions](amiga.md#build) separately.
   must retain polygon coordinates and colors, including projection-cache allocation
   failure; the default streamed globe requires 561 transforms. Resizing and pixel-aspect
   changes rebuild projection state; all five resolution keys remain available.
+- **Clock:** `timer.device` ownership, E-clock samples across the low-word carry on
+  V36 and later, `TR_GETSYSTIME` with backward adjustment on 1.3, and `CurrentTime`
+  fallback after each failed port, request, or device acquisition.
 - **Lifecycle and recovery:** native event input, activation/refresh, close,
   Chip RAM allocation/release, the 32 KiB stack guard, back-buffer failure selecting
   direct drawing, scratch-allocation pause/retry, and bounded recovery from area-fill
