@@ -19,21 +19,14 @@ typedef Soft3d_screen_point Qd_screen_point;
 /* Angles must be finite and normalized to [0,360). Failure invalidates the
  * previous transform; subsequent projection returns no polygon. */
 extern int qd_fpu_prepare(const float *rotation_x, const float *rotation_y);
-extern void qd_fpu_transform(unsigned int count, const Vertex *vertices);
 extern int qd_fpu_transform_reuse(unsigned int count, const Vertex *vertices,
                                   unsigned int reuse_count);
-/* Returns a near/far-clipped polygon in downward-Y screen coordinates.
- * The caller then clips to its window and rejects back-facing polygons. */
-extern int qd_fpu_project_polygon(const unsigned int *indices, unsigned int count,
-                                   unsigned int width, unsigned int height,
-                                   Qd_screen_point *out);
+/* Returns a near/far-clipped polygon in downward-Y screen coordinates; a
+ * NULL cache projects every corner. The caller then clips to its window
+ * and rejects back-facing polygons. */
 extern int qd_fpu_project_cached(const unsigned int *indices, unsigned int count,
                                   unsigned int width, unsigned int height,
                                   Soft3d_project_cache *cache,
                                   Qd_screen_point *out);
-/* Retained triangle convenience entry point. */
-extern int qd_fpu_project(unsigned int first, unsigned int second,
-                           unsigned int third, unsigned int width,
-                           unsigned int height, Qd_screen_point *out);
 
 #endif /* qd_math_h */

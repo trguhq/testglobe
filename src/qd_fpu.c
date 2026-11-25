@@ -17,7 +17,7 @@
 #include "globe.h"
 
 /* The shared floating object is built with the same guarded FPU options.
- * These wrappers keep the Macintosh calling boundary and triangle entry. */
+ * These wrappers keep the Macintosh calling boundary. */
 static float qd_fpu_matrix[3][3];
 static Soft3d_float_point qd_fpu_points[QD_FPU_MAX_VERTICES];
 static unsigned int qd_fpu_count;
@@ -46,11 +46,6 @@ int qd_fpu_transform_reuse(unsigned int count, const Vertex *vertices,
     return TRUE;
 }
 
-void qd_fpu_transform(unsigned int count, const Vertex *vertices)
-{
-    (void)qd_fpu_transform_reuse(count, vertices, 0U);
-}
-
 int qd_fpu_project_cached(const unsigned int *indices, unsigned int count,
                            unsigned int width, unsigned int height,
                            Soft3d_project_cache *cache, Qd_screen_point *out)
@@ -58,21 +53,5 @@ int qd_fpu_project_cached(const unsigned int *indices, unsigned int count,
     return soft3d_float_project_cached(qd_fpu_points, qd_fpu_count, indices,
                                        count, width, height,
                                        SOFT3D_FLOAT_DOUBLE, cache, out);
-}
-
-int qd_fpu_project_polygon(const unsigned int *indices, unsigned int count,
-                            unsigned int width, unsigned int height,
-                            Qd_screen_point *out)
-{
-    return qd_fpu_project_cached(indices, count, width, height, NULL, out);
-}
-
-int qd_fpu_project(unsigned int first, unsigned int second,
-                     unsigned int third, unsigned int width,
-                     unsigned int height, Qd_screen_point *out)
-{
-    unsigned int indices[3];
-    indices[0] = first; indices[1] = second; indices[2] = third;
-    return qd_fpu_project_polygon(indices, 3U, width, height, out);
 }
 #endif /* SEG68 && DRV_QD */

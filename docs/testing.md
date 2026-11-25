@@ -725,33 +725,60 @@ python3 tests/run.py --qd-contract
   references, clipping, native polygon/text call arguments, and shared-vertex bounds.
   Individual and streamed submissions must preserve polygon coordinates/colors at
   multiple poses and window sizes, including clipped silhouettes and collapsed poles.
-  The monochrome-68000 profile rejects Color QuickDraw, Palette Manager, and GWorld
-  calls. The recorder validates the reusable native polygon record, its bounds,
-  closure, and point coordinates rather than simulating `OpenPoly()` recording.
-- **CPU and display:** fixed-point/FPU paths and dispatch guards; 1-bit dithering;
-  4/8/16/32-bit color; selection among currently configured display depths; old Color
-  QuickDraw; small-screen and explicit-size cases; 1×1 viewports and the 32,767-coordinate
-  limit. Invalid FPU angles must not leave a stale transformation usable.
+  The monochrome-68000 profiles reject Color QuickDraw and Palette Manager calls;
+  System 7 basic QuickDraw draws through a 1-bit GWorld (`mono`), while System 6
+  (`mono6`) and a failed GWorld (`monofail`) keep direct drawing. The recorder validates
+  the reusable native polygon record, its bounds, closure, and point coordinates rather
+  than simulating `OpenPoly()` recording.
+- **CPU and display:** fixed-point/FPU paths and dispatch guards, through the
+  production FPU entry points only; 1-bit dithering; 4/8/16/32-bit color; selection
+  among currently configured display depths, then the deepest display under the window
+  after a drag across the gray region; old Color QuickDraw and 32-bit QuickDraw 1.0
+  (`qd32`, `portPixMap` without `GetGWorldPixMap`); small-screen and explicit-size
+  cases; 1×1 viewports and the 32,767-coordinate limit. Invalid FPU angles must not
+  leave a stale transformation usable.
 - **Native color selection:** all 256 original Earth RGB values reach Color
-  QuickDraw unchanged. Indexed fills retain native pattern conversion after palette
-  changes and palette-allocation failures; monochrome retains 64 luminance steps.
-  The recorder checks API inputs, not the Toolbox's internal dithered pixels.
+  QuickDraw unchanged. Only 8-bit devices create the Earth palette, with
+  `pmTolerant` and the 2/4-bit inhibit flags; 4-bit GWorlds keep the standard table.
+  Indexed fills retain native pattern conversion after palette changes and
+  palette-allocation failures. An Earth-table GWorld probes each index once and paints
+  inverse-table-exact colors solid, with a simulated inverse table that hides every
+  fifth index. Monochrome retains 64 luminance steps; the 65 cached patterns must match
+  the per-pixel threshold bits exactly, with colors set once per pass. The recorder
+  checks API inputs, not the Toolbox's internal dithered pixels.
 - **Buffering and state:** GWorld allocation/locking failures, direct-rendering fallback,
-  and recovery. `CopyBits` must use black/white destination colors and restore the
-  previous colors. The recorder gives a GWorld its own device when `noNewDevice` is
-  absent. Display changes rebuild palettes, patterns, and buffers; OSD state follows
-  actual GWorld use.
-- **Input and lifecycle:** startup, short drag-poll waits, activation/suspend/resume,
-  resize, `TickCount` rollover, animation, window close, Command-Q, and ownership.
-  Early drawing and late teardown events must respect readiness guards.
-  Controls are dispatched by the synchronous outer event loop. Font tests cover
-  available Geneva bitmaps, system-font fallback, and measured glyph bounds.
+  and recovery. `CopyBits` must receive both ports' `portBits` with locked pixels, use
+  black/white destination colors and restore the previous colors; basic QuickDraw
+  uses `srcCopy` without `ditherCopy`. The recorder gives a GWorld its own device when
+  `noNewDevice` is absent and leaves `portPixMap` unset where it is invalid. Display
+  changes rebuild palettes, patterns, and buffers; OSD state follows actual GWorld use.
+  The recorder models update regions: a grow, drag, or activation must draw one frame
+  and validate it, and an update with no scene change only copies the held frame.
+- **Input and lifecycle:** startup, short drag-poll waits, long background sleeps,
+  activation/suspend/resume, resize, `TickCount` rollover, animation, window close,
+  Command-Q, the quit Apple event, and ownership. The Apple menu's About alert and desk
+  accessories restore the port; Apple event handlers are installed only when Gestalt
+  reports them, decline documents, and reject a quit with unread parameters.
+  Resolution keys show the watch cursor during the rebuild. Early drawing and late
+  teardown events must respect readiness guards. Controls are dispatched by the
+  synchronous outer event loop. Font tests cover available Geneva bitmaps,
+  system-font fallback, and measured glyph bounds; wrapping must measure each
+  character a bounded number of times without `TextWidth`, and cached help breaks must
+  match measured ones.
 - **Recovery:** checked polygon allocation and bounded native-scratch preflight
   failures release optional resources before one retry, then pause without repeated
   allocations. Reduced pattern scratch permits nearest-color fallback. A subsequent
-  key resumes drawing after the fault clears. Native resource reads return typed
-  failures and empty scenes remain interactive; attempts restore ports/devices and
-  temporary ownership.
+  key resumes drawing after the fault clears and takes the released resources back.
+  Restoration happens once per scene revision and only when the simulated `MaxBlock`
+  leaves headroom, palette and pattern before the GWorld. Native resource reads return
+  typed failures and empty scenes remain interactive; attempts restore ports/devices
+  and temporary ownership.
+- **Memory reserve:** master pointers are made before the Toolbox starts. Under
+  simulated pressure, checked allocations (probes, GWorld, mesh storage) get nothing
+  from the grow zone, which must switch A5 before touching the reserve; an unchecked
+  fill receives it. The next frame releases optional resources and takes the reserve
+  back, or pauses when it cannot. The `fatal` run checks that a fatal alert finds the
+  reserve freed and the arrow cursor restored, then exits with status 1.
 
 ### Native validation
 
