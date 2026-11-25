@@ -83,6 +83,20 @@ static int fail_mask_polygon;
 static unsigned int fail_frame_clears, frame_clears;
 static unsigned int font_creates;
 static int fail_font, fail_font_metrics, substituted_font_height;
+/* GlobalAlloc fails at or above fail_allocation_from bytes, and at exactly
+ * fail_allocation_size bytes, emulating a fragmented global heap. */
+static DWORD fail_allocation_from, fail_allocation_size;
+static unsigned int global_allocations, compatible_bitmaps;
+static unsigned int pen_creates, brush_selections, pen_selections;
+static unsigned int text_color_sets, background_color_sets;
+static unsigned long mask_polygons, solid_polygons;
+/* Message queue and window-manager state seen by the driver's own loop. */
+static MSG queued_messages[8];
+static unsigned int queued_first, queued_count;
+static unsigned int wait_calls, update_calls, peek_calls;
+static int iconic, update_pending;
+static unsigned int full_invalidations, partial_count;
+static RECT partial_rects[64];
 
 static HANDLE object_new(int kind)
 {
@@ -114,7 +128,11 @@ HGLOBAL GlobalAlloc(UINT flags, DWORD bytes)
 {
     HGLOBAL handle;
     assert(bytes > 0 && (flags & GMEM_MOVEABLE));
+    ++global_allocations;
     if (fail_allocation != 0 && ++allocation_attempts == fail_allocation)
+        return 0;
+    if ((fail_allocation_from != 0 && bytes >= fail_allocation_from) ||
+        (fail_allocation_size != 0 && bytes == fail_allocation_size))
         return 0;
     handle = object_new(OBJ_MEMORY);
     objects[handle].memory = calloc((size_t)bytes, 1);
@@ -243,41 +261,71 @@ BOOL DestroyWindow(HWND window)
     if (window_callback != NULL) window_callback(window, WM_DESTROY, 0, 0);
     object_delete(window);
     main_window = 0;
+    update_pending = FALSE;
     return 1;
 }
 BOOL ShowWindow(HWND window, int show)
 {
-    assert(window == main_window);
-    (void)show;
+    assert(window == main_window && show == SW_SHOW);
+    /* Showing a new top-level window activates it before it is painted. */
+    window_callback(window, WM_ACTIVATE, WA_ACTIVE, 0);
     return 1;
 }
-void UpdateWindow(HWND window) { assert(window == main_window); }
+/* UpdateWindow sends WM_PAINT at once, but only for a pending update. */
+void UpdateWindow(HWND window)
+{
+    assert(window == main_window);
+    ++update_calls;
+    if (update_pending) window_callback(window, WM_PAINT, 0, 0);
+}
+BOOL IsIconic(HWND window) { assert(window == main_window); return iconic; }
 LONG DefWindowProc(HWND window, UINT message, WPARAM word, LPARAM parameter)
 {
     (void)message; (void)word; (void)parameter;
     assert(window == main_window);
     return 0;
 }
-BOOL GetMessage(MSG *message, HWND window, UINT first, UINT last)
+static void queue_message(UINT message, WPARAM word)
 {
-    (void)window; (void)first; (void)last;
+    MSG *entry;
+    assert(queued_count < 8U);
+    entry = queued_messages + queued_count++;
+    memset(entry, 0, sizeof(*entry));
+    entry->hwnd = message == WM_QUIT ? 0 : main_window;
+    entry->message = message;
+    entry->wParam = message == WM_QUIT ? (WPARAM)quit_code : word;
+}
+/* The first poll runs the contract; afterwards the queue closes the window
+ * and quits. An empty queue is the idle case PeekMessage reports as FALSE. */
+BOOL PeekMessage(MSG *message, HWND window, UINT first, UINT last, UINT flags)
+{
+    assert(window == 0 && first == 0 && last == 0 && flags == PM_REMOVE);
     memset(message, 0, sizeof(*message));
+    ++peek_calls;
     if (!contract_started) {
         contract_started = TRUE;
         assert(run_contract() == 0);
-        message->hwnd = main_window;
-        message->message = close_with_escape ? WM_CHAR : WM_CLOSE;
-        message->wParam = close_with_escape ? 27 : 0;
-        return 1;
+        queued_first = queued_count = 0;
+        queue_message(close_with_escape ? WM_CHAR : WM_CLOSE,
+                      close_with_escape ? 27 : 0);
+        queue_message(WM_QUIT, 0);
     }
-    message->message = WM_QUIT;
-    message->wParam = (WPARAM)quit_code;
-    return 0;
+    if (queued_first == queued_count) {
+        /* WM_PAINT is synthesized for a pending update when idle. */
+        if (!update_pending || main_window == 0) return FALSE;
+        message->hwnd = main_window;
+        message->message = WM_PAINT;
+        return TRUE;
+    }
+    *message = queued_messages[queued_first++];
+    if (queued_first == queued_count) queued_first = queued_count = 0;
+    return TRUE;
 }
-BOOL PeekMessage(MSG *message, HWND window, UINT first, UINT last, UINT flags)
+void WaitMessage(void)
 {
-    (void)message; (void)window; (void)first; (void)last; (void)flags;
-    return 0;
+    /* The driver waits only after PeekMessage found no message. */
+    assert(queued_first == queued_count && !update_pending);
+    ++wait_calls;
 }
 BOOL TranslateMessage(const MSG *message) { assert(message != NULL); return 1; }
 LONG DispatchMessage(const MSG *message)
@@ -300,9 +348,16 @@ BOOL PostMessage(HWND window, UINT message, WPARAM word, LPARAM parameter)
 }
 void InvalidateRect(HWND window, const RECT *rectangle, BOOL erase)
 {
-    assert(window == main_window);
+    assert(window == main_window && !erase);
     ++invalidations;
-    (void)rectangle; (void)erase;
+    update_pending = TRUE;
+    if (rectangle == NULL) { ++full_invalidations; return; }
+    /* Partial updates are nonempty and inside the signed client area. */
+    assert(rectangle->left >= 0 && rectangle->top >= 0);
+    assert(rectangle->left < rectangle->right && rectangle->top < rectangle->bottom);
+    assert(rectangle->right <= (int)drv_win_width && rectangle->bottom <= (int)drv_win_height);
+    assert(partial_count < 64U);
+    partial_rects[partial_count++] = *rectangle;
 }
 HDC GetDC(HWND window)
 {
@@ -330,6 +385,7 @@ HDC BeginPaint(HWND window, PAINTSTRUCT *paint)
 {
     memset(paint, 0, sizeof(*paint));
     paint->hdc = GetDC(window);
+    update_pending = FALSE; /* BeginPaint validates the update region. */
     return paint->hdc;
 }
 void EndPaint(HWND window, const PAINTSTRUCT *paint)
@@ -382,6 +438,7 @@ BOOL DeleteDC(HDC dc)
 HBITMAP CreateCompatibleBitmap(HDC dc, int width, int height)
 {
     assert(objects[dc].kind == OBJ_DC && width > 0 && height > 0);
+    ++compatible_bitmaps;
     if (fail_bitmap) return 0;
     return object_new(OBJ_BITMAP);
 }
@@ -403,6 +460,7 @@ HPEN CreatePen(int style, int width, COLORREF color)
 {
     HPEN pen;
     assert(style == PS_SOLID && (width == 0 || width == 1));
+    ++pen_creates;
     if (fail_pens) return 0;
     pen = object_new(OBJ_PEN);
     objects[pen].color = color;
@@ -447,8 +505,10 @@ HGDIOBJ SelectObject(HDC dc, HGDIOBJ object)
     assert(objects[dc].kind == OBJ_DC && object > 0);
     switch (objects[object].kind) {
     case OBJ_BITMAP: previous = objects[dc].bitmap; objects[dc].bitmap = object; break;
-    case OBJ_BRUSH: previous = objects[dc].brush; objects[dc].brush = object; break;
-    case OBJ_PEN: previous = objects[dc].pen; objects[dc].pen = object; break;
+    case OBJ_BRUSH: previous = objects[dc].brush; objects[dc].brush = object;
+        ++brush_selections; break;
+    case OBJ_PEN: previous = objects[dc].pen; objects[dc].pen = object;
+        ++pen_selections; break;
     case OBJ_FONT: previous = objects[dc].font; objects[dc].font = object; break;
     default: assert(!"Unexpected GDI object selection"); previous = 0;
     }
@@ -593,10 +653,12 @@ static void record_polygon(HDC dc, const POINT *points, int count)
         assert(objects[dc].pen == GetStockObject(WHITE_PEN));
         assert(objects[dc].fill_mode == WINDING);
         brush = gdi_selected_brush;
-        assert(objects[brush].kind == OBJ_BRUSH);
+        assert(objects[brush].kind == OBJ_BRUSH && objects[brush].patterned);
+        ++mask_polygons;
     } else {
         assert(!objects[brush].patterned);
         assert(objects[objects[dc].pen].color == objects[brush].color);
+        ++solid_polygons;
     }
     assert(count >= 3 && count <= GDI_MAX_POLY + 1);
     /* Native contour closure is an API detail, not an extra mesh vertex. */
@@ -698,6 +760,8 @@ BOOL BitBlt(HDC dc, int x, int y, int width, int height, HDC source,
         assert(objects[dc].text_color == RGB(0, 0, 0));
         assert(objects[dc].background_color == RGB(255, 255, 255));
         assert(objects[dc].brush == gdi_selected_brush);
+        /* Exactly realized colors use solid brushes and never this blit. */
+        assert(objects[objects[dc].brush].patterned);
         /* The Win16 ROP3 truth table selects the destination pattern only
          * where the black/white mask covers a filled interior or outline. */
         for (p = 0; p < 2; ++p) for (s = 0; s < 2; ++s)
@@ -735,6 +799,7 @@ COLORREF SetTextColor(HDC dc, COLORREF color)
 {
     COLORREF old;
     assert(objects[dc].kind == OBJ_DC);
+    ++text_color_sets;
     old = objects[dc].text_color;
     objects[dc].text_color = color;
     return old;
@@ -743,6 +808,7 @@ COLORREF SetBkColor(HDC dc, COLORREF color)
 {
     COLORREF old;
     assert(objects[dc].kind == OBJ_DC);
+    ++background_color_sets;
     old = objects[dc].background_color;
     objects[dc].background_color = color;
     return old;
@@ -1057,9 +1123,11 @@ static void check_projection(void)
 static void check_quad_batches(void)
 {
     Vertex vertices[130], *saved_vertices;
-    unsigned int indices[64 * 4], sizes[3], test, i, quad, calls;
+    unsigned int indices[64 * 4], sizes[3], test, i, quad, calls, batches;
+    unsigned int brushes, pens, created;
     unsigned char colors[64];
     HPEN previous;
+    HBRUSH own_brush;
     for (i = 0; i < 130U; ++i) {
         unsigned int slot = (i * 37U) % 130U;
         vertices[slot].x = (float)((int)(i / 2U) * 2 - 64);
@@ -1079,6 +1147,9 @@ static void check_quad_batches(void)
     gdi_set_transform();
     saved_vertices = globe_verts;
     previous = (HPEN)SelectObject(gdi_buffer, GetStockObject(NULL_PEN));
+    own_brush = objects[gdi_buffer].brush;
+    gdi_release_brushes();
+    assert(gdi_pen_count == 0);
     for (test = 0; test < 3U; ++test) {
         reference_count = 0;
         globe_verts = vertices;
@@ -1090,9 +1161,22 @@ static void check_quad_batches(void)
         recorded_count = 0;
         globe_quads_num_vis = 0;
         calls = polypolygon_calls;
+        brushes = brush_selections; pens = pen_selections; created = pen_creates;
         drv_draw_quadbatch_flat_color(130U, vertices, sizes[test], indices, colors);
+        batches = sizes[test] < 4U ? sizes[test] : 4U;
         assert(recorded_count == sizes[test] && globe_quads_num_vis == sizes[test]);
-        assert(polypolygon_calls - calls == (sizes[test] < 4U ? sizes[test] : 4U));
+        assert(polypolygon_calls - calls == batches);
+        /* One selection per color batch, one restoration per packet, and
+         * batches in ascending palette order. */
+        assert(brush_selections - brushes == batches + 1U);
+        assert(pen_selections - pens == batches + 1U);
+        assert(objects[gdi_buffer].brush == own_brush);
+        assert(objects[gdi_buffer].pen == GetStockObject(NULL_PEN));
+        for (i = 1; i < recorded_count; ++i)
+            assert(recorded[i - 1U].color <= recorded[i].color);
+        /* Same-index pens are created once and then reused. */
+        assert(pen_creates - created == (test == 0 ? 1U : test == 1 ? 3U : 0U));
+        assert(gdi_pen_count == batches);
         check_projection();
         for (quad = 0; quad < reference_count; ++quad) assert(reference[quad].seen);
     }
@@ -1108,7 +1192,7 @@ static void check_quad_batches(void)
     assert(recorded_count == 1 && globe_quads_num_vis == 1);
     SelectObject(gdi_buffer, previous);
     gdi_resize(640, 480);
-    puts("PASS GDI quad packets: arbitrary shared-vertex indices, exact colors/winding, partial and 64-quad batches, native palette grouping and individual-quad compatibility");
+    puts("PASS GDI quad packets: arbitrary shared-vertex indices, exact colors/winding, partial and 64-quad batches, ascending palette grouping, per-packet brush/pen restore, cached same-index pens and individual-quad compatibility");
 }
 
 /* Compare exact native polygon multisets: packet ordering can change, but
@@ -1282,8 +1366,8 @@ static void check_palette_mixtures(void)
     };
     unsigned char original[3];
     unsigned int i, x, y, mix, calls, allocations, queued;
+    unsigned int clears, realizations, fulls, blits;
     HBRUSH brush;
-    HDC dc;
     MSG message;
     memcpy(original, earth_cmap[17], 3);
     earth_cmap[17][0] = earth_cmap[17][1] = 127; earth_cmap[17][2] = 0;
@@ -1329,18 +1413,23 @@ static void check_palette_mixtures(void)
     assert(gdi_brushes[17] == 0 && gdi_color_matches[17].mix == 0U);
     brush = gdi_brush(17);
     assert(!objects[brush].patterned && objects[brush].color == PALETTEINDEX(0));
-    /* A late change while presenting an already-rendered buffer must still
-     * schedule a new frame for a static window; unchanged colors must not. */
+    /* A change found while exposing an already-rendered buffer redraws it
+     * in the same paint (one realization) and schedules the rest of the
+     * client; unchanged colors only present the buffer. */
     assert(gdi_buffer != 0);
+    drv_render();
+    assert(!gdi_dirty && gdi_buffer_valid);
     for (i = 0; i < 256U; ++i) memcpy(realized_palette[i], palette[i < 4U ? i : 0U], 3);
-    dc = GetDC(main_window);
-    gdi_dirty = FALSE; calls = invalidations;
-    gdi_present(dc);
-    assert(gdi_dirty && invalidations == calls + 1U && gdi_color_matches[17].mix == 8U);
-    gdi_dirty = FALSE; calls = invalidations;
-    gdi_present(dc);
-    assert(!gdi_dirty && invalidations == calls);
-    ReleaseDC(main_window, dc);
+    calls = invalidations; clears = frame_clears;
+    realizations = palette_realizations; fulls = full_invalidations;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(!gdi_dirty && frame_clears > clears && gdi_color_matches[17].mix == 8U);
+    assert(invalidations == calls + 1U && full_invalidations == fulls + 1U);
+    assert(palette_realizations == realizations + 1U);
+    calls = invalidations; clears = frame_clears; blits = bitblts;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(!gdi_dirty && invalidations == calls && frame_clears == clears);
+    assert(bitblts == blits + 1U);
     /* Failed native color queries discard stale mixtures and retain the
      * original logical-color rendering path, without retaining partial data. */
     fail_color_query = TRUE;
@@ -1376,9 +1465,28 @@ static void check_palette_mixtures(void)
     puts("PASS GDI palette mixtures: realized colors, logical-index DIB patterns, all coverage levels, deferred palette changes, solid fallbacks and resource ownership");
 }
 
+/* Realize every odd Earth entry as its even neighbor, as reserved system
+ * colors or a background mapping would; some odd colors then need mixtures. */
+static unsigned int use_dithered_palette(void)
+{
+    unsigned int i, dithered;
+    custom_realized_palette = TRUE;
+    for (i = 0; i < 256U; ++i) memcpy(realized_palette[i], earth_cmap[i & ~1U], 3);
+    (void)gdi_realize_palette(TRUE);
+    assert(gdi_palette_valid);
+    for (i = dithered = 0; i < 256U; ++i)
+    {
+        if (gdi_color_matches[i].mix == 0U) continue;
+        assert(i & 1U);
+        ++dithered;
+    }
+    return dithered;
+}
+
 /* These checks enforce the Win16 raster-operation contract, not the host's
  * own polygon rasterizer: closing contours, including the pen in the mask,
- * preserving destination brush phase/colors, and bounded fallback retries. */
+ * preserving destination brush phase/colors, and bounded fallback retries.
+ * Only inexact colors use patterns and the mask; the rest are solid. */
 static void check_mask_coverage(void)
 {
     COLORREF text_color, background_color;
@@ -1387,11 +1495,22 @@ static void check_mask_coverage(void)
         {15, 24}, {19, 21}, {21, 17}, {19, 13}, {15, 10}
     };
     Drv_palette_match match;
-    unsigned int allocations, blits, clears;
+    unsigned int allocations, blits, clears, texts, backgrounds, dithered;
+    unsigned long masked, solid;
     int failure, width, height, i;
     width = (int)drv_win_width; height = (int)drv_win_height;
-    assert(gdi_buffer != 0 && !drv_osd_enabled);
+    assert(gdi_buffer != 0 && !drv_osd_enabled && !custom_realized_palette);
+    /* Exactly realized colors never allocate or use the mask. */
+    gdi_resize(width, height);
     stream_polygons = TRUE;
+    allocations = mask_bitmaps; blits = mask_blits; clears = mask_clears;
+    solid = solid_polygons;
+    drv_render();
+    assert(gdi_mask == 0 && mask_bitmaps == allocations);
+    assert(mask_blits == blits && mask_clears == clears);
+    assert(solid_polygons - solid == globe_quads_num_vis);
+    dithered = use_dithered_palette();
+    assert(dithered > 0U && dithered < 128U);
     drv_render();
     text_color = RGB(17, 29, 41);
     background_color = RGB(53, 67, 79);
@@ -1399,10 +1518,15 @@ static void check_mask_coverage(void)
     SetBkColor(gdi_buffer, background_color);
     allocations = mask_bitmaps;
     blits = mask_blits; clears = mask_clears;
-    stream_polygons = TRUE;
+    masked = mask_polygons; solid = solid_polygons;
+    texts = text_color_sets; backgrounds = background_color_sets;
     drv_render();
     assert(gdi_mask != 0 && !gdi_mask_unavailable);
-    assert(mask_bitmaps == allocations && mask_blits > blits && mask_clears > clears);
+    assert(mask_bitmaps == allocations && mask_blits > blits + 1U && mask_clears > clears);
+    assert(mask_polygons > masked && solid_polygons > solid);
+    assert(mask_polygons - masked + solid_polygons - solid == globe_quads_num_vis);
+    /* Mask colors are set by the first masked batch and restored once. */
+    assert(text_color_sets == texts + 2U && background_color_sets == backgrounds + 2U);
     assert(objects[gdi_buffer].text_color == text_color &&
            objects[gdi_buffer].background_color == background_color);
     /* A maximum-sized clipped contour needs eleven packed points; its
@@ -1418,6 +1542,9 @@ static void check_mask_coverage(void)
     blits = pattern_mask_blits;
     gdi_fill_batch(gdi_buffer, 17, 1, GDI_MAX_POLY + 1);
     assert(pattern_mask_blits == blits + 1);
+    assert(objects[gdi_buffer].brush == gdi_selected_brush);
+    gdi_restore_objects();
+    gdi_restore_mask_colors();
     assert(objects[gdi_buffer].text_color == text_color &&
            objects[gdi_buffer].background_color == background_color);
     gdi_release_brushes();
@@ -1432,10 +1559,12 @@ static void check_mask_coverage(void)
         fail_mask_bitmap = failure == 0;
         fail_mask_clear = failure == 1;
         fail_mask_blit = failure == 2;
+        masked = mask_polygons;
         drv_render();
         assert(gdi_mask == 0 && gdi_mask_bitmap == 0 && gdi_mask_unavailable);
         assert(!gdi_draw_paused && !gdi_frame_failed && !drv_frame_failed);
         assert(globe_quads_num_vis > 0);
+        assert(failure != 0 || mask_polygons == masked);
         assert(objects[gdi_buffer].text_color == text_color &&
                objects[gdi_buffer].background_color == background_color);
         fail_mask_bitmap = fail_mask_clear = fail_mask_blit = FALSE;
@@ -1459,11 +1588,12 @@ static void check_mask_coverage(void)
     assert(!gdi_draw_paused && !gdi_frame_failed && !drv_frame_failed);
     assert(globe_quads_num_vis > 0);
     fail_mask_polygon = FALSE;
-    /* Even pen-allocation failure must keep matching brush/pen pairs. */
+    /* Even pen-allocation failure must keep matching brush/pen pairs. A
+     * solid batch can reach reduced colors before any mask is attempted. */
     gdi_resize(width, height);
     fail_mask_bitmap = fail_pens = TRUE;
     drv_render();
-    assert(gdi_brush_reduced && gdi_mask_unavailable && !gdi_draw_paused);
+    assert(gdi_brush_reduced && gdi_mask == 0 && !gdi_draw_paused);
     assert(globe_quads_num_vis > 0);
     fail_mask_bitmap = fail_pens = FALSE;
     gdi_brush_reduced = FALSE;
@@ -1472,9 +1602,47 @@ static void check_mask_coverage(void)
     drv_render();
     assert(gdi_mask != 0 && !gdi_mask_unavailable && !gdi_brush_reduced);
     assert(!gdi_draw_paused && !gdi_frame_failed && !drv_frame_failed);
+    custom_realized_palette = FALSE;
+    assert(gdi_realize_palette(TRUE) != 0);
     stream_polygons = FALSE;
     drv_notice(NULL);
-    puts("PASS GDI boundary coverage: closed Win16 contours, white fill/outline masks, pattern-preserving ROP and DC restoration, bounded mask/batch/pen fallbacks");
+    puts("PASS GDI boundary coverage: masks only for dithered colors, solid brush/same-index pen elsewhere, closed Win16 contours, white fill/outline masks, pattern-preserving ROP, once-per-frame mask colors and DC restoration, bounded mask/batch/pen fallbacks");
+}
+
+static unsigned int live_objects(int kind)
+{
+    unsigned int handle, count;
+    for (handle = 1, count = 0; handle < 900; ++handle)
+        if (objects[handle].kind == kind) ++count;
+    return count;
+}
+
+/* Solid batches reuse cached same-index pens. The cache is bounded, later
+ * frames create only temporary pens for uncached indices, and every pen is
+ * released with the brushes. */
+static void check_solid_pens(void)
+{
+    unsigned int first, second, cached;
+    assert(gdi_buffer != 0 && !custom_realized_palette);
+    gdi_release_brushes();
+    assert(gdi_pen_count == 0 && live_objects(OBJ_PEN) == 0);
+    stream_polygons = TRUE;
+    first = pen_creates;
+    drv_render();
+    first = pen_creates - first;
+    cached = gdi_pen_count;
+    assert(cached > 0U && cached <= GDI_PEN_CACHE);
+    assert(live_objects(OBJ_PEN) == cached && gdi_transient_pen == 0);
+    assert(live_objects(OBJ_BRUSH) <= 256U);
+    second = pen_creates;
+    drv_render();
+    second = pen_creates - second;
+    assert(gdi_pen_count == cached && second == first - cached);
+    assert(live_objects(OBJ_PEN) == cached);
+    gdi_release_brushes();
+    assert(gdi_pen_count == 0 && live_objects(OBJ_PEN) == 0);
+    stream_polygons = FALSE;
+    puts("PASS GDI solid pens: same-index pens cached per palette entry, at most 64 retained, temporary pens for the rest, released with brushes");
 }
 
 static void check_font_sizes(void)
@@ -1575,6 +1743,435 @@ static void check_frame_clears(void)
     puts("PASS GDI failed frame clears: no geometry before a successful clear, complete diagnostic fallback, suppressed invalid-buffer presentation and input recovery");
 }
 
+/* G6: one realization per paint or render, buffered or direct. */
+static void check_realize_once(void)
+{
+    unsigned int realized;
+    assert(gdi_buffer != 0);
+    stream_polygons = TRUE;
+    realized = palette_realizations;
+    drv_render();
+    assert(palette_realizations == realized + 1U);
+    realized = palette_realizations;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(palette_realizations == realized + 1U);
+    gdi_delete_buffer();
+    realized = palette_realizations;
+    drv_render();
+    assert(palette_realizations == realized + 1U);
+    realized = palette_realizations;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(palette_realizations == realized + 1U);
+    assert(gdi_make_buffer());
+    drv_render();
+    stream_polygons = FALSE;
+    puts("PASS GDI palette realization: once per paint or render, for buffered and direct frames");
+}
+
+/* G7: the shared prepare helpers keep the documented rotation and reject
+ * an unrepresentable angle on both arithmetic paths. */
+static void check_transform_domain(void)
+{
+    double sx, cx, sy, cy, expected[3][3];
+    float old_x, old_y;
+    int row, column;
+    old_x = drv_rot_x; old_y = drv_rot_y;
+    drv_rot_x = 19.0f; drv_rot_y = 301.5f;
+    drv_frame_failed = gdi_frame_failed = FALSE;
+    gdi_set_transform();
+    assert(!gdi_frame_failed && !drv_frame_failed);
+    if (gdi_has_fpu) {
+        sx = sin(19.0 * PI / 180.0); cx = cos(19.0 * PI / 180.0);
+        sy = sin(301.5 * PI / 180.0); cy = cos(301.5 * PI / 180.0);
+        expected[0][0] = sy; expected[0][1] = cy; expected[0][2] = 0.0;
+        expected[1][0] = -sx * cy; expected[1][1] = sx * sy; expected[1][2] = cx;
+        expected[2][0] = cx * cy; expected[2][1] = -cx * sy; expected[2][2] = sx;
+        for (row = 0; row < 3; ++row) for (column = 0; column < 3; ++column)
+            assert(fabs((double)gdi_float_matrix[row][column] -
+                        expected[row][column]) < 1e-6);
+    }
+    drv_rot_y = FLT_MAX;
+    gdi_set_transform();
+    assert(gdi_frame_failed && drv_frame_failed);
+    drv_rot_x = old_x; drv_rot_y = old_y;
+    drv_frame_failed = gdi_frame_failed = FALSE;
+    drv_notice(NULL);
+    puts("PASS GDI transform: shared soft3d prepare matches the double-precision rotation and rejects out-of-range angles");
+}
+
+static int requested_pixel(unsigned int first, int x, int y)
+{
+    unsigned int i;
+    for (i = first; i < partial_count; ++i)
+        if (x >= partial_rects[i].left && x < partial_rects[i].right &&
+            y >= partial_rects[i].top && y < partial_rects[i].bottom) return TRUE;
+    return FALSE;
+}
+
+/* Every pixel of area was invalidated since partial_rects[first]. */
+static void assert_requested(unsigned int first, const RECT *area)
+{
+    int x, y;
+    for (y = area->top; y < area->bottom; ++y)
+        for (x = area->left; x < area->right; ++x)
+            assert(requested_pixel(first, x, y));
+}
+
+/* Bounds of the recorded frame, including the one-pixel outline. */
+static void recorded_bounds(RECT *bounds)
+{
+    unsigned int polygon;
+    int point, x, y;
+    assert(recorded_count > 0);
+    bounds->left = bounds->top = 32767;
+    bounds->right = bounds->bottom = 0;
+    for (polygon = 0; polygon < recorded_count; ++polygon)
+        for (point = 0; point < recorded[polygon].count; ++point) {
+            x = recorded[polygon].points[point].x;
+            y = recorded[polygon].points[point].y;
+            if (x < bounds->left) bounds->left = (short)x;
+            if (y < bounds->top) bounds->top = (short)y;
+            if (x + 1 > bounds->right) bounds->right = (short)(x + 1);
+            if (y + 1 > bounds->bottom) bounds->bottom = (short)(y + 1);
+        }
+    if (bounds->right > (int)drv_win_width) bounds->right = (short)drv_win_width;
+    if (bounds->bottom > (int)drv_win_height) bounds->bottom = (short)drv_win_height;
+}
+
+static int rect_inside(const RECT *inner, const RECT *outer)
+{
+    return inner->left >= outer->left && inner->top >= outer->top &&
+           inner->right <= outer->right && inner->bottom <= outer->bottom;
+}
+
+static void paint_pending(void)
+{
+    unsigned int guard;
+    for (guard = 0; update_pending; ++guard) {
+        assert(guard < 4U);
+        recorded_count = 0;
+        window_callback(main_window, WM_PAINT, 0, 0);
+    }
+}
+
+/* Overflow strips cover exactly the part of a drawn area outside the
+ * covered one: nothing inside it, nothing outside the drawn area. */
+static void check_overflow_strips(void)
+{
+    static const short cases[7][9] = {
+        /* drawn l, t, r, b; covered l, t, r, b; expected rectangles */
+        {10, 10, 50, 50, 20, 20, 40, 40, 4}, {10, 10, 50, 50, 0, 0, 60, 60, 0},
+        {10, 10, 50, 50, 30, 30, 70, 70, 2}, {10, 10, 50, 50, 60, 10, 90, 50, 1},
+        {10, 10, 50, 50, 10, 0, 50, 30, 1}, {10, 10, 50, 50, 10, 60, 50, 90, 1},
+        {10, 10, 50, 50, 0, 0, 0, 0, 1}
+    };
+    RECT drawn, covered;
+    unsigned int test, i;
+    int x, y, inside;
+    for (test = 0; test < 7U; ++test) {
+        drawn.left = cases[test][0]; drawn.top = cases[test][1];
+        drawn.right = cases[test][2]; drawn.bottom = cases[test][3];
+        covered.left = cases[test][4]; covered.top = cases[test][5];
+        covered.right = cases[test][6]; covered.bottom = cases[test][7];
+        partial_count = 0;
+        gdi_invalidate_outside(&drawn, &covered);
+        assert(partial_count == (unsigned int)cases[test][8]);
+        for (i = 0; i < partial_count; ++i) assert(rect_inside(partial_rects + i, &drawn));
+        for (y = 0; y < 100; ++y) for (x = 0; x < 100; ++x) {
+            inside = !gdi_rect_empty(&covered) &&
+                     x >= covered.left && x < covered.right &&
+                     y >= covered.top && y < covered.bottom;
+            if (inside) assert(!requested_pixel(0, x, y));
+            else if (x >= drawn.left && x < drawn.right &&
+                     y >= drawn.top && y < drawn.bottom)
+                assert(requested_pixel(0, x, y));
+        }
+    }
+    paint_pending();
+    partial_count = 0;
+}
+
+/* G4: timer and drag frames invalidate the previous frame's globe and OSD
+ * areas, then present only what the new frame drew beyond them. Keys, OSD
+ * toggles, palette changes, failed frames and direct drawing stay full. */
+static void check_partial_updates(void)
+{
+    RECT previous[GDI_RECTS], drawn;
+    unsigned int full, first, clears, i, pass;
+    long area;
+    assert(gdi_buffer != 0 && drv_auto_available && !drv_auto_enabled);
+    assert(!custom_realized_palette && !drv_osd_enabled);
+    drv_osd_enabled = TRUE;
+    full = full_invalidations;
+    window_callback(main_window, WM_CHAR, 'a', 0);
+    assert(drv_auto_enabled && full_invalidations == full + 1U);
+    gdi_idle_frame = FALSE;
+    recorded_count = 0;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(!gdi_dirty && gdi_shown_valid && !gdi_requested_full && !update_pending);
+    memcpy(previous, gdi_shown, sizeof(previous));
+    for (i = 0; i < GDI_RECTS; ++i) assert(!gdi_rect_empty(&previous[i]));
+    recorded_bounds(&drawn);
+    assert(rect_inside(&drawn, &previous[GDI_GLOBE_RECT]));
+    for (pass = 0; pass < 4U; ++pass) {
+        full = full_invalidations; first = partial_count;
+        if (pass < 3U) {
+            ticks += 500UL;
+            window_callback(main_window, WM_TIMER, GDI_TIMER, 0);
+        } else {
+            window_callback(main_window, WM_LBUTTONDOWN, MK_LBUTTON, packed_coordinates(100, 100));
+            window_callback(main_window, WM_MOUSEMOVE, MK_LBUTTON, packed_coordinates(117, 104));
+            window_callback(main_window, WM_LBUTTONUP, 0, packed_coordinates(117, 104));
+        }
+        assert(full_invalidations == full && partial_count == first + GDI_RECTS && gdi_dirty);
+        area = 0;
+        for (i = 0; i < GDI_RECTS; ++i) {
+            assert(memcmp(partial_rects + first + i, previous + i, sizeof(RECT)) == 0);
+            area += (long)(previous[i].right - previous[i].left) *
+                    (previous[i].bottom - previous[i].top);
+        }
+        assert(area < (long)drv_win_width * (long)drv_win_height * 3L / 4L);
+        recorded_count = 0;
+        window_callback(main_window, WM_PAINT, 0, 0);
+        assert(full_invalidations == full && !gdi_dirty && gdi_shown_valid);
+        /* The old areas plus any overflow cover everything just drawn. */
+        recorded_bounds(&drawn);
+        assert_requested(first, &drawn);
+        for (i = 0; i < GDI_RECTS; ++i) assert_requested(first, &gdi_shown[i]);
+        /* Overflow is presented from the buffer, not drawn again. */
+        clears = frame_clears;
+        paint_pending();
+        assert(frame_clears == clears && full_invalidations == full);
+        memcpy(previous, gdi_shown, sizeof(previous));
+        partial_count = 0;
+    }
+    /* A smaller previous globe area leaves strips on all four sides; they
+     * are invalidated after drawing and presented without redrawing. */
+    gdi_shown[GDI_GLOBE_RECT].left += 12; gdi_shown[GDI_GLOBE_RECT].top += 12;
+    gdi_shown[GDI_GLOBE_RECT].right -= 12; gdi_shown[GDI_GLOBE_RECT].bottom -= 12;
+    full = full_invalidations; first = partial_count;
+    ticks += 500UL;
+    window_callback(main_window, WM_TIMER, GDI_TIMER, 0);
+    assert(partial_count == first + GDI_RECTS);
+    recorded_count = 0;
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(partial_count >= first + GDI_RECTS + 4U && full_invalidations == full);
+    recorded_bounds(&drawn);
+    assert_requested(first, &drawn);
+    clears = frame_clears;
+    paint_pending();
+    assert(frame_clears == clears);
+    partial_count = 0;
+    /* Keys and OSD toggles present everything. */
+    full = full_invalidations;
+    window_callback(main_window, WM_CHAR, 'o', 0);
+    assert(full_invalidations == full + 1U && !drv_osd_enabled);
+    paint_pending();
+    window_callback(main_window, WM_CHAR, 'o', 0);
+    assert(full_invalidations == full + 2U && drv_osd_enabled);
+    paint_pending();
+    /* A palette change from another application is a full update. */
+    full = full_invalidations;
+    window_callback(main_window, WM_PALETTECHANGED, 899, 0);
+    assert(full_invalidations == full + 1U);
+    paint_pending();
+    /* A failed timer frame shows its complete diagnostic view. */
+    full = full_invalidations; first = partial_count;
+    fail_frame_clears = 1;
+    ticks += 500UL;
+    window_callback(main_window, WM_TIMER, GDI_TIMER, 0);
+    assert(partial_count == first + GDI_RECTS && full_invalidations == full);
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(fail_frame_clears == 0 && gdi_draw_paused && !drv_auto_enabled);
+    assert(full_invalidations == full + 1U && !gdi_shown_valid && !gdi_dirty);
+    paint_pending();
+    window_callback(main_window, WM_CHAR, '2', 0);
+    paint_pending();
+    assert(!gdi_draw_paused && gdi_shown_valid);
+    /* Direct drawing cannot present a stored frame. */
+    gdi_delete_buffer();
+    drv_auto_enabled = TRUE;
+    full = full_invalidations; first = partial_count;
+    window_callback(main_window, WM_TIMER, GDI_TIMER, 0);
+    assert(full_invalidations == full + 1U && partial_count == first);
+    paint_pending();
+    assert(gdi_make_buffer());
+    drv_auto_enabled = FALSE;
+    drv_osd_enabled = FALSE;
+    gdi_invalidate_full();
+    paint_pending();
+    partial_count = 0;
+    drv_notice(NULL);
+    puts("PASS GDI partial updates: timer and drag frames invalidate the previous globe/OSD areas and present new overflow from the buffer; keys, OSD, palette, failed frames and direct drawing stay full");
+}
+
+/* G5: an icon ignores timer frames; restoring the same client size keeps
+ * the frame, mask and brushes and resumes without an elapsed-time jump. */
+static void check_window_restore(void)
+{
+    HDC buffer, mask;
+    HBITMAP bitmap;
+    HBRUSH brush;
+    unsigned int bitmaps, calls;
+    float rotation;
+    LPARAM size;
+    assert(gdi_buffer != 0 && !drv_auto_enabled);
+    stream_polygons = TRUE;
+    (void)use_dithered_palette();
+    drv_render();
+    assert(gdi_mask != 0 && gdi_brushes[gdi_background] != 0);
+    buffer = gdi_buffer; bitmap = gdi_bitmap; mask = gdi_mask;
+    brush = gdi_brushes[gdi_background];
+    bitmaps = compatible_bitmaps;
+    size = packed_coordinates((int)drv_win_width, (int)drv_win_height);
+    window_callback(main_window, WM_SIZE, SIZE_MINIMIZED, 0);
+    iconic = TRUE;
+    drv_auto_enabled = TRUE;
+    gdi_idle_frame = FALSE;
+    drv_rot_y = 10.0f;
+    calls = invalidations;
+    ticks += 100000UL;
+    window_callback(main_window, WM_TIMER, GDI_TIMER, 0);
+    assert(drv_rot_y == 10.0f && invalidations == calls && !gdi_dirty);
+    iconic = FALSE;
+    window_callback(main_window, WM_SIZE, 0, size);
+    assert(gdi_buffer == buffer && gdi_bitmap == bitmap && gdi_mask == mask);
+    assert(gdi_brushes[gdi_background] == brush && compatible_bitmaps == bitmaps);
+    assert(!gdi_dirty && invalidations == calls);
+    rotation = drv_rot_y;
+    window_callback(main_window, WM_TIMER, GDI_TIMER, 0);
+    assert(fabs((drv_rot_y - rotation) - 0.16f) < 0.001);
+    drv_auto_enabled = FALSE;
+    paint_pending();
+    /* The same size still rebuilds a missing buffer. */
+    gdi_delete_buffer();
+    window_callback(main_window, WM_SIZE, 0, size);
+    assert(gdi_buffer != 0 && compatible_bitmaps == bitmaps + 1U && gdi_mask == 0);
+    custom_realized_palette = FALSE;
+    assert(gdi_realize_palette(TRUE) != 0);
+    gdi_invalidate_full();
+    paint_pending();
+    stream_polygons = FALSE;
+    puts("PASS GDI restore: iconic timer frames are ignored; same-size restore keeps buffer, mask and brushes and resumes elapsed time; a missing buffer is rebuilt");
+}
+
+/* G8: while active and auto-rotating, each empty poll draws one frame
+ * (PeekMessage has already yielded); otherwise the loop waits. The timer
+ * only animates when idle frames stop, as in a modal loop. */
+static void check_idle_loop(void)
+{
+    unsigned int waits, clears, updates, frames, polls, calls, state;
+    float rotation;
+    int osd;
+    stream_polygons = TRUE;
+    paint_pending();
+    assert(gdi_buffer != 0 && drv_auto_available && gdi_active && !iconic);
+    assert(queued_count == 0U);
+    window_callback(main_window, WM_CHAR, 'a', 0);
+    assert(drv_auto_enabled);
+    paint_pending();
+    gdi_idle_frame = FALSE;
+    waits = wait_calls; updates = update_calls;
+    for (frames = polls = 0; frames < 3U; ++polls) {
+        assert(polls < 12U);
+        clears = frame_clears; rotation = drv_rot_y;
+        ticks += 100UL;
+        assert(gdi_pump());
+        if (frame_clears == clears) continue;
+        assert(frame_clears == clears + 1U && drv_rot_y != rotation && gdi_idle_frame);
+        ++frames;
+    }
+    assert(wait_calls == waits && update_calls == updates + 3U);
+    paint_pending();
+    /* The tick after idle frames is redundant; the next one animates. */
+    calls = invalidations; rotation = drv_rot_y;
+    window_callback(main_window, WM_TIMER, GDI_TIMER, 0);
+    assert(invalidations == calls && drv_rot_y == rotation && !gdi_idle_frame);
+    window_callback(main_window, WM_TIMER, GDI_TIMER, 0);
+    assert(invalidations > calls && drv_rot_y != rotation);
+    paint_pending();
+    /* Inactive, iconic or stopped: WaitMessage instead of drawing. */
+    for (state = 0; state < 3U; ++state) {
+        if (state == 0U) window_callback(main_window, WM_ACTIVATE, WA_INACTIVE, 0);
+        if (state == 1U) iconic = TRUE;
+        if (state == 2U) window_callback(main_window, WM_CHAR, 'a', 0);
+        paint_pending();
+        waits = wait_calls; clears = frame_clears;
+        assert(gdi_pump());
+        assert(wait_calls == waits + 1U && frame_clears == clears);
+        if (state == 0U) window_callback(main_window, WM_ACTIVATE, WA_ACTIVE, 0);
+        if (state == 1U) iconic = FALSE;
+        paint_pending();
+    }
+    assert(!drv_auto_enabled && gdi_active);
+    /* Queued messages are dispatched without waiting; WM_QUIT ends it. */
+    osd = drv_osd_enabled;
+    waits = wait_calls;
+    queue_message(WM_CHAR, 'o');
+    assert(gdi_pump() && drv_osd_enabled != osd && wait_calls == waits);
+    queue_message(WM_CHAR, 'o');
+    assert(gdi_pump() && drv_osd_enabled == osd);
+    queue_message(WM_QUIT, 0);
+    assert(!gdi_pump() && queued_count == 0U);
+    paint_pending();
+    assert(!gdi_idle_frame);
+    stream_polygons = FALSE;
+    puts("PASS GDI idle loop: active auto-rotation draws on empty polls beyond the 18.2 Hz timer, the timer covers modal loops, and inactive/iconic/stopped windows wait");
+}
+
+/* G1: after drv_release_optional() the buffer, projection cache, mask and
+ * brush modes return with memory, once per scene revision. */
+static void check_optional_recovery(void)
+{
+    unsigned int bitmaps, allocations;
+    unsigned long polygons;
+    stream_polygons = TRUE;
+    if (globe_longitude != 64) window_callback(main_window, WM_CHAR, '2', 0);
+    paint_pending();
+    assert(globe_longitude == 64 && gdi_buffer != 0 && gdi_project_cache != NULL);
+    assert(!gdi_reacquire_pending && !custom_realized_palette);
+    /* Large allocations fail: key 5 releases optional storage and falls
+     * back to 64; the one retry for that revision fails as well. */
+    fail_allocation_from = 65536UL;
+    fail_allocation_size = (DWORD)sizeof(Soft3d_project_cache);
+    fail_bitmap = TRUE;
+    bitmaps = compatible_bitmaps;
+    window_callback(main_window, WM_CHAR, '5', 0);
+    assert(globe_ready() && globe_longitude == 64);
+    assert(strstr(drv_get_notice(), "using 64") != NULL);
+    assert(gdi_buffer == 0 && gdi_project_cache == NULL && gdi_reacquire_pending);
+    assert(compatible_bitmaps == bitmaps + 1U);
+    /* Paints and renders in the same revision do not allocate again. */
+    bitmaps = compatible_bitmaps; allocations = global_allocations;
+    polygons = submitted_polygons;
+    paint_pending();
+    drv_render();
+    assert(compatible_bitmaps == bitmaps && global_allocations == allocations);
+    assert(gdi_buffer == 0 && submitted_polygons > polygons && !gdi_draw_paused);
+    /* Memory returns: the next resolution change restores everything. */
+    fail_allocation_from = fail_allocation_size = 0;
+    fail_bitmap = FALSE;
+    window_callback(main_window, WM_CHAR, '1', 0);
+    assert(globe_longitude == 32 && !gdi_reacquire_pending);
+    assert(gdi_buffer != 0 && gdi_project_cache != NULL);
+    assert(!gdi_mask_unavailable && !gdi_pattern_unavailable && !gdi_brush_reduced);
+    paint_pending();
+    assert(gdi_buffer_valid && gdi_project_cache->count != 0U);
+    (void)use_dithered_palette();
+    drv_render();
+    assert(gdi_mask != 0 && pattern_mask_blits > 0U);
+    custom_realized_palette = FALSE;
+    assert(gdi_realize_palette(TRUE) != 0);
+    /* A successful recovery is not repeated at later revisions. */
+    bitmaps = compatible_bitmaps;
+    window_callback(main_window, WM_CHAR, '2', 0);
+    assert(compatible_bitmaps == bitmaps && gdi_buffer != 0);
+    paint_pending();
+    stream_polygons = FALSE;
+    drv_notice(NULL);
+    puts("PASS GDI optional recovery: a failed key 5 falls back without buffer/cache; one retry per revision, and the next resolution change restores buffer, cache, mask and brush modes");
+}
+
 static int run_contract(void)
 {
     int resolution, pose, i;
@@ -1591,6 +2188,10 @@ static int run_contract(void)
     assert(gdi_has_fpu == ((windows_flags & WF_80x87) != 0 &&
                           (windows_flags & (WF_CPU386 | WF_CPU486)) != 0));
     assert(palette_uploads == 1 && palette_realizations > 0 && timer_calls == 1);
+    /* Activation by ShowWindow is the only startup match: one foreground
+     * query of all 256 entries, none before the window was shown. */
+    assert(color_queries == 256U && !last_realize_background);
+    assert(gdi_active && gdi_palette_foreground && gdi_palette_valid);
     assert(drv_win_width == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 320 : 640));
     assert(drv_win_height == (unsigned int)(screen_width <= 640 && screen_height <= 480 ? 240 : 480));
     assert(allocated_count >= 4 && loaded_chunks > 0);
@@ -1653,6 +2254,13 @@ static int run_contract(void)
     check_mask_coverage();
     check_font_sizes();
     check_frame_clears();
+    check_solid_pens();
+    check_realize_once();
+    check_transform_domain();
+    check_overflow_strips();
+    check_partial_updates();
+    check_window_restore();
+    check_idle_loop();
     puts("PASS GDI rendering: five Earth resolutions, huge allocations/resources, independent pose checks, bounded palette batches, near/far/screen clipping");
 
     old_x = drv_rot_x; old_y = drv_rot_y;
@@ -1745,15 +2353,20 @@ static int run_contract(void)
     realized = palette_realizations;
     window_callback(main_window, WM_PALETTECHANGED, main_window, 0);
     assert(palette_realizations == realized);
+    /* Another window's change keeps an active window's foreground mapping. */
     window_callback(main_window, WM_PALETTECHANGED, 899, 0);
     assert(palette_realizations > realized);
-    assert(last_realize_background);
+    assert(!last_realize_background);
     window_callback(main_window, WM_ACTIVATE, WA_INACTIVE, 0);
+    assert(!gdi_active);
+    realized = palette_realizations;
+    window_callback(main_window, WM_PALETTECHANGED, 899, 0);
+    assert(palette_realizations == realized + 1U && last_realize_background);
     recorded_count = 0;
     window_callback(main_window, WM_PAINT, 0, 0);
     assert(last_realize_background);
     window_callback(main_window, WM_ACTIVATE, 1, 0);
-    assert(!last_realize_background);
+    assert(!last_realize_background && gdi_active);
     client_width = 800; client_height = 600;
     window_callback(main_window, WM_SIZE, 0, packed_coordinates(800, 600));
     assert(drv_win_width == 800 && drv_win_height == 600);
@@ -1866,6 +2479,7 @@ static int run_contract(void)
         assert(globe_ready() && !gdi_failed && gdi_ready);
         fail_allocation = 0;
     }
+    check_optional_recovery();
     globe_free();
     assert(!globe_ready());
     drv_auto_enabled = TRUE;
@@ -1877,6 +2491,13 @@ static int run_contract(void)
     drv_osd_enabled = FALSE;
     texts = text_calls;
     drv_notice("no globe; choose a resolution");
+    /* A resolution key empties the scene and requests a full frame. */
+    gdi_invalidate_full();
+    window_callback(main_window, WM_PAINT, 0, 0);
+    assert(text_calls > texts && gdi_ready);
+    /* Direct drawing repaints the empty scene on every expose. */
+    gdi_delete_buffer();
+    texts = text_calls;
     window_callback(main_window, WM_PAINT, 0, 0);
     assert(text_calls > texts && gdi_ready);
     window_callback(main_window, WM_CHAR, '1', 0);

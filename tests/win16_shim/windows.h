@@ -152,7 +152,11 @@ typedef struct {
 #define WS_THICKFRAME 0x00040000UL
 #define WS_VISIBLE 0x10000000UL
 #define CW_USEDEFAULT (-32768)
+#define SW_HIDE 0
+#define SW_SHOWNORMAL 1
+#define SW_SHOWNOACTIVATE 4
 #define SW_SHOW 5
+#define SW_SHOWMINNOACTIVE 7
 #define IDC_ARROW ((LPCSTR)32512UL)
 #define IDI_APPLICATION ((LPCSTR)32512UL)
 #define WM_CREATE 0x0001
@@ -179,6 +183,7 @@ typedef struct {
 #define WM_CANCELMODE 0x001F
 #define SIZE_MINIMIZED 1
 #define WA_INACTIVE 0
+#define WA_ACTIVE 1
 #define VK_ESCAPE 0x1B
 #define MK_LBUTTON 0x0001
 #define PM_REMOVE 0x0001
@@ -215,9 +220,11 @@ HWND CreateWindow(LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HANDLE, HINST
 BOOL DestroyWindow(HWND);
 BOOL ShowWindow(HWND, int);
 void UpdateWindow(HWND);
+BOOL IsIconic(HWND);
 LONG DefWindowProc(HWND, UINT, WPARAM, LPARAM);
 BOOL GetMessage(MSG *, HWND, UINT, UINT);
 BOOL PeekMessage(MSG *, HWND, UINT, UINT, UINT);
+void WaitMessage(void);
 BOOL TranslateMessage(const MSG *);
 LONG DispatchMessage(const MSG *);
 void PostQuitMessage(int);
