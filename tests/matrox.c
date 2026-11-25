@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <math.h>
 #include <setjmp.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,8 @@
 /* Count every globe patch before the real driver's visibility rejection. */
 static void recorded_mtx_error(char *message);
 static clock_t recorded_mtx_clock(void);
+static int recorded_mtx_fprintf(FILE *stream, const char *format, ...);
+static void check_backward_clock(void);
 static int recorded_fixed_prepare(long matrix[3][3], int yaw, int pitch);
 static int recorded_float_prepare(float matrix[3][3], int yaw, int pitch);
 static int recorded_fixed_transform(long matrix[3][3], unsigned int count,
@@ -35,7 +38,10 @@ static int recorded_float_transform(float matrix[3][3], unsigned int count,
 #define soft3d_float_transform_reuse recorded_float_transform
 #define error recorded_mtx_error
 #define clock recorded_mtx_clock
+#undef fprintf
+#define fprintf recorded_mtx_fprintf
 #include "../src/drv_mtx.c"
+#undef fprintf
 #undef clock
 #undef error
 #undef drv_draw_quad_flat_color
@@ -77,6 +83,19 @@ static unsigned short board_errors[8];
 static unsigned int error_read, error_count, error_polls, delayed_reads;
 static int expected_board_error, clock_timeout;
 static unsigned long clock_step;
+static unsigned int clock_calls;
+static clock_t clock_script[4];
+static unsigned int clock_script_count, clock_script_next;
+/* Polls before each reply word, stale startup data and an asynchronous
+ * second error after the first is acknowledged (a stalled shell resuming). */
+static unsigned int word_delay, pending_delay;
+static unsigned long stale_words;
+static unsigned int stale_error_gap, error_gap;
+static int stale_endless, stale_toggle;
+static char stderr_text[512];
+static unsigned short original_mask = 0x7f, current_mask = 0x7f;
+static unsigned int mask_words = 1;
+static int break_exit;
 static char board_message[128];
 static jmp_buf board_error;
 static int expected_inquiry_error;
@@ -136,6 +155,23 @@ static void inject_v3_error(unsigned int *remaining)
     board_errors[0] = injected_v3_error;
 }
 
+static int recorded_mtx_fprintf(FILE *stream, const char *format, ...)
+{
+    char text[1024];
+    int result;
+    va_list arguments;
+    va_start(arguments, format);
+    result = vsprintf(text, format, arguments);
+    va_end(arguments);
+    assert(result >= 0 && (size_t)result < sizeof(text));
+    if (stream == stderr)
+    {
+        assert(strlen(stderr_text) + strlen(text) < sizeof(stderr_text));
+        strcat(stderr_text, text);
+    }
+    return fputs(text, stream) == EOF ? -1 : result;
+}
+
 static void recorded_mtx_error(char *message)
 {
     if (expected_board_error)
@@ -155,6 +191,8 @@ static void recorded_mtx_error(char *message)
 static clock_t recorded_mtx_clock(void)
 {
     static unsigned long ticks;
+    ++clock_calls;
+    if (clock_script_next < clock_script_count) return clock_script[clock_script_next++];
     if (!clock_timeout && clock_step == 0) return clock();
     ticks += clock_timeout ? MTX_WAIT_TICKS : clock_step;
     return (clock_t)ticks;
@@ -225,7 +263,13 @@ int int86(int number, union REGS *input, union REGS *output)
     return 0;
 }
 
-int kbhit(void) { return 0; }
+int kbhit(void)
+{
+    static unsigned int break_polls;
+    /* After Ctrl-Break a hung event loop fails instead of spinning. */
+    if (break_exit) assert(++break_polls < 1000U);
+    return 0;
+}
 int getch(void) { assert(!"Unexpected blocking keyboard read"); return 0; }
 
 void lsinit(short handle, short address)
@@ -244,7 +288,17 @@ void lserror(short enabled) { assert(enabled == 0 || enabled == 1); error_report
 short iogeterror(void)
 {
     ++error_polls;
-    if (error_read < error_count) return (short)board_errors[error_read++];
+    if (stale_endless)
+    {
+        stale_toggle = !stale_toggle;
+        return stale_toggle ? 2 : 0;
+    }
+    if (error_read < error_count)
+    {
+        if (error_gap != 0U) { --error_gap; return 0; }
+        if (error_read == 0U) error_gap = stale_error_gap;
+        return (short)board_errors[error_read++];
+    }
     return 0;
 }
 short rdfifocnt(void)
@@ -254,35 +308,52 @@ short rdfifocnt(void)
         ++delayed_reads;
         return 0;
     }
-    return inquiry != 0;
+    if (inquiry == 0 && stale_words == 0UL) return 0;
+    if (pending_delay != 0U)
+    {
+        --pending_delay;
+        ++delayed_reads;
+        return 0;
+    }
+    return 1;
 }
 void lsinqsys(void)
 {
-    assert(inquiry == 0);
+    assert(inquiry == 0 && stale_words == 0UL);
     inquiry = 1;
     inquiry_remaining = 10;
     fixed_reply_offset = 0;
+    pending_delay = word_delay;
 }
 void lsinq(unsigned short code)
 {
-    assert((code == 77 || code == 78) && inquiry == 0);
-    inquiry = code == 78 ? 2U : 4U;
+    assert((code == 77 || code == 78 || code == 88) && inquiry == 0 && stale_words == 0UL);
+    inquiry = code == 78 ? 2U : code == 88 ? 5U : 4U;
     if (code == 77) ++sync_calls;
     inquiry_header = 1;
-    inquiry_remaining = code == 78 ? inquiry_words : 1U;
+    inquiry_remaining = code == 78 ? inquiry_words : code == 88 ? mask_words : 1U;
+    pending_delay = word_delay;
 }
 short iogetw(void)
 {
     unsigned int type, offset;
     static short system_info[10] = {640,480,256,0x0104,640,480,80,0x0108,0,0};
-    assert(inquiry != 0 && rdfifocnt() > 0);
+    assert(error_read >= error_count && !clock_timeout && pending_delay == 0U);
+    if (stale_words != 0UL)
+    {
+        /* Words left by a previous program precede every new reply. */
+        --stale_words;
+        return 0x5a5a;
+    }
+    assert(inquiry != 0);
     ++inquiry_reads;
+    pending_delay = word_delay;
     type = inquiry;
     if (inquiry_header)
     {
         inquiry_header = 0;
         if (inquiry_remaining == 0) inquiry = 0;
-        return (short)(type == 2 ? inquiry_words : 1U);
+        return (short)(type == 2 ? inquiry_words : type == 5 ? mask_words : 1U);
     }
     assert(inquiry_remaining != 0);
     --inquiry_remaining;
@@ -294,6 +365,7 @@ short iogetw(void)
         return (short)original_palette[offset / 3U][offset % 3U];
     }
     if (type == 4) return error_reporting;
+    if (type == 5) return (short)current_mask;
     return 3;
 }
 void lslutrd(unsigned short logical, unsigned short first, unsigned short count)
@@ -302,6 +374,7 @@ void lslutrd(unsigned short logical, unsigned short first, unsigned short count)
     inquiry = 3;
     inquiry_remaining = 768;
     fixed_reply_offset = 0;
+    pending_delay = word_delay;
 }
 void iogetbuf(short *buffer, unsigned short size)
 {
@@ -328,7 +401,8 @@ void lslutsl(unsigned short logical, unsigned short physical)
 }
 void lslutpm(unsigned short physical, unsigned short mask)
 {
-    assert(physical == 0 && mask == 255);
+    assert(physical == 0 && mask <= 255);
+    current_mask = mask;
 }
 void lssbm(short bitmap) { assert(bitmap == -1); }
 void lssclpl(short clip) { assert(clip == -1); }
@@ -610,10 +684,13 @@ static void cleanup_checks(void)
     assert(close_calls == 1);
     assert(palette_uploads == 2);
     assert(memcmp(supplied_palette, original_palette, sizeof(original_palette)) == 0);
-    assert(current_lut == 3);
+    assert(current_lut == 3 && current_mask == original_mask);
     assert(error_reporting == initial_error_reporting);
     assert(allocated_blocks == 0);
-    puts("PASS Matrox cleanup: Escape, board emulation, palette selection/content, huge allocations");
+    if (break_exit)
+        puts("PASS Matrox Ctrl-Break: INT 23h sets a flag and the event loop exits through board, palette and mask cleanup");
+    else
+        puts("PASS Matrox cleanup: Escape, board emulation, palette selection/content, plane mask, huge allocations");
 }
 
 static void check_board_errors(void)
@@ -631,7 +708,7 @@ static void check_board_errors(void)
         expected_board_error = 1;
         if (setjmp(board_error) == 0)
         {
-            (void)mtx_checkpoint("command test");
+            (void)mtx_checkpoint("command test", FALSE);
             assert(!"Board errors must be reported");
         }
         expected_board_error = 0;
@@ -647,7 +724,7 @@ static void check_board_errors(void)
     expected_board_error = 1;
     if (setjmp(board_error) == 0)
     {
-        (void)mtx_checkpoint("multiple errors");
+        (void)mtx_checkpoint("multiple errors", FALSE);
         assert(!"Multiple board errors must be drained and reported");
     }
     expected_board_error = 0;
@@ -659,7 +736,7 @@ static void check_board_errors(void)
     expected_board_error = clock_timeout = 1;
     if (setjmp(board_error) == 0)
     {
-        (void)mtx_checkpoint("timeout test");
+        (void)mtx_checkpoint("timeout test", FALSE);
         assert(!"Missing completion reply must time out");
     }
     expected_board_error = clock_timeout = 0;
@@ -674,25 +751,98 @@ static void check_board_errors(void)
     inquiry = inquiry_header = inquiry_remaining = 0;
     puts("PASS Matrox timeout: bounded FIFO wait and cleanup avoids further commands after lost communication");
 
-    /* A deadline applies to the entire reply even when each individual
-     * word is ready immediately; restarting it for each word is unsafe. */
+    /* Ready words are read before the clock and need none. Reply lengths
+     * are bounded by count, so an always-ready reply still terminates. */
+    polls = clock_calls;
+    assert(mtx_inquire_lut() == 3 && clock_calls == polls && inquiry == 0);
+    /* One deadline spans the reply: each word waits one poll while the
+     * clock advances half the limit. Restarting it per word never expires. */
     expected_board_error = 1;
     clock_step = MTX_WAIT_TICKS / 2UL;
-    inquiry_words = 2;
+    inquiry_words = 2; word_delay = 1;
     polls = inquiry_reads;
     if (setjmp(board_error) == 0)
     {
         (void)mtx_inquire_lut();
-        assert(!"Continuous ready data must still respect the reply deadline");
+        assert(!"Waits for successive words must share the reply deadline");
     }
     expected_board_error = 0;
-    clock_step = 0;
+    clock_step = 0; word_delay = 0;
     assert(strstr(board_message, "communication timeout") != NULL && mtx_io_failed);
-    assert(inquiry_reads - polls == 1U && inquiry_remaining == 2U);
+    assert(inquiry_reads - polls == 2U && inquiry_remaining == 1U);
     mtx_io_failed = FALSE;
     inquiry = inquiry_header = inquiry_remaining = 0;
+    pending_delay = 0;
     inquiry_words = 1;
-    puts("PASS Matrox reply bounds: total deadline includes immediately available words");
+    puts("PASS Matrox reply bounds: ready words read no clock; one deadline covers every wait of a reply");
+    check_backward_clock();
+}
+
+static void check_backward_clock(void)
+{
+    unsigned int calls;
+    /* DOS clock() can step backward at midnight. That step adds nothing:
+     * nearly the whole limit afterward still completes the reply. */
+    clock_script[0] = (clock_t)(3UL * MTX_WAIT_TICKS);
+    clock_script[1] = 0;
+    clock_script[2] = (clock_t)(MTX_WAIT_TICKS - 1UL);
+    clock_script[3] = (clock_t)(MTX_WAIT_TICKS - 1UL);
+    clock_script_count = 4; clock_script_next = 0;
+    word_delay = 2;
+    calls = clock_calls;
+    assert(mtx_inquire_lut() == 3 && !mtx_io_failed && inquiry == 0);
+    assert(clock_calls - calls == 4U && clock_script_next == 4U);
+    /* Nor does a backward step restart the deadline: half the limit before
+     * it and half after still expires within one reply. */
+    clock_script[0] = 100;
+    clock_script[1] = (clock_t)(100UL + MTX_WAIT_TICKS / 2UL);
+    clock_script[2] = 50;
+    clock_script[3] = (clock_t)(50UL + MTX_WAIT_TICKS / 2UL);
+    clock_script_next = 0;
+    word_delay = 4;
+    expected_board_error = 1;
+    if (setjmp(board_error) == 0)
+    {
+        (void)mtx_inquire_lut();
+        assert(!"A backward clock step must not restart the reply deadline");
+    }
+    expected_board_error = 0;
+    assert(strstr(board_message, "communication timeout") != NULL && mtx_io_failed);
+    assert(clock_script_next == 4U);
+    clock_script_count = clock_script_next = 0;
+    word_delay = pending_delay = 0;
+    mtx_io_failed = FALSE;
+    inquiry = inquiry_header = inquiry_remaining = 0;
+    puts("PASS Matrox backward clock: backward steps add no time and do not restart the reply deadline");
+}
+
+static void check_stale_limits(void)
+{
+    unsigned int calls;
+    /* Bounded discard: a board that never stops replying is abandoned. */
+    stale_words = MTX_STALE_LIMIT + 1UL;
+    expected_board_error = 1;
+    if (setjmp(board_error) == 0)
+    {
+        (void)mtx_discard_stale();
+        assert(!"An endless stale reply must be bounded");
+    }
+    assert(strstr(board_message, "stale replies") != NULL && mtx_io_failed);
+    assert(stale_words == 1UL);
+    stale_words = 0; mtx_io_failed = FALSE;
+    /* Deadline: errors keep arriving, each before the quiet interval ends. */
+    stale_endless = 1; clock_step = MTX_STALE_QUIET / 2UL;
+    if (setjmp(board_error) == 0)
+    {
+        (void)mtx_discard_stale();
+        assert(!"Endless stale errors must meet the deadline");
+    }
+    expected_board_error = 0;
+    assert(strstr(board_message, "stale replies") != NULL && mtx_io_failed);
+    stale_endless = stale_toggle = 0; clock_step = 0; mtx_io_failed = FALSE;
+    calls = clock_calls;
+    assert(mtx_discard_stale() && inquiry == 0 && clock_calls == calls);
+    puts("PASS Matrox stale replies: discard is bounded by count and deadline; an idle board is not delayed");
 }
 
 static void check_invalid_inquiry(unsigned int words)
@@ -721,13 +871,14 @@ static void check_invalid_inquiry(unsigned int words)
     }
 }
 
-static void check_indexed_triangle(void)
+static void check_direct_quad(void)
 {
-    unsigned long top, before_fill, before_triangles, before_quads;
+    unsigned long top, before_fill, before_triangles, before_quads, before_caps;
     unsigned char color;
     Vertex *a, *b, *c;
-    /* Default view looks toward the positive-Y equatorial hemisphere. Use
-     * a real outward triangle there to exercise the separate byte-color API. */
+    /* Default view looks toward the positive-Y equatorial hemisphere. A
+     * real outward facet there, given as a quad with a repeated corner,
+     * exercises direct calls, NULL rejection and the original color byte. */
     top = ((unsigned long)globe_latitude / 2UL - 1UL) *
           (globe_longitude + 1UL) + (unsigned long)globe_longitude / 4UL;
     a = globe_verts + top;
@@ -741,9 +892,6 @@ static void check_indexed_triangle(void)
     before_fill = filled_polygons;
     before_triangles = globe_tris_num_vis;
     before_quads = globe_quads_num_vis;
-    drv_draw_tri_flat_color(NULL, b, c, color);
-    drv_draw_tri_flat_color(a, NULL, c, color);
-    drv_draw_tri_flat_color(a, b, NULL, color);
     recorded_driver_quad(NULL, b, c, a, color);
     recorded_driver_quad(a, NULL, c, a, color);
     recorded_driver_quad(a, b, NULL, a, color);
@@ -751,12 +899,14 @@ static void check_indexed_triangle(void)
     assert(filled_polygons == before_fill &&
            globe_tris_num_vis == before_triangles &&
            globe_quads_num_vis == before_quads);
-    drv_draw_tri_flat_color(a, b, c, color);
+    before_caps = filled_triangles;
+    recorded_driver_quad(a, b, c, c, color);
     assert(filled_polygons == before_fill + 1UL);
-    assert(globe_tris_num_vis == before_triangles + 1UL);
-    assert(globe_quads_num_vis == before_quads);
+    assert(filled_triangles == before_caps + 1UL);
+    assert(globe_tris_num_vis == before_triangles);
+    assert(globe_quads_num_vis == before_quads + 1UL);
     assert(last_color == color);
-    puts("PASS indexed drawing: distinct triangle and quad APIs receive original color bytes");
+    puts("PASS direct quad drawing: NULL corners rejected, repeated corner compacted, original color byte");
 }
 
 static void check_orthographic_math(void)
@@ -852,7 +1002,7 @@ static void check_software_controls(void)
     render_and_check(512, test_earth_data(32));
     assert(world_polygons == native_before && screen_polygons > 0);
     assert(strstr(osd_text, "soft3d on") != NULL && strstr(osd_text, "S = soft3d") != NULL);
-    check_indexed_triangle();
+    check_direct_quad();
     if (selected_fpu) assert(floating_transforms && !fixed_transforms && !optimized_transforms);
     else if (selected_cpu >= 386) assert(optimized_transforms && !fixed_transforms && !floating_transforms);
     else assert(fixed_transforms && !optimized_transforms && !floating_transforms);
@@ -946,7 +1096,7 @@ static void check_transform_recovery(void)
             else fail_v3_polygon = 1U;
             render_and_check(512, test_earth_data(32));
             assert(drv_soft3d_active && !drv_soft3d_requested);
-            assert(!drv_frame_failed && !mtx_io_failed && !mtx_transform_scope);
+            assert(!drv_frame_failed && !mtx_io_failed);
             assert(inquiry == 0 && error_read == error_count);
             assert(strstr(osd_text, "soft3d on") != NULL);
             retry_native();
@@ -971,7 +1121,6 @@ static void check_transform_recovery(void)
     assert(!drv_soft3d_active && strstr(board_message, "0x11") != NULL);
     assert(inquiry == 0 && error_read == error_count);
     /* Only the fixture resumes after fatal error(); the application exits. */
-    mtx_transform_scope = FALSE;
     mtx_keyboard('S');
     injected_v3_error = 1U; fail_screen_polygon = 1U;
     expected_board_error = 1;
@@ -992,7 +1141,7 @@ int main(int process_argc, char **process_argv)
 {
     unsigned int i;
     int argc;
-    int startup_failure = 0;
+    int startup_failure = 0, stale_profile = 0, break_profile = 0;
     char *argv[2];
     float x, y;
     if (process_argc > 1)
@@ -1003,6 +1152,8 @@ int main(int process_argc, char **process_argv)
         if (strcmp(profile, "reporting-off") == 0) error_reporting = initial_error_reporting = 0;
         else if (strcmp(profile, "startup-v3") == 0) startup_failure = 1;
         else if (strcmp(profile, "startup-world") == 0) startup_failure = 2;
+        else if (strcmp(profile, "stale") == 0) stale_profile = 1;
+        else if (strcmp(profile, "ctrl-break") == 0) break_profile = 1;
         else if (strcmp(profile, "8086") == 0) selected_cpu = 86;
         else if (strcmp(profile, "286") == 0) selected_cpu = 286;
         else if (strcmp(profile, "386") == 0) selected_cpu = 386;
@@ -1019,6 +1170,25 @@ int main(int process_argc, char **process_argv)
         original_palette[i][2] = (unsigned short)((i + 47) & 255);
     }
     argc = 1; argv[0] = "testglob.exe"; argv[1] = NULL;
+#ifndef MTX_8086_BINDING
+    if (selected_cpu < 286)
+    {
+        /* The supplied binding uses 286 instructions; reject before lsinit
+         * or any interrupt vector changes. */
+        drv_ext_init();
+        expected_board_error = 1;
+        if (setjmp(board_error) == 0)
+        {
+            drv_init(&argc, argv);
+            assert(!"The 286 LibShell binding must reject an 8086");
+        }
+        expected_board_error = 0;
+        assert(strstr(board_message, "80286") != NULL);
+        assert(init_calls == 0 && !mtx_initialized && test_dos_vectors[0x23] == NULL);
+        puts("PASS Matrox CPU requirement: the supplied 286 binding rejects 8086-class CPUs before lsinit");
+        return 0;
+    }
+#endif
     /* Registered first, so this checks the production atexit cleanup last. */
     assert(atexit(cleanup_checks) == 0);
     /* Main owns the scene; native cleanup remains registered afterward. */
@@ -1032,18 +1202,49 @@ int main(int process_argc, char **process_argv)
     check_invalid_inquiry(2);
     check_invalid_inquiry(65535U);
     inquiry_words = 1;
+    if (stale_profile)
+    {
+        /* A previous program left two errors, the second reported only
+         * after the first is read, and unread reply words behind them. */
+        board_errors[0] = 2; board_errors[1] = 8;
+        error_read = 0; error_count = 2; stale_error_gap = 3;
+        stale_words = 5;
+    }
     drv_init(&argc, argv);
     assert(init_calls == 1 && mouse_resets > 0);
+    assert(test_dos_vectors[0x23] != NULL && test_dos_vectors[0x24] != NULL);
     assert(mtx_previous_lut == 3 && inquiry == 0);
+    assert(mtx_mask_saved && mtx_previous_mask == original_mask);
     assert(error_reporting == 1 && mtx_previous_error_reporting == initial_error_reporting);
+    if (stale_profile)
+    {
+        assert(error_read == error_count && stale_words == 0UL && error_gap == 0U);
+        assert(strstr(stderr_text, "discarded 5 stale reply words, error bits 0x0A") != NULL);
+        stale_error_gap = 0;
+        puts("PASS Matrox stale startup: latched errors, a delayed second error and old reply words are discarded with a warning");
+    }
+    else assert(stderr_text[0] == '\0');
     puts("PASS Matrox inquiry: short malformed replies drained, oversized counts rejected, palette FIFO remains synchronized");
+    {
+        /* LSINQ 88 is optional: a shell without it leaves the mask alone. */
+        unsigned short mask = 1234;
+        int present = TRUE;
+        mask_words = 0;
+        assert(mtx_inquire(88, &mask, "plane-mask inquiry", "invalid", FALSE, &present));
+        assert(!present && mask == 1234 && inquiry == 0);
+        mask_words = 1;
+        assert(mtx_inquire(88, &mask, "plane-mask inquiry", "invalid", FALSE, &present));
+        assert(present && mask == original_mask);
+        puts("PASS Matrox plane mask: LSINQ 88 saves the original mask; an empty reply means the shell keeps it");
+    }
+    check_stale_limits();
     if (startup_failure == 1) fail_v3_projection = 1U;
     if (startup_failure == 2) fail_world_window = 1U;
     assert(drv_init_window(0, 0, 0, 0));
     assert(drv_win_width == 640 && drv_win_height == 480);
     assert(viewport_calls > 0 && world_window_calls > 0);
     if (startup_failure != 2) assert(projection_calls > 0);
-    assert(palette_uploads == 1 && current_lut == 0);
+    assert(palette_uploads == 1 && current_lut == 0 && current_mask == 255);
     for (i = 0; i < 256; ++i) {
         assert(supplied_palette[i][0] == earth_cmap[i][0]);
         assert(supplied_palette[i][1] == earth_cmap[i][1]);
@@ -1061,7 +1262,7 @@ int main(int process_argc, char **process_argv)
     }
     check_orthographic_math();
     render_and_check(512, test_earth_data(32));
-    check_indexed_triangle();
+    check_direct_quad();
     check_noncardinal_poses(512, test_earth_data(32));
     assert(osd_calls > 0);
     mtx_keyboard('2');
@@ -1127,6 +1328,17 @@ int main(int process_argc, char **process_argv)
         assert(mtx_angle((float)HUGE_VAL) == 0);
     }
     puts("PASS Matrox recovery: empty scene draws status with OSD disabled and resolution input restores the globe");
+    if (break_profile)
+    {
+        /* Ctrl-C/Break runs the stored INT 23h routine; the next loop pass
+         * must leave through exit() and the registered board cleanup. */
+        test_dos_vectors[0x23]();
+        assert(drv_dos_break_pending());
+        break_exit = 1;
+        drv_loop();
+        assert(!"Ctrl-Break must leave the event loop");
+        return 1;
+    }
     mtx_keyboard(27);
     assert(!"Escape must terminate the application");
     return 1;

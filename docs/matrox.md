@@ -4,7 +4,9 @@
 
 MS-DOS, Microsoft C 7.0 with its huge-model runtime and NMAKE, and the matching Matrox
 LibShell C binding. The driver assumes a 640 × 480, 256-color PG-641-compatible
-display; initialize the board and its firmware as the SDK describes. A
+display; initialize the board and its firmware as the SDK describes. The supplied
+`LSCL.LIB` uses 286 instructions (`ENTER`/`LEAVE`), so both builds stop with an error
+on an 8086-class CPU before calling `lsinit`. A
 Microsoft-compatible DOS mouse driver enables dragging; the keyboard controls work
 without one. A [cross-build](build.md#linux-hosted-cross-builds) with OpenWatcom is
 also available.
@@ -30,7 +32,9 @@ The output is `testglob.exe`. For an SDK elsewhere, set `XGX_ROOT`, for example
 `XGX_ROOT=C:\MATROX`; the default is `.` in the root Makefile and `..` in
 `src/Makefile`. Override `MTX_CC`, `MTX_CFLAGS`, `MTX_CPPFLAGS`, `MTX_386FLAGS`,
 `MTX_LIB`, and `MTX_LDFLAGS` as needed, keeping `-AH -G0 -FPi` on the baseline objects;
-only the guarded `m_386.obj` kernel uses `-G3`. `MTX_HOTFLAGS` (`-Gs`) removes stack
+only the guarded `m_386.obj` kernel uses `-G3`. When linking a LibShell binding built
+for 8086 instructions, add `-DMTX_8086_BINDING` to `MTX_CPPFLAGS` (keeping its
+`-I$(XGX_ROOT)`) to skip the 286 check. `MTX_HOTFLAGS` (`-Gs`) removes stack
 probes from the per-vertex and per-polygon objects, none of which recurse; the
 OpenWatcom cross-build uses `-s` for the same files. The DOS rules use backslash paths,
 8.3 generated names, and response files to stay within command-line limits.
@@ -70,10 +74,22 @@ LibShell reports each error as an 8-bit value in its error register and waits un
 that value is read before reporting the next, so a shell with unread errors appears
 to hang. The driver therefore services the register while waiting for `LSINQ`
 replies between bounded command packets. Diagnostics name the operation and error
-bits. Reply polling has a ten-second deadline: short malformed replies are drained,
-while oversized replies or timeouts abandon communication. Cleanup restores the
-palette and error-reporting policy while communication still works and sends no more
-board commands after communication is abandoned. A recoverable error during a native
+bits. At startup the driver first discards errors and Read FIFO words left by a
+previous program, waiting for a short quiet interval in case a stalled shell
+resumes, and prints a warning on stderr if it discarded anything; a board that
+keeps replying past a word limit or the deadline is abandoned.
+
+Reply polling reads the board before the clock, so ready words cost no clock call. A
+ten-second deadline covers all the waiting of one reply; only forward `clock()` steps
+count, so a backward step (DOS midnight) neither ends a wait early nor restarts it.
+Short malformed replies are drained, while oversized replies or timeouts abandon
+communication. Cleanup restores the palette, its LUT selection, the plane mask read
+with `LSINQ` 88 (a shell without that index keeps its mask) and the error-reporting
+policy while communication still works, and sends no more board commands after
+communication is abandoned. Ctrl-C and Ctrl-Break set a flag through INT 23h instead
+of ending the program inside DOS; the event loop then exits through the same cleanup
+as Escape, so board emulation is restored. Critical disk errors (INT 24h) fail the
+DOS call instead of prompting on an invisible screen. A recoverable error during a native
 geometry packet can retry the frame with host transforms once a valid error reply has
 been drained; this recovers only if the 2D color and fill commands work.
 Communication failures and errors in that shared drawing path cannot be fixed by

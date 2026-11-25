@@ -37,12 +37,14 @@ static short mtx_previous_error_reporting;
 static int mtx_dirty = TRUE;
 static int mtx_mouse_present;
 static int mtx_cpu, mtx_has_fpu;
-static int mtx_transform_scope, mtx_native_failed;
+static int mtx_native_failed;
+static int mtx_mask_saved;
 static union {
     long fixed[3][3];
     float floating[3][3];
 } mtx_matrix;
 static unsigned short mtx_previous_lut;
+static unsigned short mtx_previous_mask;
 static unsigned short mtx_background;
 static unsigned short mtx_foreground;
 static struct Lutval mtx_saved_palette[256];
@@ -60,9 +62,50 @@ static float mtx_eye_z = 1.0f;
  * inquiry; LUT writes and text are bounded so even a legacy 256-byte
  * command FIFO cannot fill before error servicing resumes. */
 #define MTX_WAIT_TICKS (10UL * (unsigned long)CLOCKS_PER_SEC)
+/* Stale startup data: a full-screen readback is 153,600 words. A shell
+ * that stalled on a second error resumes once the first is read, so wait
+ * for at least one BIOS tick of silence after discarding anything. */
+#define MTX_STALE_LIMIT 262144UL
+#define MTX_STALE_QUIET ((unsigned long)CLOCKS_PER_SEC / 10UL)
+
+/* Only forward clock steps count toward a deadline. DOS clock() can step
+ * backward (at midnight, for example); that must neither end a wait early
+ * nor restart it. Callers poll the board first, so ready words never read
+ * the clock. */
+typedef struct Mtx_wait
+{
+    clock_t previous;
+    unsigned long elapsed;
+    int started;
+} Mtx_wait;
+
+static void mtx_wait_begin(Mtx_wait *wait)
+{
+    wait->elapsed = 0UL;
+    wait->started = FALSE;
+}
+
+/* Return this sample's forward step. An unavailable clock ends the wait;
+ * the total saturates at MTX_WAIT_TICKS instead of wrapping. */
+static unsigned long mtx_wait_step(Mtx_wait *wait)
+{
+    clock_t now = clock();
+    unsigned long step = 0UL;
+    if (now == (clock_t)-1) step = MTX_WAIT_TICKS;
+    else
+    {
+        if (wait->started && now > wait->previous)
+            step = (unsigned long)now - (unsigned long)wait->previous;
+        wait->previous = now;
+        wait->started = TRUE;
+    }
+    if (step >= MTX_WAIT_TICKS - wait->elapsed) wait->elapsed = MTX_WAIT_TICKS;
+    else wait->elapsed += step;
+    return step;
+}
 
 static int mtx_failure(const char *operation, unsigned short errors,
-                        int communication)
+                        int communication, int recoverable)
 {
     char message[128];
     const char *reason;
@@ -77,11 +120,12 @@ static int mtx_failure(const char *operation, unsigned short errors,
     sprintf(message, "Matrox %s: %s (0x%02X)", operation, reason,
             (unsigned int)errors);
     /* A fully drained, valid inquiry establishes that communication still
-     * works. Only optional native geometry setup/polygon packets permit a
-     * bounded 2D retry; the latter include their color command. A persistent
-     * color/fill error remains fatal at the software packet's checkpoint.
-     * Unknown bits, command-list faults, and transport faults stay fatal. */
-    if (!communication && !mtx_cleanup_active && mtx_transform_scope &&
+     * works. Only optional native geometry setup/polygon packets are
+     * recoverable, permitting a bounded 2D retry; the latter include their
+     * color command. A persistent color/fill error remains fatal at the
+     * software packet's checkpoint. Unknown bits, command-list faults, and
+     * transport faults stay fatal. */
+    if (!communication && !mtx_cleanup_active && recoverable &&
         errors != 0U && (errors & ~15U) == 0U)
     {
         mtx_native_failed = TRUE;
@@ -94,18 +138,13 @@ static int mtx_failure(const char *operation, unsigned short errors,
     return FALSE;
 }
 
+/* One wait covers the entire reply. Callers bound the word count, so words
+ * that are already ready need no deadline of their own. */
 static int mtx_read_word(unsigned short *word, unsigned short *errors,
-                         const char *operation, clock_t start)
+                         const char *operation, Mtx_wait *wait)
 {
-    clock_t now;
     for (;;)
     {
-        /* One deadline covers the entire reply, including immediately
-         * available words in a malformed, unexpectedly long reply. */
-        now = clock();
-        if (start == (clock_t)-1 || now == (clock_t)-1 ||
-            (unsigned long)now - (unsigned long)start >= MTX_WAIT_TICKS)
-            return mtx_failure(operation, *errors, TRUE);
         /* IOGETERROR reads/acknowledges the eight-bit error register; zero
          * has no error bits set. Keep draining while firmware is busy. */
         *errors |= (unsigned short)iogeterror();
@@ -118,21 +157,30 @@ static int mtx_read_word(unsigned short *word, unsigned short *errors,
             *word = (unsigned short)iogetw();
             return TRUE;
         }
+        (void)mtx_wait_step(wait);
+        if (wait->elapsed >= MTX_WAIT_TICKS)
+            return mtx_failure(operation, *errors, TRUE, FALSE);
     }
 }
 
+/* Each inquiry used here returns one value. With present == NULL that value
+ * is required; otherwise an empty reply (an index this shell does not know)
+ * clears *present instead of failing. */
 static int mtx_inquire(unsigned short code, unsigned short *value,
-                        const char *operation, char *invalid_reply)
+                        const char *operation, char *invalid_reply,
+                        int recoverable, int *present)
 {
     unsigned short remaining, word, errors = 0;
-    clock_t start = clock();
+    Mtx_wait wait;
     int valid;
+    mtx_wait_begin(&wait);
     lsinq(code);
     ioflush();
-    if (!mtx_read_word(&remaining, &errors, operation, start)) return FALSE;
-    valid = remaining == 1U;
-    /* These two inquiries return exactly one value. Drain short malformed
-     * replies for cleanup, but do not trust an unbounded corrupted count. */
+    if (!mtx_read_word(&remaining, &errors, operation, &wait)) return FALSE;
+    valid = remaining == 1U || (remaining == 0U && present != NULL);
+    if (present != NULL) *present = remaining == 1U;
+    /* Drain short malformed replies for cleanup, but do not trust an
+     * unbounded corrupted count. */
     if (remaining > 16U)
     {
         mtx_io_failed = TRUE;
@@ -142,7 +190,7 @@ static int mtx_inquire(unsigned short code, unsigned short *value,
     }
     while (remaining != 0U)
     {
-        if (!mtx_read_word(&word, &errors, operation, start)) return FALSE;
+        if (!mtx_read_word(&word, &errors, operation, &wait)) return FALSE;
         if (valid) *value = word;
         --remaining;
     }
@@ -153,43 +201,84 @@ static int mtx_inquire(unsigned short code, unsigned short *value,
         else error(invalid_reply);
         return FALSE;
     }
-    if (errors != 0) return mtx_failure(operation, errors, FALSE);
+    if (errors != 0) return mtx_failure(operation, errors, FALSE, recoverable);
     return TRUE;
 }
 
-static int mtx_checkpoint(const char *operation)
+/* recoverable marks optional native 3D packets; see mtx_failure(). */
+static int mtx_checkpoint(const char *operation, int recoverable)
 {
     unsigned short reporting;
     if (mtx_io_failed) return FALSE;
     return mtx_inquire(77, &reporting, operation,
-                       "Invalid Matrox error-policy inquiry reply length");
+                       "Invalid Matrox error-policy inquiry reply length",
+                       recoverable, NULL);
 }
 
 #define MTX_COMMAND(command, operation) \
-    do { command; (void)mtx_checkpoint(operation); } while (0)
+    do { command; (void)mtx_checkpoint(operation, FALSE); } while (0)
 
 /* Used only in helpers which return a success flag. Never allow a failed
  * V3 operation to continue submitting the rest of that transformation. */
 #define MTX_TRANSFORM(command, operation) \
-    do { int mtx_ok; mtx_transform_scope = TRUE; command; \
-         mtx_ok = mtx_checkpoint(operation); mtx_transform_scope = FALSE; \
-         if (!mtx_ok) return FALSE; } while (0)
+    do { command; if (!mtx_checkpoint(operation, TRUE)) return FALSE; } while (0)
 
 static int mtx_read_words(short *words, unsigned short count,
                            const char *operation)
 {
     unsigned short word, errors = 0;
-    clock_t start = clock();
+    Mtx_wait wait;
+    mtx_wait_begin(&wait);
     ioflush();
     while (count != 0U)
     {
-        if (!mtx_read_word(&word, &errors, operation, start)) return FALSE;
+        if (!mtx_read_word(&word, &errors, operation, &wait)) return FALSE;
         *words++ = (short)word;
         --count;
     }
     errors |= (unsigned short)iogeterror();
-    if (errors != 0) return mtx_failure(operation, errors, FALSE);
+    if (errors != 0) return mtx_failure(operation, errors, FALSE, FALSE);
     return TRUE;
+}
+
+/* A previous program can leave a latched error (the register holds it until
+ * it is read) and unread replies. Discard both before the first inquiry, so
+ * neither is mistaken for this program's own reply or failure. */
+static int mtx_discard_stale(void)
+{
+    unsigned short error_bits, errors = 0;
+    unsigned long discarded = 0UL, words = 0UL, quiet = 0UL;
+    Mtx_wait wait;
+    mtx_wait_begin(&wait);
+    for (;;)
+    {
+        error_bits = (unsigned short)iogeterror();
+        if (error_bits != 0U || rdfifocnt() > 0)
+        {
+            if (discarded == MTX_STALE_LIMIT) break;
+            if (error_bits != 0U) errors |= error_bits;
+            else
+            {
+                (void)iogetw();
+                ++words;
+            }
+            ++discarded;
+            quiet = 0UL;
+            continue;
+        }
+        if (discarded == 0UL) return TRUE;
+        quiet += mtx_wait_step(&wait);
+        if (wait.elapsed >= MTX_WAIT_TICKS) break;
+        if (quiet >= MTX_STALE_QUIET)
+        {
+            fprintf(stderr, "Matrox: discarded %lu stale reply words, "
+                    "error bits 0x%02X\n", words, (unsigned int)errors);
+            return TRUE;
+        }
+    }
+    mtx_io_failed = TRUE;
+    error("Matrox board kept returning stale replies; reset the board");
+    return FALSE;
 }
 
 static int mtx_upload_palette(struct Lutval *palette)
@@ -198,7 +287,7 @@ static int mtx_upload_palette(struct Lutval *palette)
     for (first = 0; first < 256U; first += 16U)
     {
         lslutmd(0, first, 16, palette + first);
-        if (!mtx_checkpoint("palette upload")) return FALSE;
+        if (!mtx_checkpoint("palette upload", FALSE)) return FALSE;
     }
     return TRUE;
 }
@@ -215,12 +304,17 @@ static void TG_ATEXIT_CALL mtx_cleanup(void)
     if (!mtx_io_failed && mtx_palette_saved)
     {
         lslutsl(mtx_previous_lut, 0);
-        (void)mtx_checkpoint("restore palette selection");
+        (void)mtx_checkpoint("restore palette selection", FALSE);
+    }
+    if (!mtx_io_failed && mtx_mask_saved)
+    {
+        lslutpm(0, mtx_previous_mask);
+        (void)mtx_checkpoint("restore plane mask", FALSE);
     }
     if (!mtx_io_failed)
     {
         lserror(mtx_error_policy_saved ? mtx_previous_error_reporting : 0);
-        (void)mtx_checkpoint("restore error reporting");
+        (void)mtx_checkpoint("restore error reporting", FALSE);
     }
     if (!mtx_io_failed)
     {
@@ -247,7 +341,7 @@ static unsigned short mtx_inquire_lut(void)
 {
     unsigned short value = 0;
     (void)mtx_inquire(78, &value, "LUT inquiry",
-                      "Invalid Matrox LUT inquiry reply length");
+                      "Invalid Matrox LUT inquiry reply length", FALSE, NULL);
     return value;
 }
 
@@ -258,14 +352,18 @@ void drv_init(int *argc, char **argv)
     (void)argc;
     (void)argv;
     mtx_cpu = drv_cpu_detect();
-#ifdef __WATCOMC__
-    /* The supplied Microsoft LSCL.LIB uses ENTER/LEAVE even in its 2D
-     * binding. The host probe remains 8086-safe, but cannot make that
-     * external library run on an earlier processor. */
+#ifndef MTX_8086_BINDING
+    /* The supplied LSCL.LIB, linked by both compilers, uses ENTER/LEAVE even
+     * in its 2D binding; an 8086 misexecutes them inside lsinit. The host
+     * probe remains 8086-safe. Define MTX_8086_BINDING only when linking a
+     * binding built for 8086 instructions. */
     if (mtx_cpu < 286) error("This LibShell library requires an 80286 or later CPU");
 #endif
     mtx_has_fpu = drv_cpu_has_fpu();
-    mtx_transform_scope = mtx_native_failed = FALSE;
+    mtx_native_failed = FALSE;
+    /* Before the board changes state: Ctrl-C/Break then only sets a flag,
+     * and the event loop exits through the cleanup registered below. */
+    drv_dos_break_init();
     lsinit(0, 1);
     ioflush();
     mtx_initialized = TRUE;
@@ -274,8 +372,10 @@ void drv_init(int *argc, char **argv)
         mtx_cleanup();
         error("Cannot register Matrox cleanup");
     }
+    if (!mtx_discard_stale()) return;
     if (!mtx_inquire(77, &reporting, "error-policy inquiry",
-                     "Invalid Matrox error-policy inquiry reply length")) return;
+                     "Invalid Matrox error-policy inquiry reply length",
+                     FALSE, NULL)) return;
     mtx_previous_error_reporting = reporting != 0;
     mtx_error_policy_saved = TRUE;
     MTX_COMMAND(lserror(1), "enable error reporting");
@@ -285,8 +385,14 @@ void drv_init(int *argc, char **argv)
         (unsigned short)system_info[1] < DRV_WIN_HEIGHT ||
         (unsigned short)system_info[2] < 256)
         error("Matrox LibShell needs a 640x480, 256-color display");
-    /* Preserve the table replaced and the currently displayed LUT label. */
+    /* Preserve the table replaced, the displayed LUT label and its plane
+     * mask (LSINQ 88). Without index 88, or with a reply outside LSLUTPM's
+     * 0..255 range, cleanup leaves the mask alone instead of guessing. */
     mtx_previous_lut = mtx_inquire_lut();
+    if (!mtx_inquire(88, &mtx_previous_mask, "plane-mask inquiry",
+                     "Invalid Matrox plane-mask inquiry reply length",
+                     FALSE, &mtx_mask_saved)) return;
+    if (mtx_previous_mask > 255U) mtx_mask_saved = FALSE;
     lslutrd(0, 0, 256);
     if (!mtx_read_words((short *)mtx_saved_palette, 256 * 3,
                         "palette inquiry")) return;
@@ -456,9 +562,8 @@ static void mtx_draw_software_color(unsigned short npoints,
     }
     krhwsfcol((unsigned short)color);
     scarwplygn((unsigned short)count, polygon);
-    if (!mtx_checkpoint("screen polygon fill")) return;
-    if (npoints == 3) ++globe_tris_num_vis;
-    else ++globe_quads_num_vis;
+    if (!mtx_checkpoint("screen polygon fill", FALSE)) return;
+    ++globe_quads_num_vis;
 }
 
 static void mtx_draw_flat_color(unsigned short npoints,
@@ -470,7 +575,6 @@ static void mtx_draw_flat_color(unsigned short npoints,
     unsigned short i;
     float ax, ay, az, bx, by, bz;
     float nx, ny, nz;
-    int completed;
     if (drv_frame_failed || mtx_io_failed) return;
     if (drv_soft3d_active)
     {
@@ -513,28 +617,9 @@ static void mtx_draw_flat_color(unsigned short npoints,
         return;
     /* Color (4), four 16.16 vertices (52), inquiry (4): 60 bytes total. */
     krhwsfcol((unsigned short)color);
-    mtx_transform_scope = TRUE;
     v3arwplygn(count, vertices);
-    completed = mtx_checkpoint("polygon fill");
-    mtx_transform_scope = FALSE;
-    if (!completed) return;
-    if (npoints == 3)
-        ++globe_tris_num_vis;
-    else
-        ++globe_quads_num_vis;
-}
-
-void drv_draw_tri_flat_color(Vertex TG_HUGE *xyz1,
-                             Vertex TG_HUGE *xyz2,
-                             Vertex TG_HUGE *xyz3,
-                             unsigned char color)
-{
-    Vertex TG_HUGE *source[3];
-    if (xyz1 == NULL || xyz2 == NULL || xyz3 == NULL) return;
-    source[0] = xyz1;
-    source[1] = xyz2;
-    source[2] = xyz3;
-    mtx_draw_flat_color(3, source, color);
+    if (!mtx_checkpoint("polygon fill", TRUE)) return;
+    ++globe_quads_num_vis;
 }
 
 void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1,
@@ -552,19 +637,10 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1,
     mtx_draw_flat_color(4, source, color);
 }
 
-static void mtx_draw_text(short x, short y, char *text)
-{
-    char bounded[120];
-    /* SCTXBSTRING expands bytes into 16-bit SCTXSTRING characters. With
-     * its eight-byte header and the inquiry, 119 characters use 250 bytes.
-     * Text beyond this limit is already outside the 640-pixel display. */
-    strncpy(bounded, text, sizeof(bounded) - 1);
-    bounded[sizeof(bounded) - 1] = '\0';
-    MTX_COMMAND(sctxbstring(x, y, bounded), "OSD text");
-}
-
 /* The selected font is 8x16. Wrap both status and help to the actual screen
- * width, in addition to respecting the smaller command FIFO's text limit. */
+ * width. SCTXBSTRING expands bytes into 16-bit characters: with its
+ * eight-byte header and the inquiry, a 78-character line uses 168 bytes,
+ * well inside the smallest command FIFO. */
 static unsigned int mtx_text_lines(const char *text, short y, int draw)
 {
     char line[79];
@@ -581,7 +657,7 @@ static unsigned int mtx_text_lines(const char *text, short y, int draw)
         }
         memcpy(line, text, count);
         line[count] = '\0';
-        if (draw) mtx_draw_text(8, (short)(y + 16U * lines), line);
+        if (draw) MTX_COMMAND(sctxbstring(8, (short)(y + 16U * lines), line), "OSD text");
         ++lines;
         text += count;
         while (*text == ' ') ++text;
@@ -681,6 +757,9 @@ void drv_loop(void)
             }
             mtx_keyboard((unsigned char)key);
         }
+        /* Ctrl-C/Break only set a flag; leave through exit's cleanup, which
+         * restores the palette and board emulation, instead of from DOS. */
+        if (drv_dos_break_pending()) drv_close();
         mtx_poll_mouse();
         if (mtx_dirty || drv_animation_allowed())
         {
