@@ -96,6 +96,16 @@ static char stderr_text[512];
 static unsigned short original_mask = 0x7f, current_mask = 0x7f;
 static unsigned int mask_words = 1;
 static int break_exit;
+/* Command bytes written since the last completed reply, when the board has
+ * executed everything before it. Sizes follow the manual's formats: 16-bit
+ * opcodes and integers, 32-bit FIXPT values, six-byte LUTVALs. */
+static unsigned int fifo_bytes, fifo_peak;
+static unsigned int fills_since_sync, fill_syncs, transform_syncs;
+static int transform_since_sync;
+/* The board's color is known after KRHWSFCOL until a clear, text or a
+ * reported error; resending it while known is redundant. */
+static int color_known;
+static unsigned long color_commands;
 static char board_message[128];
 static jmp_buf board_error;
 static int expected_inquiry_error;
@@ -113,6 +123,20 @@ static unsigned int fail_v3_rotation, fail_v3_polygon, fail_v3_projection;
 static unsigned int fail_world_window, fail_screen_polygon, fail_software_prepare;
 static unsigned short injected_v3_error = 1;
 static char osd_text[2048];
+
+static void fifo_command(unsigned int bytes)
+{
+    fifo_bytes += bytes;
+    /* The driver's own FIFO argument: at most 228 bytes in flight. */
+    assert(fifo_bytes <= 228U);
+    if (fifo_bytes > fifo_peak) fifo_peak = fifo_bytes;
+}
+
+static void fifo_transform(unsigned int bytes)
+{
+    fifo_command(bytes);
+    transform_since_sync = 1;
+}
 
 int drv_cpu_detect(void) { return selected_cpu; }
 int drv_cpu_has_fpu(void) { return selected_fpu; }
@@ -282,9 +306,15 @@ void lslibsync(void) { assert(!"Blocking synchronization must not hide board err
 void lsemulen(short restore)
 {
     assert(restore == 1);
+    fifo_command(4);
     ++close_calls;
 }
-void lserror(short enabled) { assert(enabled == 0 || enabled == 1); error_reporting = enabled; }
+void lserror(short enabled)
+{
+    assert(enabled == 0 || enabled == 1);
+    fifo_command(4);
+    error_reporting = enabled;
+}
 short iogeterror(void)
 {
     ++error_polls;
@@ -297,6 +327,7 @@ short iogeterror(void)
     {
         if (error_gap != 0U) { --error_gap; return 0; }
         if (error_read == 0U) error_gap = stale_error_gap;
+        if (board_errors[error_read] != 0U) color_known = 0;
         return (short)board_errors[error_read++];
     }
     return 0;
@@ -320,6 +351,7 @@ short rdfifocnt(void)
 void lsinqsys(void)
 {
     assert(inquiry == 0 && stale_words == 0UL);
+    fifo_command(2);
     inquiry = 1;
     inquiry_remaining = 10;
     fixed_reply_offset = 0;
@@ -328,8 +360,12 @@ void lsinqsys(void)
 void lsinq(unsigned short code)
 {
     assert((code == 77 || code == 78 || code == 88) && inquiry == 0 && stale_words == 0UL);
+    fifo_command(4);
     inquiry = code == 78 ? 2U : code == 88 ? 5U : 4U;
     if (code == 77) ++sync_calls;
+    if (fills_since_sync != 0U) ++fill_syncs;
+    if (transform_since_sync) ++transform_syncs;
+    fills_since_sync = 0; transform_since_sync = 0;
     inquiry_header = 1;
     inquiry_remaining = code == 78 ? inquiry_words : code == 88 ? mask_words : 1U;
     pending_delay = word_delay;
@@ -352,12 +388,12 @@ short iogetw(void)
     if (inquiry_header)
     {
         inquiry_header = 0;
-        if (inquiry_remaining == 0) inquiry = 0;
+        if (inquiry_remaining == 0) inquiry = fifo_bytes = 0;
         return (short)(type == 2 ? inquiry_words : type == 5 ? mask_words : 1U);
     }
     assert(inquiry_remaining != 0);
     --inquiry_remaining;
-    if (inquiry_remaining == 0) inquiry = 0;
+    if (inquiry_remaining == 0) inquiry = fifo_bytes = 0;
     if (type == 1) return system_info[fixed_reply_offset++];
     if (type == 3)
     {
@@ -371,6 +407,7 @@ short iogetw(void)
 void lslutrd(unsigned short logical, unsigned short first, unsigned short count)
 {
     assert(logical == 0 && first == 0 && count == 256 && inquiry == 0);
+    fifo_command(8);
     inquiry = 3;
     inquiry_remaining = 768;
     fixed_reply_offset = 0;
@@ -387,6 +424,7 @@ void lslutmd(unsigned short logical, unsigned short first,
     unsigned int i;
     assert(logical == 0 && count == 16 && first + count <= 256);
     assert(inquiry == 0 && error_read == error_count);
+    fifo_command(8U + 6U * count);
     for (i = 0; i < count; ++i) {
         supplied_palette[first + i][0] = colors[i].red;
         supplied_palette[first + i][1] = colors[i].green;
@@ -397,32 +435,38 @@ void lslutmd(unsigned short logical, unsigned short first,
 void lslutsl(unsigned short logical, unsigned short physical)
 {
     assert(physical == 0);
+    fifo_command(6);
     current_lut = logical;
 }
 void lslutpm(unsigned short physical, unsigned short mask)
 {
     assert(physical == 0 && mask <= 255);
+    fifo_command(6);
     current_mask = mask;
 }
-void lssbm(short bitmap) { assert(bitmap == -1); }
-void lssclpl(short clip) { assert(clip == -1); }
-void scsorg(unsigned short x, unsigned short y) { assert(x == 0 && y == 0); }
-void krgcdi(void) {}
-void krhwsbop(short operation) { assert(operation == 0); }
-void krhwsmsk(unsigned short mask) { assert(mask == 255); }
-void krhwstdef(unsigned short mode) { assert(mode == 0); }
-void lssafapat(short pattern) { assert(pattern == -1); }
-void lssfont(short font) { assert(font == -1 || font == -4); }
-void sctxssf(double x, double y) { assert(x > 0 && y > 0); }
-void sctxsdmode(short mode) { assert(mode == 0); }
+void lssbm(short bitmap) { assert(bitmap == -1); fifo_command(4); }
+void lssclpl(short clip) { assert(clip == -1); fifo_command(4); }
+void scsorg(unsigned short x, unsigned short y) { assert(x == 0 && y == 0); fifo_command(6); }
+void krgcdi(void) { fifo_command(2); }
+void krhwsbop(short operation) { assert(operation == 0); fifo_command(4); }
+void krhwsmsk(unsigned short mask) { assert(mask == 255); fifo_command(4); }
+void krhwstdef(unsigned short mode) { assert(mode == 0); fifo_command(4); }
+void lssafapat(short pattern) { assert(pattern == -1); fifo_command(4); }
+void lssfont(short font) { assert(font == -1 || font == -4); fifo_command(4); }
+void sctxssf(double x, double y) { assert(x > 0 && y > 0); fifo_command(10); }
+void sctxsdmode(short mode) { assert(mode == 0); fifo_command(4); }
 void sctxsalign(short horizontal, short vertical)
 {
     (void)horizontal; (void)vertical;
+    fifo_command(6);
 }
 void sctxbstring(short x, short y, char *text)
 {
     char expected[80];
     assert(x >= 0 && x < 640 && y >= 0 && y < 480);
+    /* SCTXBSTRING sends SCTXSTRING: opcode, x, y, count, 16-bit chars. */
+    fifo_command(8U + 2U * (unsigned int)strlen(text));
+    color_known = 0;
     assert(strstr(text, "texture") == NULL);
     assert(strstr(text, "Texture") == NULL);
     assert(strstr(text, "T =") == NULL);
@@ -440,6 +484,7 @@ void sctxbstring(short x, short y, char *text)
 void v2gpsvwp(short xmin, short xmax, short ymin, short ymax)
 {
     assert(xmin == 0 && xmax == 639 && ymin == 0 && ymax == 479);
+    fifo_command(10);
     ++viewport_calls;
 }
 void v2gpswdw(double xmin, double xmax, double ymin, double ymax)
@@ -447,24 +492,30 @@ void v2gpswdw(double xmin, double xmax, double ymin, double ymax)
     assert(xmin < -GLOBE_RADIUS && xmax > GLOBE_RADIUS);
     assert(ymin < -GLOBE_RADIUS && ymax > GLOBE_RADIUS);
     assert(fabs((xmax - xmin) / (ymax - ymin) - 4.0 / 3.0) < 0.01);
+    fifo_transform(18);
     ++world_window_calls;
     inject_v3_error(&fail_world_window);
 }
 void v3gpsproj(short projection)
-{ assert(projection == 0); ++projection_calls; inject_v3_error(&fail_v3_projection); }
-void v3gpsdist(double distance) { assert(distance > GLOBE_RADIUS); ++distance_calls; }
-void v3gpshclip(short enabled) { assert(enabled == 0); ++hither_calls; }
-void v3gpsyclip(short enabled) { assert(enabled == 0); ++yon_calls; }
-void v3mdid(void) { ++model_calls; }
-void v3mdorg(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); }
-void v3mdrotz(short angle) { last_yaw = angle; inject_v3_error(&fail_v3_rotation); }
-void v3vwid(void) { ++view_calls; }
-void v3vwrpt(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); }
-void v3vwrotx(short angle) { last_pitch = angle; }
+{
+    assert(projection == 0); fifo_transform(4);
+    ++projection_calls; inject_v3_error(&fail_v3_projection);
+}
+void v3gpsdist(double distance) { assert(distance > GLOBE_RADIUS); fifo_transform(6); ++distance_calls; }
+void v3gpshclip(short enabled) { assert(enabled == 0); fifo_transform(4); ++hither_calls; }
+void v3gpsyclip(short enabled) { assert(enabled == 0); fifo_transform(4); ++yon_calls; }
+void v3mdid(void) { fifo_transform(2); ++model_calls; }
+void v3mdorg(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); fifo_transform(14); }
+void v3mdrotz(short angle) { fifo_transform(4); last_yaw = angle; inject_v3_error(&fail_v3_rotation); }
+void v3vwid(void) { fifo_transform(2); ++view_calls; }
+void v3vwrpt(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); fifo_transform(14); }
+void v3vwrotx(short angle) { fifo_transform(4); last_pitch = angle; }
 void krhwcclr(unsigned short color)
 {
     unsigned int i, brightness;
     assert(color < 256);
+    fifo_command(4);
+    color_known = 0;
     brightness = earth_cmap[color][0] + earth_cmap[color][1] + earth_cmap[color][2];
     for (i = 0; i < 256; ++i)
         assert(brightness <= (unsigned int)earth_cmap[i][0] + earth_cmap[i][1] +
@@ -473,7 +524,15 @@ void krhwcclr(unsigned short color)
     expected_visible = expected_caps = silhouette_faces = silhouette_caps = 0;
     osd_text[0] = '\0';
 }
-void krhwsfcol(unsigned short color) { assert(color < 256); last_color = color; }
+void krhwsfcol(unsigned short color)
+{
+    assert(color < 256);
+    assert(!color_known || color != last_color);
+    fifo_command(4);
+    color_known = 1;
+    ++color_commands;
+    last_color = color;
+}
 
 void v3arwplygn(unsigned short count, struct V3coord *vertices)
 {
@@ -482,6 +541,9 @@ void v3arwplygn(unsigned short count, struct V3coord *vertices)
     int found;
     assert(count == 3 || count == 4);
     assert(last_color == submitted_color);
+    fifo_command(4U + 12U * count);
+    ++fills_since_sync;
+    assert(fills_since_sync <= 4U);
     for (i = 0; i < count; ++i) {
         found = 0;
         for (j = 0; j < 4; ++j)
@@ -524,6 +586,9 @@ void scarwplygn(unsigned short count, struct Phcoord *vertices)
     int found;
     assert(drv_soft3d_active && count >= 3U && count <= SOFT3D_MAX_POLY);
     assert(last_color == submitted_color);
+    fifo_command(4U + 4U * count);
+    ++fills_since_sync;
+    assert(fills_since_sync <= 4U);
     area = 0;
     for (i = 0; i < count; ++i)
     {
@@ -633,13 +698,25 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
 static void render_and_check(unsigned long faces, unsigned char *data)
 {
     unsigned int before_sync, before_model, before_view;
+    unsigned int before_fill_syncs, before_transform_syncs;
+    unsigned long before_colors;
     int software;
     submitted_quads = filled_polygons = filled_triangles = 0;
     expected_visible = expected_caps = silhouette_faces = silhouette_caps = 0;
     expected_data = data;
     before_sync = sync_calls; before_model = model_calls; before_view = view_calls;
+    before_fill_syncs = fill_syncs; before_transform_syncs = transform_syncs;
+    before_colors = color_commands;
     software = drv_soft3d_active;
     drv_render();
+    /* One checkpoint per four fills, one for the model/view commands and
+     * a color command only when the next fill's palette index changes. */
+    if (software == drv_soft3d_active)
+    {
+        assert(fill_syncs - before_fill_syncs == (filled_polygons + 3UL) / 4UL);
+        assert(transform_syncs - before_transform_syncs == (software ? 0U : 1U));
+        assert(color_commands - before_colors < filled_polygons);
+    }
     assert(submitted_quads == faces);
     assert(filled_polygons > 0 && filled_polygons < faces);
     assert(filled_triangles > 0); /* duplicate pole vertices compacted */
@@ -687,6 +764,7 @@ static void cleanup_checks(void)
     assert(current_lut == 3 && current_mask == original_mask);
     assert(error_reporting == initial_error_reporting);
     assert(allocated_blocks == 0);
+    assert(fifo_bytes == 4U && fifo_peak <= 228U);
     if (break_exit)
         puts("PASS Matrox Ctrl-Break: INT 23h sets a flag and the event loop exits through board, palette and mask cleanup");
     else
@@ -1265,6 +1343,14 @@ int main(int process_argc, char **process_argv)
     check_direct_quad();
     check_noncardinal_poses(512, test_earth_data(32));
     assert(osd_calls > 0);
+    {
+        unsigned int syncs = sync_calls;
+        unsigned long colors = color_commands;
+        render_and_check(512, test_earth_data(32));
+        printf("PASS Matrox packets: a key-1 frame uses %u checkpoints and %lu color commands "
+               "for %lu fills; at most %u bytes in flight\n", sync_calls - syncs,
+               color_commands - colors, filled_polygons, fifo_peak);
+    }
     mtx_keyboard('2');
     assert(globe_longitude == 64 && globe_faces_num == 2048UL);
     render_and_check(2048, test_earth_data(64));

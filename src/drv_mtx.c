@@ -47,6 +47,12 @@ static unsigned short mtx_previous_lut;
 static unsigned short mtx_previous_mask;
 static unsigned short mtx_background;
 static unsigned short mtx_foreground;
+/* Last foreground color sent; valid only while the board state is known. */
+static unsigned short mtx_color;
+static int mtx_color_valid;
+/* Unconfirmed fill packets, queued only during a frame's traversal. */
+static unsigned int mtx_pending_fills;
+static int mtx_pending_native, mtx_queue_fills;
 static struct Lutval mtx_saved_palette[256];
 static struct Lutval mtx_palette[256];
 /* The native path uses this eye vector only for visibility rejection.
@@ -58,10 +64,14 @@ static float mtx_eye_z = 1.0f;
 /* LSERROR stalls the shell before a second unread error. A blocking
  * lslibsync() cannot service that register, so use a counted LSINQ reply
  * as a completion marker while polling the SDK's error and Read FIFO APIs.
- * Packets contain a small command or color/polygon pair and a four-byte
- * inquiry; LUT writes and text are bounded so even a legacy 256-byte
- * command FIFO cannot fill before error servicing resumes. */
+ * Packets contain a small command, the per-frame model/view commands or up
+ * to MTX_FILL_PACKETS color/polygon pairs, and a four-byte inquiry; LUT
+ * writes and text are bounded so even a legacy 256-byte command FIFO cannot
+ * fill before error servicing resumes. */
 #define MTX_WAIT_TICKS (10UL * (unsigned long)CLOCKS_PER_SEC)
+/* A native fill is a color (4 bytes) and a four-vertex V3ARWPLYGN (52):
+ * four with the inquiry use 228 bytes. Screen fills (4 + 44) are smaller. */
+#define MTX_FILL_PACKETS 4U
 /* Stale startup data: a full-screen readback is 153,600 words. A shell
  * that stalled on a second error resumes once the first is read, so wait
  * for at least one BIOS tick of silence after discarding anything. */
@@ -109,6 +119,8 @@ static int mtx_failure(const char *operation, unsigned short errors,
 {
     char message[128];
     const char *reason;
+    /* A failed packet may not have set its color. */
+    mtx_color_valid = FALSE;
     if (communication) mtx_io_failed = TRUE;
     if (errors & 1U) reason = "undefined opcode";
     else if (errors & 2U) reason = "unsupported parameter";
@@ -223,6 +235,48 @@ static int mtx_checkpoint(const char *operation, int recoverable)
 #define MTX_TRANSFORM(command, operation) \
     do { command; if (!mtx_checkpoint(operation, TRUE)) return FALSE; } while (0)
 
+/* Confirm queued fills with one inquiry; only confirmed fills are counted
+ * as visible. Native packets remain recoverable, as single ones were: a
+ * frame retried with host transforms needs no finer error attribution. */
+static int mtx_flush_fills(void)
+{
+    unsigned int fills = mtx_pending_fills;
+    if (fills == 0U) return TRUE;
+    mtx_pending_fills = 0U;
+    if (!mtx_checkpoint(mtx_pending_native ? "polygon fill" : "screen polygon fill",
+                        mtx_pending_native)) return FALSE;
+    globe_quads_num_vis += fills;
+    return TRUE;
+}
+
+/* Never mix native and screen packets in one group. */
+static int mtx_fill_room(int native)
+{
+    if (mtx_pending_fills != 0U && mtx_pending_native != native)
+        return mtx_flush_fills();
+    return TRUE;
+}
+
+/* Direct calls outside a traversal still confirm their own packet. */
+static void mtx_fill_sent(int native)
+{
+    mtx_pending_native = native;
+    ++mtx_pending_fills;
+    if (!mtx_queue_fills || mtx_pending_fills >= MTX_FILL_PACKETS)
+        (void)mtx_flush_fills();
+}
+
+/* The foreground color persists between fills. Return whether a command
+ * was needed: it is resent after a clear, the OSD or any failure. */
+static int mtx_set_color(unsigned short color)
+{
+    if (mtx_color_valid && mtx_color == color) return FALSE;
+    krhwsfcol(color);
+    mtx_color = color;
+    mtx_color_valid = TRUE;
+    return TRUE;
+}
+
 static int mtx_read_words(short *words, unsigned short count,
                            const char *operation)
 {
@@ -297,6 +351,8 @@ static void TG_ATEXIT_CALL mtx_cleanup(void)
     if (!mtx_initialized)
         return;
     mtx_cleanup_active = TRUE;
+    /* An exit during a traversal confirms its fills before other packets. */
+    if (!mtx_io_failed) (void)mtx_flush_fills();
     if (!mtx_io_failed && mtx_palette_saved)
     {
         (void)mtx_upload_palette(mtx_saved_palette);
@@ -465,6 +521,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     MTX_COMMAND(sctxsalign(0, 0), "text alignment");
     MTX_COMMAND(sctxsdmode(0), "text mode");               /* Text must not enqueue read-FIFO replies. */
     MTX_COMMAND(sctxssf(1.0, 1.0), "text scale");
+    mtx_color_valid = FALSE;
     mtx_dirty = TRUE;
     return 1;
 }
@@ -496,13 +553,18 @@ static int mtx_set_transform(void)
     sin_pitch = sin(pitch_radians);
     /* A single rotation in each stage avoids undocumented cumulative
      * matrix ordering. Globe longitude runs around its Z axis. The view
-     * command moves the viewer about X around the reference point. */
-    MTX_TRANSFORM(v3mdid(), "model identity");
-    MTX_TRANSFORM(v3mdorg(0.0, 0.0, 0.0), "model origin");
-    MTX_TRANSFORM(v3mdrotz(yaw), "model rotation");
-    MTX_TRANSFORM(v3vwid(), "view identity");
-    MTX_TRANSFORM(v3vwrpt(0.0, 0.0, 0.0), "view reference");
-    MTX_TRANSFORM(v3vwrotx(pitch), "view rotation");
+     * command moves the viewer about X around the reference point. The
+     * manual calls the origin a section of the modelling transformation
+     * and does not say that v3mdid/v3vwid preserve it or the reference
+     * point, so both are resent each frame. One recoverable checkpoint
+     * (44 bytes) covers all six: any fault retries the whole frame. */
+    v3mdid();
+    v3mdorg(0.0, 0.0, 0.0);
+    v3mdrotz(yaw);
+    v3vwid();
+    v3vwrpt(0.0, 0.0, 0.0);
+    v3vwrotx(pitch);
+    if (!mtx_checkpoint("model/view transform", TRUE)) return FALSE;
     /* Inverse model yaw applied to the viewer's world-space direction.
      * Use exactly the integer-degree angles sent to LibShell. */
     mtx_eye_x = (float)(-sin(yaw_radians) * sin_pitch);
@@ -560,10 +622,10 @@ static void mtx_draw_software_color(unsigned short npoints,
         polygon[i].x = (short)screen[i].x;
         polygon[i].y = (short)screen[i].y;
     }
-    krhwsfcol((unsigned short)color);
+    if (!mtx_fill_room(FALSE)) return;
+    (void)mtx_set_color((unsigned short)color);
     scarwplygn((unsigned short)count, polygon);
-    if (!mtx_checkpoint("screen polygon fill", FALSE)) return;
-    ++globe_quads_num_vis;
+    mtx_fill_sent(FALSE);
 }
 
 static void mtx_draw_flat_color(unsigned short npoints,
@@ -615,11 +677,11 @@ static void mtx_draw_flat_color(unsigned short npoints,
     nz = ax * by - ay * bx;
     if (nx * mtx_eye_x + ny * mtx_eye_y + nz * mtx_eye_z <= 0.0f)
         return;
-    /* Color (4), four 16.16 vertices (52), inquiry (4): 60 bytes total. */
-    krhwsfcol((unsigned short)color);
+    /* Color (4) and four 16.16 vertices (52); see MTX_FILL_PACKETS. */
+    if (!mtx_fill_room(TRUE)) return;
+    (void)mtx_set_color((unsigned short)color);
     v3arwplygn(count, vertices);
-    if (!mtx_checkpoint("polygon fill", TRUE)) return;
-    ++globe_quads_num_vis;
+    mtx_fill_sent(TRUE);
 }
 
 void drv_draw_quad_flat_color(Vertex TG_HUGE *xyz1,
@@ -669,12 +731,14 @@ void drv_draw_osd(void)
 {
     char status[256];
     unsigned int lines;
-    MTX_COMMAND(krhwsfcol(mtx_foreground), "text color");
+    if (mtx_set_color(mtx_foreground)) (void)mtx_checkpoint("text color", FALSE);
     lines = mtx_text_lines(drv_help, 0, FALSE);
     (void)mtx_text_lines(drv_help, (short)(DRV_WIN_HEIGHT - 4U - 16U * lines), TRUE);
     drv_format_stats(status);
     drv_append_soft3d_status(status, sizeof(status), "LibShell", mtx_cpu, mtx_has_fpu);
     (void)mtx_text_lines(status, 8, TRUE);
+    /* The manual does not say text leaves the foreground color unchanged. */
+    mtx_color_valid = FALSE;
 }
 
 void drv_render(void)
@@ -688,11 +752,20 @@ void drv_render(void)
         drv_fps_start();
         mtx_native_failed = FALSE;
         MTX_COMMAND(krhwcclr(mtx_background), "clear screen");
+        mtx_color_valid = FALSE;
         globe_quads_num_vis = 0;
         if (globe_ready())
         {
             prepared = mtx_set_transform();
-            if (prepared) globe_draw_quads();
+            if (prepared)
+            {
+                /* Fills are confirmed in groups. Confirm the last group
+                 * before any other command, so its faults stay recoverable. */
+                mtx_queue_fills = TRUE;
+                globe_draw_quads();
+                mtx_queue_fills = FALSE;
+                (void)mtx_flush_fills();
+            }
             else if (!drv_frame_failed) drv_abort_frame("Matrox software rotation failed");
         }
         if (drv_frame_failed)
@@ -700,6 +773,7 @@ void drv_render(void)
             drv_reset_timing();
             if (mtx_native_failed && attempt == 0) continue;
             MTX_COMMAND(krhwcclr(mtx_background), "clear failed frame");
+            mtx_color_valid = FALSE;
             globe_quads_num_vis = 0;
         }
         if (drv_status_required()) drv_draw_osd();

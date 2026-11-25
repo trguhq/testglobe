@@ -73,8 +73,14 @@ emulation for other floating-point work, including mesh generation.
 LibShell reports each error as an 8-bit value in its error register and waits until
 that value is read before reporting the next, so a shell with unread errors appears
 to hang. The driver therefore services the register while waiting for `LSINQ`
-replies between bounded command packets. Diagnostics name the operation and error
-bits. At startup the driver first discards errors and Read FIFO words left by a
+replies between bounded command packets, keeping at most 228 bytes in flight so even
+a 256-byte command FIFO cannot fill while the shell is stalled. One reply confirms up
+to four polygon fills, and one the six per-frame model/view commands; a key-1 frame
+needs about 70 replies instead of about 270. The driver resends `v3mdorg` and `v3vwrpt`
+each frame, because the manual does not say that `v3mdid` and `v3vwid` preserve the
+origin and reference point. A fill color equal to the previous one is not resent;
+the driver forgets the color after a clear, the OSD and any error. Diagnostics name
+the operation and error bits. At startup the driver first discards errors and Read FIFO words left by a
 previous program, waiting for a short quiet interval in case a stalled shell
 resumes, and prints a warning on stderr if it discarded anything; a board that
 keeps replying past a word limit or the deadline is abandoned.

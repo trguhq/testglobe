@@ -489,6 +489,10 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
   supplied 286 binding is rejected before `lsinit`; a second build with
   `MTX_8086_BINDING` runs them through the whole contract. The OSD reports actual
   selection and failed requests; the help keeps `S` visible.
+- **Packets:** the recorder counts command bytes from the manual's formats since the
+  last completed reply and requires at most 228 in flight, one checkpoint per four
+  fills and per model/view group, and no repeated fill color while the board's color
+  is known.
 - **Replies and errors:** `LSINQ` word counts and payload ordering; short malformed
   replies are drained before failure, while replies longer than 16 words abandon the
   connection. Ready words read no clock; one deadline covers every wait of a reply,
