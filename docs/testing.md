@@ -729,11 +729,15 @@ cross-build uses the [Amiga build instructions](amiga.md#build) separately.
   `D`/`d` switches between mixtures and independently verified nearest solid pens;
   the setting survives palette refreshes, resizing, and resolution changes. Tests
   check OSD/help, unchanged resource ownership, and unaffected truecolor RTG output.
+  Skipping unchanged pens, draw modes, and patterns must leave every fill's RastPort
+  state identical to setting all four per polygon, with fewer calls; a windowed
+  present issues no `WaitBlit`.
 - **OSD fonts:** resident Topaz sizes, open failure and oversized substitution,
   selection restoration, glyph bounds, and status/help separation are checked.
 - **RTG:** optional CyberGraphX/Picasso96 detection, indexed and 15/16/24/32-bit
   screens, opaque bitmap attributes, RGB span bounds and colors, and native fallback
-  when RTG libraries are absent. The native-only `AMI_RTG=0` build is checked separately.
+  when RTG libraries are absent. Picasso96 storage comes from bytes per pixel, and a
+  depth larger than that storage is rejected. The native-only `AMI_RTG=0` build is checked separately.
   Display-compatible bitmap allocation, direct-drawing fallback, resizing, and cleanup
   must not depend on native chipset limits or planar bitmap fields.
 - **Fullscreen:** V39 screen-buffer allocation and presentation, delayed safe/display

@@ -10,7 +10,8 @@ The driver opens a resizable Workbench window on a 68000 or later CPU.
 - **Native chipset:** OCS, ECS, or AGA on AmigaOS 1.3 or later, with planar screens of
   1–8 bitplanes.
 - **RTG (optional):** CyberGraphX or Picasso96 on AmigaOS 3.0 or later, with 8-bit
-  indexed or 15/16/24/32-bit truecolor desktops.
+  indexed or 15/16/24/32-bit truecolor desktops. Storage size comes from each
+  library's bytes-per-pixel attribute.
 - **Fullscreen (optional):** AmigaOS 3.0 or later and a display mode that supports
   synchronized screen buffers.
 
@@ -90,7 +91,9 @@ two-pen patterns approximate missing colors by comparing their mixed RGB values.
 Palettes of up to 16 entries use the closest pair and a 1/16 mixture; larger palettes
 use two bounded searches to improve the mixture without a costly full pair search.
 Exact matches stay solid. Mappings are cached until the desktop palette changes, and
-precomputed patterns avoid per-polygon work.
+precomputed patterns avoid per-polygon work. A pen, draw mode, or pattern is set only
+when it differs from the previous polygon's, and `AreaEnd` reinitializes the vector
+table for the next polygon.
 
 `D` toggles dithering, which starts enabled; with it off, each polygon uses its
 nearest solid palette color. Both mappings stay cached, so toggling neither rebuilds
@@ -113,7 +116,9 @@ scratch raster, which truecolor RTG fills do not; geometry and other working dat
 ordinary memory. If the back buffer cannot be allocated, the driver draws directly; if
 the indexed scratch raster is missing, filled rendering pauses while controls stay
 available to retry. Buffering hides each polygon's construction but does not
-guarantee tear-free presentation. Native input handles dragging, keys, close,
+guarantee tear-free presentation. The window copy does not wait for the blitter:
+`graphics.library` and the RTG libraries order later blits behind it, and the driver
+waits only before freeing a bitmap or swapping fullscreen buffers. Native input handles dragging, keys, close,
 activation, refresh, and resizing. The projection follows the client area and
 corrects the display mode's pixel proportions; RTG uses square pixels.
 

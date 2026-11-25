@@ -12,6 +12,10 @@
 #include "glob_ext.h"
 #include "globe.h"
 #include "earth_resources.h"
+/* gfxmacros.h assigns the pattern fields directly; count each use too. */
+static void test_set_area_pattern(struct RastPort *port, UWORD *pattern, int size);
+#undef SetAfPt
+#define SetAfPt(rp,pattern,size) test_set_area_pattern((rp), (pattern), (size))
 static unsigned long baseline_vertices, enhanced_vertices, fpu_vertices;
 static int fail_cache_allocation;
 static void *ami_test_malloc(size_t size);
@@ -82,6 +86,8 @@ static unsigned int raster_calls, raster_fail_at, area_calls, area_failures;
 static unsigned int copy_calls, text_calls, refresh_count, reply_count, rect_calls;
 static unsigned int resource_calls, resource_max, resource_first, resource_failure;
 static unsigned int area_count;
+static unsigned int state_calls, wait_calls;
+static int uncached_draw_state;
 static long area_x[16], area_y[16];
 static unsigned long rendered_hash, rendered_count;
 static int blitter_busy, event_outstanding, small_stack, cli13_stack;
@@ -149,7 +155,7 @@ static void test_safe_draw(const struct RastPort *port)
     assert(port->Layer == NULL);
 }
 #if AMI_RTG
-static int friend_incompatible;
+static int friend_incompatible, p96_short_storage;
 static unsigned int cgx_calls, p96_calls, span_calls;
 static int coverage_active;
 static unsigned int coverage[64][64];
@@ -626,10 +632,12 @@ struct TmpRas *InitTmpRas(struct TmpRas *tmp, PLANEPTR raster, LONG size)
     tmp->RasPtr = raster; tmp->Size = size; return tmp;
 }
 void SetAPen(struct RastPort *port, ULONG pen)
-{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->FgPen = (UBYTE)pen; }
+{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->FgPen = (UBYTE)pen; ++state_calls; }
 void SetBPen(struct RastPort *port, ULONG pen)
-{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->BgPen = (UBYTE)pen; }
-void SetDrMd(struct RastPort *port, ULONG mode) { port->DrawMode = (UBYTE)mode; }
+{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->BgPen = (UBYTE)pen; ++state_calls; }
+void SetDrMd(struct RastPort *port, ULONG mode) { port->DrawMode = (UBYTE)mode; ++state_calls; }
+static void test_set_area_pattern(struct RastPort *port, UWORD *pattern, int size)
+{ port->AreaPtrn = pattern; port->AreaPtSz = (BYTE)size; ++state_calls; }
 void RectFill(struct RastPort *port, LONG x0, LONG y0, LONG x1, LONG y1)
 {
     assert(port != NULL && x0 == 0 && y0 == 0);
@@ -672,6 +680,8 @@ static LONG record_corner(struct RastPort *port, LONG x, LONG y)
 }
 LONG AreaMove(struct RastPort *port, LONG x, LONG y) { assert(area_count == 0); return record_corner(port, x, y); }
 LONG AreaDraw(struct RastPort *port, LONG x, LONG y) { return record_corner(port, x, y); }
+/* The hash covers every RastPort field that selects fill pixels. AreaEnd
+ * reinitializes the vector table, as graphics.library documents. */
 LONG AreaEnd(struct RastPort *port)
 {
     unsigned int i;
@@ -680,9 +690,18 @@ LONG AreaEnd(struct RastPort *port)
         assert(port->DrawMode == JAM1 && port->AreaPtrn == NULL);
     for (i = 0; i < area_count; ++i) rendered_hash = rendered_hash * 33UL + (ULONG)(area_x[i] * 32768L + area_y[i]);
     rendered_hash = rendered_hash * 33UL + port->FgPen;
+    rendered_hash = rendered_hash * 33UL + port->BgPen;
+    rendered_hash = rendered_hash * 33UL + port->DrawMode;
+    rendered_hash = rendered_hash * 33UL + (ULONG)port->AreaPtSz;
+    if (port->AreaPtrn != NULL)
+        for (i = 0; i < 4U; ++i) rendered_hash = rendered_hash * 33UL + port->AreaPtrn[i];
+    area_count = 0;
+    /* The reference mode forgets the driver's state after each polygon,
+     * which sends every pen, mode and pattern call as before caching. */
+    if (uncached_draw_state) ami_reset_draw_state();
     ++rendered_count; ++area_calls; blitter_busy = 1; return 0;
 }
-void WaitBlit(void) { blitter_busy = 0; }
+void WaitBlit(void) { blitter_busy = 0; ++wait_calls; }
 void BltBitMapRastPort(const struct BitMap *bitmap, LONG sx, LONG sy,
                       struct RastPort *port, LONG dx, LONG dy, LONG width, LONG height, ULONG minterm)
 {
@@ -739,7 +758,8 @@ ULONG ami_p96_attr(struct Library *base, struct BitMap *bitmap, ULONG attribute)
         return rtg_backend == 2 && !(bitmap == &friend_bitmap && friend_incompatible) &&
                !(bitmap == &fullscreen_alternate && fullscreen_incompatible);
     assert(rtg_backend == 2);
-    if (attribute == AMI_P96_DEPTH) return rtg_storage_depth;
+    /* P96BMA_DEPTH (2) need not describe storage; it is never queried. */
+    if (attribute == AMI_P96_BYTES) return p96_short_storage ? 2U : (rtg_storage_depth + 7U) / 8U;
     assert(attribute == AMI_P96_BITS); return rtg_depth;
 }
 static void record_rgb_fill(struct RastPort *port, unsigned int x0, unsigned int y0,
@@ -975,7 +995,7 @@ static void test_palette_quality(void)
     }
     /* Test the native draw state and actual bit coverage, not just the
      * lookup's mixture number. Clear pattern bits select the background pen. */
-    ami_draw_port = &window_port;
+    ami_draw_port = &window_port; ami_reset_draw_state();
     ami_pen_a[0] = 0; ami_pen_b[0] = 1;
     for (mix = 0; mix <= 16U; ++mix)
     {
@@ -1030,7 +1050,7 @@ static void test_solid_palette(void)
     unsigned long error, best;
     assert(!ami_dither_enabled && ami_draw_port == NULL && ami_depth <= 8U);
     saved_port = window_port;
-    ami_draw_port = &window_port;
+    ami_draw_port = &window_port; ami_reset_draw_state();
     for (color = 0; color < 256U; ++color)
     {
         nearest = 0; best = ULONG_MAX;
@@ -1101,6 +1121,23 @@ static void test_dither_toggle(void)
     test_render();
     assert(rendered_hash == before_hash && rendered_count == before_count);
     test_osd_contains(ami_depth <= 8U ? "dither on" : "dither n/a");
+}
+
+/* Unchanged pens, modes and patterns are skipped, yet every fill sees the
+ * RastPort state of setting all four before each polygon. A windowed
+ * present relies on the libraries' own blit ordering and does not wait. */
+static void test_draw_state(void)
+{
+    unsigned long hash, count;
+    unsigned int calls, waits;
+    uncached_draw_state = 1; calls = state_calls;
+    test_render(); hash = rendered_hash; count = rendered_count;
+    calls = state_calls - calls;
+    uncached_draw_state = 0; waits = wait_calls; state_calls = 0;
+    test_render();
+    assert(rendered_hash == hash && rendered_count == count && count > 20UL);
+    assert(state_calls < calls);
+    if (!ami_fullscreen) assert(wait_calls == waits);
 }
 
 static void test_fpu_integer_conversion(void)
@@ -1317,7 +1354,7 @@ static int test_rtg(int argc, char **argv, const char *mode)
     unsigned int i, copies, spans, raster_attempts;
     unsigned char saved_palette[sizeof(desktop_palette)];
     drv_ext_init(); globe_init(); drv_init(&argc, argv);
-    if (rtg_unknown || rtg_depth == 12 || pubscreen_failure)
+    if (rtg_unknown || rtg_depth == 12 || pubscreen_failure || p96_short_storage)
     {
         assert(!drv_init_window(0, 0, 0, 0)); ami_cleanup();
         assert(library_count == 0 && window_count == 0 && raster_count == 0);
@@ -1349,7 +1386,7 @@ static int test_rtg(int argc, char **argv, const char *mode)
         test_span_coverage();
         test_render();
     }
-    else assert(area_calls > 20 && span_calls == 0);
+    else { assert(area_calls > 20 && span_calls == 0); test_draw_state(); }
     test_dither_toggle();
     reference_hash = rendered_hash; reference_count = rendered_count;
     copies = copy_calls; drv_release_optional();
@@ -1633,6 +1670,7 @@ int main(int argc, char **argv)
         friend_failure = strcmp(mode, "rtgbackfail") == 0;
         friend_incompatible = strcmp(mode, "rtgbadfriend") == 0;
         pubscreen_failure = strcmp(mode, "rtglockfail") == 0;
+        p96_short_storage = strcmp(mode, "p96short") == 0;
         if (strcmp(mode, "rtgbaddepth") == 0) rtg_depth = rtg_storage_depth = 12;
         if (strcmp(mode, "rtgnative") == 0)
         { rtg_libraries_native = 1; rtg_backend = rtg_depth = rtg_storage_depth = 0; }
@@ -1699,6 +1737,7 @@ int main(int argc, char **argv)
     assert(strstr(osd_text, "FPS") != NULL);
     assert(strstr(strstr(osd_text, "FPS") + 3, "FPS") == NULL);
     assert(baseline_vertices + enhanced_vertices + fpu_vertices == 561);
+    test_draw_state();
     test_dither_toggle();
     reference_hash = rendered_hash; reference_count = rendered_count;
     drv_release_optional(); assert(ami_project_cache == NULL && ami_back_planes == 0);

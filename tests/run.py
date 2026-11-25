@@ -601,7 +601,7 @@ def main():
                          "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop", "fs-cgx8", "fs-cgx15", "fs-cgx16", "fs-cgx24", "fs-cgx32",
                          "fs-p968", "fs-p9615", "fs-p9616", "fs-p9624", "fs-p9632",
                          "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative",
-                         "cli13"):
+                         "p96short", "cli13"):
                 run([str(output / "amiga"), mode])
             for mode in ("stack", "cli13stack"):
                 run([str(output / "amiga"), mode], expected_returncode=1,
