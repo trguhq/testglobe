@@ -28,16 +28,30 @@ static int record_enhanced(long matrix[3][3], unsigned int count,
 static int record_fpu(float matrix[3][3], unsigned int count,
                       const Vertex *vertices, Soft3d_float_point *out,
                       unsigned int reuse, int precision);
+static unsigned int palette_rebuilds;
+static int record_palette_match(const unsigned char *rgb, unsigned int count,
+                                const unsigned char *palette, unsigned int palette_count,
+                                Drv_palette_match *matches);
 #define soft3d_fixed_transform_reuse record_baseline
 #define soft3d_020_transform_reuse record_enhanced
 #define soft3d_float_transform_reuse record_fpu
+#define drv_match_palette_colors record_palette_match
 #define malloc ami_test_malloc
 #include "../src/drv_ami.c"
 #undef malloc
 #undef soft3d_fixed_transform_reuse
 #undef soft3d_020_transform_reuse
 #undef soft3d_float_transform_reuse
+#undef drv_match_palette_colors
 #include "ami_shim/timer_record.h"
+/* Each call is one rebuild of a screen's complete Earth-pen lookup. */
+static int record_palette_match(const unsigned char *rgb, unsigned int count,
+                                const unsigned char *palette, unsigned int palette_count,
+                                Drv_palette_match *matches)
+{
+    ++palette_rebuilds;
+    return drv_match_palette_colors(rgb, count, palette, palette_count, matches);
+}
 static void *ami_test_malloc(size_t size)
 {
     if (fail_cache_allocation && size == sizeof(Soft3d_project_cache)) return NULL;
@@ -916,15 +930,15 @@ static void test_palette_mapping(int exhaustive)
     unsigned int color;
     unsigned long actual;
     memcpy(before, desktop_palette, sizeof(before));
-    ami_palette_valid = FALSE;
+    ami_map->valid = FALSE;
     ami_map_palette();
-    assert(ami_color_count == colormap.Count);
+    assert(ami_map->count == colormap.Count);
     assert(memcmp(before, desktop_palette, sizeof(before)) == 0);
     for (color = 0; color < 256U; ++color)
     {
-        assert(ami_pen_a[color] < colormap.Count && ami_pen_b[color] < colormap.Count);
-        assert(ami_mix[color] <= 16U);
-        actual = test_palette_error(color, ami_pen_a[color], ami_pen_b[color], ami_mix[color]);
+        assert(ami_map->pen_a[color] < colormap.Count && ami_map->pen_b[color] < colormap.Count);
+        assert(ami_map->mix[color] <= 16U);
+        actual = test_palette_error(color, ami_map->pen_a[color], ami_map->pen_b[color], ami_map->mix[color]);
         if (exhaustive) assert(actual == test_palette_optimum(color));
         else assert(actual <= test_palette_previous(color));
     }
@@ -973,33 +987,33 @@ static void test_palette_quality(void)
         for (pen = 0; pen < colormap.Count; ++pen)
             memcpy(desktop_palette[pen], difficult[pen < 4U ? pen : 0], 3);
         test_palette_mapping(index == 0);
-        actual = test_palette_error(0, ami_pen_a[0], ami_pen_b[0], ami_mix[0]);
+        actual = test_palette_error(0, ami_map->pen_a[0], ami_map->pen_b[0], ami_map->mix[0]);
         assert(actual == 128UL && actual < test_palette_previous(0));
-        assert(ami_mix[0] == 8U);
-        assert((ami_pen_a[0] == 2U && ami_pen_b[0] == 3U) ||
-               (ami_pen_a[0] == 3U && ami_pen_b[0] == 2U));
+        assert(ami_map->mix[0] == 8U);
+        assert((ami_map->pen_a[0] == 2U && ami_map->pen_b[0] == 3U) ||
+               (ami_map->pen_a[0] == 3U && ami_map->pen_b[0] == 2U));
     }
     /* An exact entry, including duplicates, must stay solid without noise. */
     colormap.Count = 16;
     memcpy(desktop_palette[1], earth_cmap[0], 3);
     memcpy(desktop_palette[5], earth_cmap[0], 3);
     test_palette_mapping(TRUE);
-    assert(ami_mix[0] == 0U && test_palette_error(0, ami_pen_a[0], ami_pen_a[0], 0U) == 0UL);
+    assert(ami_map->mix[0] == 0U && test_palette_error(0, ami_map->pen_a[0], ami_map->pen_a[0], 0U) == 0UL);
     colormap.Count = 2;
     memset(desktop_palette[0], 0, 3); memset(desktop_palette[1], 255, 3);
     for (index = 0; index < 2U; ++index)
     {
         memset(earth_cmap[0], index ? 255 : 0, 3);
         test_palette_mapping(TRUE);
-        assert(ami_mix[0] == 0U && ami_pen_a[0] == index);
+        assert(ami_map->mix[0] == 0U && ami_map->pen_a[0] == index);
     }
     /* Test the native draw state and actual bit coverage, not just the
      * lookup's mixture number. Clear pattern bits select the background pen. */
     ami_draw_port = &window_port; ami_reset_draw_state();
-    ami_pen_a[0] = 0; ami_pen_b[0] = 1;
+    ami_map->pen_a[0] = 0; ami_map->pen_b[0] = 1;
     for (mix = 0; mix <= 16U; ++mix)
     {
-        ami_mix[0] = (unsigned char)mix;
+        ami_map->mix[0] = (unsigned char)mix;
         ami_set_color(0);
         if (mix == 0U || mix == 16U)
         {
@@ -1026,7 +1040,7 @@ static void test_palette_quality(void)
     memcpy(earth_cmap[0], saved_earth, sizeof(saved_earth));
     memcpy(desktop_palette, saved_palette, sizeof(saved_palette));
     colormap.Count = (UWORD)saved_count;
-    ami_palette_valid = FALSE;
+    ami_map->valid = FALSE;
     ami_map_palette();
     puts("PASS Amiga palette matching: exhaustive small-palette colors, bounded-search quality, exact/duplicate pens and Bayer coverage");
 }
@@ -1054,19 +1068,19 @@ static void test_solid_palette(void)
     for (color = 0; color < 256U; ++color)
     {
         nearest = 0; best = ULONG_MAX;
-        for (pen = 0; pen < ami_color_count; ++pen)
+        for (pen = 0; pen < ami_map->count; ++pen)
         {
             error = 0;
             /* The effective desktop palette includes RGB12 quantization on
              * older graphics.library versions; compare the colors read. */
             for (channel = 0; channel < 3U; ++channel)
             {
-                difference = (long)earth_cmap[color][channel] - ami_palette[pen][channel];
+                difference = (long)earth_cmap[color][channel] - ami_map->palette[pen][channel];
                 error += (unsigned long)(difference * difference);
             }
             if (error < best) { best = error; nearest = pen; }
         }
-        assert(ami_pen_solid[color] == nearest);
+        assert(ami_map->solid[color] == nearest);
         ami_set_color((unsigned char)color);
         assert(window_port.FgPen == nearest);
         assert(window_port.DrawMode == JAM1 && window_port.AreaPtrn == NULL);
@@ -1436,6 +1450,39 @@ static void test_fullscreen_windowed(void)
            drv_win_height == (unsigned int)window_record.GZZHeight);
 }
 
+/* Workbench and fullscreen keep separate pen maps. Once each exists, F
+ * toggles read back unchanged colors and rebuild neither; a Workbench
+ * palette change made while fullscreen is noticed on return. */
+static void test_fullscreen_pen_maps(void)
+{
+    unsigned char saved_pen[3];
+    unsigned int rebuilds, first, i;
+    int indexed;
+    indexed = ami_depth <= 8U;
+    rebuilds = palette_rebuilds;
+    ami_keyboard('f');
+    assert(ami_window == &fullscreen_window && ami_map == &ami_maps[1]);
+    first = palette_rebuilds - rebuilds;
+    assert(first == (ami_depth <= 8U ? 1U : 0U));
+    ami_keyboard('f'); test_fullscreen_windowed(); assert(ami_map == &ami_maps[0]);
+    for (i = 0; i < 3U; ++i)
+    {
+        ami_keyboard('F'); assert(ami_window == &fullscreen_window);
+        ami_keyboard('F'); test_fullscreen_windowed();
+    }
+    assert(palette_rebuilds == rebuilds + first);
+    if (!indexed) return;
+    ami_keyboard('f'); assert(ami_window == &fullscreen_window);
+    memcpy(saved_pen, desktop_palette[1], 3);
+    desktop_palette[1][0] ^= 0x80U;
+    ami_keyboard('f'); test_fullscreen_windowed();
+    assert(palette_rebuilds == rebuilds + first + 1U);
+    assert(ami_map->palette[1][0] == desktop_palette[1][0]);
+    memcpy(desktop_palette[1], saved_pen, 3);
+    ami_event(ACTIVEWINDOW, 0, 0, 0);
+    assert(palette_rebuilds == rebuilds + first + 2U);
+}
+
 static int test_fullscreen(int argc, char **argv, const char *mode)
 {
     unsigned int calls, copies, draws, swaps, i, saved_width, saved_height;
@@ -1510,6 +1557,7 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
         buffer_fail_at = 0;
         ami_keyboard('f'); test_fullscreen_windowed();
     }
+    test_fullscreen_pen_maps();
     copies = copy_calls;
     ami_keyboard('f');
     assert(ami_window == &fullscreen_window && screen_count == 1 && screenbuffer_count == 2);
@@ -1800,12 +1848,12 @@ int main(int argc, char **argv)
     memset(desktop_palette[0], 255, 3);
     memset(desktop_palette[colormap.Count - 1], 0, 3);
     ami_event(REFRESHWINDOW, 0, 0, 0);
-    assert(ami_black == colormap.Count - 1U && ami_white == 0U);
-    assert(ami_palette[0][0] == 255 && ami_palette[colormap.Count - 1U][0] == 0);
+    assert(ami_map->black == colormap.Count - 1U && ami_map->white == 0U);
+    assert(ami_map->palette[0][0] == 255 && ami_map->palette[colormap.Count - 1U][0] == 0);
     assert(desktop_palette[0][0] == 255 && desktop_palette[colormap.Count - 1U][0] == 0);
     memcpy(desktop_palette, saved_palette, saved_palette_size);
     ami_event(ACTIVEWINDOW, 0, 0, 0);
-    assert(ami_black == 0U && ami_white == colormap.Count - 1U);
+    assert(ami_map->black == 0U && ami_map->white == colormap.Count - 1U);
     assert(memcmp(saved_palette, desktop_palette, saved_palette_size) == 0);
     messages[0].Class = VANILLAKEY; messages[0].Code = 'p';
     messages[1].Class = MOUSEBUTTONS; messages[1].Code = SELECTDOWN;

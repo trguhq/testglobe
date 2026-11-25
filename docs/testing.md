@@ -746,7 +746,8 @@ cross-build uses the [Amiga build instructions](amiga.md#build) separately.
   not copy into the displayed bitmap or discard its buffers during cache recovery.
   `F`/`f` switches presentation and `P`/`p` toggles FPS. Tests cover retained scene
   settings, Workbench window restoration, private palettes, older-OS fallback and
-  incompatible RTG buffers.
+  incompatible RTG buffers. Repeated toggles must not rebuild either screen's pen
+  map, while a Workbench palette change made during fullscreen is detected.
 - **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch,
   including a reported FPU without a supporting CPU. Cached and uncached drawing
   must retain polygon coordinates and colors, including projection-cache allocation

@@ -137,13 +137,20 @@ static int ami_big_blits, ami_unsafe_bitmap;
 static const char *ami_fpu_name = "none";
 static const char *ami_chipset = "OCS/ECS";
 static unsigned int ami_aspect_num = 1, ami_aspect_den = 1;
-static unsigned char ami_palette[256][3];
-static unsigned char ami_pen_a[256], ami_pen_b[256], ami_mix[256];
-static unsigned char ami_pen_solid[256];
+/* Earth-color lookups for one destination screen. Workbench and the
+ * private fullscreen screen keep separate maps, so F toggles reuse them;
+ * each is rebuilt only when the colors read back from its screen change. */
+typedef struct Ami_pen_map
+{
+    unsigned char palette[256][3];
+    unsigned char pen_a[256], pen_b[256], mix[256], solid[256];
+    unsigned int count, black, white;
+    unsigned int depth, storage; /* the screen format these were built for */
+    int rtg, valid;
+} Ami_pen_map;
+static Ami_pen_map ami_maps[2]; /* Workbench, fullscreen */
+static Ami_pen_map *ami_map = &ami_maps[0];
 static int ami_dither_enabled;
-static unsigned int ami_color_count;
-static int ami_palette_valid;
-static unsigned int ami_black, ami_white;
 static double ami_auto_time;
 /* RastPort fields last set by ami_set_color; -1/FALSE mean unknown. Other
  * drawing sets them directly, so each frame and the OSD forget them. */
@@ -426,7 +433,8 @@ void drv_init(int *argc, char **argv)
     UBYTE marker;
     ami_ready = ami_rendering = ami_paused = FALSE;
     ami_running = ami_active = ami_dirty = TRUE;
-    ami_palette_valid = FALSE;
+    ami_maps[0].valid = ami_maps[1].valid = FALSE;
+    ami_map = &ami_maps[0];
     ami_dither_enabled = AMI_DITHER_DEFAULT;
     ami_unsafe_bitmap = FALSE;
     ami_reset_draw_state();
@@ -451,19 +459,19 @@ void drv_init(int *argc, char **argv)
     if (result != DRV_OK) drv_notice("Earth data unavailable; select a level to retry");
 }
 
-static unsigned int ami_nearest(unsigned int red, unsigned int green,
-                                 unsigned int blue)
+static unsigned int ami_nearest(const Ami_pen_map *map, unsigned int red,
+                                 unsigned int green, unsigned int blue)
 {
     unsigned int pen, best;
     long r, g, b;
     unsigned long distance, minimum;
     minimum = 0xffffffffUL;
     best = 0;
-    for (pen = 0; pen < ami_color_count; ++pen)
+    for (pen = 0; pen < map->count; ++pen)
     {
-        r = (long)red - ami_palette[pen][0];
-        g = (long)green - ami_palette[pen][1];
-        b = (long)blue - ami_palette[pen][2];
+        r = (long)red - map->palette[pen][0];
+        g = (long)green - map->palette[pen][1];
+        b = (long)blue - map->palette[pen][2];
         distance = (unsigned long)(r * r + g * g + b * b);
         if (distance < minimum) { minimum = distance; best = pen; }
     }
@@ -472,19 +480,19 @@ static unsigned int ami_nearest(unsigned int red, unsigned int green,
 
 /* Match all 256 Earth colors in one pass; above 16 pens the shared matcher
  * searches each distinct desktop color once. */
-static void ami_match_colors(void)
+static void ami_match_colors(Ami_pen_map *map)
 {
     static Drv_palette_match matches[256];
     unsigned int color;
-    if (!drv_match_palette_colors(&earth_cmap[0][0], 256U, &ami_palette[0][0],
-                                  ami_color_count, matches))
+    if (!drv_match_palette_colors(&earth_cmap[0][0], 256U, &map->palette[0][0],
+                                  map->count, matches))
         return;
     for (color = 0; color < 256U; ++color)
     {
-        ami_pen_a[color] = matches[color].first;
-        ami_pen_b[color] = matches[color].second;
-        ami_mix[color] = matches[color].mix;
-        ami_pen_solid[color] = matches[color].solid;
+        map->pen_a[color] = matches[color].first;
+        map->pen_b[color] = matches[color].second;
+        map->mix[color] = matches[color].mix;
+        map->solid[color] = matches[color].solid;
     }
 }
 
@@ -494,16 +502,19 @@ static void ami_map_palette(void)
     ULONG rgb[3], packed;
     unsigned char sample[3];
     unsigned int pen, channel, count;
+    Ami_pen_map *map;
     int changed;
     if (ami_window == NULL || ami_depth < 1) return;
+    map = ami_map = &ami_maps[ami_fullscreen ? 1 : 0];
     colors = ami_window->WScreen->ViewPort.ColorMap;
     count = ami_depth > AMI_MAX_DEPTH ? 256U : 1U << ami_depth;
     if (colors != NULL && colors->Count != 0 && colors->Count < count)
         count = colors->Count;
     if (count < 1) count = 1;
-    changed = !ami_palette_valid || count != ami_color_count;
-    ami_color_count = count;
-    for (pen = 0; pen < ami_color_count; ++pen)
+    changed = !map->valid || count != map->count || map->rtg != ami_rtg ||
+              map->depth != ami_depth || map->storage != ami_storage_depth;
+    map->count = count;
+    for (pen = 0; pen < map->count; ++pen)
     {
         if (colors != NULL && GfxBase->LibNode.lib_Version >= 39)
         {
@@ -520,24 +531,27 @@ static void ami_map_palette(void)
         }
         for (channel = 0; channel < 3; ++channel)
         {
-            if (ami_palette[pen][channel] != sample[channel]) changed = TRUE;
-            ami_palette[pen][channel] = sample[channel];
+            if (map->palette[pen][channel] != sample[channel]) changed = TRUE;
+            map->palette[pen][channel] = sample[channel];
         }
     }
-    /* Refresh/resize often leaves Workbench's pens unchanged. Rebuild the
-     * two-pen lookup only when the native values or count actually change. */
+    /* Refresh, resize and F often leave a screen's pens unchanged. Rebuild
+     * its lookup only when the native values, count or format change. */
     if (changed)
     {
-        ami_black = ami_nearest(0, 0, 0);
-        ami_white = ami_nearest(255, 255, 255);
-        if (ami_depth <= 8U) ami_match_colors();
+        map->black = ami_nearest(map, 0, 0, 0);
+        map->white = ami_nearest(map, 255, 255, 255);
+        if (ami_depth <= 8U) ami_match_colors(map);
     }
-    ami_palette_valid = TRUE;
+    map->rtg = ami_rtg;
+    map->depth = ami_depth;
+    map->storage = ami_storage_depth;
+    map->valid = TRUE;
     drv_bits_per_pixel = ami_storage_depth;
     drv_colormapped = ami_depth <= 8U;
     drv_colormap_bits = ami_depth > 24U ? 24U : ami_depth;
-    drv_colormap_colors = ami_depth <= 8U ? ami_color_count : 1UL << drv_colormap_bits;
-    drv_colors = ami_depth > 8U ? drv_colormap_colors : ami_color_count;
+    drv_colormap_colors = ami_depth <= 8U ? map->count : 1UL << drv_colormap_bits;
+    drv_colors = ami_depth > 8U ? drv_colormap_colors : map->count;
     /* Report storage separately: e.g. RGB15 occupies two bytes, RGB32 four. */
     drv_bytes_per_pixel = (ami_storage_depth + 7U) / 8U;
 }
@@ -646,8 +660,6 @@ static int ami_screen_format(struct Screen *screen, struct BitMap *bitmap)
         drv_notice("Unsupported Workbench bitmap or unavailable RTG library");
         return FALSE;
     }
-    if (ami_rtg != backend || ami_depth != depth || ami_storage_depth != storage)
-        ami_palette_valid = FALSE;
     ami_rtg = backend;
     ami_depth = depth;
     ami_storage_depth = storage;
@@ -1088,7 +1100,6 @@ static void ami_enter_fullscreen(void)
     drv_win_width = width; drv_win_height = height;
     InitRastPort(&ami_back_port);
     SetFont(&ami_back_port, ami_window->RPort->Font);
-    ami_palette_valid = FALSE;
     ami_map_palette();
     ami_pixel_aspect();
     drv_quadstream_reset(&ami_stream);
@@ -1113,7 +1124,6 @@ static void ami_leave_fullscreen(void)
     ami_workbench_window = NULL;
     ami_fullscreen = FALSE;
     ami_drain_window(ami_window);
-    ami_palette_valid = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     (void)ami_resize();
     ami_active = TRUE;
@@ -1151,17 +1161,18 @@ static void ami_set_color(unsigned char color)
     const UWORD *pattern;
     unsigned int mix;
     int pen, mode;
-    mix = ami_dither_enabled ? ami_mix[color] : 0U;
-    pen = !ami_dither_enabled ? ami_pen_solid[color] :
-          (mix == 16U ? ami_pen_b[color] : ami_pen_a[color]);
+    mix = ami_dither_enabled ? ami_map->mix[color] : 0U;
+    pen = !ami_dither_enabled ? ami_map->solid[color] :
+          (mix == 16U ? ami_map->pen_b[color] : ami_map->pen_a[color]);
     if (pen != ami_last_apen) SetAPen(ami_draw_port, (ULONG)pen);
     ami_last_apen = pen;
     mode = JAM1;
     pattern = NULL;
     if (mix != 0U && mix != 16U)
     {
-        if (ami_pen_b[color] != ami_last_bpen) SetBPen(ami_draw_port, ami_pen_b[color]);
-        ami_last_bpen = ami_pen_b[color];
+        if (ami_map->pen_b[color] != ami_last_bpen)
+            SetBPen(ami_draw_port, ami_map->pen_b[color]);
+        ami_last_bpen = ami_map->pen_b[color];
         mode = JAM2;
         pattern = (const UWORD *)drv_dither_pattern(mix);
     }
@@ -1394,8 +1405,8 @@ void drv_draw_osd(void)
     if (font != NULL) SetFont(ami_draw_port, font);
     SetAfPt(ami_draw_port, NULL, 0);
     SetDrMd(ami_draw_port, JAM2);
-    SetAPen(ami_draw_port, ami_white);
-    SetBPen(ami_draw_port, ami_black);
+    SetAPen(ami_draw_port, ami_map->white);
+    SetBPen(ami_draw_port, ami_map->black);
     drv_format_stats(status);
     drv_append_status(status, sizeof(status), ami_depth > 8U ? ", dither n/a" :
                       (ami_dither_enabled ? ", dither on" : ", dither off"));
@@ -1409,7 +1420,7 @@ void drv_draw_osd(void)
                 (ami_rtg_bitmap != NULL ? "buffered" : "direct"));
     else
         sprintf(detail, "%s, %d, %s, %u colors, %s", ami_chipset, ami_cpu,
-                ami_has_fpu ? ami_fpu_name : "fixed-point", ami_color_count,
+                ami_has_fpu ? ami_fpu_name : "fixed-point", ami_map->count,
                 ami_fullscreen ? "fullscreen, double buffered" :
                 (ami_back_planes != 0 ? "buffered" : "direct"));
     next_line = ami_text_lines(detail, baseline, TRUE);
@@ -1442,7 +1453,7 @@ static void ami_render_pass(void)
     ami_reset_draw_state();
     SetAfPt(ami_draw_port, NULL, 0);
     SetDrMd(ami_draw_port, JAM1);
-    SetAPen(ami_draw_port, ami_black);
+    SetAPen(ami_draw_port, ami_map->black);
 #if AMI_RTG
     if (ami_rtg && ami_depth > 8U)
         ami_rtg_fill(ami_draw_port, 0, 0, drv_win_width - 1U, drv_win_height - 1U, 0UL);

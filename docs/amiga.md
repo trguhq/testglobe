@@ -91,7 +91,9 @@ two-pen patterns approximate missing colors by comparing their mixed RGB values.
 Palettes of up to 16 entries use the closest pair and a 1/16 mixture; larger palettes
 use two bounded searches to improve the mixture without a costly full pair search.
 Exact matches stay solid. Mappings are cached until the desktop palette changes, and
-precomputed patterns avoid per-polygon work. A pen, draw mode, or pattern is set only
+precomputed patterns avoid per-polygon work. Workbench and fullscreen keep separate
+mappings, each rebuilt only when the colors read back from its screen change, so
+switching with `F` does not repeat the search. A pen, draw mode, or pattern is set only
 when it differs from the previous polygon's, and `AreaEnd` reinitializes the vector
 table for the next polygon.
 
