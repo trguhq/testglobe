@@ -545,42 +545,60 @@ python3 tests/dos_cpu.py
 - **Mode and palette:** query-based selection of 640 × 480, eight-bit programmable
   256-color modes, preference for two display pages, exact Earth palette uploads,
   and restoration of available prior state. Missing drivers, old TIGA versions,
-  invalid modes, and failed primitive-library initialization must clean up safely.
+  invalid or incompatible modes, tiny command buffers, and failed primitive-library
+  initialization must clean up safely; the recorder requires the display and palette
+  to be restored before the error message is printed. `set_config()` must precede
+  every extension download, and it loads the mode's default palette, which cleanup
+  then overwrites. An unreadable startup palette skips saving instead of failing.
 - **Geometry:** both Earth resolutions, bounded shared-vertex packets, clockwise
   polygon submission, rounded-polygon fallback, and visibility counts. Host integer
   and TI-module paths must submit identical coordinates and colors. Small command
-  buffers force bounded packet splitting rather than oversized transfers.
+  buffers force bounded packet splitting rather than oversized transfers. TI frames
+  must send exactly each band's new row (about 47% fewer packet words at key 2), and
+  each packet resets only its status word. A malformed corner on a reused row must
+  be rejected on the host, whose coordinate filter must match the module for every
+  exponent, edge value, and random bit patterns. The early-exit convexity test must
+  match the full test on random polygons, and repeated fill colors must not be
+  resent, even with a stale cached color.
 - **Transforms and controls:** software 3D is the default; `S`/`s` switches the
   actual transform path and OSD status. CPU/FPU profiles check dispatch, including
   8086/8087, 286/287 and 386/387 combinations, with mouse
   absence and DOS mouse/keyboard input covered independently. Missing embedded
   payloads, incorrect protocol versions, rejected packets, and invalid returned
   coordinates must restore usable host rendering.
-- **Presentation and failure:** single-page fallback, synchronization before page
-  flipping, safe page reuse, page-wait deadlines, communication errors, and cleanup.
-  The recorder rejects drawing into a page that is still displayed in double-buffered
-  profiles.
+- **Presentation and failure:** single-page fallback, queued page flips without a
+  prior `synchronize()` (single pages synchronize each frame), safe page reuse,
+  page-wait deadlines, communication errors, including a failed flip that must be
+  reported by its own frame, and cleanup. The recorder rejects drawing into a page
+  that is still displayed in double-buffered profiles. A persistent failure must
+  present a cleared page with the notice and stop redraws and rotation in the event
+  loop. The break and critical-error routines must be installed before TIGA opens.
+  Calling the stored INT 23h routine during `kbhit()` must end the loop through
+  `drv_close()` and the display cleanup.
 - **OSD layout:** system-font widths from 8 to 32 pixels and heights from 8 to 64
   verify measured word wrapping, visible `S` help, and nonoverlapping screen bounds.
 - **Executable packing:** `tests/tiga_pack.py` checks unchanged DOS headers and
-  image bytes, exact module bytes and CRC, 64 KiB boundaries through the 1 MiB
-  payload limit, software-only copying, and repeated builds. Invalid inputs, file
+  image bytes, exact module bytes and CRC, MZ header-size and last-page boundaries,
+  64 KiB boundaries through the 1 MiB payload limit, software-only copying, and
+  repeated builds. Invalid inputs, file
   aliases, and occupied `.tmp`/`.bak` paths must preserve existing output.
 - **Embedded loading:** independent Python MZ/trailer fixtures feed real driver file
-  I/O. Only the executable remains in the distribution directory, which may be
+  I/O, including an MZ load image that overlaps the module. Only the executable remains in the distribution directory, which may be
   read-only; changing the working directory after startup must still load it. The
   TIGA recorder verifies exact extracted bytes and deletion after loading or failure.
   Missing, truncated, or corrupt payloads, invalid bounds, unavailable temporary
   storage, disk-full and close failures must retain software rendering. Short writes,
-  exclusive-name collisions, and deferred-deletion retries are also covered.
+  exclusive-name collisions, and deferred-deletion retries are also covered. The
+  temporary name must be seeded from the date, not from `clock()`.
   Loader arguments discard unused exports while preserving the plain extraction path.
   Checked `flush_module()` failure retains module ownership for reuse or retry; the
   recorder distinguishes it from the reserved internal deletion API and rejects
   further board calls after a communication failure.
 - **TI arithmetic:** `tests/tiga_module.c` calls the production module entry and
   compares its fixed-point camera coordinates and projections with the host pipeline
-  over varied poses, one- and 130-vertex packets, and viewport boundaries. Malformed
-  packet fields, out-of-range matrices, and invalid coordinate bits must be rejected.
+  over varied poses, one- and 130-vertex packets, and viewport boundaries. Stale
+  output words must be overwritten. Malformed packet fields, out-of-range matrices,
+  and invalid coordinate bits must be rejected.
 
 `tests/dos_cpu.py` assembles the shared `drv_cpu.c` inline probe instructions and executes 24
 FLAGS/stack cases. Hooks supply the older processors' FLAGS restrictions, which

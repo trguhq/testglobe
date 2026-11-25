@@ -34,8 +34,9 @@ keeps no extra copy of the module in memory.
 
 The module uses TMS34010 instructions, which the TMS34020 also supports, and needs no
 floating-point coprocessor or TI math runtime. `src/tga_cmd.h` defines its bounded
-command and embedded-file formats. To build a software-only executable without the TI
-tools or the module:
+command packet and is also read by the TI compiler; the host-only `src/tga_rlm.h`
+defines the embedded-file format and the MZ and CRC-32 checks that the packer and the
+driver share. To build a software-only executable without the TI tools or the module:
 
 ```text
 nmake tiga TGA_ROOT=C:\TIGA TGA_MODULE=
@@ -67,7 +68,9 @@ reuse or another attempt while host transforms continue.
 
 If the executable cannot be reopened, the module is missing or corrupt, temporary
 storage is unavailable, or TIGA rejects the module, rendering continues with
-`soft3d on` and an OSD notice; press `S` to retry. The application does not look for a
+`soft3d on` and an OSD notice; press `S` to retry. On DOS 3.1 or later, a critical disk
+error, such as a write-protected or missing disk, fails the file operation instead of
+showing the hidden Abort, Retry, Fail prompt, so the same fallback applies. The application does not look for a
 separate `tga_gsp.rlm`. The vendor graphics driver, graphics manager, and
 `extprims.rlm` remain part of the installed TIGA environment.
 
@@ -93,11 +96,24 @@ traversal, with collapsed pole patches drawn as triangles.
 
 Insufficient command capacity or a rejected transform packet restores software 3D
 with an OSD notice; press `S` to retry. Host/GSP packets contain bounded 32-bit values,
-not host pointers or compiler-dependent structures.
+not host pointers or compiler-dependent structures. Adjacent latitude bands share a
+row, so after the first band only the new row is sent to the TMS340, which nearly
+halves packet traffic. The host keeps the shared row's results but still checks its
+input coordinates. Consecutive polygons of the same color do not resend the fill
+color.
 
-A mode with two display pages is preferred. Completed frames use synchronized page
-flips, and the previous page is not reused until its flip completes. A single-page
-mode still works but can flicker, and the OSD reports the buffering in use.
+A mode with two display pages is preferred. TIGA runs queued commands in order, so
+each frame's page flip follows its drawing without a separate `synchronize()`, and the
+previous page is not reused until its flip completes. A single-page mode synchronizes
+each frame instead; it still works but can flicker, and the OSD reports the buffering
+in use. A frame that still fails after the host retry is shown as a cleared page with
+the notice, and automatic rotation pauses until a key or mouse input.
+
+Esc, Ctrl-C, and Ctrl-Break all exit through the same cleanup, which restores the
+previous video mode and saved palette. Configuration errors, such as a missing
+640 × 480 mode or `extprims.rlm`, restore the display before printing their message.
+If the board cannot read back its palette at startup, the program still runs, and exit
+leaves the mode's default palette.
 
 ## CPU and platform notes
 

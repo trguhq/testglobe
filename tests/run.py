@@ -53,7 +53,8 @@ def check_tiga_extraction(executable, output):
         "nooverlay", "badcrc", "truncated", "oversized", "badoffset", "reserved",
         "badmagic", "badimage", "missingexe", "diskfull", "closefail", "notemp", "shortwrite",
         "removefail", "collision", "movedcwd", "readonlyexe", "fallbacktmp",
-        "longtemp", "moduleioerror", "flushioerror",
+        "longtemp", "moduleioerror", "flushioerror", "flipioerror", "tinybuffer",
+        "badreturn", "palettefail", "persistent", "ctrlbreak",
     )
     payload = bytes((index * 73 + 19) & 255 for index in range(1549))
     image = bytearray(512)
