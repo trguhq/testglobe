@@ -1,8 +1,8 @@
 # Controls and status
 
 [README](../README.md) lists the keys. This page covers the on-screen display (OSD),
-frame-rate measurement, window sizing, CPU culling, and recovery from resource
-shortages.
+frame-rate measurement, window sizing, CPU culling, recovery from resource
+shortages, and exiting.
 
 ## Globe resolution
 
@@ -105,9 +105,11 @@ drivers start with it off.
 
 OpenGL display lists and IRIS GL geometry objects are bypassed while culling is on.
 OpenGL remembers the `d` setting, including changes made while culling is on, and
-reapplies it when culling is turned off. The polygon total still describes the
-complete mesh. Nearly edge-on facets can differ by one silhouette pixel, because CPU
-and native transforms round differently.
+reapplies it when culling is turned off. OpenGL's color-index software texturing
+always skips back-facing bands, whatever the `c` setting, because its rasterizer would
+discard them anyway. The polygon total still describes the complete mesh. Nearly
+edge-on facets can differ by one silhouette pixel, because CPU and native transforms
+round differently.
 
 ## Resource recovery
 
@@ -115,8 +117,11 @@ When a new mesh cannot be allocated, optional rendering caches are released befo
 retrying. The application can then restore the previous resolution or choose a
 smaller one; startup uses the same fallback. The OSD shows the result and any
 recovery notice, including the failure category. If no scene can be built, the window
-stays responsive so another resolution can be selected. Bad data and invalid
-requests are reported separately from insufficient memory. OpenGL, IRIS GL, and XGL
+stays responsive so another resolution can be selected. GDI and QuickDraw bring
+their released back buffers, projection caches, masks, palettes, and patterns back at
+most once per scene revision, after the next successful resolution change; a failed
+attempt waits for the following revision. Bad data and invalid requests are
+reported separately from insufficient memory. OpenGL, IRIS GL, and XGL
 show a failed-frame diagnostic even with the OSD off, and stop automatic redraws until
 input requests another attempt.
 
@@ -131,3 +136,13 @@ performance, so compare runs by their reported settings.
 These fallbacks keep usable native resources. Choosing another valid resource can
 recover from bad map data but does not repair it. A lost device or an opaque native
 library error can still require the program to exit.
+
+## Exiting
+
+`Esc` exits through each driver's normal cleanup, which restores palettes, display
+modes, and windows. Matrox and TIGA treat Ctrl-C and Ctrl-Break the same way, so the
+board's display state is restored rather than left for the next program; from DOS 3.1
+a critical disk error fails the DOS call instead of prompting on a graphics screen.
+IRIS GL catches SIGINT, SIGTERM, SIGHUP, and SIGQUIT, cleans up, and re-raises the
+signal. QuickDraw quits through File > Quit, Command-Q, or the quit Apple event,
+including Shut Down.

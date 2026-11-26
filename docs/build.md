@@ -72,10 +72,13 @@ Apple OpenGL uses its own `APPLE_SYS_FLAGS` and the system math library.
 
 `DEBUG` defaults to `0`. After cleaning, `make opengl CPPFLAGS=-DDEBUG=1` enables
 pixel-storage and right-button diagnostics (a System 7 single-button mouse has no
-right-button state). Software texture buffers are released when texturing is
-disabled; `CPPFLAGS=-DTEXTURE_CACHE_RASTER=1` keeps them. Other targets use their own
-`*_CPPFLAGS` variable. [Development notes](development.md#shared-rendering-pipelines)
-describe the cache and memory policy.
+right-button state). Software texture buffers are released when texturing is disabled;
+`CPPFLAGS=-DTEXTURE_CACHE_RASTER=1` keeps them.
+[Development notes](development.md#shared-rendering-pipelines) describe the cache and
+memory policy. Other targets use their own `*_CPPFLAGS` variable, for example
+`IGL_CPPFLAGS=-DIGL_ZBUFFER=1` to keep the IRIS GL z-buffer, or `-DMTX_8086_BINDING`
+in `MTX_CPPFLAGS` (beside its `-I$(XGX_ROOT)`) for a LibShell binding without 286
+instructions.
 
 ## Linux-hosted cross-builds
 
@@ -109,13 +112,15 @@ The Watcom DOS builds use huge-model pointers and C stack calling conventions to
 match the SDK bindings; `src/mtx_ow.c` adapts the Microsoft-built LibShell library's
 runtime calls. Application objects use 8086 instructions, and the 386 transform
 kernel is compiled separately and guarded by CPU detection. The supplied LibShell
-library itself needs a 286 or later. Floating-point emulation stays available without
-a coprocessor.
+library itself needs a 286 or later, which both Matrox builds check before `lsinit`
+unless `MTX_8086_BINDING` is defined for an 8086-safe binding. Floating-point
+emulation stays available without a coprocessor. The per-vertex objects are compiled
+with `-s`, without stack probes.
 
 Watcom's Windows runtime uses the large memory model. Explicit `TG_HUGE` pointers keep
 mesh and resource access normalized across 64 KiB boundaries, with `SEG86` still
-enabled. The output is a protected-mode Windows 3.1 NE application with all Earth
-resources embedded and loaded on demand.
+enabled. The output is a protected-mode NE application marked for Windows 3.0, with
+all Earth resources embedded and loaded on demand.
 
 Install [Retro68](https://github.com/autc04/Retro68) for QuickDraw, including its
 Multiversal interfaces, resource tools, and 68000 runtime:

@@ -34,7 +34,7 @@ Workbench pens or a private fullscreen palette, or draws RGB on truecolor RTG sc
 | [Sun XGL](docs/xgl.md) | Solaris 2.6, 32-bit SPARC | `make xgl` | Key 3: 128 × 64 | Yes |
 | [Matrox LibShell](docs/matrox.md) | MS-DOS, PG-641-compatible hardware | `nmake matrox` | Key 1: 32 × 16 | No |
 | [TIGA](docs/tiga.md) | MS-DOS, TIGA 2.x, 640 × 480 indexed color | `nmake tiga` | Key 1: 32 × 16 | No |
-| [Windows GDI](docs/gdi.md) | Windows 3.1, 16-bit | `nmake gdi` | Key 1: 32 × 16 | No |
+| [Windows GDI](docs/gdi.md) | Windows 3.0 or 3.1, 16-bit | `nmake gdi` | Key 1: 32 × 16 | No |
 | [QuickDraw](docs/quickdraw.md) | Classic Macintosh System 7, 68000 | MPW `Makefile.mpw` | Key 1: 32 × 16 | No |
 | [Amiga](docs/amiga.md) | AmigaOS Workbench, 68000 and later, OCS/ECS/AGA or RTG | `make amiga` | Key 1: 32 × 16 | No |
 
@@ -52,7 +52,7 @@ make
 
 The Makefiles work with traditional make, IRIX and Solaris make, and Microsoft NMAKE;
 GNU make is not required. [Building](docs/build.md) lists every target, out-of-tree
-builds, cleaning, the Linux-hosted cross-builds for DOS, Windows 3.1, and System 7,
+builds, cleaning, the Linux-hosted cross-builds for DOS, Windows 3.x, and System 7,
 and how the Earth maps are embedded. Each driver page gives its requirements and
 build variables.
 
@@ -72,12 +72,12 @@ Letter keys work in either case.
 | `c` | Toggle CPU culling of back-facing latitude-band ranges in OpenGL, IRIS GL, Sun XGL, and WebGL; on by default in Sun XGL only. |
 | `d` | Toggle display lists in OpenGL, or palette dithering in the native Amiga driver; both start enabled. |
 | `s` | Switch Matrox or TIGA between host software transforms and board/API transforms. Matrox starts with LibShell transforms, TIGA with host transforms. |
-| `Esc` | Exit native applications; in WebGL, pause rotation and release dragging. |
+| `Esc` | Exit native applications (Matrox and TIGA also accept Ctrl-C and Ctrl-Break); in WebGL, pause rotation and release dragging. |
 
 WebGL also has on-screen controls and a **Reset view** button.
 
-The OSD shows the polygon count, frame rate, and the state of each toggle, for
-example `texture on`, `texture fail`, or `cull off`. [Controls and status](docs/usage.md)
+The OSD shows the polygon count, frame rate, and the state of each toggle, for example
+`texture on`, `texture fail`, or `cull off`. [Controls and status](docs/usage.md)
 explains every status message, how FPS is measured, window and font sizing, CPU
 culling, and how drivers recover from memory or resource shortages.
 
@@ -97,9 +97,10 @@ Development builds are in the [`downloads`](downloads/README.md) folder:
 | DOS Matrox LibShell | [ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-cross.zip) |
 | Amiga chipset / RTG | [ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-palette-fix.zip) (predates fullscreen support) |
 
-Each archive includes installation notes, a license, and checksums. The DOS and
-Windows applications embed their data in `testglob.exe`. Decode the Macintosh
-MacBinary file with a resource-fork-aware utility, or use the disk image.
+Each archive includes installation notes, a license, and checksums. The archives
+predate the latest driver revisions; see the [downloads notes](downloads/README.md).
+The DOS and Windows applications embed their data in `testglob.exe`. Decode the
+Macintosh MacBinary file with a resource-fork-aware utility, or use the disk image.
 
 ## Testing
 
@@ -118,7 +119,8 @@ test runner.
 
 ## Documentation
 
-- [Controls and status](docs/usage.md): OSD messages, FPS, fonts, culling, and recovery.
+- [Controls and status](docs/usage.md): OSD messages, FPS, fonts, culling, recovery,
+  and exiting.
 - [Building](docs/build.md): targets, build settings, cross-builds, and Earth map data.
 - Drivers: [WebGL](docs/webgl.md), [OpenGL and Amiga OpenGL](docs/opengl.md),
   [IRIS GL](docs/irisgl.md), [Sun XGL](docs/xgl.md), [Matrox LibShell](docs/matrox.md),
@@ -143,7 +145,8 @@ test runner.
 
 ### v0.2 (in development)
 
-- Added Matrox LibShell, TIGA, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga backends.
+- Added Matrox LibShell, TIGA, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga
+  backends.
 - Added a static WebGL 2 browser frontend using the canonical Earth maps and palette.
 - Added native macOS, Solaris, and PiStorm3D Amiga OpenGL build targets.
 - Embedded the canonical binary Earth maps through bounded C arrays or native
@@ -151,7 +154,8 @@ test runner.
 - Switched OpenGL and IRIS GL to latitude strips and GDI/QuickDraw/Amiga to
   shared-vertex quad batches with bounded transform/projection reuse, keeping the
   independent triangle and quad reference paths.
-- Standardized the driver and traversal APIs and shared rendering, input, and data helpers.
+- Standardized the driver and traversal APIs and shared rendering, input, and data
+  helpers.
 - Added FPS, automatic rotation, display-list control, and texture-use status.
 - Added selectable host/TI transforms and DOS CPU/FPU dispatch for TIGA, and embedded
   the TI transform module for single-executable distribution.
@@ -160,8 +164,16 @@ test runner.
 - Converted comments to C style and fixed bitmap OSD text in Mesa.
 - Tuned Sun XGL for the Sun ZX: ASTI globe submission, one model transform write per
   frame, device inquiry, point-sampled software texturing, cached help layout,
-  detailed error diagnostics, CPU culling on by default, and optional argument checking.
+  detailed error diagnostics, CPU culling on by default, and optional argument
+  checking.
 - Moved detailed documentation into `docs`.
+- Reviewed the Matrox, TIGA, GDI, QuickDraw, IRIS GL, OpenGL, and Amiga drivers:
+  DOS Ctrl-C/Break and critical-error handling; Matrox startup draining, grouped
+  replies, and row-reusing software transforms; TIGA row reuse in the TI module; GDI
+  partial updates and Windows 3.0 marking; QuickDraw memory reserve, palette policy,
+  and Apple events; IRIS GL buffering, signal handling, and affine native texturing;
+  a GLUT adapter and fewer OpenGL round trips; recovery of optional resources; and
+  faster mesh construction, palette matching, and software texturing.
 
 ### [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 

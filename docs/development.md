@@ -9,9 +9,9 @@ primitive and capabilities. Keep those responsibilities separate.
 | --- | --- | --- | --- |
 | OpenGL | `FLAT`, `DRV_OGL` | `TRISTRIP` | `DRV_TRI_CAPS`, color/RGB/UV triangle callbacks |
 | Amiga OpenGL | `FLAT`, `DRV_OGL`, `OGL_AMIGA` | `TRISTRIP` | Same callbacks with MiniGL submission limits |
-| IRIS GL | `FLAT`, `DRV_IGL` | `TRISTRIP` | Color/UV triangle callbacks |
+| IRIS GL | `FLAT`, `DRV_IGL` | `TRISTRIP` | Color/UV strip callbacks |
 | Sun XGL | `FLAT`, `DRV_XGL` | `TRISTRIP` | RGB/UV strip callbacks |
-| Matrox | `SEG86`, `DRV_MTX` | `QUAD` | Color triangle callbacks |
+| Matrox | `SEG86`, `DRV_MTX` | `QUAD` | `DRV_QUAD_BATCH` |
 | TIGA | `SEG86`, `DRV_TGA` | `QUAD` | `DRV_QUAD_BATCH` |
 | GDI | `SEG86`, `DRV_GDI` | `QUAD` | `DRV_QUAD_BATCH` |
 | QuickDraw | `SEG68`, `DRV_QD` | `QUAD` | `DRV_QUAD_BATCH` |
@@ -37,9 +37,9 @@ primitive and capabilities. Keep those responsibilities separate.
 | `src/globe.c` | Scene ownership, recoverable mesh construction, and the plural traversals `globe_draw_tris()`, `globe_draw_tristrips()`, `globe_draw_quads()`, `globe_draw_quadbatches()`, and OpenGL pole-cap traversal. |
 | `src/drv_*.c` | Singular native callbacks such as `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*`, with color/RGB/UV variants grouped by primitive. |
 | `src/drv.c` | Shared allocation and clock services, input, rotation, FPS/OSD, palette matching, geometry-packet helpers, and Earth-resource traversal. |
-| Driver-private helpers | Backend-prefixed windowing, events, timing, transforms and caches, and drawing state. `src/ogl_ami.c`/`.h` integrate the OpenGL driver with MiniGL and the Amiga. |
+| Driver-private helpers | Backend-prefixed windowing, events, timing, transforms and caches, and drawing state. `src/ogl_glut.c`/`.h` adapt the OpenGL driver to GLUT; `src/ogl_ami.c`/`.h` integrate it with MiniGL and the Amiga. |
 | `src/drv_cpu.c` / `src/tga_gsp.c` | Shared Matrox/TIGA DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
-| `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader. |
+| `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader, and both use the format and MZ/CRC-32 checks in `tga_rlm.h`. |
 | `src/cross*.py` | Linux-hosted build orchestration for the DOS, Win16, and QuickDraw drivers. |
 | `src/mtx_ow.c` | OpenWatcom runtime adapters for the Microsoft-built LibShell library; not used by the Microsoft target. |
 | `src/buildio.h` | C89 file validation and safe output publication for the Earth converter and TIGA packer; not linked into applications. |
@@ -54,7 +54,11 @@ Shared geometry helpers include `drv_validate_quadbatch()`,
 `drv_split_tristrip_batches()`. The common strip-range calculation preserves even
 winding for indexed, RGB, and UV packets. Shared input uses `drv_handle_key()`,
 `drv_rotate_drag()`, and `drv_rotate_elapsed()`; the DOS Matrox/TIGA mouse adapters
-use `drv_dos_mouse_init()` and `drv_dos_mouse_poll()`. Backend resize and
+use `drv_dos_mouse_init()` and `drv_dos_mouse_poll()`. Matrox and TIGA also call
+`drv_dos_break_init()`, which turns Ctrl-C and Ctrl-Break into a flag that the event
+loop reads with `drv_dos_break_pending()` and, from DOS 3.1, fails critical disk
+errors instead of prompting. `drv_match_palette_colors()` matches a whole palette for
+GDI and Amiga, searching each distinct realized color once. Backend resize and
 texture-loading helpers stay private; `drv_render()` and `drv_close()` are the common
 driver entry points.
 
@@ -64,7 +68,9 @@ texture intent is tracked separately from the active draw pass. `Drv_result`
 distinguishes allocation, data, input, unavailable-feature, and native failures.
 Optional caches are evicted outside rendering scopes through `drv_release_optional()`.
 `drv_status_required()` and `drv_animation_allowed()` implement the common
-failed-frame policy. Texture drivers use the typed, recoverable `texture_build()`;
+failed-frame policy. Texture drivers share the size search `drv_texture_fit()`, which
+evicts optional caches once and halves the width after each memory shortage, and use
+the typed, recoverable `texture_build()`;
 `texture_generate()` remains a fatal compatibility wrapper, and
 `texture_try_generate()` its nonterminating boolean counterpart. Selecting the
 unsupported PGC or PHIGS drivers reports a configuration error; their headers are
@@ -79,6 +85,12 @@ Apple, IRIS GL, XGL, and Amiga OpenGL use the `s_`, `a_`, `i_`, `x_`, and `ao_`
 prefixes. Matrox uses `.obj`, TIGA `t_*.obj`, GDI `g_*.obj`, QuickDraw `q_*.o`, and
 Amiga `am_*.o`; TIGA module objects stay separate from the x86 host objects. MPW uses
 its own Makefile grammar.
+
+DOS link rules write their object lists to response files in several `echo` lines,
+each within COMMAND.COM's 127-character command line once NMAKE adds `/c`. Keep new
+objects within that budget. `MTX_HOTFLAGS` and `TGA_HOTFLAGS` (`-Gs`) remove stack
+probes from the per-vertex and per-polygon objects only; those objects must not
+recurse.
 
 ## Geometry submission
 
@@ -105,52 +117,57 @@ than stored as a full two-dimensional array, and XGL expands palette indices onl
 its current RGB packet. XGL has separate `drv_draw_tristrip_flat_rgb()` and
 `drv_draw_tristrip_flat_uv()` callbacks.
 
-`DRV_QUAD_BATCH` is a capability of `QUAD`. TIGA, GDI, QuickDraw, and Amiga use at
-most 64 quads and 130 shared vertices per packet, with four indices and one palette
-byte per quad. Traversal follows latitude bands within bounded longitude tiles. In
-the host software paths, packet sequence and row-continuity metadata let the previous
-bottom row become the next top row without repeating its transforms or cached
-projections. Direct quad calls, new tiles, interrupted streams, and new frames
-disable this reuse, and no cache treats a submission buffer's address as a persistent
-vertex identity. The shared `drv_quadstream_*()` helpers check eligibility, commit
-successful packet state, and reset interrupted streams; each driver keeps its own
-transform dispatch and cache allocation.
+`DRV_QUAD_BATCH` is a capability of `QUAD`. Matrox, TIGA, GDI, QuickDraw, and Amiga
+use at most 64 quads and 130 shared vertices per packet, with four indices and one
+palette byte per quad. Traversal follows latitude bands within bounded longitude
+tiles. In the host software paths, packet sequence and row-continuity metadata let the
+previous bottom row become the next top row without repeating its transforms or cached
+projections. Direct quad calls, new tiles, interrupted streams, and new frames disable
+this reuse, and no cache treats a submission buffer's address as a persistent vertex
+identity. The shared `drv_quadstream_*()` helpers check eligibility, commit successful
+packet state, and reset interrupted streams; each driver keeps its own transform
+dispatch and cache allocation.
 
 At `EARTH_32`, row reuse cuts host transforms from 1,056 to 561 per frame, and an
 optional packet cache also avoids projecting the same corner for neighboring quads.
 Larger maps repeat tile-boundary vertices to keep storage bounded; there is no cache
 of the whole transformed globe. GDI groups visible polygons by color for
-`PolyPolygon`, while QuickDraw, Amiga, and TIGA fill them individually. The TI
-transform module currently processes every submitted vertex without reusing the
-previous row, so transfer costs can make it slower than host transforms. Individual
-quad submission remains available, including for Matrox.
+`PolyPolygon`, while QuickDraw, Amiga, TIGA, and Matrox fill them individually.
+Native LibShell mode sends each quad's world vertices. The TI transform module
+receives only each band's new row after the first, but its transfer costs can still
+make it slower than host transforms. Individual quad submission remains available.
 
 ## Shared rendering pipelines
 
 Matrox, TIGA, GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer
 IEEE-float decoding, fixed-point transforms, projection, clipping, and back-face
-rejection; `src/soft3fp.c` provides the floating-point equivalents. Matrox uses an
-orthographic projector with one-polygon stack packets; the other four use perspective
-projection with bounded packet caches. Indexed projection validates indices against
-the initialized packet. Whole polygons inside the depth and viewport bounds skip
-clipping, while polygons crossing them take the general path. Back-face rejection uses
-the complete rounded polygon, preserving silhouette and collapsed-pole behavior, and
-clearly rejected polygons skip later processing.
+rejection; `src/soft3fp.c` provides the floating-point equivalents. Matrox uses
+orthographic kernels that compute only x and y over the same row-reusing packets; the
+other four use perspective projection with bounded packet caches. Indexed projection
+validates indices against the initialized packet. Whole polygons inside the depth and
+viewport bounds skip clipping, while polygons crossing them take the general path.
+Back-face rejection uses the complete rounded polygon, preserving silhouette and
+collapsed-pole behavior, and clearly rejected polygons skip later processing.
 
-The GDI, QuickDraw, and Amiga projection caches are optional and bounded to one
-packet; without them, the uncached path is used. TIGA uses bounded static packet
-storage. Frame, pose, viewport, and interrupted-stream changes invalidate reuse.
-QuickDraw's `qd_fpu.c`/`qd_math.h` boundary and Amiga's runtime CPU/FPU dispatch keep
-hardware floating-point code apart from baseline 68000 execution. Resource-backed
-indices load directly into their final storage without an extra full-map allocation.
-TIGA's host path selects the shared integer or floating-point helpers; its TI module
-uses the same fixed-point rounding and validates each command's version and bounds.
+The GDI and Amiga projection caches are optional and bounded to one packet; without
+them, the uncached path is used. After `drv_release_optional()`, GDI and QuickDraw
+reacquire their optional resources at most once per scene revision, outside
+rendering. QuickDraw, TIGA, and Matrox use bounded static packet storage. Frame, pose,
+viewport, and interrupted-stream changes invalidate reuse. QuickDraw's
+`qd_fpu.c`/`qd_math.h` boundary and Amiga's runtime CPU/FPU dispatch keep hardware
+floating-point code apart from baseline 68000 execution. Resource-backed indices load
+directly into their final storage without an extra full-map allocation. TIGA's host
+path selects the shared integer or floating-point helpers; its TI module uses the same
+fixed-point rounding and validates each command's version and bounds.
 
 OpenGL and IRIS GL share `src/texsoft.c`/`.h` for software texturing: homogeneous
 clipping, depth testing and culling, perspective-correct UVs, repeat sampling, and
-filtered mipmaps. They link it as `texsoft.o` and `i_soft.o`; the OpenGL platform
-variants use their own object prefixes. `src/texture.h` sets `TEXTURE_MAX_SIZE=512`,
-`TEXTURE_PALETTE_SIZE=256`, and `TEXTURE_CACHE_RASTER=0` by default.
+filtered mipmaps. Triangles inside every clip plane skip the clipper, each triangle
+and pixel takes one reciprocal instead of separate divides, power-of-two wrapping uses
+masks, and a reused raster clears only the previous frame's drawn rectangle. They link
+it as `texsoft.o` and `i_soft.o`; the OpenGL platform variants use their own object
+prefixes. `src/texture.h` sets `TEXTURE_MAX_SIZE=512`, `TEXTURE_PALETTE_SIZE=256`, and
+`TEXTURE_CACHE_RASTER=0` by default.
 
 - Disabling software texturing releases the frame and depth buffers but keeps the
   texture images.

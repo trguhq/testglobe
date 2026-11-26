@@ -14,6 +14,13 @@ checksums; [SHA256SUMS](SHA256SUMS) covers the ZIPs and standalone executables.
 | Amiga chipset / RTG palette build | [Download](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-palette-fix.zip) | Application and Workbench icon; predates fullscreen support |
 | Earlier Amiga build | [Download](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-50a89c3.zip) | Archived build from `50a89c3` |
 
+The archives have not been rebuilt since the latest driver revisions, which changed
+DOS break handling, the Matrox and TIGA protocols, GDI's Windows version marking, and
+QuickDraw memory and events. Build the current code with the
+[cross-build targets](../docs/build.md#linux-hosted-cross-builds). The GDI executable
+here is still marked for Windows 3.1, so the current `tests/cross_binary.py` check,
+which expects the Windows 3.0 marking, rejects it.
+
 All Earth data is embedded in the applications. Decode the Macintosh MacBinary
 file with a resource-fork-aware utility, or use the included disk image.
 
