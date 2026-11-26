@@ -59,8 +59,7 @@
 #define TEXTURE
 #define TEXTURE_DEFAULT_SIZE 512
 #define TEXTURE_RGB
+/* Strips only: the globe never needs the individual-triangle callbacks. */
 #define TRISTRIP
-#define DRV_TRI_COLOR
-#define DRV_TRI_UV
 
 #endif /* drv_igl_h */

@@ -30,55 +30,33 @@
 
 #ifdef DRV_OGL
 
+/* Platform adapters: MiniGL with native Amiga windows, or GLUT. */
 #ifdef OGL_AMIGA
 #include "ogl_ami.h"
-#elif defined(__APPLE__)
-#include <GLUT/glut.h>
-#else
-#include <GL/glut.h>
-#endif
-
-#ifndef OGL_AMIGA
-/* OpenGL font pointer */
-static void *ogl_font;
-static int ogl_font_ascent = 12, ogl_font_descent = 4;
-static int ogl_font_step = 18;
-
-static void ogl_select_font(int width, int height)
+#define OGL_LEFT_BUTTON OGL_AMI_LEFT_BUTTON
+#define OGL_RIGHT_BUTTON OGL_AMI_RIGHT_BUTTON
+#define OGL_DOWN OGL_AMI_DOWN
+#define OGL_UP OGL_AMI_UP
+#define ogl_post_redisplay ogl_ami_post_redisplay
+/* A MiniGL packet holds OGL_AMI_VERTEX_LIMIT vertices. Textured strips
+ * spend two on their shared edge; flat runs may also add one degenerate
+ * vertex. Strip packets carry an even number of facets, which keeps the
+ * following packet's winding. Triangle batches keep the flat-run margin. */
+#define OGL_AMI_UV_FACETS ((OGL_AMI_VERTEX_LIMIT - 2U) & ~1U)
+#define OGL_AMI_FLAT_FACETS ((OGL_AMI_VERTEX_LIMIT - 3U) & ~1U)
+#define OGL_AMI_TRIANGLE_VERTICES ((OGL_AMI_VERTEX_LIMIT - 3U) / 3U * 3U)
+typedef struct Ogl_format
 {
-    const unsigned char *text;
-    int tier, extent;
-    tier = width < 480 || height < 320 ? 0 :
-           (width >= 1024 && height >= 600 ? 2 : 1);
-    /* Classic GLUT supplies widths but no bitmap-height query. These stock
-     * font bounds include descenders; keep two pixels between lines. Prefer
-     * a smaller font before wrapping the fixed help text, only on resize. */
-    for (;;)
-    {
-        if (tier == 0)
-        {
-            ogl_font = GLUT_BITMAP_HELVETICA_10;
-            ogl_font_ascent = 11; ogl_font_descent = 3;
-        }
-        else if (tier == 2)
-        {
-            ogl_font = GLUT_BITMAP_HELVETICA_18;
-            ogl_font_ascent = 18; ogl_font_descent = 5;
-        }
-        else
-        {
-            ogl_font = GLUT_BITMAP_HELVETICA_12;
-            ogl_font_ascent = 12; ogl_font_descent = 4;
-        }
-        if (tier == 0) break;
-        extent = 0;
-        for (text = (const unsigned char *)drv_help; *text != 0; ++text)
-            extent += glutBitmapWidth(ogl_font, *text);
-        if (extent <= width - 20) break;
-        --tier;
-    }
-    ogl_font_step = ogl_font_ascent + ogl_font_descent + 2;
-}
+    int rgba, red, green, blue, alpha, buffer, depth, double_buffer, palette;
+} Ogl_format;
+#else
+#include "ogl_glut.h"
+#define OGL_LEFT_BUTTON OGL_GLUT_LEFT_BUTTON
+#define OGL_RIGHT_BUTTON OGL_GLUT_RIGHT_BUTTON
+#define OGL_DOWN OGL_GLUT_DOWN
+#define OGL_UP OGL_GLUT_UP
+#define ogl_post_redisplay ogl_glut_post_redisplay
+typedef Ogl_glut_format Ogl_format;
 #endif
 
 /* previous mouse pointer location */
@@ -103,19 +81,16 @@ static int ogl_indexed;
 static int ogl_double_buffer;
 static int ogl_has_depth;
 static unsigned int ogl_palette_size;
-#ifndef OGL_AMIGA
-static unsigned int ogl_foreground, ogl_background;
-#endif
 #ifdef OGL_AMIGA
 /* MiniGL's immediate buffer is bounded, including while recording lists. */
 static unsigned int ogl_triangle_vertices;
+#else
+static unsigned int ogl_foreground, ogl_background;
+/* Flat shading takes each triangle's color from its last vertex. The
+ * current color persists through a batch, also when a list replays it, so
+ * only a changed facet color is sent. -1 makes a batch send its first. */
+static int ogl_batch_color = -1;
 #endif
-
-typedef struct Ogl_format
-{
-    int rgba, red, green, blue, alpha, buffer, depth, double_buffer, palette;
-    int alpha_known;
-} Ogl_format;
 
 static void ogl_texture_failure(const char *message);
 static void ogl_render_state(void);
@@ -157,18 +132,17 @@ static void ogl_cleanup(void)
 {
 #ifdef OGL_AMIGA
     if (ogl_ami_ready())
+#else
+    if (ogl_window > 0 && ogl_glut_ready())
+#endif
     {
         if (dlist != 0) glDeleteLists(dlist, 1);
         if (texture_id != 0) glDeleteTextures(1, &texture_id);
     }
+#ifdef OGL_AMIGA
     ogl_ami_cleanup();
 #else
-    if (ogl_window > 0 && glutGetWindow() != 0)
-    {
-        if (dlist != 0) glDeleteLists((GLuint)dlist, 1);
-        if (texture_id != 0) glDeleteTextures(1, &texture_id);
-        glutDestroyWindow(ogl_window);
-    }
+    ogl_glut_cleanup(ogl_window);
 #endif
     ogl_window = 0; dlist = 0; texture_id = 0;
     ogl_dlist_used = FALSE;
@@ -176,195 +150,6 @@ static void ogl_cleanup(void)
     drv_texture_loaded = drv_texture_enabled = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     texsoft_free();
-}
-
-#ifndef OGL_AMIGA
-/* Apple GLUT can service pending redraws during window management. Every
- * window needs a display callback, even a short-lived format probe. Keep
- * drawing disabled until the application window and globe are ready. */
-static void ogl_pending_display(void)
-{
-}
-
-/* These queries describe the window actually created, including legacy GLUT
- * implementations which cannot check a format before creating a window. */
-static int ogl_window_format(Ogl_format *format)
-{
-    memset(format, 0, sizeof(*format));
-    format->rgba = glutGet(GLUT_WINDOW_RGBA) > 0;
-    format->buffer = glutGet(GLUT_WINDOW_BUFFER_SIZE);
-    format->depth = glutGet(GLUT_WINDOW_DEPTH_SIZE);
-    format->double_buffer = glutGet(GLUT_WINDOW_DOUBLEBUFFER) > 0;
-    if (format->depth < 0) format->depth = 0;
-    if (format->rgba)
-    {
-        format->red = glutGet(GLUT_WINDOW_RED_SIZE);
-        format->green = glutGet(GLUT_WINDOW_GREEN_SIZE);
-        format->blue = glutGet(GLUT_WINDOW_BLUE_SIZE);
-        format->alpha = glutGet(GLUT_WINDOW_ALPHA_SIZE);
-        format->alpha_known = format->alpha >= 0;
-        if (format->alpha < 0) format->alpha = 0;
-        if (format->red <= 0 || format->green <= 0 || format->blue <= 0)
-            return FALSE;
-        if (format->buffer <= 0)
-            format->buffer = format->red + format->green + format->blue + format->alpha;
-    }
-    else
-    {
-        format->palette = glutGet(GLUT_WINDOW_COLORMAP_SIZE);
-        if (format->buffer < 8 || format->palette < 256) return FALSE;
-    }
-    return TRUE;
-}
-
-#ifdef GLUT_DISPLAY_MODE_POSSIBLE
-static int ogl_better_format(const Ogl_format *candidate, const Ogl_format *best)
-{
-    int total, previous, rgb, old_rgb;
-    if (candidate->rgba != best->rgba) return candidate->rgba > best->rgba;
-    if (!candidate->rgba)
-    {
-        if (candidate->buffer != best->buffer) return candidate->buffer > best->buffer;
-    }
-    else
-    {
-        rgb = candidate->red + candidate->green + candidate->blue;
-        old_rgb = best->red + best->green + best->blue;
-        total = rgb + candidate->alpha; previous = old_rgb + best->alpha;
-        if (total != previous) return total > previous;
-        if (candidate->alpha != best->alpha) return candidate->alpha > best->alpha;
-        if (rgb != old_rgb) return rgb > old_rgb;
-        if (candidate->alpha_known != best->alpha_known)
-            return candidate->alpha_known > best->alpha_known;
-        if (candidate->buffer != best->buffer) return candidate->buffer > best->buffer;
-    }
-    if (candidate->double_buffer != best->double_buffer)
-        return candidate->double_buffer > best->double_buffer;
-    return candidate->depth > best->depth;
-}
-#endif
-
-/* GLUT exposes requests and selected-window queries, rather than a portable
- * enumeration of every native pixel format. Probe supported request classes
- * and rank their actual results, giving color precision priority over buffers. */
-static int ogl_select_window(Ogl_format *selected, int x, int y, int width, int height)
-{
-#ifdef GLUT_DISPLAY_MODE_POSSIBLE
-    static const char *requests[] = {
-        "rgba red>=8 green>=8 blue>=8 alpha>=8",
-        /* Classic GLUT's bare "rgba" also requires an alpha channel. */
-        "rgb red>=8 green>=8 blue>=8",
-        "rgb red>=5 green>=6 blue>=5",
-        "rgb red>=5 green>=5 blue>=5",
-        "rgb", "index buffer>=8"
-    };
-    Ogl_format current;
-    char request[160], best_request[160];
-    unsigned int mode, best_mode;
-    int quality, double_buffer, depth, window, best;
-    best = 0;
-    best_mode = 0;
-    best_request[0] = 0;
-    glutInitWindowSize(1, 1);
-    glutInitWindowPosition(-32768, -32768);
-    for (quality = 0; quality < 6; ++quality)
-        for (double_buffer = 1; double_buffer >= 0; --double_buffer)
-            for (depth = 1; depth >= 0; --depth)
-            {
-                mode = quality == 5 ? GLUT_INDEX : GLUT_RGBA;
-                if (quality == 0) mode |= GLUT_ALPHA;
-                mode |= double_buffer ? GLUT_DOUBLE : GLUT_SINGLE;
-                if (depth) mode |= GLUT_DEPTH;
-                glutInitDisplayMode(mode);
-#if defined(GLUT_API_VERSION) && GLUT_API_VERSION >= 4
-                sprintf(request, "%s %s%s", requests[quality],
-                         double_buffer ? "double" : "single",
-                         depth ? " depth>=16" : "");
-                glutInitDisplayString(request);
-#else
-                (void)requests; (void)request;
-#endif
-                if (!glutGet(GLUT_DISPLAY_MODE_POSSIBLE)) continue;
-                window = glutCreateWindow("testglobe pixel-format probe");
-                if (window <= 0) continue;
-                glutDisplayFunc(ogl_pending_display);
-                glutHideWindow();
-                if (!ogl_window_format(&current))
-                {
-                    glutDestroyWindow(window);
-                    continue;
-                }
-                if (best == 0 || ogl_better_format(&current, selected))
-                {
-                    best = 1;
-                    best_mode = mode;
-#if defined(GLUT_API_VERSION) && GLUT_API_VERSION >= 4
-                    strcpy(best_request, request);
-#endif
-                    *selected = current;
-                }
-                glutDestroyWindow(window);
-            }
-    if (best == 0) return 0;
-    /* Do not promote a hidden one-pixel probe to the application window.
-     * Some GLUT implementations discard its initial visibility/resize redraw.
-     * Reapply the winning request to a normal, freshly created window. */
-    glutInitDisplayMode(best_mode);
-#if defined(GLUT_API_VERSION) && GLUT_API_VERSION >= 4
-    glutInitDisplayString(best_request);
-#else
-    (void)best_request;
-#endif
-    glutInitWindowSize(width, height);
-    glutInitWindowPosition(x, y);
-    window = glutCreateWindow(TESTGLOBE_NAME);
-    if (window > 0) glutDisplayFunc(ogl_pending_display);
-    return window;
-#else
-    int window;
-    /* Older GLUT may terminate on an unsupported request. Use the original
-     * RGB/double-buffer request once, without probing or requiring newer
-     * display-string APIs, and validate the actual returned format. */
-    glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
-    glutInitWindowSize(width, height);
-    glutInitWindowPosition(x, y);
-    window = glutCreateWindow(TESTGLOBE_NAME);
-    if (window <= 0) return 0;
-    glutDisplayFunc(ogl_pending_display);
-    if (!ogl_window_format(selected))
-    {
-        glutDestroyWindow(window);
-        return 0;
-    }
-    return window;
-#endif
-}
-
-static void ogl_install_palette(void)
-{
-    unsigned int index, brightness, minimum, maximum;
-    minimum = 0xffffffffU; maximum = 0;
-    for (index = 0; index < 256; ++index)
-    {
-        glutSetColor((int)index, (GLfloat)earth_cmap[index][0] / 255.0f,
-                      (GLfloat)earth_cmap[index][1] / 255.0f,
-                      (GLfloat)earth_cmap[index][2] / 255.0f);
-        brightness = (unsigned int)earth_cmap[index][0] * 77U +
-                     (unsigned int)earth_cmap[index][1] * 150U +
-                     (unsigned int)earth_cmap[index][2] * 29U;
-        if (brightness < minimum) { minimum = brightness; ogl_background = index; }
-        if (brightness > maximum) { maximum = brightness; ogl_foreground = index; }
-    }
-}
-#endif /* !OGL_AMIGA: GLUT format selection and indexed palettes */
-
-static void ogl_post_redisplay(void)
-{
-#ifdef OGL_AMIGA
-    ogl_ami_post_redisplay();
-#else
-    glutPostRedisplay();
-#endif
 }
 
 /* cleanly close window */
@@ -421,24 +206,14 @@ static void ogl_mouse_move(int x, int y)
 static void ogl_mouse(int button, int state, int x, int y)
 {
     int pressed;
-#ifdef OGL_AMIGA
-    if (state != OGL_AMI_DOWN && state != OGL_AMI_UP) return;
-    pressed = state == OGL_AMI_DOWN;
-    if (button == OGL_AMI_RIGHT_BUTTON)
-#else
-    if (state != GLUT_DOWN && state != GLUT_UP) return;
-    pressed = state == GLUT_DOWN;
-    if (button == GLUT_RIGHT_BUTTON)
-#endif
+    if (state != OGL_DOWN && state != OGL_UP) return;
+    pressed = state == OGL_DOWN;
+    if (button == OGL_RIGHT_BUTTON)
     {
         drv_rmouse_pressed = pressed;
         ogl_post_redisplay();
     }
-#ifdef OGL_AMIGA
-    else if (button == OGL_AMI_LEFT_BUTTON && drv_lmouse_pressed != pressed)
-#else
-    else if (button == GLUT_LEFT_BUTTON && drv_lmouse_pressed != pressed)
-#endif
+    else if (button == OGL_LEFT_BUTTON && drv_lmouse_pressed != pressed)
     {
         drv_lmouse_pressed = pressed;
         ogl_old_x = x;
@@ -517,6 +292,19 @@ static int ogl_checkerror(void)
     return ogl_collect_errors(FALSE) != DRV_OK;
 }
 
+#ifndef OGL_AMIGA
+/* Build glyph lists between frames, so their errors are never mistaken
+ * for the globe's. Any error leaves that font drawn directly. */
+static void ogl_prepare_font(void)
+{
+    int built;
+    if (!ogl_glut_font_pending()) return;
+    ogl_checkerror();
+    built = ogl_glut_build_font();
+    if (ogl_checkerror() || !built) ogl_glut_discard_font();
+}
+#endif
+
 /* initialize graphics subsystem */
 void drv_init(int *argc, char **argv)
 {
@@ -524,46 +312,32 @@ void drv_init(int *argc, char **argv)
     if (atexit(ogl_cleanup) != 0) error("Cannot register OpenGL cleanup");
     ogl_ami_init(argc, argv);
 #else
-    glutInit(argc, argv);
+    ogl_glut_init(argc, argv);
     if (atexit(ogl_cleanup) != 0) error("Cannot register OpenGL cleanup");
-    ogl_select_font((int)drv_win_width, (int)drv_win_height);
+    ogl_glut_select_font((int)drv_win_width, (int)drv_win_height);
 #endif
 }
 
-#ifndef OGL_AMIGA
-/* A color-index OpenGL framebuffer cannot perform RGB texture mapping.
- * Keep its texture toggle functional using the shared perspective-correct
- * rasterizer, then transfer tightly packed palette bytes through OpenGL. */
-static int ogl_present_indexed_texture(void)
+static void ogl_clear(void)
 {
-    const unsigned char *pixels;
-    GLint matrix_mode;
-    pixels = texsoft_index_pixels();
-    if (pixels == NULL) return FALSE;
-    glGetIntegerv(GL_MATRIX_MODE, &matrix_mode);
-    glPushAttrib(GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT | GL_PIXEL_MODE_BIT | GL_CURRENT_BIT);
-    glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
-    glDisable(GL_DEPTH_TEST); glDisable(GL_TEXTURE_2D);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
-    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
-    glPixelTransferi(GL_INDEX_SHIFT, 0);
-    glPixelTransferi(GL_INDEX_OFFSET, 0);
-    glPixelTransferi(GL_MAP_COLOR, GL_FALSE);
-    glPixelZoom(1.0f, 1.0f);
-    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
-    gluOrtho2D(0, drv_win_width, 0, drv_win_height);
-    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
-    glRasterPos2i(0, 0);
-    glDrawPixels((GLsizei)drv_win_width, (GLsizei)drv_win_height,
-                  GL_COLOR_INDEX, GL_UNSIGNED_BYTE, pixels);
-    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix();
-    glMatrixMode((GLenum)matrix_mode);
-    glPopClientAttrib(); glPopAttrib();
-    return !ogl_checkerror();
+    glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
 }
+
+/* One batch per call; MiniGL flat triangles open their own uniform-color
+ * batches and software-textured triangles are rasterized on the CPU. */
+static void ogl_draw_triangles(void (*traverse)(void))
+{
+    int batch;
+#ifdef OGL_AMIGA
+    batch = drv_texture_active;
+#else
+    batch = !(ogl_indexed && drv_texture_active);
+    ogl_batch_color = -1;
 #endif
+    if (batch) glBegin(GL_TRIANGLES);
+    traverse();
+    if (batch) glEnd();
+}
 
 /* Keep the pole triangles in one batch; each latitude band opens its own
  * native strip. Indexed textures expand the same geometry in software. */
@@ -573,44 +347,28 @@ static void ogl_draw_globe(void)
     ogl_triangle_vertices = 0;
 #endif
 #ifdef TRI
-#ifdef OGL_AMIGA
-    if (drv_texture_active) glBegin(GL_TRIANGLES);
-    globe_draw_tris();
-    if (drv_texture_active) glEnd();
-#else
-    if (ogl_indexed && drv_texture_active)
-        globe_draw_tris();
-    else
-    {
-        glBegin(GL_TRIANGLES);
-        globe_draw_tris();
-        glEnd();
-    }
-#endif
+    ogl_draw_triangles(globe_draw_tris);
 #endif
 #ifdef TRISTRIP
 #ifdef DRV_TRI_CAPS
-#ifdef OGL_AMIGA
-    if (drv_texture_active) glBegin(GL_TRIANGLES);
-    globe_draw_pole_tris();
-    if (drv_texture_active) glEnd();
-#else
-    if (ogl_indexed && drv_texture_active)
-        globe_draw_pole_tris();
-    else
-    {
-        glBegin(GL_TRIANGLES);
-        globe_draw_pole_tris();
-        glEnd();
-    }
-#endif
+    ogl_draw_triangles(globe_draw_pole_tris);
 #endif
     globe_draw_tristrips();
 #endif
 }
 
+static void ogl_list_failed(void)
+{
+    if (dlist != 0) glDeleteLists(dlist, 1);
+    dlist = 0;
+    ogl_dlist_used = FALSE;
+    ogl_dlist_blocked = TRUE;
+    if (!drv_frame_failed)
+        drv_notice("Display list unavailable; drawing directly");
+}
+
 /* OpenGL 1.1 has no separate display-list support query. Compile and
- * validate the native object, then accept it only after error-free use. */
+ * validate the native object once; each frame's error check covers its use. */
 static int ogl_draw_dlist(void)
 {
     GLboolean valid;
@@ -626,15 +384,15 @@ static int ogl_draw_dlist(void)
     if (dlist != 0 && (ogl_dlist_revision != globe_revision ||
                       ogl_dlist_textured != drv_texture_active))
         ogl_invalidate_dlist();
-    ogl_checkerror();
-    failed = FALSE;
     if (dlist == 0)
     {
-        /* Compile before executing so a rejected or incomplete list does
-         * not draw part of the globe before the immediate fallback. */
+        /* Drain older errors so only compilation is checked. Compile before
+         * executing so a rejected or incomplete list does not draw part of
+         * the globe before the immediate fallback. */
+        ogl_checkerror();
         dlist = glGenLists(1);
-        failed = ogl_checkerror();
-        if (dlist != 0 && !failed)
+        failed = ogl_checkerror() || dlist == 0;
+        if (!failed)
         {
             glNewList(dlist, GL_COMPILE);
             failed = ogl_checkerror();
@@ -643,38 +401,28 @@ static int ogl_draw_dlist(void)
                 ogl_draw_globe();
                 glEndList();
                 failed = ogl_checkerror() || drv_frame_failed;
-                if (!failed)
-                {
-                    ogl_dlist_revision = globe_revision;
-                    ogl_dlist_textured = drv_texture_active;
-                }
             }
         }
-        else failed = TRUE;
+        if (!failed)
+        {
+            valid = glIsList(dlist);
+            failed = ogl_checkerror() || !valid;
+        }
+        if (failed)
+        {
+            ogl_list_failed();
+            return FALSE;
+        }
+        ogl_dlist_revision = globe_revision;
+        ogl_dlist_textured = drv_texture_active;
     }
-    if (!failed)
-    {
-        valid = glIsList(dlist);
-        failed = ogl_checkerror();
-        if (!valid) failed = TRUE;
-    }
-    if (!failed)
-    {
-        glCallList(dlist);
-        failed = ogl_checkerror();
-    }
-    if (failed)
-    {
-        if (dlist != 0) glDeleteLists(dlist, 1);
-        dlist = 0;
-        ogl_dlist_blocked = TRUE;
-        if (!drv_frame_failed)
-            drv_notice("Display list unavailable; drawing directly");
-    }
-    return !failed;
+    glCallList(dlist);
+    return TRUE;
 }
 
-/* Texture object and enable/binding queries are available in OpenGL 1.1. */
+/* Texture object and enable/binding queries are available in OpenGL 1.1.
+ * Desktop OpenGL checks them once after enabling; MiniGL, which is local,
+ * reasserts and checks its binding every frame. */
 static int ogl_texture_native_ready(void)
 {
     GLboolean valid, enabled;
@@ -702,99 +450,109 @@ static int ogl_texture_native_ready(void)
 #endif
 }
 
-/* render current scene */
-void drv_render(void)
+/* Flat colors, or the native texture when it is ready. */
+static void ogl_draw_native(int textured)
 {
-#ifndef OGL_AMIGA
-    float model[4][4], projection[4][4];
-#endif
-    int requested, ready, drawn;
+    /* Keep the public flag as the user's request. Only the traversal sees
+     * texturing disabled, so T still toggles normally. */
+    drv_texture_active = textured;
+    if (!textured) glDisable(GL_TEXTURE_2D);
 #ifdef OGL_AMIGA
-    if (!ogl_ami_ready()) return;
+    else glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 #endif
-    ogl_dlist_used = FALSE;
-    ogl_texture_used = FALSE;
-    requested = drv_texture_enabled;
-    drawn = FALSE;
-    drv_fps_start();
-    if (!globe_ready()) drv_frame_failed = TRUE;
-    glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    glTranslatef(0,0, -GLOBE_VIEW_DISTANCE);
-    glRotatef(drv_rot_x, 1, 0, 0);
-    glRotatef(drv_rot_y, 0, 1, 0);
-    glRotatef(-90, 1, 0, 0);
-    glRotatef(-90, 0, 0, 1);
-
-    ready = globe_ready() && requested && drv_texture_loaded && !ogl_texture_failed;
-    if (globe_ready() && requested && !ogl_texture_failed && !drv_texture_loaded)
-        ogl_texture_failure("OpenGL texture data is not loaded");
-    if (ready && !ogl_indexed && !ogl_texture_native_ready())
-    {
-        ogl_texture_failure("OpenGL texture is not active");
-        ready = FALSE;
-    }
-    drv_texture_active = ready;
-#ifndef OGL_AMIGA
-    if (ogl_indexed && ready)
-    {
-        /* Column-major OpenGL matrix memory is the equivalent row-vector
-         * array consumed by texsoft; no further transpose is needed. */
-        glGetFloatv(GL_MODELVIEW_MATRIX, &model[0][0]);
-        glGetFloatv(GL_PROJECTION_MATRIX, &projection[0][0]);
-        if (ogl_checkerror() ||
-            !texsoft_begin(drv_win_width, drv_win_height, model, projection,
-                             TEXSOFT_INDEX_BYTES, &earth_cmap[0][0]))
-            ogl_texture_failure("Cannot prepare indexed OpenGL texture raster");
-        else
-        {
-            ogl_draw_globe();
-            if (drv_frame_failed) ready = FALSE;
-            else if (ogl_present_indexed_texture())
-                drawn = ogl_texture_used = TRUE;
-            else
-                ogl_texture_failure("Cannot present indexed OpenGL texture raster");
-        }
-        if (!drawn) ready = FALSE;
-    }
-#endif
-    if (!drawn && globe_ready())
-    {
-        /* Keep the public flag as the user's request. Only the fallback
-         * traversal sees texturing disabled, so T still toggles normally. */
-        drv_texture_active = ready;
-        if (!ready) glDisable(GL_TEXTURE_2D);
-#ifdef OGL_AMIGA
-        else glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-#endif
-        if (requested && ogl_texture_failed)
-            glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
-        /* Whole-globe lists cannot select view-dependent longitude runs.
-         * Preserve the requested D setting and cached full mesh while C
-         * temporarily forces direct, pre-culled submissions. */
-        if (ogl_dlist_enabled && !drv_cull_enabled)
-            ogl_dlist_used = ogl_draw_dlist();
-        if (!ogl_dlist_used) ogl_draw_globe();
-        if (ready)
-        {
-            if (ogl_checkerror())
-            {
-                ogl_texture_failure("Cannot draw OpenGL texture");
-                drv_texture_active = FALSE;
-                glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
-                ogl_draw_globe();
-            }
-            else ogl_texture_used = TRUE;
-        }
-    }
+    /* Whole-globe lists cannot select view-dependent longitude runs.
+     * Preserve the requested D setting and cached full mesh while C
+     * temporarily forces direct, pre-culled submissions. */
+    if (ogl_dlist_enabled && !drv_cull_enabled)
+        ogl_dlist_used = ogl_draw_dlist();
+    if (!ogl_dlist_used && !drv_frame_failed) ogl_draw_globe();
     drv_texture_active = FALSE;
-    if (drv_frame_failed)
-    {
-        ogl_texture_used = ogl_dlist_used = FALSE;
-        glClear(GL_COLOR_BUFFER_BIT | (ogl_has_depth ? GL_DEPTH_BUFFER_BIT : 0));
-    }
+    ogl_texture_used = textured;
+}
 
+#ifndef OGL_AMIGA
+/* A color-index OpenGL framebuffer cannot perform RGB texture mapping.
+ * Keep its texture toggle functional using the shared perspective-correct
+ * rasterizer, then transfer tightly packed palette bytes through OpenGL.
+ * The raster covers the whole viewport, so it needs no color clear, and
+ * nothing in this frame tests or writes depth. */
+static int ogl_draw_indexed_texture(void)
+{
+    float model[4][4], projection[4][4];
+    const unsigned char *pixels;
+    int cull;
+    /* Column-major OpenGL matrix memory is the equivalent row-vector
+     * array consumed by texsoft; no further transpose is needed. */
+    glGetFloatv(GL_MODELVIEW_MATRIX, &model[0][0]);
+    glGetFloatv(GL_PROJECTION_MATRIX, &projection[0][0]);
+    if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
+                         TEXSOFT_INDEX_BYTES, &earth_cmap[0][0]))
+    {
+        ogl_texture_failure("Cannot prepare indexed OpenGL texture raster");
+        return FALSE;
+    }
+    /* texsoft discards back faces after transforming them. Skipping them in
+     * the CPU traversal first leaves the same pixels for less work. Restore
+     * the user's C setting before the OSD reports it. */
+    cull = drv_cull_enabled;
+    drv_cull_enabled = TRUE;
+    drv_texture_active = TRUE;
+    ogl_draw_globe();
+    drv_texture_active = FALSE;
+    drv_cull_enabled = cull;
+    if (drv_frame_failed) return FALSE;
+    pixels = texsoft_index_pixels();
+    if (pixels == NULL)
+    {
+        ogl_texture_failure("Cannot present indexed OpenGL texture raster");
+        return FALSE;
+    }
+    glPushAttrib(GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT | GL_PIXEL_MODE_BIT | GL_CURRENT_BIT);
+    glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
+    glDisable(GL_DEPTH_TEST); glDisable(GL_TEXTURE_2D);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelTransferi(GL_INDEX_SHIFT, 0);
+    glPixelTransferi(GL_INDEX_OFFSET, 0);
+    glPixelTransferi(GL_MAP_COLOR, GL_FALSE);
+    glPixelZoom(1.0f, 1.0f);
+    /* drv_render leaves the modelview matrix selected. */
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
+    gluOrtho2D(0, drv_win_width, 0, drv_win_height);
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glRasterPos2i(0, 0);
+    glDrawPixels((GLsizei)drv_win_width, (GLsizei)drv_win_height,
+                  GL_COLOR_INDEX, GL_UNSIGNED_BYTE, pixels);
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glPopClientAttrib(); glPopAttrib();
+    ogl_texture_used = TRUE;
+    return TRUE;
+}
+#endif
+
+/* Draw one complete attempt at the frame, including the desktop OSD. */
+static void ogl_draw_frame(int ready)
+{
+    ogl_dlist_used = ogl_texture_used = FALSE;
+#ifndef OGL_AMIGA
+    if (!(ogl_indexed && ready && ogl_draw_indexed_texture()))
+#endif
+    {
+        ogl_clear();
+        if (globe_ready() && !drv_frame_failed)
+        {
+            ogl_draw_native(ready && !ogl_indexed && !ogl_texture_failed);
+            if (drv_frame_failed)
+            {
+                /* Do not present part of the globe. */
+                ogl_dlist_used = ogl_texture_used = FALSE;
+                ogl_clear();
+            }
+        }
+    }
 #ifndef OGL_AMIGA
     if (drv_status_required())
     {
@@ -808,18 +566,69 @@ void drv_render(void)
         glMatrixMode(GL_MODELVIEW);
         glPopMatrix();
     }
-    
-    if (ogl_double_buffer) glutSwapBuffers();
-    else glFlush();
+#endif
+}
+
+/* render current scene */
+void drv_render(void)
+{
+    int requested, ready, pass;
+#ifdef OGL_AMIGA
+    if (!ogl_ami_ready()) return;
+#endif
+    requested = drv_texture_enabled;
+    drv_fps_start();
+    if (!globe_ready()) drv_frame_failed = TRUE;
+    ready = globe_ready() && requested && drv_texture_loaded && !ogl_texture_failed;
+    if (globe_ready() && requested && !ogl_texture_failed && !drv_texture_loaded)
+        ogl_texture_failure("OpenGL texture data is not loaded");
+#ifdef OGL_AMIGA
+    if (ready && !ogl_texture_native_ready())
+    {
+        ogl_texture_failure("OpenGL texture is not active");
+        ready = FALSE;
+    }
+#endif
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glTranslatef(0,0, -GLOBE_VIEW_DISTANCE);
+    glRotatef(drv_rot_x, 1, 0, 0);
+    glRotatef(drv_rot_y, 0, 1, 0);
+    glRotatef(-90, 1, 0, 0);
+    glRotatef(-90, 0, 0, 1);
+
+    /* Each synchronous query is a round trip on indirect GLX, so a normal
+     * frame makes one error check, just before presentation. An error
+     * redraws the frame without the list, then without the texture. Errors
+     * neither fallback can avoid are reported once and the frame is kept. */
+    for (pass = 0; pass < 3; ++pass)
+    {
+        ogl_draw_frame(ready);
+        if (!ogl_checkerror() || drv_frame_failed) break;
+        if (ogl_dlist_used) ogl_list_failed();
+        else if (ogl_texture_used)
+        {
+            ogl_texture_failure(ogl_indexed ?
+                "Cannot present indexed OpenGL texture raster" :
+                "Cannot draw OpenGL texture");
+            ready = FALSE;
+        }
+        else break;
+    }
+
+#ifndef OGL_AMIGA
+    ogl_glut_present(ogl_double_buffer);
 #else
     ogl_ami_present();
+    /* MiniGL queries are local calls. Drain presentation errors here, so a
+     * later frame's texture check cannot take them for its own. */
+    ogl_checkerror();
     /* The native font writes to the presented Workbench window, outside
      * MiniGL's framebuffer. Its colors and state do not modify GL state. */
     if (drv_status_required()) drv_draw_osd();
 #endif
-    ogl_checkerror();
     drv_fps_stop();
-    
+
     if (drv_animation_allowed())
     {
         drv_globe_rotate();
@@ -845,12 +654,12 @@ static void ogl_resize(int width, int height) {
     if (changed == 2) ogl_render_state();
 #else
     if (width < 1 || height < 1) return;
-    ogl_select_font(width, height);
+    ogl_glut_select_font(width, height);
 #endif
     drv_win_width = width;
     drv_win_height = height;
     drv_reset_timing();
-    
+
     glViewport(0, 0, width, height);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
@@ -858,6 +667,8 @@ static void ogl_resize(int width, int height) {
                      GLOBE_NEAR_DISTANCE, GLOBE_FAR_DISTANCE);
 #ifdef OGL_AMIGA
     if (changed == 2 && drv_texture_enabled) drv_texture_enable();
+#else
+    ogl_prepare_font();
 #endif
 }
 
@@ -941,16 +752,20 @@ static Drv_result ogl_texture_attempt(unsigned int size, const char **reason)
     return DRV_OK;
 }
 
+/* The size search passes only a width; keep the failure reason here. */
+static const char *ogl_texture_reason;
+
+static Drv_result ogl_texture_try(unsigned int size)
+{
+    return ogl_texture_attempt(size, &ogl_texture_reason);
+}
+
 /* Try each supported size, with at most one optional-resource eviction. */
 static int ogl_texture_load(void)
 {
     Drv_result result;
     unsigned int size;
     GLint maximum;
-    int released;
-    const char *reason;
-    char message[64];
-    released = FALSE;
     size = TEXTURE_DEFAULT_SIZE;
     if (!ogl_indexed)
     {
@@ -970,28 +785,18 @@ static int ogl_texture_load(void)
         while (size > (unsigned int)maximum && size > 32U)
             size /= 2U;
     }
-    for (; size >= 32U; size /= 2U)
+    ogl_texture_reason = NULL;
+    result = drv_texture_fit(size, ogl_texture_try);
+    if (result == DRV_OK)
     {
-        result = ogl_texture_attempt(size, &reason);
-        if (result == DRV_NO_MEMORY && !released)
-        {
-            drv_release_optional();
-            released = TRUE;
-            result = ogl_texture_attempt(size, &reason);
-        }
-        if (result == DRV_NO_MEMORY) continue;
-        if (result != DRV_OK)
-        {
-            ogl_texture_failure(reason != NULL ? reason : "Cannot load OpenGL texture");
-            return FALSE;
-        }
         drv_texture_loaded = TRUE;
-        if (size < TEXTURE_DEFAULT_SIZE)
-        {
-            sprintf(message, "Texture reduced to %u x %u", size, size / 2U);
-            drv_notice(message);
-        }
         return TRUE;
+    }
+    if (result != DRV_NO_MEMORY)
+    {
+        ogl_texture_failure(ogl_texture_reason != NULL ? ogl_texture_reason :
+                            "Cannot load OpenGL texture");
+        return FALSE;
     }
     ogl_texture_failure("Insufficient memory for texture; drawing flat colors");
     drv_notice("Texture unavailable; drawing flat colors");
@@ -1019,6 +824,12 @@ void drv_texture_enable(void)
         glEnable(GL_TEXTURE_2D);
         if (ogl_checkerror())
             ogl_texture_failure("Cannot enable OpenGL texture");
+#ifndef OGL_AMIGA
+        /* This driver makes every later binding and enable change, so the
+         * object, binding and enable are checked here, not every frame. */
+        else if (!ogl_texture_native_ready())
+            ogl_texture_failure("OpenGL texture is not active");
+#endif
     }
 }
 
@@ -1051,7 +862,7 @@ static void ogl_render_state(void)
 #ifndef OGL_AMIGA
     if (ogl_indexed)
     {
-        ogl_install_palette();
+        ogl_glut_install_palette(&ogl_background, &ogl_foreground);
         glClearIndex((GLfloat)ogl_background);
     }
     else
@@ -1100,7 +911,7 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
         return FALSE;
     selected.buffer = selected.red + selected.green + selected.blue + selected.alpha;
 #else
-    ogl_window = ogl_select_window(&selected, in_x, in_y, in_width, in_height);
+    ogl_window = ogl_glut_create_window(&selected, in_x, in_y, in_width, in_height);
     if (ogl_window == 0) error("No usable OpenGL RGB(A) or 8-bit palette window format");
 #endif
     ogl_indexed = !selected.rgba;
@@ -1115,20 +926,13 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     drv_colormap_colors = ogl_indexed ? ogl_palette_size : drv_colors;
     drv_bytes_per_pixel = ((unsigned int)selected.buffer + 7U) / 8U;
 #ifndef OGL_AMIGA
-    glutReshapeWindow(in_width, in_height);
-    glutPositionWindow(in_x, in_y);
-    glutSetWindowTitle(TESTGLOBE_NAME);
-    glutReshapeFunc(ogl_resize);
-    glutMouseFunc(ogl_mouse);
-    glutMotionFunc(ogl_mouse_move);
-    glutPassiveMotionFunc(ogl_mouse_move);
-    glutKeyboardFunc(ogl_keyboard);
+    ogl_glut_callbacks(ogl_resize, ogl_keyboard, ogl_mouse, ogl_mouse_move);
 #endif
 
     ogl_render_state();
     ogl_resize(in_width, in_height);
 #ifndef OGL_AMIGA
-    glutShowWindow();
+    ogl_glut_show();
 #endif
     ogl_post_redisplay();
 
@@ -1142,11 +946,7 @@ void drv_loop(void)
 #ifdef OGL_AMIGA
     ogl_ami_loop(drv_render, ogl_resize, ogl_keyboard, ogl_mouse, ogl_mouse_move);
 #else
-    /* main initializes the globe after drv_init_window returns. Window
-     * operations may redraw earlier, so only enable rendering here. */
-    glutDisplayFunc(drv_render);
-    glutPostRedisplay();
-    glutMainLoop();
+    ogl_glut_loop(drv_render);
 #endif
 }
 
@@ -1162,7 +962,7 @@ static void ogl_set_index_color(unsigned char color)
 #ifdef OGL_AMIGA
 static void ogl_triangle_room(void)
 {
-    if (ogl_triangle_vertices == 252U)
+    if (ogl_triangle_vertices == OGL_AMI_TRIANGLE_VERTICES)
     {
         glEnd();
         glBegin(GL_TRIANGLES);
@@ -1182,8 +982,14 @@ void drv_draw_tri_flat_color(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3,
 #ifdef OGL_AMIGA
     /* MiniGL flat color is uniform over one immediate batch. */
     glBegin(GL_TRIANGLES);
-#endif
     ogl_set_index_color(color);
+#else
+    if ((int)color != ogl_batch_color)
+    {
+        ogl_set_index_color(color);
+        ogl_batch_color = color;
+    }
+#endif
     glVertex3fv((GLfloat *)xyz1);
     glVertex3fv((GLfloat *)xyz2);
     glVertex3fv((GLfloat *)xyz3);
@@ -1196,6 +1002,8 @@ void drv_draw_tri_flat_rgb(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Color_RGB *
 {
 #ifdef OGL_AMIGA
     glBegin(GL_TRIANGLES);
+#else
+    ogl_batch_color = -1;
 #endif
     glColor3ub(color->r, color->g, color->b);
     glVertex3fv((GLfloat *)xyz1);
@@ -1230,8 +1038,8 @@ void drv_draw_tri_flat_uv(Vertex *xyz1, Vertex *xyz2, Vertex *xyz3, Coord *uv1, 
 /* MiniGL's flat renderer uses one uniform color per glBegin/glEnd batch.
  * Keep contiguous equal-color facets together. A duplicated first vertex
  * advances odd-start runs to their original strip winding without drawing
- * an extra triangle. The outer splitter keeps every packet below 256
- * vertices, including this optional degenerate vertex. */
+ * an extra triangle. The outer splitter keeps every packet within
+ * OGL_AMI_VERTEX_LIMIT vertices, including this optional degenerate vertex. */
 static void ogl_draw_strip_batch(unsigned int count,
                                  const Vertex TG_HUGE *vertices,
                                  const unsigned char TG_HUGE *facet_colors)
@@ -1254,23 +1062,31 @@ static void ogl_draw_strip_batch(unsigned int count,
 #endif
 
 /* In OpenGL flat shading, a strip's newly submitted vertex supplies that
- * triangle's color. The first two vertices do not complete a triangle. */
+ * triangle's color. The first two vertices do not complete a triangle.
+ * Each strip starts with its first facet color, then sends only changes. */
 void drv_draw_tristrip_flat_color(unsigned int count,
                                 const Vertex TG_HUGE *vertices,
                                 const unsigned char TG_HUGE *facet_colors)
 {
 #ifndef OGL_AMIGA
     unsigned int i;
+    unsigned char color;
 #endif
     if (count < 3U || vertices == NULL || facet_colors == NULL) return;
 #ifdef OGL_AMIGA
-    drv_split_tristrip_batches(count, vertices, facet_colors, 252U, ogl_draw_strip_batch);
+    drv_split_tristrip_batches(count, vertices, facet_colors,
+                               OGL_AMI_FLAT_FACETS, ogl_draw_strip_batch);
 #else
     glBegin(GL_TRIANGLE_STRIP);
-    ogl_set_index_color(facet_colors[0]);
+    color = facet_colors[0];
+    ogl_set_index_color(color);
     for (i = 0; i < count; ++i)
     {
-        if (i >= 2U) ogl_set_index_color(facet_colors[i - 2U]);
+        if (i >= 2U && facet_colors[i - 2U] != color)
+        {
+            color = facet_colors[i - 2U];
+            ogl_set_index_color(color);
+        }
         glVertex3fv((const GLfloat *)(vertices + i));
     }
     glEnd();
@@ -1298,7 +1114,7 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
     while (first < count - 2U)
     {
         facets = count - 2U - first;
-        if (facets > 254U) facets = 254U;
+        if (facets > OGL_AMI_UV_FACETS) facets = OGL_AMI_UV_FACETS;
         glBegin(GL_TRIANGLE_STRIP);
         for (i = first; i < first + facets + 2U; ++i)
         {
@@ -1320,43 +1136,6 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
 }
 #endif /* TRISTRIP */
 
-#ifndef OGL_AMIGA
-/* Native bitmap widths preserve proportional spacing. Measure and draw the
- * same word wrapping; no glyph may extend outside the drawable viewport. */
-static int ogl_osd_text(const char *text, int baseline, int draw)
-{
-    int count, space, width, next, lines;
-    width = (int)drv_win_width - 20;
-    lines = 0;
-    while (*text != 0 && width > 0)
-    {
-        count = space = next = 0;
-        while (text[count] != 0)
-        {
-            next += glutBitmapWidth(ogl_font, (unsigned char)text[count]);
-            if (next > width) break;
-            if (text[count] == ' ') space = count;
-            ++count;
-        }
-        if (text[count] != 0 && space > 0) count = space;
-        if (count == 0) break;
-        if (draw && baseline - ogl_font_descent >= 4 &&
-            baseline + ogl_font_ascent <= (int)drv_win_height - 4)
-        {
-            int i;
-            glRasterPos2i(10, baseline);
-            for (i = 0; i < count; ++i)
-                glutBitmapCharacter(ogl_font, (unsigned char)text[i]);
-        }
-        ++lines;
-        baseline -= ogl_font_step;
-        text += count;
-        while (*text == ' ') ++text;
-    }
-    return lines;
-}
-#endif
-
 /* draw the OSD */
 void drv_draw_osd(void)
 {
@@ -1364,21 +1143,21 @@ void drv_draw_osd(void)
     char dimensions[24];
 
 #ifndef OGL_AMIGA
-    int status_lines, help_lines, top, bottom;
-    glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT);
+    /* GL_LIST_BIT keeps the glyph-list base private to the OSD. */
+    glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT | GL_LIST_BIT);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_TEXTURE_2D);
-    
+
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     gluOrtho2D(0, drv_win_width, 0, drv_win_height);
-    
+
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     if (ogl_indexed) glIndexi((GLint)ogl_foreground);
     else glColor3ub(255, 255, 255);
 #endif
-    
+
     drv_format_stats(status_str);
     drv_append_status(status_str, sizeof(status_str),
              (!ogl_dlist_enabled || drv_cull_enabled) ? ", dlist off" :
@@ -1394,13 +1173,7 @@ void drv_draw_osd(void)
 #ifdef OGL_AMIGA
     ogl_ami_draw_osd(status_str, drv_help);
 #else
-    top = (int)drv_win_height - 4 - ogl_font_ascent;
-    status_lines = ogl_osd_text(status_str, top, TRUE);
-    help_lines = ogl_osd_text(drv_help, 0, FALSE);
-    bottom = 4 + ogl_font_descent + (help_lines - 1) * ogl_font_step;
-    if (help_lines > 0 && bottom + ogl_font_ascent + 2 <
-        top - (status_lines - 1) * ogl_font_step - ogl_font_descent)
-        (void)ogl_osd_text(drv_help, bottom, TRUE);
+    ogl_glut_draw_osd(status_str, drv_help);
     glPopAttrib();
 #endif
 }

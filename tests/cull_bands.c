@@ -401,7 +401,8 @@ int main(void)
     char stats[128];
     drv_ext_init();
     globe_init();
-    assert(!drv_cull_enabled);
+    /* Sun XGL starts with CPU culling on; OpenGL and IRIS GL start with it off. */
+    assert(drv_cull_enabled == DRV_CULL_DEFAULT);
     for (width = 32; width <= 512; width *= 2)
         check_scene(width, -1, GLOBE_RADIUS);
     check_scene(32, 2, 100.0f);

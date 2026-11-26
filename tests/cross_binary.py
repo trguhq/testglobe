@@ -107,7 +107,7 @@ def check_gdi(path):
     require(flags & 0x0008, "GDI must require protected mode")
     require(not flags & (0x8000 | 0x2000 | 0x0080),
             "GDI is a DLL, has link errors, or requires a math coprocessor")
-    require(u16(ne, 0x3e) == 0x030a, "GDI must specify Windows 3.1")
+    require(u16(ne, 0x3e) == 0x0300, "GDI must specify Windows 3.0")
     # In a Windows NE header, OS/2's CPU bits are repurposed for EMS behavior.
     # Do not claim CPU instruction validation from those flag positions.
     segments, modules = u16(ne, 0x1c), u16(ne, 0x1e)
@@ -174,7 +174,7 @@ def check_gdi(path):
         require(payload[:len(expected)] == expected and
                 len(payload) - len(expected) < 1 << resource_shift and
                 not any(payload[len(expected):]), "GDI resource differs from canonical %s" % name)
-    print("PASS GDI: %s (Win16 NE 3.1 protected mode, optional FPU, %d segments, all 13 Earth chunks; imports %s)" %
+    print("PASS GDI: %s (Win16 NE 3.0 protected mode, optional FPU, %d segments, all 13 Earth chunks; imports %s)" %
           (path, segments, ", ".join(imports)))
 
 

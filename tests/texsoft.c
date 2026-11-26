@@ -221,6 +221,59 @@ static void frustum_clipping(void)
     c.x=0;c.y=4;c.z=0;
     texsoft_triangle(&a,&b,&c,&uv,&uv,&uv);
     all_pixels(8,8,RED_PIXEL);
+    /* The same triangle reversed needs clipping before its back face is
+     * rejected; only unclipped triangles bypass the clipper. */
+    assert(texsoft_begin(8,8,model,projection,0,NULL));
+    texsoft_triangle(&a,&c,&b,&uv,&uv,&uv);
+    all_pixels(8,8,BLACK_PIXEL);
+}
+
+static unsigned long count_pixels(unsigned int width,unsigned int height,unsigned long value)
+{
+    unsigned int x,y;
+    unsigned long total=0;
+    for(y=0;y<height;++y)for(x=0;x<width;++x)if(pixel(width,x,y)==value)++total;
+    return total;
+}
+
+static void dirty_rectangle_reuse(void)
+{
+    unsigned char palette[TEXTURE_PALETTE_BYTES];
+    unsigned int x,y;
+    reset_matrices();
+    assert(texsoft_texture(2,2,quadrants));
+    /* Reused buffers clear only what the previous frame drew; the result
+     * must equal a full clear, for colors and for depth. */
+    assert(texsoft_begin(8,8,model,projection,0,NULL));
+    solid_quad(-1,-1,-0.5f,-0.5f,0,0.25f,0.25f,0);
+    assert(pixel(8,0,0)==RED_PIXEL&&pixel(8,1,1)==RED_PIXEL&&count_pixels(8,8,RED_PIXEL)==4);
+    assert(texsoft_begin(8,8,model,projection,0,NULL));
+    all_pixels(8,8,BLACK_PIXEL);
+    solid_quad(0.5f,0.5f,1,1,-0.5f,0.75f,0.25f,0);
+    assert(texsoft_begin(8,8,model,projection,0,NULL));
+    solid_quad(-1,-1,-0.5f,-0.5f,0,0.25f,0.25f,0);
+    solid_quad(0.5f,0.5f,1,1,0.5f,0.25f,0.75f,0);
+    for(y=0;y<8;++y)for(x=0;x<8;++x)
+        assert(pixel(8,x,y)==(x<2&&y<2?RED_PIXEL:(x>=6&&y>=6?BLUE_PIXEL:BLACK_PIXEL)));
+    /* A farther surface drawn where a nearer one was last frame must pass. */
+    assert(texsoft_begin(8,8,model,projection,0,NULL));
+    solid_quad(-1,-1,1,1,-0.5f,0.75f,0.25f,0);
+    assert(texsoft_begin(8,8,model,projection,0,NULL));
+    solid_quad(-1,-1,1,1,0.5f,0.25f,0.25f,0);
+    all_pixels(8,8,RED_PIXEL);
+    /* A palette whose black match moves changes the background index, so
+     * the next frame clears outside the old dirty rectangle as well. */
+    memset(palette,255,sizeof(palette));
+    palette[5*3]=palette[5*3+1]=palette[5*3+2]=0;
+    assert(texsoft_begin(8,8,model,projection,TEXSOFT_INDEX_WORDS,palette));
+    all_pixels(8,8,5UL);
+    solid_quad(-1,-1,-0.5f,-0.5f,0,0.75f,0.75f,0);
+    assert(count_pixels(8,8,0UL)==4&&count_pixels(8,8,5UL)==60);
+    palette[5*3]=palette[5*3+1]=palette[5*3+2]=255;
+    palette[7*3]=palette[7*3+1]=palette[7*3+2]=0;
+    assert(texsoft_begin(8,8,model,projection,TEXSOFT_INDEX_WORDS,palette));
+    all_pixels(8,8,7UL);
+    texsoft_free();
 }
 
 static void row_vectors_and_perspective(void)
@@ -362,6 +415,38 @@ static void invalid_numeric_inputs(void)
     texsoft_free();
 }
 
+static void wrap_boundaries(void)
+{
+    static const float whole[]={0.0f,-1.0f,-2147483520.0f,-2147483648.0f,-3.0e9f,
+                                2147483520.0f,2147483648.0f,3.0e9f};
+    static const float fractional[][2]={{0.25f,0.75f},{-0.75f,-0.25f},{-1.25f,2.25f}};
+    /* Even channels keep the four-texel corner blend off a rounding tie. */
+    static const unsigned char even[12]={254,0,0, 0,254,0, 0,0,254, 254,254,254};
+    unsigned long expected[36];
+    unsigned int i;
+    reset_matrices();
+    assert(texsoft_texture(2,2,even));
+    /* The sampler truncates coordinates that fit a long and calls floor()
+     * beyond; integral coordinates on both sides wrap to the same corner. */
+    assert(texsoft_begin(6,6,model,projection,0,NULL));
+    solid_quad(-1,-1,1,1,0,0,0,0);
+    memcpy(expected,texsoft_pixels(),sizeof(expected));
+    for(i=0;i<sizeof(whole)/sizeof(whole[0]);++i){
+        assert(texsoft_begin(6,6,model,projection,0,NULL));
+        solid_quad(-1,-1,1,1,0,whole[i],whole[i],0);
+        assert(memcmp(expected,texsoft_pixels(),sizeof(expected))==0);
+    }
+    all_pixels(6,6,BLACK_PIXEL|127UL|(127UL<<8)|(127UL<<16));
+    /* Negative fractions wrap like their positive equivalents. */
+    assert(texsoft_texture(2,2,quadrants));
+    for(i=0;i<sizeof(fractional)/sizeof(fractional[0]);++i){
+        assert(texsoft_begin(6,6,model,projection,0,NULL));
+        solid_quad(-1,-1,1,1,0,fractional[i][0],fractional[i][1],0);
+        all_pixels(6,6,i==2?GREEN_PIXEL:BLUE_PIXEL);
+    }
+    texsoft_free();
+}
+
 int main(void)
 {
     magnification_and_repeat();
@@ -372,8 +457,11 @@ int main(void)
     row_vectors_and_perspective();
     indexed_and_lifetimes();
     invalid_numeric_inputs();
+    dirty_rectangle_reuse();
+    wrap_boundaries();
     puts("PASS Shared software texture pixels: bilinear/repeat, trilinear/mipmaps, perspective-correct UVs and row-vector matrices");
     puts("PASS Shared software raster formats: byte indices equal native words, no OpenGL transfer copy, same-size format replacement and cached-size reuse");
     puts("PASS Shared software visibility/lifetimes: clipping, depth, culling, palette rebuilds, raster release/reuse and invalid numeric input guards");
+    puts("PASS Shared software raster reuse: dirty-rectangle clears equal full clears for colors, depth and palette background changes; clipped back faces stay culled; wrapping truncates exactly");
     return 0;
 }

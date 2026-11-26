@@ -62,6 +62,11 @@
 #error Select a supported graphics driver through its Makefile target or DRV_ define
 #endif
 
+/* CPU band culling starts off unless a driver header chooses otherwise. */
+#if defined(DRV_CULL) && !defined(DRV_CULL_DEFAULT)
+#define DRV_CULL_DEFAULT FALSE
+#endif
+
 #if defined(DRV_OGL) || defined(DRV_IGL) || defined(DRV_MTX) || defined(DRV_TGA) || defined(DRV_XGL) || defined(DRV_GDI) || defined(DRV_QD) || defined(DRV_AMI)
 #if (defined(TRI) + defined(QUAD) + defined(TRISTRIP)) != 1
 #error Select exactly one driver primitive: TRI, QUAD, or TRISTRIP

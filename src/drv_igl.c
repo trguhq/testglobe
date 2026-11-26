@@ -9,6 +9,7 @@
  */
 #include "testglob.h"
 #ifdef DRV_IGL
+#include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +30,18 @@
 #include <gl/device.h>
 #undef Coord
 
+/* The globe is one closed convex mesh, so back-face rejection alone leaves
+ * one front face per pixel and the z-buffer only costs a clear and z-tested
+ * fills. Build with -DIGL_ZBUFFER=1 to use it where the hardware has one. */
+#ifndef IGL_ZBUFFER
+#define IGL_ZBUFFER 0
+#endif
+/* Double buffering stops flicker. It wins whenever it keeps 12 RGB bits
+ * (4/4/4 against 8/8/8 on 24 planes), but not 1/2/1 against 3/3/2. */
+#define IGL_DOUBLE_RGB_BITS 12
+/* TIMER0 ticks between heartbeat events that end an idle qread. */
+#define IGL_HEARTBEAT_TICKS 30
+
 static long igl_window;
 static int igl_running;
 static int igl_dirty = TRUE;
@@ -36,8 +49,9 @@ static int igl_active = TRUE;
 static int igl_double_buffer;
 static int igl_indexed;
 static int igl_has_zbuffer;
+static long igl_zmax;
 static int igl_native_texture;
-static int igl_texture_perspective;
+static int igl_texture_bound = -1;
 static int igl_texture_failed;
 static int igl_texture_used;
 static int igl_palette_saved;
@@ -56,26 +70,79 @@ static Matrix igl_identity = {
     {0.0f, 0.0f, 0.0f, 1.0f}
 };
 
+/* A terminating signal only records its number: GL calls are not safe in a
+ * handler, so drv_loop leaves through igl_cleanup, which restores the
+ * shared colormap, and then re-raises the signal for the parent. */
+static const int igl_signals[] = {
+    SIGINT, SIGTERM
+#ifdef SIGHUP
+    , SIGHUP
+#endif
+#ifdef SIGQUIT
+    , SIGQUIT
+#endif
+};
+#define IGL_SIGNALS (sizeof(igl_signals) / sizeof(igl_signals[0]))
+static void (*igl_signal_previous[IGL_SIGNALS])(int);
+static int igl_signals_installed;
+static volatile sig_atomic_t igl_signal_caught;
+
+static void igl_signal(int number)
+{
+    /* IRIX 4 signal() has SVR3 semantics: the disposition is reset before
+     * the handler runs, so re-arm first. C89 permits only this call and
+     * the assignment below in a handler. */
+    (void)signal(number, igl_signal);
+    igl_signal_caught = number;
+}
+
+static void igl_signals_install(void)
+{
+    unsigned int i;
+    for (i = 0; i < IGL_SIGNALS; ++i)
+    {
+        igl_signal_previous[i] = signal(igl_signals[i], igl_signal);
+        /* Keep what the invoker ignored, as nohup and background jobs do. */
+        if (igl_signal_previous[i] == SIG_IGN) (void)signal(igl_signals[i], SIG_IGN);
+    }
+    igl_signals_installed = TRUE;
+}
+
+static void igl_signals_restore(void)
+{
+    unsigned int i;
+    if (!igl_signals_installed) return;
+    for (i = 0; i < IGL_SIGNALS; ++i)
+        if (igl_signal_previous[i] != SIG_ERR)
+            (void)signal(igl_signals[i], igl_signal_previous[i]);
+    igl_signals_installed = FALSE;
+}
+
+/* Each bind is a pair of pipe commands; skip it when the state is known. */
 static void igl_bind_texture(int enabled)
 {
 #ifdef GD_TEXTURE
-    if (igl_native_texture)
+    if (igl_native_texture && igl_texture_bound != (enabled != 0))
     {
         texbind(TX_TEXTURE_0, enabled ? 1 : 0);
         tevbind(TV_ENV0, enabled ? 1 : 0);
-#if defined(SS_DEPTH) && defined(SS_OFF)
-        if (!igl_texture_perspective)
-        {
-            float subdivision[3];
-            subdivision[0] = subdivision[1] = 0.0f;
-            subdivision[2] = 10.0f;
-            scrsubdivide(enabled ? SS_DEPTH : SS_OFF, subdivision);
-        }
-#endif
+        igl_texture_bound = enabled != 0;
     }
 #else
     (void)enabled;
 #endif
+}
+
+static void igl_clear(void)
+{
+    if (igl_has_zbuffer)
+        czclear(igl_indexed ? (unsigned long)igl_background : 0xff000000UL, igl_zmax);
+    else
+    {
+        if (igl_indexed) color((Colorindex)igl_background);
+        else cpack(0xff000000UL);
+        clear();
+    }
 }
 
 static void igl_invalidate_object(void)
@@ -98,22 +165,6 @@ void drv_release_optional(void)
          * or closing GL. Do not claim that an unbind frees its storage. */
         if (!igl_native_texture) drv_texture_loaded = FALSE;
     }
-}
-
-/* Baseline IRIX 4.0 texture and pixel-transfer calls return void. Query
- * documented capabilities and report every failure the API can expose;
- * residency queries from later hardware are not definition-validity tests. */
-static int igl_texture_native_ready(void)
-{
-#ifdef GD_TEXTURE
-    if (!igl_native_texture || getgdesc(GD_TEXTURE) <= 0) return FALSE;
-#ifdef GD_TEXTURE_PERSP
-    if (igl_texture_perspective && getgdesc(GD_TEXTURE_PERSP) <= 0) return FALSE;
-#endif
-    return TRUE;
-#else
-    return FALSE;
-#endif
 }
 
 static void igl_texture_failure(const char *message)
@@ -145,8 +196,10 @@ static void igl_cleanup(void)
         igl_palette_saved = FALSE;
         winclose(igl_window);
         igl_window = 0;
+        igl_texture_bound = -1;
         gexit();
     }
+    igl_signals_restore();
     texsoft_free();
     drv_texture_loaded = FALSE;
     drv_texture_enabled = FALSE;
@@ -198,7 +251,6 @@ static void igl_setup_palette(void)
     igl_foreground = igl_nearest_color(255, 255, 255);
 }
 
-/* Prefer precision to buffering; equal formats use the back buffer. */
 static long igl_rgb_depth(int double_buffer, long *rgb_bits, long *alpha_bits)
 {
     long red, green, blue;
@@ -216,6 +268,15 @@ static long igl_rgb_depth(int double_buffer, long *rgb_bits, long *alpha_bits)
     return *rgb_bits + *alpha_bits;
 }
 
+/* perspective() replaces the projection in MVIEWING mode, so resizing and
+ * the OSD set it again rather than reading it back from the pipe. */
+static void igl_projection(void)
+{
+    perspective((Angle)(GLOBE_FIELD_OF_VIEW * 10.0f),
+                (float)drv_win_width / (float)drv_win_height,
+                GLOBE_NEAR_DISTANCE, GLOBE_FAR_DISTANCE);
+}
+
 static void igl_resize(int width, int height)
 {
     if (width < 1 || height < 1) return;
@@ -226,9 +287,7 @@ static void igl_resize(int width, int height)
     drv_reset_timing();
     viewport(0, (Screencoord)(width - 1), 0, (Screencoord)(height - 1));
     mmode(MVIEWING);
-    perspective((Angle)(GLOBE_FIELD_OF_VIEW * 10.0f),
-                (float)width / (float)height,
-                GLOBE_NEAR_DISTANCE, GLOBE_FAR_DISTANCE);
+    igl_projection();
     igl_dirty = TRUE;
 }
 
@@ -246,7 +305,10 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     double_depth = igl_rgb_depth(TRUE, &double_rgb, &double_alpha);
     single_depth = igl_rgb_depth(FALSE, &single_rgb, &single_alpha);
     igl_indexed = double_depth == 0 && single_depth == 0;
-    igl_double_buffer = double_depth > single_depth ||
+    /* Below the double-buffer threshold, prefer precision, then alpha, then
+     * RGB bits; equal formats use the back buffer. */
+    igl_double_buffer = double_rgb >= IGL_DOUBLE_RGB_BITS ||
+        double_depth > single_depth ||
         (double_depth == single_depth &&
          (double_alpha > single_alpha ||
           (double_alpha == single_alpha && double_rgb >= single_rgb)));
@@ -263,6 +325,9 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     prefsize((long)drv_win_width, (long)drv_win_height);
     prefposition((long)drv_win_x, (long)drv_win_x + drv_win_width - 1L,
                   (long)drv_win_y, (long)drv_win_y + drv_win_height - 1L);
+    /* Without this, winopen forks and the shell regains control at once:
+     * Ctrl-C, job control and the exit status no longer reach the program. */
+    foreground();
     igl_window = winopen(TESTGLOBE_NAME);
     if (igl_window <= 0) error("Cannot open IRIS GL window");
     /* winopen resets pending constraints. Applying those defaults releases
@@ -301,31 +366,30 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
                  1UL << drv_colormap_bits;
     drv_colormap_colors = drv_colors;
     drv_bytes_per_pixel = (drv_bits_per_pixel + 7U) / 8U;
+    /* From here a kill must restore the colormap; see igl_signal. */
+    igl_signals_install();
     if (igl_indexed) igl_setup_palette();
-    igl_has_zbuffer = getgdesc(GD_BITS_NORM_ZBUFFER) > 0;
-    if (igl_has_zbuffer)
+    igl_has_zbuffer = FALSE;
+#if IGL_ZBUFFER
+    if (getgdesc(GD_BITS_NORM_ZBUFFER) > 0)
     {
+        igl_has_zbuffer = TRUE;
+        igl_zmax = getgdesc(GD_ZMAX);
         zbuffer(TRUE);
-        lsetdepth(getgdesc(GD_ZMIN), getgdesc(GD_ZMAX));
+        lsetdepth(getgdesc(GD_ZMIN), igl_zmax);
     }
+#endif
     backface(TRUE);
     shademodel(FLAT);
     subpixel(TRUE);
+    /* One query after gconfig: support is fixed for the configured window.
+     * Affine-only hardware (VGX) textures without scrsubdivide; measured
+     * against perspective it is off by at most 0.32 texel at key 1, 0.08 at
+     * key 2 and 0.02 at the key-3 default. */
     igl_native_texture = FALSE;
-    igl_texture_perspective = FALSE;
 #ifdef GD_TEXTURE
     igl_native_texture = !igl_indexed && getgdesc(GD_TEXTURE) > 0;
-#ifdef GD_TEXTURE_PERSP
-    igl_texture_perspective = getgdesc(GD_TEXTURE_PERSP) > 0;
 #endif
-#endif
-    /* An affine-only implementation needs GL's documented subdivision.
-     * Old SDKs without that facility use the perspective-correct CPU path. */
-#if !defined(SS_DEPTH) || !defined(SS_OFF)
-    if (!igl_texture_perspective) igl_native_texture = FALSE;
-#endif
-    /* On affine-only VGX hardware, binding a texture also enables GL's
-     * depth subdivision. Projection-correct implementations need none. */
     igl_bind_texture(FALSE);
     qdevice(KEYBD);
     qdevice(LEFTMOUSE);
@@ -340,6 +404,11 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
 #endif
 #ifdef QFULL
     qdevice(QFULL);
+#endif
+#ifdef TIMER0
+    /* If a signal does not end a blocked qread, the next tick still does. */
+    qdevice(TIMER0);
+    noise(TIMER0, IGL_HEARTBEAT_TICKS);
 #endif
     tie(LEFTMOUSE, MOUSEX, MOUSEY);
     getsize(&width, &height);
@@ -400,7 +469,10 @@ static Drv_result igl_texture_attempt(unsigned int size)
     environment[0] = TV_DECAL;
     environment[1] = TV_NULL;
     tevdef(1, 2, environment);
-    if (!igl_texture_native_ready()) return DRV_NATIVE_FAILED;
+    /* Bind the new definitions explicitly rather than trust earlier state. */
+    igl_texture_bound = -1;
+    /* Baseline IRIX 4.0 texture calls return void; GD_TEXTURE was checked
+     * once at init, and later residency queries are not validity tests. */
     texture_size = size;
     return DRV_OK;
 #else
@@ -410,35 +482,19 @@ static Drv_result igl_texture_attempt(unsigned int size)
 
 static int igl_texture_load(void)
 {
-    unsigned int size;
     Drv_result result;
-    int released;
-    char message[64];
-    released = FALSE;
-    for (size = TEXTURE_DEFAULT_SIZE; size >= 32U; size /= 2U)
+    result = drv_texture_fit(TEXTURE_DEFAULT_SIZE, igl_texture_attempt);
+    if (result == DRV_OK)
     {
-        result = igl_texture_attempt(size);
-        if (result == DRV_NO_MEMORY && !released)
-        {
-            drv_release_optional();
-            released = TRUE;
-            result = igl_texture_attempt(size);
-        }
-        if (result == DRV_NO_MEMORY) continue;
-        if (result == DRV_BAD_DATA || result == DRV_BAD_INPUT)
-            error("Invalid embedded IRIS GL texture data");
-        if (result != DRV_OK)
-        {
-            igl_texture_failure("Native texture operation failed");
-            return FALSE;
-        }
         drv_texture_loaded = TRUE;
-        if (size < TEXTURE_DEFAULT_SIZE)
-        {
-            sprintf(message, "Texture reduced to %u x %u", size, size / 2U);
-            drv_notice(message);
-        }
         return TRUE;
+    }
+    if (result == DRV_BAD_DATA || result == DRV_BAD_INPUT)
+        error("Invalid embedded IRIS GL texture data");
+    if (result != DRV_NO_MEMORY)
+    {
+        igl_texture_failure("Native texture operation failed");
+        return FALSE;
     }
     igl_texture_failure("Insufficient memory for texture; drawing flat colors");
     drv_notice("Texture unavailable; drawing flat colors");
@@ -452,11 +508,6 @@ void drv_texture_enable(void)
     igl_invalidate_object();
     igl_object_blocked = FALSE;
     igl_dirty = TRUE;
-    if (igl_native_texture && !igl_texture_native_ready())
-    {
-        igl_texture_failure("IRIS GL native texturing is unavailable");
-        return;
-    }
     if (!drv_texture_loaded && !igl_texture_load()) return;
     igl_bind_texture(TRUE);
 }
@@ -481,46 +532,29 @@ static void igl_set_index_color(unsigned char index)
                  ((unsigned long)earth_cmap[index][2] << 16));
 }
 
-void drv_draw_tri_flat_color(Vertex *a, Vertex *b, Vertex *c, unsigned char index)
-{
-    igl_set_index_color(index);
-    bgnpolygon();
-    v3f((float *)a); v3f((float *)b); v3f((float *)c);
-    endpolygon();
-}
-
-void drv_draw_tri_flat_uv(Vertex *a, Vertex *b, Vertex *c,
-                          Coord *ua, Coord *ub, Coord *uc)
-{
-    if (!igl_native_texture)
-    {
-        texsoft_triangle(a, b, c, ua, ub, uc);
-        return;
-    }
-#ifdef GD_TEXTURE
-    cpack(0xffffffffUL);
-    bgnpolygon();
-    t2f((float *)ua); v3f((float *)a);
-    t2f((float *)ub); v3f((float *)b);
-    t2f((float *)uc); v3f((float *)c);
-    endpolygon();
-#endif
-}
-
 void drv_draw_tristrip_flat_color(unsigned int count,
                                   const Vertex TG_HUGE *vertices,
                                   const unsigned char TG_HUGE *facet_colors)
 {
     unsigned int i;
+    unsigned char index;
     if (count < 3 || vertices == NULL || facet_colors == NULL) return;
     /* IRIS GL retains two vertices and alternates mesh winding. In FLAT
-     * mode triangle n takes the color of vertex n+2, so every new vertex
-     * supplies exactly one facet's original palette color. */
+     * mode triangle n takes the color current at vertex n+2, and the color
+     * persists, so set it for the first facet and then only when it changes
+     * (most neighbouring facets share an Earth color). */
     bgntmesh();
-    igl_set_index_color(facet_colors[0]);
-    for (i = 0; i < count; ++i)
+    v3f((float *)vertices);
+    v3f((float *)(vertices + 1));
+    index = facet_colors[0];
+    igl_set_index_color(index);
+    for (i = 2; i < count; ++i)
     {
-        if (i >= 2U) igl_set_index_color(facet_colors[i - 2U]);
+        if (facet_colors[i - 2U] != index)
+        {
+            index = facet_colors[i - 2U];
+            igl_set_index_color(index);
+        }
         v3f((float *)(vertices + i));
     }
     endtmesh();
@@ -551,64 +585,103 @@ void drv_draw_tristrip_flat_uv(unsigned int count,
 #endif
 }
 
-/* Font 0 is native GL's built-in bitmap font; no Font Manager is needed. */
-static int igl_osd_text(const char *text, long baseline, long width,
-                         long height, int draw)
+/* IRIS GL raster fonts have no kerning, so a string is as wide as the sum
+ * of its characters. Measure each character of font 0 once. */
+static long igl_glyph_width[256];
+static long igl_glyph_height = -1;
+
+static long igl_glyph(unsigned char character)
 {
-    char line[256];
-    unsigned int count, space;
-    int lines;
-    lines = 0;
-    while (*text != 0)
+    char text[2];
+    if (igl_glyph_width[character] < 0)
+    {
+        text[0] = (char)character; text[1] = 0;
+        igl_glyph_width[character] = strwidth(text);
+    }
+    return igl_glyph_width[character];
+}
+
+/* Both OSD texts fit 255 characters, and every line holds at least one. */
+#define IGL_OSD_LINES 256
+typedef struct Igl_wrap {
+    unsigned int count;
+    unsigned short start[IGL_OSD_LINES], length[IGL_OSD_LINES];
+} Igl_wrap;
+static Igl_wrap igl_help_wrap;
+static char igl_help_source[256];
+static long igl_help_width = -1, igl_help_height = -1;
+
+/* Break text at spaces into lines no wider than width. A glyph wider than
+ * the drawable ends the text, so no partial glyph is ever drawn. */
+static void igl_osd_wrap(const char *text, long width, Igl_wrap *wrap)
+{
+    unsigned int offset, count, space;
+    long used;
+    wrap->count = 0;
+    offset = 0;
+    while (text[offset] != 0 && wrap->count < IGL_OSD_LINES)
     {
         count = space = 0;
-        while (text[count] != 0 && count < sizeof(line) - 1U)
+        used = 0;
+        while (text[offset + count] != 0 && count < 255U)
         {
-            line[count] = text[count]; line[count + 1U] = 0;
-            if (strwidth(line) > width) break;
-            if (text[count] == ' ') space = count;
+            used += igl_glyph((unsigned char)text[offset + count]);
+            if (used > width) break;
+            if (text[offset + count] == ' ') space = count;
             ++count;
         }
-        if (text[count] != 0 && space > 0) count = space;
-        /* Do not draw even a single glyph wider than the drawable. */
-        if (count == 0) return lines;
-        memcpy(line, text, count); line[count] = 0;
-        /* Font 0 has no portable size selector. Its total native height is
-         * also a conservative bound on either side of the baseline. */
-        if (draw && baseline >= height &&
-            baseline + height < (long)drv_win_height)
+        if (text[offset + count] != 0 && space > 0) count = space;
+        if (count == 0) return;
+        wrap->start[wrap->count] = (unsigned short)offset;
+        wrap->length[wrap->count++] = (unsigned short)count;
+        offset += count;
+        while (text[offset] == ' ') ++offset;
+    }
+}
+
+/* Font 0 is native GL's built-in bitmap font; no Font Manager is needed.
+ * Its total height also bounds either side of the baseline. */
+static void igl_osd_draw(const char *text, const Igl_wrap *wrap,
+                         long baseline, long height)
+{
+    char line[256];
+    unsigned int i;
+    for (i = 0; i < wrap->count; ++i, baseline -= height)
+        if (baseline >= height && baseline + height < (long)drv_win_height)
         {
+            memcpy(line, text + wrap->start[i], wrap->length[i]);
+            line[wrap->length[i]] = 0;
             cmov2i(8, baseline);
             charstr(line);
         }
-        baseline -= height;
-        ++lines;
-        text += count;
-        while (*text == ' ') ++text;
-    }
-    return lines;
 }
 
 void drv_draw_osd(void)
 {
-    Matrix model, projection;
+    Igl_wrap status_wrap;
     char status[256];
     char dimensions[24];
-    long height, status_baseline, help_baseline, status_bottom;
-    int help_lines, status_lines;
+    long height, width, status_baseline, help_baseline, status_bottom;
+    unsigned int i;
     if (drv_win_width <= 16 || drv_win_height <= 16) return;
-    mmode(MVIEWING); getmatrix(model);
-    mmode(MPROJECTION); getmatrix(projection);
-    if (igl_texture_used) igl_bind_texture(FALSE);
+    /* Bitmap text is not shown to ignore texture state on every model, so
+     * unbind it. drv_render binds again before the next globe. */
+    igl_bind_texture(FALSE);
     if (igl_has_zbuffer) zbuffer(FALSE);
     backface(FALSE);
-    mmode(MVIEWING); loadmatrix(igl_identity);
+    mmode(MVIEWING); pushmatrix(); loadmatrix(igl_identity);
     ortho2(-0.5f, (float)drv_win_width - 0.5f,
              -0.5f, (float)drv_win_height - 0.5f);
     if (igl_indexed) color((Colorindex)igl_foreground);
     else cpack(0xffffffffUL);
     font(0);
     height = getheight(); if (height < 1) height = 14;
+    if (height != igl_glyph_height)
+    {
+        for (i = 0; i < 256U; ++i) igl_glyph_width[i] = -1;
+        igl_glyph_height = height;
+    }
+    width = (long)drv_win_width - 16L;
     drv_format_stats(status);
     drv_append_status(status, sizeof(status), !drv_texture_enabled ? ", texture off" :
              (igl_texture_used ? (igl_native_texture ? ", texture on" : ", texture soft") :
@@ -619,37 +692,121 @@ void drv_draw_osd(void)
         drv_append_status(status, sizeof(status), dimensions);
     }
     status_baseline = (long)drv_win_height - height - 4L;
-    status_lines = igl_osd_text(status, status_baseline,
-                   (long)drv_win_width - 16L, height, TRUE);
-    help_lines = igl_osd_text(drv_help, 0, (long)drv_win_width - 16L,
-                               height, FALSE);
-    status_bottom = status_baseline - (long)status_lines * height;
-    help_baseline = 4L + (long)help_lines * height;
-    if (help_lines > 0 && help_baseline + height + 4L <= status_bottom)
-        igl_osd_text(drv_help, help_baseline, (long)drv_win_width - 16L,
-                       height, TRUE);
-    mmode(MPROJECTION); loadmatrix(projection);
-    mmode(MVIEWING); loadmatrix(model);
+    igl_osd_wrap(status, width, &status_wrap);
+    igl_osd_draw(status, &status_wrap, status_baseline, height);
+    /* The help text changes only with the window width or the font. */
+    if (width != igl_help_width || height != igl_help_height ||
+        strcmp(drv_help, igl_help_source) != 0)
+    {
+        igl_osd_wrap(drv_help, width, &igl_help_wrap);
+        igl_help_width = width; igl_help_height = height;
+        if (strlen(drv_help) < sizeof(igl_help_source)) strcpy(igl_help_source, drv_help);
+        else igl_help_width = -1;
+    }
+    status_bottom = status_baseline - (long)status_wrap.count * height;
+    help_baseline = 4L + (long)igl_help_wrap.count * height;
+    if (igl_help_wrap.count > 0 && help_baseline + height + 4L <= status_bottom)
+        igl_osd_draw(drv_help, &igl_help_wrap, help_baseline, height);
+    mmode(MVIEWING); popmatrix();
+    igl_projection();
     backface(TRUE);
     if (igl_has_zbuffer) zbuffer(TRUE);
-    if (igl_texture_used) igl_bind_texture(TRUE);
+}
+
+/* Software texture path: texsoft draws the globe from the matrices GL
+ * holds, and one lrectwrite then replaces every window pixel. */
+static int igl_render_software(void)
+{
+    Matrix model, projection;
+    unsigned long *pixels;
+    getmatrix(model);
+    mmode(MPROJECTION); getmatrix(projection);
+    mmode(MVIEWING);
+    if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
+                          igl_indexed ? TEXSOFT_INDEX_WORDS : TEXSOFT_RGB_WORDS,
+                          &earth_cmap[0][0]))
+    {
+        igl_texture_failure("Cannot prepare IRIS GL software texture framebuffer");
+        return FALSE;
+    }
+    globe_draw_tristrips();
+    pixels = texsoft_pixels();
+    if (pixels == NULL)
+    {
+        igl_texture_failure("IRIS GL software texture pixels are unavailable");
+        return FALSE;
+    }
+    if (drv_frame_failed) return FALSE;
+    /* IRIX 4.0 lrectwrite is void: it transfers window pixels
+     * independently of the current object matrices. */
+    if (igl_has_zbuffer) zbuffer(FALSE);
+    lrectwrite(0, 0, (Screencoord)(drv_win_width - 1U),
+                (Screencoord)(drv_win_height - 1U), pixels);
+    if (igl_has_zbuffer) zbuffer(TRUE);
+    igl_texture_used = TRUE;
+    return TRUE;
+}
+
+/* Flat or native-texture globe, from the cached geometry object if any. */
+static void igl_draw_cached(void)
+{
+    /* Retain the full-mesh object while CPU pre-culling selects new
+     * longitude runs. Reuse it after C is switched off, subject to the
+     * ordinary scene/material revision checks below. */
+    if (drv_cull_enabled)
+    {
+        globe_draw_tristrips();
+        return;
+    }
+    if (igl_object >= 0 && (igl_object_revision != globe_revision ||
+                           igl_object_textured != drv_texture_active))
+        igl_invalidate_object();
+    if (igl_object < 0 && !igl_object_blocked)
+    {
+        igl_object = genobj();
+        if (igl_object < 0)
+        {
+            igl_object_blocked = TRUE;
+            drv_notice("Geometry cache unavailable; drawing directly");
+        }
+        else
+        {
+            makeobj(igl_object);
+            globe_draw_tristrips();
+            closeobj();
+            igl_object_revision = globe_revision;
+            igl_object_textured = drv_texture_active;
+            if (drv_frame_failed) igl_invalidate_object();
+            else if (!isobj(igl_object))
+            {
+                /* A rejected new object is an allocation/creation failure,
+                 * not an old cache disappearing. Avoid rebuilding it on
+                 * every frame while direct drawing remains usable. */
+                igl_object = -1;
+                igl_object_blocked = TRUE;
+                drv_notice("Geometry cache unavailable; drawing directly");
+            }
+        }
+    }
+    if (igl_object >= 0 && isobj(igl_object)) callobj(igl_object);
+    else
+    {
+        /* callobj silently ignores an undefined object. Submit this
+         * frame directly, then rebuild the optional cache next time. */
+        igl_object = -1;
+        globe_draw_tristrips();
+    }
 }
 
 void drv_render(void)
 {
-    Matrix model, projection;
-    unsigned long *pixels;
-    int requested, ready, drawn;
+    int requested, ready, software, drawn;
     if (igl_window <= 0) return;
     igl_texture_used = FALSE;
     requested = drv_texture_enabled;
     drawn = FALSE;
     drv_fps_start();
     if (!globe_ready()) drv_frame_failed = TRUE;
-    if (igl_indexed) color((Colorindex)igl_background);
-    else cpack(0xff000000UL);
-    clear();
-    if (igl_has_zbuffer) zclear();
     mmode(MVIEWING); loadmatrix(igl_identity);
     translate(0.0f, 0.0f, -GLOBE_VIEW_DISTANCE);
     rot(drv_rot_x, 'x'); rot(drv_rot_y, 'y');
@@ -657,93 +814,28 @@ void drv_render(void)
     ready = globe_ready() && requested && drv_texture_loaded && !igl_texture_failed;
     if (globe_ready() && requested && !igl_texture_failed && !drv_texture_loaded)
         igl_texture_failure("IRIS GL texture data is not loaded");
-    if (ready && igl_native_texture && !igl_texture_native_ready())
-    {
-        igl_texture_failure("IRIS GL native texturing is unavailable");
-        ready = FALSE;
-    }
+    software = ready && !igl_native_texture;
+    /* The software image replaces the whole window, and a failed frame is
+     * cleared below, so only native drawing starts with a clear. */
+    if (!software && !drv_frame_failed) igl_clear();
     drv_texture_active = ready;
     igl_bind_texture(ready);
-    if (ready && !igl_native_texture)
+    if (software)
     {
-        getmatrix(model);
-        mmode(MPROJECTION); getmatrix(projection);
-        mmode(MVIEWING);
-        if (!texsoft_begin(drv_win_width, drv_win_height, model, projection,
-                              igl_indexed ? TEXSOFT_INDEX_WORDS : TEXSOFT_RGB_WORDS,
-                              &earth_cmap[0][0]))
-            igl_texture_failure("Cannot prepare IRIS GL software texture framebuffer");
-        else
+        drawn = igl_render_software();
+        if (!drawn)
         {
-            globe_draw_tristrips();
-            pixels = texsoft_pixels();
-            if (pixels == NULL)
-                igl_texture_failure("IRIS GL software texture pixels are unavailable");
-            else if (!drv_frame_failed)
-            {
-                /* IRIX 4.0 lrectwrite is void: it transfers window pixels
-                 * independently of the current object matrices. */
-                if (igl_has_zbuffer) zbuffer(FALSE);
-                lrectwrite(0, 0, (Screencoord)(drv_win_width - 1U),
-                            (Screencoord)(drv_win_height - 1U), pixels);
-                if (igl_has_zbuffer) zbuffer(TRUE);
-                drawn = igl_texture_used = TRUE;
-            }
+            ready = FALSE;
+            if (!drv_frame_failed) igl_clear();
         }
-        if (!drawn) ready = FALSE;
     }
-    if (!drawn && globe_ready())
+    if (!drawn && !drv_frame_failed)
     {
         /* Preserve the common flag as user intent; only the fallback
          * traversal sees flat mode, so the next T still toggles off. */
         drv_texture_active = ready;
         if (!ready) igl_bind_texture(FALSE);
-        /* Retain the full-mesh object while CPU pre-culling selects new
-         * longitude runs. Reuse it after C is switched off, subject to the
-         * ordinary scene/material revision checks below. */
-        if (drv_cull_enabled)
-            globe_draw_tristrips();
-        else
-        {
-            if (igl_object >= 0 && (igl_object_revision != globe_revision ||
-                                   igl_object_textured != drv_texture_active))
-                igl_invalidate_object();
-            if (igl_object < 0 && !igl_object_blocked)
-            {
-                igl_object = genobj();
-                if (igl_object < 0)
-                {
-                    igl_object_blocked = TRUE;
-                    drv_notice("Geometry cache unavailable; drawing directly");
-                }
-                else
-                {
-                    makeobj(igl_object);
-                    globe_draw_tristrips();
-                    closeobj();
-                    igl_object_revision = globe_revision;
-                    igl_object_textured = drv_texture_active;
-                    if (drv_frame_failed) igl_invalidate_object();
-                    else if (!isobj(igl_object))
-                    {
-                        /* A rejected new object is an allocation/creation failure,
-                         * not an old cache disappearing. Avoid rebuilding it on
-                         * every frame while direct drawing remains usable. */
-                        igl_object = -1;
-                        igl_object_blocked = TRUE;
-                        drv_notice("Geometry cache unavailable; drawing directly");
-                    }
-                }
-            }
-            if (igl_object >= 0 && isobj(igl_object)) callobj(igl_object);
-            else
-            {
-                /* callobj silently ignores an undefined object. Submit this
-                 * frame directly, then rebuild the optional cache next time. */
-                igl_object = -1;
-                globe_draw_tristrips();
-            }
-        }
+        igl_draw_cached();
         igl_texture_used = ready && !drv_frame_failed;
     }
     drv_texture_active = FALSE;
@@ -751,10 +843,7 @@ void drv_render(void)
     {
         igl_texture_used = FALSE;
         igl_bind_texture(FALSE);
-        if (igl_indexed) color((Colorindex)igl_background);
-        else cpack(0xff000000UL);
-        clear();
-        if (igl_has_zbuffer) zclear();
+        igl_clear();
     }
     if (drv_status_required()) drv_draw_osd();
     if (igl_double_buffer) swapbuffers();
@@ -872,7 +961,7 @@ static void igl_event(long device, short value)
             igl_sync_mouse();
             break;
 #endif
-        default: break;
+        default: break; /* including the TIMER0 heartbeat */
     }
 }
 
@@ -880,21 +969,34 @@ void drv_loop(void)
 {
     short value;
     long device;
-    while (igl_running)
+    int number;
+    while (igl_running && !igl_signal_caught)
     {
-        while (igl_running && qtest())
+        while (igl_running && !igl_signal_caught && qtest())
         {
             device = qread(&value);
             igl_event(device, value);
         }
-        if (!igl_running) break;
+        if (!igl_running || igl_signal_caught) break;
         if (igl_dirty || (igl_active && drv_animation_allowed())) drv_render();
         else
         {
+            /* qtest just found the queue empty and no signal is pending.
+             * A signal during the wait may only end at the next event or
+             * heartbeat if qread restarts its wait. */
             device = qread(&value);
             igl_event(device, value);
         }
     }
     igl_cleanup();
+    number = (int)igl_signal_caught;
+    if (number != 0)
+    {
+        /* Terminate as the signal would have, after output an exit would
+         * have flushed, so the parent sees the kill (and stops a loop). */
+        fflush(NULL);
+        (void)signal(number, SIG_DFL);
+        (void)raise(number);
+    }
 }
 #endif /* DRV_IGL */

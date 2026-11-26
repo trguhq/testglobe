@@ -11,7 +11,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKER = ROOT / "src" / "ami_pack.py"
-HEADER, CODE, DATA, DEBUG, END = 1011, 1001, 1002, 1009, 1010
+HEADER, CODE, DATA, RELOC32, DEBUG, END = 1011, 1001, 1002, 1004, 1009, 1010
 
 
 def words(*values):
@@ -81,6 +81,22 @@ def main():
                     executable[:-4] + words(0), executable + b"garbage",
                     words(HEADER, 0, 1, 0, 0, 1, CODE, 0x7fffffff, END)):
             rejected(raw)
+        # Kickstart 1.3 LoadSeg reads only 32-bit relocations. V37's short
+        # form and DREL32, which V37 reads the same way, must be refused.
+        relocated = words(HEADER, 0, 2, 0, 1, 1, 1, CODE, 1, 0, RELOC32, 1, 1, 0, 0,
+                          END, DATA, 1, 0x12345678, END)
+        relocated_output = work / "relocated"
+        source.write_bytes(relocated)
+        call(source, maps, relocated_output, True)
+        check_payload(relocated_output.read_bytes(), relocated)
+        for kind, name in ((1015, b"HUNK_DREL32"), (1020, b"HUNK_RELOC32SHORT")):
+            short = (words(HEADER, 0, 2, 0, 1, 1, 1, CODE, 1, 0, kind) +
+                     struct.pack(">4H", 1, 1, 0, 0) + words(END, DATA, 1, 0x12345678, END))
+            rejected(short)
+            result = subprocess.run([sys.executable, str(PACKER), str(source), str(maps),
+                                     str(output)], capture_output=True, timeout=10)
+            assert result.returncode != 0 and name in result.stderr, result.stderr
+            assert b"Kickstart 2.0" in result.stderr, result.stderr
         source.write_bytes(executable)
         for name in ("e32.bin", "e256_1.bin", "e512_7.bin"):
             path = maps / name
@@ -141,7 +157,7 @@ def main():
         (alias / "keep").write_bytes(b"preserve directory")
         call(source, maps, alias, False)
         assert (alias / "keep").read_bytes() == b"preserve directory"
-    print("PASS Amiga executable data: exact canonical maps and directory, preserved loadable/debug hunks, idempotent repack, classic Workbench Tool icon/stack, malformed input rejection and atomic destination protection")
+    print("PASS Amiga executable data: exact canonical maps and directory, preserved loadable/debug hunks, idempotent repack, Kickstart 1.3 relocation records only, classic Workbench Tool icon/stack, malformed input rejection and atomic destination protection")
 
 
 if __name__ == "__main__":

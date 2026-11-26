@@ -16,6 +16,9 @@
 #define DRV_NAME "Sun XGL"
 #define DRV_HELP "1-5 = facets, A = auto rotate, F = FPS, O = OSD, C = cull, T = texture mapping, Esc = exit"
 #define DRV_CULL
+/* The Sun ZX is limited by submitted triangles, not pixels, and XGL's own
+ * back-face culling still processes every triangle it receives. */
+#define DRV_CULL_DEFAULT TRUE
 #define DRV_WIN_X 100
 #define DRV_WIN_Y 100
 #define DRV_WIN_WIDTH 640

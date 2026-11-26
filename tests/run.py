@@ -51,9 +51,10 @@ def check_tiga_extraction(executable, output):
         "fpu", "8087", "287", "387", "badmodule", "wrongabi", "badscreen", "nocd", "videoerror", "oldversion",
         "nomode", "modeerror", "primitivesfail", "pagehang", "syncerror",
         "nooverlay", "badcrc", "truncated", "oversized", "badoffset", "reserved",
-        "badmagic", "missingexe", "diskfull", "closefail", "notemp", "shortwrite",
+        "badmagic", "badimage", "missingexe", "diskfull", "closefail", "notemp", "shortwrite",
         "removefail", "collision", "movedcwd", "readonlyexe", "fallbacktmp",
-        "longtemp", "moduleioerror", "flushioerror",
+        "longtemp", "moduleioerror", "flushioerror", "flipioerror", "tinybuffer",
+        "badreturn", "palettefail", "persistent", "ctrlbreak",
     )
     payload = bytes((index * 73 + 19) & 255 for index in range(1549))
     image = bytearray(512)
@@ -87,6 +88,11 @@ def check_tiga_extraction(executable, output):
             data = data[:-4] + struct.pack("<I", 1)
         elif profile == "badmagic":
             data = data[:-24] + b"TGRLM002" + data[-16:]
+        elif profile == "badimage":
+            # The MZ load image may not extend into the appended module.
+            data = bytearray(data)
+            struct.pack_into("<H", data, 4, 2)
+            data = bytes(data)
         if profile != "missingexe":
             source.write_bytes(data)
         env = dict(os.environ)
@@ -401,9 +407,9 @@ def main():
         api_source = ["-fsyntax-only", str(ROOT / "tests/driver_api.c")]
         api_modes = (
             ("OpenGL", flat, ("drv_draw_quad_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tristrip_flat_rgb", "drv_resize", "drv_texture_load")),
-            ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_rgb", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
+            ("IRIS GL", ["-DFLAT", "-DDRV_IGL"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_rgb", "drv_draw_tri_flat_uv", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
             ("Sun XGL", ["-DFLAT", "-DDRV_XGL"], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_color", "drv_resize", "drv_texture_load")),
-            ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tristrip_flat_color", "drv_draw_quadbatch_flat_color", "drv_draw_tri_flat_uv", "earth_data_128", "texture_generate")),
+            ("Matrox", ["-DSEG86", "-DDRV_MTX", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tristrip_flat_color", "drv_draw_tri_flat_uv", "drv_draw_quad_flat_rgb", "earth_data_128", "texture_generate")),
             ("TIGA", ["-DSEG86", "-DDRV_TGA", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_128", "texture_generate", "drv_resize")),
             ("GDI", ["-DSEG86", "-DDRV_GDI", "-D_huge="], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
             ("QuickDraw", ["-DSEG68", "-DDRV_QD"], ("drv_draw_tri_flat_color", "drv_draw_tri_flat_uv", "drv_draw_tristrip_flat_color", "drv_draw_quad_flat_rgb", "earth_data_32", "texture_generate", "drv_resize")),
@@ -532,11 +538,13 @@ def main():
                 str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "qd")])
-            for mode in ("mono", "1", "4", "8", "16", "32", "fpu", "falsefpu",
-                         "oldcolor", "nogworld", "lockfail", "multi", "small640",
+            for mode in ("mono", "mono6", "monofail", "1", "4", "8", "16", "32", "fpu", "falsefpu",
+                         "oldcolor", "qd32", "nogworld", "lockfail", "multi", "small640",
                          "small512", "large800", "tall640", "explicit",
                          "explicitwidth", "explicitheight", "patternfail", "polyfail"):
                 run([str(output / "qd"), mode])
+            run([str(output / "qd"), "fatal"], expected_returncode=1, expected_stderr="",
+                required_output="PASS QuickDraw fatal alert: input and drawing stop, ports restore, the memory reserve is freed for the alert and the watch cursor is cleared")
         if args.gdi_contract:
             check_production_units(cc, common, gdi + ["-Wno-cast-function-type"], output, "GDI",
                 ("drv.c", "drv_gdi.c", "err.c", "globe.c", "main.c", "soft3d.c", "soft3fp.c"))
@@ -563,7 +571,7 @@ def main():
                          "-I" + str(ROOT / "tests/mgl_shim"),
                          "-I" + str(ROOT / "tests/ami_shim")]
             check_production_units(cc, common, amiga_ogl, output, "Amiga_OpenGL",
-                ("drv.c", "drv_ogl.c", "ogl_ami.c", "err.c", "globe.c", "main.c",
+                ("drv.c", "drv_ogl.c", "ogl_ami.c", "ami_time.c", "err.c", "globe.c", "main.c",
                  "texture.c", "texsoft.c"))
             run(cc + common + amiga_ogl + [str(ROOT / "tests/amiga_ogl.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/globe.c"),
@@ -573,7 +581,7 @@ def main():
             run([str(output / "amiga_ogl")],
                 expected_stderr="OpenGL texture: Insufficient memory for texture; drawing flat colors\n")
             run(cc + common + amiga_ogl + [str(ROOT / "tests/ogl_ami.c"),
-                "-lm", "-o", str(output / "ogl_ami")])
+                str(ROOT / "src/ami_time.c"), "-lm", "-o", str(output / "ogl_ami")])
             for mode in ("normal", "fontfail", "fontlarge", "nomipmap", "rgb24-in32", "native", "windowfail", "lockfail", "contextfail",
                          "bitmapfail", "wrong16", "wrong24", "unknownbitmap", "wrongformat",
                          "rounded", "shortbitmap", "hugebitmap"):
@@ -585,33 +593,44 @@ def main():
         if args.ami_contract:
             ami = ["-DFLAT", "-DDRV_AMI", "-DAMI_RTG=1", "-I" + str(ROOT / "tests/ami_shim")]
             check_production_units(cc, common, ami, output, "Amiga",
-                ("drv.c", "drv_ami.c", "ami_data.c", "err.c", "globe.c", "main.c",
+                ("drv.c", "drv_ami.c", "ami_time.c", "ami_data.c", "err.c", "globe.c", "main.c",
                  "soft3d.c", "soft3fp.c"))
             enhanced = output / "ami_020.o"
             run(cc + common + ami + ["-DSOFT3D_TRANSFORM_020", "-c",
                 str(ROOT / "src/soft3d.c"), "-o", str(enhanced)])
-            run(cc + common + ami + [str(ROOT / "tests/amiga.c"),
+            # The RTG recorder also enables optional quad trimming; the native-only
+            # build below keeps the default, untrimmed traversal.
+            trim_ami = ami + ["-DAMI_QUAD_TRIM=1"]
+            check_production_units(cc, common, trim_ami, output, "Amiga_trim",
+                ("drv_ami.c", "globe.c"))
+            run(cc + common + trim_ami + [str(ROOT / "tests/amiga.c"),
                 str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
-                str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga")])
+                str(ROOT / "src/err.c"), str(ROOT / "src/ami_time.c"), str(enhanced),
+                "-lm", "-o", str(output / "amiga")])
             for mode in ("ocs", "fontfail", "fontlarge", "mono", "two", "three", "four", "ecs", "aga", "aga64", "aga128", "020", "fpu", "040",
                          "falsefpu", "aspect", "backfail", "scratchfail", "ham", "oversize", "cachefail", "ocswide", "denisewide", "ecswide",
                          "cgx8", "cgx15", "cgx16", "cgx24", "cgx32", "p968", "p9615", "p9616", "p9624", "p9632",
-                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop", "fs-cgx8", "fs-cgx15", "fs-cgx16", "fs-cgx24", "fs-cgx32",
+                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop",
+                         "fs-multiscan", "fs-bestmode", "fs-default", "fs-nomode", "fs-cgx8", "fs-cgx15", "fs-cgx16", "fs-cgx24", "fs-cgx32",
                          "fs-p968", "fs-p9615", "fs-p9616", "fs-p9624", "fs-p9632",
-                         "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative"):
+                         "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative",
+                         "p96short", "cli13"):
                 run([str(output / "amiga"), mode])
-            run([str(output / "amiga"), "stack"], expected_returncode=1,
-                required_output="PASS Amiga stack guard:")
+            for mode in ("stack", "cli13stack"):
+                run([str(output / "amiga"), mode], expected_returncode=1,
+                    required_output="PASS Amiga stack guard:")
             native_ami = ["-DAMI_RTG=0" if option == "-DAMI_RTG=1" else option for option in ami]
             check_production_units(cc, common, native_ami, output, "Amiga_native",
                 ("drv_ami.c",))
             run(cc + common + native_ami + [str(ROOT / "tests/amiga.c"),
                 str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
-                str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga_native")])
+                str(ROOT / "src/err.c"), str(ROOT / "src/ami_time.c"), str(enhanced),
+                "-lm", "-o", str(output / "amiga_native")])
             for mode in ("ocs", "fontfail", "fontlarge", "mono", "two", "three", "four", "aga", "aga64", "aga128", "backfail", "ocswide", "nativeunknown",
-                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop"):
+                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop",
+                         "fs-multiscan", "fs-bestmode", "fs-default", "fs-nomode"):
                 run([str(output / "amiga_native"), mode])
             # A real packed Hunk file exercises the production DOS resource reader.
             source = output / "amiga-input.hunk"
@@ -645,9 +664,24 @@ def main():
                  str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                  str(ROOT / "src/err.c")] + xgl_ldflags +
                 ["-lm", "-lX11", "-o", str(output / "xgl")])
-            for mode in ("double", "single", "flatstripfail"):
+            for mode in ("double", "single", "flatstripfail", "leo"):
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
-                     str(output / "xgl"), mode])
+                     str(output / "xgl"), mode],
+                    required_output=("Sun XGL device: Sun:LEO, direct graphics access, "
+                                     "RGB hardware, Z buffer hardware, shading hardware, "
+                                     "maximum buffers 2, argument checking on\n"
+                                     "Sun XGL: Sun ZX texture mapping runs in XGL software; "
+                                     "T uses point sampling\n" if mode == "leo" else
+                                     "Sun XGL device: Test:RECORDER, direct graphics access, "
+                                     "RGB hardware, Z buffer hardware, shading hardware, maximum buffers " +
+                                     ("1" if mode == "single" else "2") +
+                                     ", argument checking on\n"))
+            # Timing runs may turn XGL argument checking off; "0" keeps it on.
+            for value, state in (("1", "off"), ("0", "on")):
+                run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
+                     str(output / "xgl"), "double"],
+                    env=dict(os.environ, TESTGLOBE_XGL_NOCHECK=value),
+                    required_output=", argument checking " + state + "\n")
             for mode in ("rasterfail", "mipmapfail", "stripallocfail"):
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode],
@@ -664,33 +698,45 @@ def main():
                 "flushfail": "Cannot use XGL texture",
                 "unloaded": "XGL texture data is not loaded",
             }
-            xgl_native_error = "XGL error: test-123: injected texture failure (test operator)\n"
+            def xgl_native_error(kind, identifier="test-123", operand2="second operand"):
+                return ("XGL error: " + identifier + ": injected texture failure (test operator)\n"
+                        "  object=test object, operand1=first operand, operand2=" + operand2 +
+                        ", type=" + kind + ", category=4\n")
             for mode, message in xgl_texture_failures.items():
                 native_error = mode in ("buildfail", "mapfail", "configurefail",
                                         "bindfail", "drawfail", "flushfail")
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode],
-                    expected_stderr=(xgl_native_error if native_error else "") +
+                    expected_stderr=(xgl_native_error("recoverable") if native_error else "") +
                                     "Sun XGL texture: " + message + "\n",
                     required_output="PASS XGL recoverable texture failure:")
+            # An empty Solaris error ID and absent operand stay readable.
+            run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
+                 str(output / "xgl"), "buildfail"],
+                env=dict(os.environ, TEST_XGL_EMPTY_ID="1"),
+                expected_stderr=xgl_native_error("recoverable", "unknown", "none") +
+                                "Sun XGL texture: Cannot build XGL mipmap\n",
+                required_output="PASS XGL recoverable texture failure:")
             for mode in ("fataltexture", "fataloverlay", "fatalcleanup", "fatalosd", "fatalmodel"):
                 run(["xvfb-run", "-a", "-s", "-screen 0 1024x768x24 -nolisten tcp",
                      str(output / "xgl"), mode], expected_returncode=1,
-                    expected_stderr=xgl_native_error +
+                    expected_stderr=xgl_native_error("recoverable" if mode == "fataloverlay"
+                                                     else "nonrecoverable") +
                                     "ERROR - Sun XGL operation failed; see the XGL diagnostic\n",
                     required_output=("PASS XGL recorded cleanup:" if mode == "fataloverlay"
                                      else "PASS XGL nonrecoverable error:"))
         if args.ogl_contract:
             ogl = ["-DFLAT", "-DDRV_OGL", "-I" + str(ROOT / "tests/ogl_record")]
             check_production_units(cc, common, ogl, output, "OpenGL",
-                ("drv.c", "drv_ogl.c", "err.c", "globe.c", "main.c", "texture.c", "texsoft.c", "e_saved.c"))
+                ("drv.c", "drv_ogl.c", "ogl_glut.c", "err.c", "globe.c", "main.c", "texture.c", "texsoft.c", "e_saved.c"))
+            # tests/ogl.c includes drv_ogl.c and ogl_glut.c to reach their state.
             ogl_sources = [str(ROOT / "tests/ogl.c"), str(ROOT / "src/e_saved.c"),
                 str(ROOT / "src/texsoft.c"), str(ROOT / "src/globe.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm"]
             run(cc + common + ogl + ogl_sources +
                 ["-o", str(output / "ogl")])
-            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "reduced", "softreduced", "softadoptreduced", "uploadreduced", "framefail"):
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "rgb8", "rgb8only", "indexed", "unknownalpha", "nodepth", "limited", "listfail", "fontlistfail", "reduced", "softreduced", "softadoptreduced", "uploadreduced", "framefail"):
                 run([str(output / "ogl"), mode])
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl"), mode],
@@ -700,6 +746,15 @@ def main():
                 run([str(output / "ogl"), mode],
                     expected_stderr="OpenGL error: Invalid operation!\n" * 6 if mode == "callfail" else "",
                     required_output="PASS OpenGL display-list use failure: invalid or rejected lists are deleted, immediate geometry is complete and OSD reports fail")
+            run([str(output / "ogl"), "callonce"],
+                expected_stderr="OpenGL error: Invalid operation!\n",
+                required_output="PASS OpenGL display-list call recovery:")
+            run([str(output / "ogl"), "texdrawfail"],
+                expected_stderr="OpenGL error: Invalid operation!\nOpenGL texture: Cannot draw OpenGL texture\n",
+                required_output="PASS OpenGL texture draw error:")
+            run([str(output / "ogl"), "fontcompilefail"],
+                expected_stderr="OpenGL error: Out of memory!\n",
+                required_output="PASS OpenGL OSD glyph fallback:")
             texture_failures = {
                 "uploadfail": "Insufficient memory for texture; drawing flat colors",
                 "stagefail": "Insufficient memory for texture; drawing flat colors",
@@ -715,14 +770,17 @@ def main():
                     expected_stderr=("OpenGL error: Invalid operation!\n" if mode == "softtransfererror" else "") +
                                     "OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL recoverable texture failure:")
+            # Lost objects, bindings and enables are injected when the texture
+            # is enabled, the only point where its native state is checked.
             for mode in ("losttexture", "bindinglost", "disabledtexture", "unloadedtexture"):
                 message = "OpenGL texture data is not loaded" if mode == "unloadedtexture" else "OpenGL texture is not active"
                 run([str(output / "ogl"), mode], expected_stderr="OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL actual texture use:")
             modern_ogl = ogl + ["-DTEST_OGL_FREEGLUT"]
             run(cc + common + modern_ogl + ogl_sources + ["-o", str(output / "ogl_modern")])
-            for mode in ("rgba", "rgb24", "rgb16", "limited"):
-                run([str(output / "ogl_modern"), mode])
+            for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "rgb8", "rgb8only", "indexed", "nodepth", "limited"):
+                run([str(output / "ogl_modern"), mode],
+                    required_output="PASS FreeGLUT format selection:")
             for mode in ("newlistfail", "listcompilefail"):
                 run([str(output / "ogl_modern"), mode],
                     expected_stderr="OpenGL error: Out of memory!\n" * 6,
@@ -738,13 +796,30 @@ def main():
                     expected_stderr=("OpenGL error: Out of memory!\n" if mode == "texallocerror" else "OpenGL error: Invalid operation!\n") +
                                     "OpenGL texture: " + message + "\n",
                     required_output="PASS OpenGL recoverable texture failure:")
-            for label, options in (("legacy", ogl), ("freeglut", modern_ogl)):
-                obj = output / ("ogl_" + label + ".o")
-                run(cc + common + options + ["-c", str(ROOT / "src/drv_ogl.c"), "-o", str(obj)])
-                symbols = subprocess.run(["nm", "-u", str(obj)], text=True, capture_output=True, check=True).stdout
+            # GLUT 3.7 keeps API 3 but declares display strings from Xlib
+            # implementation 9; GLUT 3.2 has the query without them.
+            for label, define, required in (
+                    ("glut37", "TEST_OGL_GLUT37", "PASS GLUT 3.7 display strings:"),
+                    ("glut32", "TEST_OGL_GLUT32", "PASS GLUT mode-bit probes:")):
+                binary = output / ("ogl_" + label)
+                run(cc + common + ogl + ["-D" + define] + ogl_sources + ["-o", str(binary)])
+                for mode in ("rgba", "rgba-single", "rgb24", "rgb16", "rgb8", "rgb8only", "indexed", "unknownalpha", "nodepth"):
+                    run([str(binary), mode], expected_stderr="", required_output=required)
+            # Only GLUT that honors display-string comparators imports them.
+            for label, options, strings in (("legacy", ogl, True), ("freeglut", modern_ogl, False),
+                                            ("glut37", ogl + ["-DTEST_OGL_GLUT37"], True),
+                                            ("glut32", ogl + ["-DTEST_OGL_GLUT32"], False)):
+                symbols = ""
+                for source in ("drv_ogl.c", "ogl_glut.c"):
+                    obj = output / ("ogl_" + label + "_" + Path(source).stem + ".o")
+                    run(cc + common + options + ["-c", str(ROOT / "src" / source), "-o", str(obj)])
+                    symbols += subprocess.run(["nm", "-u", str(obj)], text=True, capture_output=True, check=True).stdout
                 if any(name in symbols for name in ("glGenerateMipmap", "gluBuild2DMipmaps", "glutGetProcAddress")):
                     raise SystemExit("OpenGL 1.1 object unexpectedly links a later entry point")
-            print("PASS OpenGL 1.1 object linkage: legacy and FreeGLUT builds use base-level uploads without mipmap or extension entry points")
+                if ("glutInitDisplayString" in symbols) != strings:
+                    raise SystemExit("Unexpected display-string use in the " + label + " GLUT objects")
+            print("PASS OpenGL 1.1 object linkage: legacy, GLUT 3.x and FreeGLUT builds use base-level uploads without mipmap or extension entry points")
+            print("PASS GLUT display-string linkage: API 4 and GLUT 3.7 objects use comparators; FreeGLUT and GLUT 3.2 objects send mode bits only")
             for label, define in (("missing_query", "TEST_OGL_NO_MODE_QUERY"),
                                   ("old_glut", "TEST_OGL_OLD_GLUT")):
                 legacy_options = ogl + ["-D" + define]
@@ -753,11 +828,13 @@ def main():
                 for mode in ("legacy-glut", "rgb16"):
                     run([str(binary), mode], expected_stderr="",
                         required_output="PASS legacy GLUT window: one RGB/double request at final size and position, no probes or display strings, actual pixel/depth/buffer attributes validated")
-                obj = output / ("ogl_" + label + ".o")
-                run(cc + common + legacy_options + ["-c", str(ROOT / "src/drv_ogl.c"),
-                    "-o", str(obj)])
-                symbols = subprocess.run(["nm", "-u", str(obj)], text=True,
-                    capture_output=True, check=True).stdout
+                symbols = ""
+                for source in ("drv_ogl.c", "ogl_glut.c"):
+                    obj = output / ("ogl_" + label + "_" + Path(source).stem + ".o")
+                    run(cc + common + legacy_options + ["-c", str(ROOT / "src" / source),
+                        "-o", str(obj)])
+                    symbols += subprocess.run(["nm", "-u", str(obj)], text=True,
+                        capture_output=True, check=True).stdout
                 if "glutInitDisplayString" in symbols:
                     raise SystemExit("Legacy GLUT object unexpectedly imports display-string probing")
             print("PASS legacy GLUT linkage: API 3 and API 4 without mode queries create a validated window and never import glutInitDisplayString")
@@ -777,15 +854,22 @@ def main():
                 str(ROOT / "src/drv.c"), str(ROOT / "src/texture.c"),
                 str(ROOT / "src/err.c"), "-lm", "-o", str(output / "igl")])
             for mode in ("double", "single", "indexed", "indexed-single", "noz", "software", "unknown", "affine", "winquit", "winshut",
-                         "rgba", "rgba-single", "rgb-single", "unknown-alpha", "cachefail", "reduced", "softreduced", "framefail", "objectreject"):
+                         "rgba", "alpha-single", "rgb15", "xs24", "rgb11", "entry", "unknown-alpha", "cachefail", "reduced", "softreduced",
+                         "framefail", "objectreject"):
                 run([str(output / "igl"), mode])
+            run([str(output / "igl"), "capabilitylost"], expected_stderr="",
+                required_output="PASS IRIS GL texture capability:")
+            for mode in ("double", "indexed", "software"):
+                run([str(output / "igl"), mode, "signal"], expected_stderr="",
+                    required_output="PASS IRIS GL termination signals:")
+                run([str(output / "igl"), mode, "signalwait"], expected_stderr="",
+                    required_output="PASS IRIS GL signal while idle:")
             igl_texture_failures = {
                 "stagefail": "Insufficient memory for texture; drawing flat colors",
                 "imagefail": "Insufficient memory for texture; drawing flat colors",
                 "softmipfail": "Insufficient memory for texture; drawing flat colors",
                 "softframefail": "Cannot prepare IRIS GL software texture framebuffer",
                 "softpixelsfail": "IRIS GL software texture pixels are unavailable",
-                "capabilitylost": "IRIS GL native texturing is unavailable",
                 "unloadedtexture": "IRIS GL texture data is not loaded",
             }
             for mode, message in igl_texture_failures.items():
@@ -810,6 +894,18 @@ def main():
                 str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
                 "-lm", "-o", str(output / "igl_cached")])
             run([str(output / "igl_cached"), "software"])
+            # The default build draws the convex globe without a z-buffer;
+            # IGL_ZBUFFER keeps one where present, cleared with czclear.
+            run(cc + common + igl + ["-DIGL_ZBUFFER=1",
+                str(ROOT / "tests/igl.c"), str(ROOT / "src/e_saved.c"), str(ROOT / "src/texsoft.c"),
+                str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+                str(ROOT / "src/texture.c"), str(ROOT / "src/err.c"),
+                "-lm", "-o", str(output / "igl_zbuffer")])
+            for mode in ("double", "noz", "indexed", "software", "framefail"):
+                run([str(output / "igl_zbuffer"), mode])
+            run([str(output / "igl_zbuffer"), "softframefail"],
+                expected_stderr="IRIS GL texture: Cannot prepare IRIS GL software texture framebuffer\n",
+                required_output="PASS IRIS GL recoverable texture failure:")
         if args.igl_contract or args.ogl_contract:
             run(cc + common + ["-DFLAT", "-DDRV_OGL",
                 str(ROOT / "tests/texsoft.c"), str(ROOT / "src/texsoft.c"),
@@ -842,14 +938,21 @@ def main():
         mtx_optimized = output / "mtx_386.o"
         run(cc + common + segmented + ["-DSOFT3D_TRANSFORM_386", "-c",
             str(ROOT / "src/soft3d.c"), "-o", str(mtx_optimized)])
-        run(cc + common + segmented + [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_saved.c"),
+        mtx_sources = [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_saved.c"),
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"), str(mtx_optimized),
-            str(ROOT / "src/err.c"), "-lm", "-o", str(output / "matrox")])
+            str(ROOT / "src/err.c"), "-lm"]
+        run(cc + common + segmented + mtx_sources + ["-o", str(output / "matrox")])
         run([str(output / "matrox")])
+        # 8086/8087 profiles check rejection by the supplied 286 binding.
         for profile in ("reporting-off", "8086", "286", "386", "486", "8087", "287", "387", "fpu",
-                        "startup-v3", "startup-world"):
+                        "startup-v3", "startup-world", "stale", "ctrl-break"):
             run([str(output / "matrox"), profile])
+        # An 8086-safe binding opts out of the check and runs everything.
+        run(cc + common + segmented + ["-DMTX_8086_BINDING"] + mtx_sources +
+            ["-o", str(output / "matrox_8086")])
+        for profile in ("8086", "8087"):
+            run([str(output / "matrox_8086"), profile])
         print("PASS host compatibility: strict C89 and supplied SDK prototypes")
 
 

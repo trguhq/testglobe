@@ -53,8 +53,36 @@
 #define QUAD
 #define DRV_QUAD_BATCH
 #define DRV_QUAD_BATCH_MAX 64
+/* Optional back-face trimming of quad batches (DRV_QUAD_TRIM, globe.c).
+ * Off by default: the margins that keep the drawn polygons identical let it
+ * skip under 10% of key-1 quads and almost none above, while each trimmed
+ * band costs soft-float trigonometry. Build with -DAMI_QUAD_TRIM=1 to try. */
+#ifndef AMI_QUAD_TRIM
+#define AMI_QUAD_TRIM 0
+#endif
+#if AMI_QUAD_TRIM != 0 && AMI_QUAD_TRIM != 1
+#error AMI_QUAD_TRIM must be 0 or 1
+#endif
+#if AMI_QUAD_TRIM
+/* Quad batches may omit longitude runs facing away from the camera by more
+ * than this driver's integer rounding could reverse. The driver describes
+ * its projection: screen = center + focal * (X, Y) / -Z, Y down, clip limits
+ * 0..limit, each coordinate rounded by at most pixel_x/y after camera-space
+ * vertex errors of world_error + world_scale * radius. */
+#define DRV_QUAD_TRIM
+typedef struct Drv_quad_trim
+{
+    double eye[3]; /* camera in mesh coordinates */
+    double focal_x, focal_y, center_x, center_y, limit_x, limit_y;
+    double pixel_x, pixel_y, world_error, world_scale;
+} Drv_quad_trim;
+/* Called while a frame draws its quad batches; FALSE draws every quad. */
+extern int drv_quad_trim_view(Drv_quad_trim *view);
+#endif
 /* The kick13 C runtime preserves the stack supplied by Shell/Workbench. */
 #define AMI_STACK_BYTES 32768UL
+/* Startup code, main and drv_init frames already above the stack probe. */
+#define AMI_STACK_STARTUP 1024UL
 
 extern void ami_error(char *message);
 extern double ami_time_now(void);

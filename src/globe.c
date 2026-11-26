@@ -239,8 +239,9 @@ int globe_init_verts(int longitude, int latitude, float radius)
     int i, j;
     float x, y, z, xy;
     float longitude_step, latitude_step;
-    float longitude_angle, latitude_angle;
+    float longitude_angle, latitude_angle, cosine, sine;
     Vertex TG_HUGE *vertex_ptr;
+    Vertex TG_HUGE *columns;
 #ifdef DRV_EARTH_RESOURCES
     unsigned long row, source_row;
     unsigned char TG_HUGE *destination;
@@ -291,6 +292,17 @@ int globe_init_verts(int longitude, int latitude, float radius)
     vertex_ptr = globe_verts;
     longitude_step = (float)(2.0 * PI / longitude);
     latitude_step = (float)(PI / latitude);
+    /* Every row shares each column's longitude cosine and sine. Stage them
+     * in the south-pole row, which is written last and read before it is
+     * overwritten, instead of calling (often software) trigonometry for
+     * every vertex: 263,682 calls become 1,026 at the 512-wide map. */
+    columns = globe_verts + (unsigned long)latitude * (unsigned long)(longitude + 1);
+    for (j = 0; j <= longitude; ++j)
+    {
+        longitude_angle = j * longitude_step;
+        columns[j].x = (float)COS(longitude_angle);
+        columns[j].y = (float)SIN(longitude_angle);
+    }
     for (i = 0; i <= latitude; ++i)
     {
         latitude_angle = (float)(PI / 2.0) - i * latitude_step;
@@ -303,9 +315,10 @@ int globe_init_verts(int longitude, int latitude, float radius)
         }
         for (j = 0; j <= longitude; ++j)
         {
-            longitude_angle = j * longitude_step;
-            x = xy * (float)COS(longitude_angle);
-            y = xy * (float)SIN(longitude_angle);
+            cosine = columns[j].x;
+            sine = columns[j].y;
+            x = xy * cosine;
+            y = xy * sine;
             vertex_ptr->x = x;
             vertex_ptr->y = y;
             vertex_ptr->z = z;
@@ -427,7 +440,9 @@ typedef struct Globe_cull_band
     int possible[2][2], definite[2][2];
     int possible_count, definite_count;
 } Globe_cull_band;
+#endif
 
+#if defined(DRV_CULL) || defined(DRV_QUAD_TRIM)
 static int globe_cull_ranges(double amplitude, double bias, double phase,
                               double margin, int ranges[2][2])
 {
@@ -478,7 +493,9 @@ static int globe_cull_ranges(double amplitude, double bias, double phase,
     }
     return count;
 }
+#endif
 
+#ifdef DRV_CULL
 static void globe_cull_band_init(Globe_cull_band *band, int row,
                                   const Globe_cull_view *view)
 {
@@ -935,12 +952,186 @@ void globe_draw_quads(void)
 }
 
 #ifdef DRV_QUAD_BATCH
+#ifdef DRV_QUAD_TRIM
+/* Back-face trimming for quad batches. Each latitude band's cells are
+ * congruent planar trapezoids (triangles at the poles) whose plane value
+ * v = n.eye - n.p varies with longitude as amplitude*cos(mid - phase) +
+ * bias; -v/|n| is the eye's distance behind a cell's plane.
+ *
+ * Integer rounding reverses a back face only while its projection is
+ * thinner than about a pixel. Across 3,600 random poses, windows and pixel
+ * aspects at every resolution, no cell that the fixed pipeline drew from
+ * behind was more than 1.2 pixels thick. Projection scales areas by
+ * fx*fy*d/Z^3 and lengths by about f/Z, so a cell d behind its plane is at
+ * least fmin*d*A/(Zmax^2*Lmax) pixels thick, with area A, longest edge Lmax
+ * and depth at most Zmax = D + R. Only cells thicker than GLOBE_TRIM_PIXELS
+ * plus the driver's transform error are omitted, and never in a frame whose
+ * globe could reach the viewport edge, where clipping adds rounded vertices. */
+#define GLOBE_TRIM_PIXELS 4.0
+#define GLOBE_TRIM_BANDS 256
+
+typedef struct Globe_trim_view
+{
+    Drv_quad_trim model;
+    double horizontal_eye, phase, error;
+} Globe_trim_view;
+
+/* Margins on v per band, kept for one mesh revision and screen model.
+ * Negative: the band can never be trimmed. */
+static double globe_trim_margin[GLOBE_TRIM_BANDS];
+static double globe_trim_half_cosine;
+static Drv_quad_trim globe_trim_model;
+static unsigned long globe_trim_revision;
+static int globe_trim_valid;
+
+static double globe_trim_length(const Vertex TG_HUGE *a, const Vertex TG_HUGE *b)
+{
+    double x, y, z;
+    x = (double)b->x - a->x; y = (double)b->y - a->y; z = (double)b->z - a->z;
+    return sqrt(x * x + y * y + z * z);
+}
+
+/* FALSE when no band of this mesh can be trimmed on this screen, so frames
+ * then skip the per-frame trigonometry entirely. */
+static int globe_trim_margins(const Drv_quad_trim *model)
+{
+    const Vertex TG_HUGE *top, *bottom;
+    double radius, near_z, far_z, k, e_x, e_y, tangent, thickness, focal;
+    double ax, ay, az, bx, by, bz, cx, cy, cz, area, longest, edge, normal, margin;
+    int row, side, trimmable;
+    radius = (double)globe_radius + model->world_error + model->world_scale * globe_radius;
+    near_z = (double)GLOBE_VIEW_DISTANCE - radius;
+    far_z = (double)GLOBE_VIEW_DISTANCE + radius;
+    if (!(near_z > 0.0) || globe_latitude > GLOBE_TRIM_BANDS || globe_longitude < 3 ||
+        !(model->focal_x > 0.0 && model->focal_y > 0.0)) return FALSE;
+    /* Bound how far a transform error can move a projected corner. */
+    k = 1.0 / near_z + radius / (near_z * near_z);
+    e_x = model->pixel_x + model->focal_x * k * (radius - globe_radius);
+    e_y = model->pixel_y + model->focal_y * k * (radius - globe_radius);
+    tangent = radius / sqrt((double)GLOBE_VIEW_DISTANCE * GLOBE_VIEW_DISTANCE - radius * radius);
+    if (model->center_x - model->focal_x * tangent - e_x < 0.0 ||
+        model->center_x + model->focal_x * tangent + e_x > model->limit_x ||
+        model->center_y - model->focal_y * tangent - e_y < 0.0 ||
+        model->center_y + model->focal_y * tangent + e_y > model->limit_y) return FALSE;
+    thickness = GLOBE_TRIM_PIXELS + (e_x - model->pixel_x) + (e_y - model->pixel_y);
+    focal = model->focal_x < model->focal_y ? model->focal_x : model->focal_y;
+    globe_trim_half_cosine = cos(PI / globe_longitude);
+    trimmable = FALSE;
+    for (row = 0; row < globe_latitude; ++row)
+    {
+        top = globe_verts + (unsigned long)row * (globe_longitude + 1UL);
+        bottom = top + globe_longitude + 1;
+        /* Half the diagonals' cross product is the planar cell's area. */
+        ax = (double)bottom[1].x - top->x; ay = (double)bottom[1].y - top->y;
+        az = (double)bottom[1].z - top->z;
+        bx = (double)top[1].x - bottom->x; by = (double)top[1].y - bottom->y;
+        bz = (double)top[1].z - bottom->z;
+        cx = ay * bz - az * by; cy = az * bx - ax * bz; cz = ax * by - ay * bx;
+        area = 0.5 * sqrt(cx * cx + cy * cy + cz * cz);
+        longest = 0.0;
+        for (side = 0; side < 4; ++side)
+        {
+            edge = side == 0 ? globe_trim_length(top, top + 1) :
+                   side == 1 ? globe_trim_length(top + 1, bottom + 1) :
+                   side == 2 ? globe_trim_length(bottom + 1, bottom) :
+                   globe_trim_length(bottom, top);
+            if (edge > longest) longest = edge;
+        }
+        normal = sqrt(((double)top->z - bottom->z) * ((double)top->z - bottom->z) /
+                      (globe_trim_half_cosine * globe_trim_half_cosine) +
+                      ((double)bottom->x - top->x) * ((double)bottom->x - top->x));
+        margin = area > 0.0 ?
+                 normal * thickness * far_z * far_z * longest / (focal * area) : -1.0;
+        /* No cell lies more than D + R behind its plane. */
+        if (!(margin >= 0.0 && margin < normal * far_z)) margin = -1.0;
+        else trimmable = TRUE;
+        globe_trim_margin[row] = margin;
+    }
+    return trimmable;
+}
+
+static int globe_trim_begin(Globe_trim_view *view)
+{
+    const Drv_quad_trim *model;
+    const double *eye;
+    model = &view->model;
+    if (!drv_quad_trim_view(&view->model)) return FALSE;
+    /* Margins depend only on the mesh and the screen model, not the pose. */
+    if (!globe_trim_valid || globe_trim_revision != globe_revision ||
+        globe_trim_model.focal_x != model->focal_x ||
+        globe_trim_model.focal_y != model->focal_y ||
+        globe_trim_model.center_x != model->center_x ||
+        globe_trim_model.center_y != model->center_y ||
+        globe_trim_model.limit_x != model->limit_x ||
+        globe_trim_model.limit_y != model->limit_y ||
+        globe_trim_model.pixel_x != model->pixel_x ||
+        globe_trim_model.pixel_y != model->pixel_y ||
+        globe_trim_model.world_error != model->world_error ||
+        globe_trim_model.world_scale != model->world_scale)
+    {
+        globe_trim_model = *model;
+        globe_trim_revision = globe_revision;
+        globe_trim_valid = globe_trim_margins(model) ? 1 : -1;
+    }
+    /* With no trimmable band, a frame costs no trigonometry at all. */
+    if (globe_trim_valid < 0 || globe_radius < FLT_MIN / FLT_EPSILON) return FALSE;
+    eye = model->eye;
+    if (!(eye[0] >= -DBL_MAX && eye[0] <= DBL_MAX && eye[1] >= -DBL_MAX &&
+          eye[1] <= DBL_MAX && eye[2] >= -DBL_MAX && eye[2] <= DBL_MAX)) return FALSE;
+    view->horizontal_eye = sqrt(eye[0] * eye[0] + eye[1] * eye[1]);
+    view->phase = atan2(eye[1], eye[0]);
+    if (view->phase < 0.0) view->phase += 2.0 * PI;
+    /* As for band culling: float vertices and trigonometry bound v. */
+    view->error = 64.0 * FLT_EPSILON * (double)globe_radius *
+                  ((double)GLOBE_VIEW_DISTANCE + globe_radius);
+    return TRUE;
+}
+
+/* The hull of the band's kept cells within columns first..first+count-1. */
+static void globe_trim_row(const Globe_trim_view *view, int row, unsigned int first,
+                           unsigned int count, unsigned int *start, unsigned int *end)
+{
+    const Vertex TG_HUGE *top, *bottom;
+    double horizontal, vertical, plane;
+    int ranges[2][2], total, i;
+    unsigned int low, high;
+    *start = first;
+    *end = first + count;
+    if (globe_trim_margin[row] < 0.0) return;
+    top = globe_verts + (unsigned long)row * (globe_longitude + 1UL);
+    bottom = top + globe_longitude + 1;
+    horizontal = ((double)top->z - bottom->z) / globe_trim_half_cosine;
+    vertical = (double)bottom->x - top->x;
+    plane = (double)bottom->x * top->z - (double)top->x * bottom->z;
+    total = globe_cull_ranges(horizontal * view->horizontal_eye,
+                              vertical * view->model.eye[2] - plane, view->phase,
+                              -(globe_trim_margin[row] + view->error), ranges);
+    *end = first;
+    for (i = 0; i < total; ++i)
+    {
+        low = (unsigned int)ranges[i][0] > first ? (unsigned int)ranges[i][0] : first;
+        high = (unsigned int)ranges[i][1] < first + count ? (unsigned int)ranges[i][1] : first + count;
+        if (low >= high) continue;
+        if (*end == first) *start = low;
+        else if (low < *start) *start = low;
+        if (high > *end) *end = high;
+    }
+    if (*end == first) *start = first;
+}
+#endif
+
 void globe_draw_quadbatches(void)
 {
     unsigned long top, bottom;
-    unsigned int first, count, j, index;
+    unsigned int first, count, j, index, start, span;
     const unsigned char TG_HUGE *colors;
-    int i;
+    int i, reuse;
+#ifdef DRV_QUAD_TRIM
+    Globe_trim_view trim;
+    unsigned int end, previous_start, previous_end;
+    int trimming;
+    trimming = globe_valid && !drv_frame_failed && globe_trim_begin(&trim);
+#endif
     if (!globe_valid || drv_frame_failed) return;
     /* A narrow longitude tile streams down the globe before advancing
      * sideways. Its previous lower row becomes the next packet's upper
@@ -950,27 +1141,60 @@ void globe_draw_quadbatches(void)
     {
         count = (unsigned int)globe_longitude - first;
         if (count > DRV_QUAD_BATCH_MAX) count = DRV_QUAD_BATCH_MAX;
+#ifdef DRV_QUAD_TRIM
+        previous_start = previous_end = first;
+#endif
         for (i = 0; i < globe_latitude; ++i)
         {
             colors = globe_color_row(i);
             if (colors == NULL) return;
             top = (unsigned long)i * (globe_longitude + 1UL);
             bottom = top + globe_longitude + 1UL;
-            for (j = 0; j <= count; ++j)
+            start = first;
+            span = count;
+            reuse = i != 0;
+#ifdef DRV_QUAD_TRIM
+            if (trimming)
+            {
+                globe_trim_row(&trim, i, first, count, &start, &end);
+                if (start >= end)
+                {
+                    previous_start = previous_end = first;
+                    continue;
+                }
+                /* Keep the previous row's wider run while its extra quads
+                 * cost less than transforming a new upper row; the row
+                 * reuse needs identical columns in consecutive packets. */
+                if (previous_end > previous_start && start >= previous_start &&
+                    end <= previous_end &&
+                    4U * ((previous_end - previous_start) - (end - start)) <
+                    5U * (end - start + 1U))
+                {
+                    start = previous_start;
+                    end = previous_end;
+                }
+                reuse = i != 0 && start == previous_start && end == previous_end;
+                previous_start = start;
+                previous_end = end;
+                span = end - start;
+            }
+#endif
+            /* Every packet keeps the original order of its row's quads. */
+            for (j = 0; j <= span; ++j)
             {
                 index = 2U * j;
-                globe_quad_verts[index] = globe_verts[top + first + j];
-                globe_quad_verts[index + 1U] = globe_verts[bottom + first + j];
-                if (j == count) continue;
+                globe_quad_verts[index] = globe_verts[top + start + j];
+                globe_quad_verts[index + 1U] = globe_verts[bottom + start + j];
+                if (j == span) continue;
                 globe_quad_indices[4U * j] = index;
                 globe_quad_indices[4U * j + 1U] = index + 1U;
                 globe_quad_indices[4U * j + 2U] = index + 3U;
                 globe_quad_indices[4U * j + 3U] = index + 2U;
-                globe_quad_colors[j] = colors[first + j];
+                globe_quad_colors[j] = colors[start + j];
             }
-            drv_submit_quadbatch(2U * (count + 1U), globe_quad_verts,
-                                   count, globe_quad_indices,
-                                   globe_quad_colors, i != 0);
+            drv_submit_quadbatch(2U * (span + 1U), globe_quad_verts,
+                                   span, globe_quad_indices,
+                                   globe_quad_colors, reuse);
             if (drv_frame_failed) return;
         }
     }

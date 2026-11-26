@@ -104,6 +104,8 @@ typedef double GLclampd;
 #ifdef TEST_OGL_FREEGLUT
 #define FREEGLUT 1
 #define FREEGLUT_VERSION_2_0 1
+/* FreeGLUT also claims the GLUT 3.7 Xlib implementation level. */
+#define GLUT_XLIB_IMPLEMENTATION 13
 #endif
 #define GL_INDEX_SHIFT 0x0D12
 #define GL_INDEX_OFFSET 0x0D13
@@ -112,20 +114,30 @@ typedef double GLclampd;
 #define GL_PIXEL_MODE_BIT 0x00000020
 #define GL_CURRENT_BIT 0x00000001
 #define GL_CLIENT_PIXEL_STORE_BIT 0x00000001
+#define GL_LIST_BIT 0x00020000
 #define GL_TEXTURE_ENV 0x2300
 #define GL_TEXTURE_ENV_MODE 0x2200
 #define GL_REPLACE 0x1E01
-#ifdef TEST_OGL_OLD_GLUT
+/* GLUT 3.7 keeps API version 3 but declares early GLUT 4 routines,
+ * including display strings, from Xlib implementation 9. GLUT 3.2 has
+ * the availability query without display strings. */
+#if defined(TEST_OGL_OLD_GLUT) || defined(TEST_OGL_GLUT37) || defined(TEST_OGL_GLUT32)
 #define GLUT_API_VERSION 3
 #else
 #define GLUT_API_VERSION 4
+#endif
+#ifdef TEST_OGL_GLUT37
+#define GLUT_XLIB_IMPLEMENTATION 15
+#endif
+#ifdef TEST_OGL_GLUT32
+#define GLUT_XLIB_IMPLEMENTATION 8
 #endif
 #define GLUT_BITMAP_HELVETICA_12 ((void *)1)
 #define GLUT_BITMAP_HELVETICA_10 ((void *)2)
 #define GLUT_BITMAP_HELVETICA_18 ((void *)3)
 extern void glutInit(int *argc,char **argv);
 extern void glutInitDisplayMode(unsigned int mode);
-#if GLUT_API_VERSION >= 4
+#if (GLUT_API_VERSION >= 4 || GLUT_XLIB_IMPLEMENTATION >= 9)
 extern void glutInitDisplayString(const char *string);
 #endif
 extern int glutGet(GLenum query);
@@ -183,6 +195,8 @@ extern void glNewList(GLuint list,GLenum mode);
 extern void glEndList(void);
 extern GLboolean glIsList(GLuint list);
 extern void glCallList(GLuint list);
+extern void glCallLists(GLsizei count,GLenum type,const GLvoid *lists);
+extern void glListBase(GLuint base);
 extern void glDeleteLists(GLuint list,GLsizei count);
 extern void glBegin(GLenum mode);
 extern void glEnd(void);

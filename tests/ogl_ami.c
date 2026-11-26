@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../src/ogl_ami.c"
+#include "ami_shim/timer_record.h"
 
 static struct GfxBase graphics;
 static struct IntuitionBase intuition;
@@ -192,8 +193,12 @@ void mglSwitchDisplay(void)
 { assert(current_context == &context && windows == 1 && !layer_locks && !blitter_busy); ++flips; gpu_finished = 1; }
 void LockLayerRom(struct Layer *value) { assert(value == &layer && !layer_locks); ++layer_locks; }
 void UnlockLayerRom(struct Layer *value) { assert(value == &layer && layer_locks == 1); --layer_locks; }
+/* Intuition's clock is only the fallback while timer.device is closed. */
 void CurrentTime(ULONG *seconds, ULONG *micros)
-{ clock_micros += 16000; *seconds = clock_micros / 1000000; *micros = clock_micros % 1000000; }
+{ assert(!timer_opens); clock_micros += 16000; *seconds = clock_micros / 1000000; *micros = clock_micros % 1000000; }
+/* MiniGL needs AmigaOS 3.x, whose timer.device always offers the E-clock. */
+static void test_timer_systime(ULONG *seconds, ULONG *micros)
+{ (void)seconds; (void)micros; assert(!"TR_GETSYSTIME on a V39 timer.device"); }
 void GetRGB32(struct ColorMap *map, ULONG first, ULONG count, ULONG *values)
 {
     assert(map == &palette && first < 4 && count == 1);
@@ -283,8 +288,9 @@ void drv_reset_timing(void) {}
 double drv_elapsed_time(Drv_clock *state, double sample)
 {
     /* The clock accumulator's discontinuities are covered by driver_helpers;
-     * this platform fixture checks delegation of the native seconds/micros. */
-    assert(state != NULL && sample == (double)clock_micros / 1000000.0);
+     * this platform fixture checks delegation of the native clock sample. */
+    assert(state != NULL);
+    assert(sample == (timer_opens ? timer_eclock_seconds() : (double)clock_micros / 1000000.0));
     return sample;
 }
 
@@ -292,6 +298,7 @@ static void fatal_cleanup_check(void)
 {
     ogl_ami_cleanup();
     assert(libraries == 0 && windows == 0 && locks == 0 && !current_context && !outstanding);
+    assert(timer_idle());
     puts("PASS MiniGL startup rejection: missing/invalid runtime or insufficient stack leaves no native resources");
 }
 static void draw_callback(void) { assert(!outstanding); ++draws; ogl_ami_present(); }
@@ -349,7 +356,7 @@ int main(int argc, char **argv)
     if (native_screen || fail_window || fail_lock || fail_context || fail_bitmap || unknown_bitmap || bitmap_bytes != 4 || bitmap_format != 12 || short_bitmap || huge_bitmap)
     {
         assert(!ogl_ami_create_window(10, 20, 640, 480)); ogl_ami_cleanup();
-        assert(!libraries && !windows && !locks && !current_context);
+        assert(!libraries && !windows && !locks && !current_context && timer_idle());
         puts("PASS MiniGL window rejection: incompatible desktop and allocation failures release screens, windows, contexts and libraries");
         return 0;
     }
@@ -357,7 +364,13 @@ int main(int argc, char **argv)
     assert(!locks && windows == 1 && creates == 1 && ogl_ami_ready());
     ogl_ami_get_size(&width, &height); assert(width == 640 && height == 480);
     assert(ogl_ami_resize_context(width, height) == 1 && creates == 1);
+    before = timer_eclock_calls;
     time = ogl_ami_time_now(); assert(ogl_ami_time_now() > time);
+    assert(timer_opens == 1 && timer_eclock_calls == before + 2);
+    /* Without timer.device the clock falls back to Intuition's CurrentTime. */
+    timer_fail = 3; ami_clock_open(); assert(timer_idle());
+    time = ogl_ami_time_now(); assert(ogl_ami_time_now() > time);
+    timer_fail = 0; ami_clock_open(); assert(timer_opens == 1);
     ogl_ami_present(); assert(flips == 1);
     ogl_ami_draw_string("Status line", 10, 18);
     ogl_ami_draw_string("A long line that should wrap safely inside the window even when resized", 10, 10);
@@ -411,7 +424,7 @@ int main(int argc, char **argv)
     assert(last_mouse_x == 40 && last_mouse_y == 50 && !refreshes && replies == queued && waits == 1);
     ogl_ami_cleanup(); ogl_ami_cleanup();
     assert(!libraries && !windows && !locks && !current_context && !outstanding && !bitmap_count && !blitter_busy);
-    assert(font_opens == font_closes);
+    assert(font_opens == font_closes && timer_idle());
     assert(deletes == creates - 1); /* One context creation was injected to fail. */
     puts("PASS MiniGL platform: exact ABI gate, screen/window ownership, context resize/retry, native OSD/input/clock and cleanup");
     return 0;

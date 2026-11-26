@@ -2,6 +2,7 @@
  * No test here renders pixels or replaces SGI's SDK, libgl, or IRIX ABI. */
 #include <assert.h>
 #include <math.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,13 +24,16 @@ static int fixture_texsoft_begin(unsigned int width, unsigned int height,
                                  float model[4][4], float projection[4][4],
                                  int indexed, const unsigned char *palette);
 static unsigned long *fixture_texsoft_pixels(void);
+static int fixture_raise(int number);
 #define malloc fixture_malloc
+#define raise fixture_raise
 #define texture_build fixture_texture_build
 #define texsoft_texture_take fixture_texsoft_texture_take
 #define texsoft_begin fixture_texsoft_begin
 #define texsoft_pixels fixture_texsoft_pixels
 #include "../src/drv_igl.c"
 #undef malloc
+#undef raise
 #undef texture_build
 #undef texsoft_texture_take
 #undef texsoft_begin
@@ -47,13 +51,30 @@ static int fixture_texsoft_begin(unsigned int width,unsigned int height,
 {return !fail_frame&&texsoft_begin(width,height,model,projection,indexed,palette);}
 static unsigned long *fixture_texsoft_pixels(void)
 {return fail_pixels?NULL:texsoft_pixels();}
+static int window_open;
+static int reraised;
+/* The driver re-raises a caught signal after cleanup; record it instead. */
+static int fixture_raise(int number)
+{
+    void (*current)(int);
+    current=signal(number,SIG_DFL);
+    assert(current==SIG_DFL&&!window_open&&igl_window==0&&!igl_signals_installed);
+    reraised=number;
+    return 0;
+}
 
 extern Vertex *globe_verts;
 extern int globe_longitude, globe_latitude;
 
 static int mode_single, mode_indexed, mode_noz, mode_notexture, mode_unknown, mode_affine;
-static int mode_rgba, mode_rgba_single, mode_rgb_single, mode_unknown_alpha;
-static int window_open, rgb_mode, double_mode, z_enabled, cull_enabled;
+static int mode_rgba, mode_alpha_single, mode_unknown_alpha;
+static long double_bits[3]={8,8,8}, single_bits[3]={8,8,8};
+static int rgb_mode, double_mode, z_enabled, cull_enabled;
+static int foreground_calls, timer_noise, signal_wait;
+static unsigned long texture_queries, getmatrix_calls, strwidth_calls, texture_binds;
+static unsigned long mesh_color_calls, expected_mesh_colors;
+static unsigned int mesh_last_index;
+static int mesh_color_set;
 static int matrix_mode = MVIEWING, matrix_depth[4], texture_bound, environment_bound;
 static Matrix matrices[4], matrix_stack[4][16];
 static unsigned long raster_writes;
@@ -73,9 +94,6 @@ static long window_width = 640, window_height = 480;
 static long origin_x = 100, origin_y = 100, pointer_x = 120, pointer_y = 130;
 static short saved_palette[256][3], actual_palette[256][3];
 static unsigned int palette_changes, closed, exits, window_constraints;
-#ifdef IGL_TEST_SUBDIVIDE
-static int subdivision_enabled;
-#endif
 static int requested[1024];
 static char recorded_stats[256];
 static int recording_stats;
@@ -106,12 +124,14 @@ static unsigned char *earth_bytes(void)
 long getgdesc(long inquiry)
 {
     switch(inquiry) {
-    case GD_BITS_NORM_DBL_RED: case GD_BITS_NORM_DBL_GREEN:
-    case GD_BITS_NORM_DBL_BLUE: return mode_single||mode_indexed ? 0 : (mode_rgb_single ? 5 : 8);
-    case GD_BITS_NORM_SNG_RED:case GD_BITS_NORM_SNG_GREEN:
-    case GD_BITS_NORM_SNG_BLUE:return mode_indexed ? 0 : 8;
+    case GD_BITS_NORM_DBL_RED:return mode_single||mode_indexed ? 0 : double_bits[0];
+    case GD_BITS_NORM_DBL_GREEN:return mode_single||mode_indexed ? 0 : double_bits[1];
+    case GD_BITS_NORM_DBL_BLUE:return mode_single||mode_indexed ? 0 : double_bits[2];
+    case GD_BITS_NORM_SNG_RED:return mode_indexed ? 0 : single_bits[0];
+    case GD_BITS_NORM_SNG_GREEN:return mode_indexed ? 0 : single_bits[1];
+    case GD_BITS_NORM_SNG_BLUE:return mode_indexed ? 0 : single_bits[2];
 #ifdef GD_BITS_NORM_SNG_ALPHA
-    case GD_BITS_NORM_SNG_ALPHA:return mode_unknown_alpha ? -1 : ((mode_rgba||mode_rgba_single) ? 8 : 0);
+    case GD_BITS_NORM_SNG_ALPHA:return mode_unknown_alpha ? -1 : ((mode_rgba||mode_alpha_single) ? 8 : 0);
     case GD_BITS_NORM_DBL_ALPHA:return mode_unknown_alpha ? -1 : (mode_rgba ? 8 : 0);
 #endif
     case GD_BITS_NORM_DBL_CMODE:return mode_single ? 0 : 8;
@@ -121,7 +141,7 @@ long getgdesc(long inquiry)
     case GD_ZMAX:return 0xffffffL;
     case GD_XPMAX:return 1280;
     case GD_YPMAX:return 1024;
-    case GD_TEXTURE:return mode_unknown ? -1 : ((mode_notexture||fail_capability) ? 0 : 1);
+    case GD_TEXTURE:++texture_queries;return mode_unknown ? -1 : ((mode_notexture||fail_capability) ? 0 : 1);
     #ifdef GD_TEXTURE_PERSP
     case GD_TEXTURE_PERSP:return mode_affine ? 0 : 1;
 #endif
@@ -132,7 +152,9 @@ long getgdesc(long inquiry)
 void prefsize(long w,long h){assert(w>0&&h>0);window_width=w;window_height=h;}
 void prefposition(long l,long r,long b,long t)
 {assert(r>=l&&t>=b);origin_x=l;origin_y=b;window_width=r-l+1;window_height=t-b+1;}
-long winopen(char *title){assert(!window_open&&strcmp(title,TESTGLOBE_NAME)==0);window_open=1;return 1;}
+void foreground(void){assert(!window_open);++foreground_calls;}
+/* foreground() must precede winopen, or IRIS GL forks into the background. */
+long winopen(char *title){assert(!window_open&&foreground_calls==1&&strcmp(title,TESTGLOBE_NAME)==0);window_open=1;return 1;}
 void winclose(long window){assert(window==1&&window_open);window_open=0;++closed;}
 void winconstraints(void){assert(window_open&&window_constraints==0);++window_constraints;}
 void gexit(void){++exits;}
@@ -150,7 +172,7 @@ void mmode(short mode){assert(mode>=0&&mode<4);matrix_mode=mode;}
 static void identity(Matrix m){int i,j;for(i=0;i<4;++i)for(j=0;j<4;++j)m[i][j]=(float)(i==j);}
 static void multiply_left(Matrix left){Matrix out;int i,j,k;for(i=0;i<4;++i)for(j=0;j<4;++j){out[i][j]=0;for(k=0;k<4;++k)out[i][j]+=left[i][k]*matrices[matrix_mode][k][j];}memcpy(matrices[matrix_mode],out,sizeof(out));}
 void loadmatrix(Matrix matrix){memcpy(matrices[matrix_mode],matrix,sizeof(Matrix));}
-void getmatrix(Matrix matrix){memcpy(matrix,matrices[matrix_mode],sizeof(Matrix));}
+void getmatrix(Matrix matrix){++getmatrix_calls;memcpy(matrix,matrices[matrix_mode],sizeof(Matrix));}
 void pushmatrix(void){assert(matrix_mode==MVIEWING);assert(matrix_depth[matrix_mode]<16);memcpy(matrix_stack[matrix_mode][matrix_depth[matrix_mode]++],matrices[matrix_mode],sizeof(Matrix));}
 void popmatrix(void){assert(matrix_mode==MVIEWING&&matrix_depth[matrix_mode]>0);memcpy(matrices[matrix_mode],matrix_stack[matrix_mode][--matrix_depth[matrix_mode]],sizeof(Matrix));}
 void perspective(Angle fov,float aspect,float near_plane,float far_plane)
@@ -179,29 +201,32 @@ void rot(float angle,char axis)
 }
 void rotate(Angle angle,char axis){rot((float)angle/10.0f,axis);}
 void backface(Boolean enabled){cull_enabled=enabled!=0;}
-void zbuffer(Boolean enabled){assert(!enabled||!mode_noz);z_enabled=enabled!=0;}
-void zclear(void){assert(!mode_noz);++zclears;}
-void czclear(unsigned long background,long depth){assert(!mode_noz&&depth==0xffffffL);assert((background&0xffffffUL)==0);++clears;++zclears;}
+/* The convex globe needs no z-buffer; IGL_ZBUFFER builds clear it with
+ * the colour in one czclear. */
+void zbuffer(Boolean enabled){assert(!enabled||(IGL_ZBUFFER&&!mode_noz));z_enabled=enabled!=0;}
+void zclear(void){assert(!"IRIS GL clears depth only with czclear");}
+void czclear(unsigned long background,long depth)
+{
+    assert(IGL_ZBUFFER&&!mode_noz&&depth==0xffffffL);
+    if(rgb_mode)assert((background&0xffffffUL)==0);
+    else assert(background==igl_background&&background<256);
+    ++clears;++zclears;
+}
 void lsetdepth(long near_depth,long far_depth){assert(near_depth==0&&far_depth==0xffffffL);}
 void zfunction(long function){assert(function==ZF_LEQUAL);}
-void clear(void){assert((current_color&0xffffffUL)==0||!rgb_mode);++clears;}
+void clear(void){assert(!(IGL_ZBUFFER&&!mode_noz));assert((current_color&0xffffffUL)==0||!rgb_mode);++clears;}
 void shademodel(long model){assert(model==FLAT);}
 void subpixel(Boolean enabled){assert(enabled);}
 #ifdef IGL_TEST_SUBDIVIDE
-void scrsubdivide(long mode,float params[])
-{
-    if(mode==SS_OFF)subdivision_enabled=0;
-    else{assert(mode==SS_DEPTH&&params[0]==0&&params[1]==0&&params[2]==10);subdivision_enabled=1;}
-}
+/* Affine-only hardware textures natively without subdivision: at most 0.32
+ * texel from perspective at key 1, 0.02 at the key-3 default. */
+void scrsubdivide(long mode,float params[]){(void)mode;(void)params;assert(!"IRIS GL no longer subdivides");}
 #endif
+/* Any GD_TEXTURE > 0 textures natively, even when affine or when the
+ * headers predate GD_TEXTURE_PERSP and the SS_ subdivision tokens. */
 static int software_texture_expected(void)
 {
-    if(mode_notexture||mode_indexed)return 1;
-#ifdef IGL_TEST_SUBDIVIDE
-    return 0;
-#else
-    return mode_affine;
-#endif
+    return mode_notexture||mode_indexed;
 }
 static void check_mesh_triangle(const float *a,const float *b,const float *c)
 {
@@ -215,13 +240,18 @@ static void check_mesh_triangle(const float *a,const float *b,const float *c)
     cz=(a[2]+b[2]+c[2])/3.0;
     area=(uy*vz-uz*vy)*cx+(uz*vx-ux*vz)*cy+(ux*vy-uy*vx)*cz;
     assert(area>0.0);
-    if(!drv_texture_enabled) {
+    if(!texture_bound) {
         phi=atan2(cy,cx);if(phi<0)phi+=2.0*PI;
         theta=atan2(sqrt(cx*cx+cy*cy),cz);
         longitude=(unsigned int)(phi*globe_longitude/(2.0*PI));
         latitude=(unsigned int)(theta*globe_latitude/PI);
         assert(longitude<(unsigned int)globe_longitude&&latitude<(unsigned int)globe_latitude);
         index=earth_bytes()[(unsigned long)latitude*globe_longitude+longitude];
+        /* One colour command for each mesh's first facet and for each
+         * change of palette index; none for the repeats in between. */
+        assert(mesh_color_set);
+        if(mesh_vertices==2U||index!=mesh_last_index)++expected_mesh_colors;
+        mesh_last_index=index;
         expected=(unsigned long)earth_cmap[index][0]|((unsigned long)earth_cmap[index][1]<<8)|((unsigned long)earth_cmap[index][2]<<16);
         if(mode_indexed) {
             assert(current_color<256);
@@ -240,7 +270,7 @@ void endpolygon(void){assert(!"IRIS GL strip renderer used individual polygons")
 void bgntmesh(void)
 {
     assert(!in_mesh&&cull_enabled);
-    in_mesh=1;mesh_vertices=current_uv=0;
+    in_mesh=1;mesh_vertices=current_uv=0;mesh_color_set=0;
 }
 void v3f(float v[3])
 {
@@ -295,11 +325,14 @@ void endtmesh(void)
     in_mesh=0;
     if(fail_traversal)drv_abort_frame("injected traversal failure");
 }
-void c3f(float c[3]){current_color=(unsigned long)(c[0]*255.0f+0.5f)|((unsigned long)(c[1]*255.0f+0.5f)<<8)|((unsigned long)(c[2]*255.0f+0.5f)<<16);}
+/* In FLAT meshes only the colour current at a facet's last vertex counts,
+ * so a colour before the third vertex would be wasted. */
+static void mesh_color(void){if(in_mesh){assert(mesh_vertices>=2U);++mesh_color_calls;mesh_color_set=1;}}
+void c3f(float c[3]){mesh_color();current_color=(unsigned long)(c[0]*255.0f+0.5f)|((unsigned long)(c[1]*255.0f+0.5f)<<8)|((unsigned long)(c[2]*255.0f+0.5f)<<16);}
 void c3s(short c[3]){RGBcolor(c[0],c[1],c[2]);}
-void cpack(unsigned long packed){assert((packed&0xff000000UL)==0xff000000UL);current_color=packed;}
-void RGBcolor(short r,short g,short b){assert(r>=0&&r<=255&&g>=0&&g<=255&&b>=0&&b<=255);current_color=(unsigned long)r|((unsigned long)g<<8)|((unsigned long)b<<16);}
-void color(Colorindex i){assert(i<256);current_color=(unsigned long)i;}
+void cpack(unsigned long packed){mesh_color();assert((packed&0xff000000UL)==0xff000000UL);current_color=packed;}
+void RGBcolor(short r,short g,short b){mesh_color();assert(r>=0&&r<=255&&g>=0&&g<=255&&b>=0&&b<=255);current_color=(unsigned long)r|((unsigned long)g<<8)|((unsigned long)b<<16);}
+void color(Colorindex i){mesh_color();assert(i<256);current_color=(unsigned long)i;}
 void mapcolor(Colorindex i,short r,short g,short b){assert(i<256);actual_palette[i][0]=r;actual_palette[i][1]=g;actual_palette[i][2]=b;++palette_changes;}
 void getmcolor(Colorindex i,short *r,short *g,short *b){assert(i<256);*r=actual_palette[i][0];*g=actual_palette[i][1];*b=actual_palette[i][2];}
 void texdef2d(long id,long components,long width,long height,unsigned long *image,long np,float *props)
@@ -314,13 +347,15 @@ void texdef2d(long id,long components,long width,long height,unsigned long *imag
     }
     ++texture_definitions;texture_pixels+=(unsigned long)width*height;
 }
-void texbind(long target,long id){assert(target==TX_TEXTURE_0);assert(id==0||(!software_texture_expected()));texture_bound=id!=0;}
+void texbind(long target,long id){assert(target==TX_TEXTURE_0);assert(id==0||(!software_texture_expected()));texture_bound=id!=0;++texture_binds;}
 void tevdef(long id,long np,float *props){assert(id>0&&np>0&&props[np-1]==TV_NULL);}
 void tevbind(long target,long id){assert(target==TV_ENV0);environment_bound=id!=0;}
 void t2f(float uv[2]){assert(in_mesh&&uv[0]>=0&&uv[0]<=1&&uv[1]>=0&&uv[1]<=1);memcpy(last_uv,uv,sizeof(last_uv));++coordinate_calls;++current_uv;}
 long getplanes(void){return mode_indexed?8:24;}
 long getheight(void){return font_height;}
-long strwidth(char *text){return (long)strlen(text)*8;}
+static long text_width(const char *text){return (long)strlen(text)*8;}
+/* The OSD measures each glyph once per font; strings are additive. */
+long strwidth(char *text){assert(strlen(text)==1);++strwidth_calls;return text_width(text);}
 void lrectwrite(Screencoord l,Screencoord b,Screencoord r,Screencoord top,unsigned long *pixels)
 {
     unsigned long count,i,changed;assert(!z_enabled&&l==0&&b==0&&r==(int)drv_win_width-1&&top==(int)drv_win_height-1&&pixels!=NULL);
@@ -331,12 +366,9 @@ void lrectwrite(Screencoord l,Screencoord b,Screencoord r,Screencoord top,unsign
 void font(short index){assert(index==0);}
 void cmov2i(Icoord x,Icoord y){assert(x>=0&&x<(long)drv_win_width&&y>=0&&y<(long)drv_win_height);text_baseline=y;}
 void charstr(char *text){
-#ifdef IGL_TEST_SUBDIVIDE
-assert(!subdivision_enabled);
-#endif
 assert(!texture_bound&&!z_enabled);assert(text!=NULL);
 if(checking_osd_bounds){
-    assert(strwidth(text)<=(long)drv_win_width-16L);
+    assert(text_width(text)<=(long)drv_win_width-16L);
     assert(text_baseline>=font_height&&text_baseline+font_height<(long)drv_win_height);
     if(strstr(text,"1-5")!=NULL)recording_help=1;
     if(recording_help){if(text_baseline+font_height>help_top)help_top=text_baseline+font_height;}
@@ -351,31 +383,63 @@ else if(strstr(text,"triangles")||strstr(text,"scene")){
 static void check_osd_layout(void)
 {
     unsigned int saved_width, saved_height;
-    unsigned long before;
+    unsigned long before, reads, widths;
+    unsigned int i;
+    Matrix model, projection;
     saved_width=drv_win_width;saved_height=drv_win_height;
+    /* The OSD pushes the model view and sets the projection again: the
+     * same matrices, without reading either back from the pipe. */
+    memcpy(model,matrices[MVIEWING],sizeof(model));
+    memcpy(projection,matrices[MPROJECTION],sizeof(projection));
+    reads=getmatrix_calls;
+    drv_draw_osd();
+    assert(getmatrix_calls==reads&&matrix_depth[MVIEWING]==0&&matrix_mode==MVIEWING);
+    assert(memcmp(model,matrices[MVIEWING],sizeof(model))==0);
+    assert(memcmp(projection,matrices[MPROJECTION],sizeof(projection))==0);
+    /* Every glyph is already measured, and an unchanged window reuses the
+     * help wrap: an emptied cache stays empty until the width changes. */
+    for(i=32;i<127;++i)(void)igl_glyph((unsigned char)i);
+    widths=strwidth_calls;
+    drv_draw_osd();
+    assert(strwidth_calls==widths&&igl_help_width==(long)drv_win_width-16L);
     checking_osd_bounds=1;
+    igl_help_wrap.count=0;
+    recording_help=0;help_top=0;status_bottom=(long)drv_win_height;
+    drv_draw_osd();
+    assert(!recording_help);
     drv_win_width=320;drv_win_height=240;
     recording_help=0;help_top=0;status_bottom=240;
     drv_draw_osd();
-    assert(recording_help&&help_top+4<=status_bottom);
+    assert(recording_help&&help_top+4<=status_bottom&&igl_help_width==304);
+    assert(strwidth_calls==widths);
     /* Large native fonts and short windows retain bounded statistics,
      * suppressing help when the complete blocks would overlap. */
     drv_win_height=100;font_height=32;
     recording_help=0;help_top=0;status_bottom=100;
     drv_draw_osd();
-    assert(!recording_help);
+    assert(!recording_help&&strwidth_calls>widths&&igl_help_height==32);
     drv_win_width=18;drv_win_height=240;
     before=text_calls;
     drv_draw_osd();
     assert(text_calls==before);
     checking_osd_bounds=0;font_height=14;
     drv_win_width=saved_width;drv_win_height=saved_height;
+    memcpy(matrices[MPROJECTION],projection,sizeof(projection));
     puts("PASS IRIS GL OSD: native font metrics, bounded glyphs, narrow windows and nonoverlapping status/help");
+    puts("PASS IRIS GL OSD state: pushed model view, projection set again without read-back, glyphs measured once per font, help wrap cached per width and font");
 }
 void qdevice(Device device){assert(device<1024);requested[device]=1;}
+void noise(Device device,short delta){assert(device==TIMER0&&requested[TIMER0]&&delta>0);timer_noise=delta;}
 void qreset(void){event_index=event_count;}
 long qtest(void){if(empty_wait_expected)assert(clears<=empty_clear_limit);return event_index<event_count?events[event_index].device:0;}
 long qread(short *value){
+if(event_index==event_count&&signal_wait){
+    /* A signal arrives while blocked; IRIX may restart the wait, so only
+     * the next TIMER0 heartbeat returns from qread. */
+    assert(!igl_dirty&&!igl_signal_caught&&requested[TIMER0]&&timer_noise>0);
+    signal_wait=0;(void)raise(SIGINT);assert(igl_signal_caught==SIGINT);
+    *value=0;return TIMER0;
+}
 if(event_index==event_count){
     assert(empty_wait_expected&&!globe_ready()&&drv_auto_enabled&&!igl_dirty);
     empty_wait_expected=0;*value=27;return KEYBD;
@@ -437,11 +501,18 @@ static void check_mouse_recovery(void)
 static void frame(void)
 {
     unsigned long before,old_writes,old_vertices,old_meshes,expected_meshes,expected_vertices;
-    unsigned long old_native;
+    unsigned long old_native,old_clears,old_reads;
     before=drawn;old_writes=raster_writes;old_vertices=drawn_vertices;old_meshes=drawn_meshes;
-    old_native=native_texture_draws;
+    old_native=native_texture_draws;old_clears=clears;old_reads=getmatrix_calls;
     rotations=0;drv_render();
     assert(drawn>before||raster_writes>old_writes);
+    /* lrectwrite replaces the whole window: only native drawing clears. */
+    assert(clears-old_clears==(raster_writes>old_writes?0UL:1UL));
+    /* Only the software path reads matrices back; the OSD never does. */
+    if(software_texture_expected()&&drv_texture_enabled)assert(getmatrix_calls-old_reads<=2UL);
+    else assert(getmatrix_calls==old_reads);
+    if(raster_writes>old_writes)assert(getmatrix_calls-old_reads==2UL);
+    assert(mesh_color_calls==expected_mesh_colors&&!in_mesh);
     if(drawn>before){
         if(drv_cull_enabled){
             assert(drawn-before<globe_tris_num);
@@ -460,10 +531,8 @@ static void frame(void)
     assert(rotation_axes[2]=='x'&&rotation_values[2]==-90);
     assert(rotation_axes[3]=='z'&&rotation_values[3]==-90);
     assert(matrix_depth[MVIEWING]==0&&matrix_depth[MPROJECTION]==0);
-    assert(cull_enabled&&z_enabled==!mode_noz);
-#ifdef IGL_TEST_SUBDIVIDE
-    assert(!mode_affine||subdivision_enabled==(drv_texture_enabled!=0));
-#endif
+    assert(cull_enabled&&z_enabled==(IGL_ZBUFFER&&!mode_noz));
+    assert(zclears==(IGL_ZBUFFER&&!mode_noz?clears:0UL));
     {
         double sx,cx,sy,cy,expected[3][3];int i,j;
         sx=sin((double)drv_rot_x*PI/180);cx=cos((double)drv_rot_x*PI/180);
@@ -474,6 +543,7 @@ static void frame(void)
         for(i=0;i<3;++i)for(j=0;j<3;++j)assert(fabs(matrices[MVIEWING][i][j]-expected[i][j])<1e-5);
         assert(matrices[MVIEWING][3][0]==0&&matrices[MVIEWING][3][1]==0&&matrices[MVIEWING][3][2]==-3000);
         assert(fabs(matrices[MPROJECTION][1][1]-1/tan(PI/8))<1e-5);
+        assert(fabs(matrices[MPROJECTION][0][0]*drv_win_width/drv_win_height-1/tan(PI/8))<1e-5);
         assert(matrices[MPROJECTION][2][3]==-1&&matrices[MPROJECTION][3][3]==0);
     }
     assert(strstr(recorded_stats,"triangles")!=NULL&&strstr(recorded_stats,"quads")==NULL);
@@ -509,8 +579,68 @@ static int failure_profile(const char *profile)
 {
     return strcmp(profile,"stagefail")==0||strcmp(profile,"imagefail")==0||
            strcmp(profile,"softmipfail")==0||strcmp(profile,"softframefail")==0||
-           strcmp(profile,"softpixelsfail")==0||strcmp(profile,"capabilitylost")==0||
-           strcmp(profile,"unloadedtexture")==0;
+           strcmp(profile,"softpixelsfail")==0||strcmp(profile,"unloadedtexture")==0;
+}
+
+/* GD_TEXTURE describes the configured hardware, so it is read once after
+ * gconfig. A later inquiry that disagrees must neither be made nor matter. */
+static void check_texture_capability(void)
+{
+    unsigned long definitions;
+    assert(texture_queries==1&&igl_native_texture);
+    igl_keyboard('T');frame();assert(igl_texture_used);
+    fail_capability=1;definitions=texture_definitions;
+    frame();frame();
+    assert(igl_texture_used&&!igl_texture_failed&&drv_texture_loaded&&texture_queries==1);
+    assert(strstr(recorded_stats,", texture on")!=NULL);
+    igl_keyboard('t');frame();igl_keyboard('T');frame();
+    assert(igl_texture_used&&texture_definitions==definitions&&texture_queries==1);
+    igl_cleanup();texture_free();globe_free();
+    puts("PASS IRIS GL texture capability: GD_TEXTURE is read once after gconfig, and a later disagreeing inquiry neither runs nor stops native texturing");
+}
+
+static void (*saved_dispositions[4])(int);
+static const int test_signals[4]={SIGINT,SIGTERM,SIGHUP,SIGQUIT};
+
+static void (*disposition(int number))(int)
+{
+    void (*current)(int);
+    current=signal(number,SIG_DFL);
+    (void)signal(number,current);
+    return current;
+}
+
+/* A kill sets only the driver's flag. The loop must leave before blocking
+ * or after the heartbeat, restore the colormap and handlers through
+ * cleanup, then re-raise the caught signal with its default action. */
+static void check_signal(int wait)
+{
+    unsigned long renders;
+    unsigned int i;
+    assert(disposition(SIGINT)==igl_signal&&disposition(SIGTERM)==igl_signal);
+    assert(disposition(SIGQUIT)==igl_signal&&disposition(SIGHUP)==SIG_IGN);
+    frame();assert(!igl_dirty);
+    if(wait){
+        /* Idle with an empty queue: qread blocks until the heartbeat. */
+        signal_wait=1;drv_auto_enabled=FALSE;
+        drv_loop();
+        assert(!signal_wait&&reraised==SIGINT);
+    }else{
+        /* SVR3 semantics reset the handler on delivery: it must re-arm. */
+        (void)raise(SIGTERM);
+        assert(igl_signal_caught==SIGTERM&&disposition(SIGTERM)==igl_signal);
+        (void)raise(SIGTERM);
+        assert(igl_signal_caught==SIGTERM&&disposition(SIGTERM)==igl_signal);
+        enqueue(KEYBD,'2');renders=swaps+flushes;
+        drv_loop();
+        assert(reraised==SIGTERM&&event_index==0&&swaps+flushes==renders&&globe_longitude==128);
+    }
+    assert(!window_open&&closed==1&&exits==1&&igl_window==0);
+    if(mode_indexed)assert(memcmp(saved_palette,actual_palette,sizeof(saved_palette))==0);
+    for(i=0;i<4;++i)assert(disposition(test_signals[i])==saved_dispositions[i]);
+    texture_free();globe_free();
+    puts(wait?"PASS IRIS GL signal while idle: a restarted qread returns on the TIMER0 heartbeat and the loop exits through cleanup":
+              "PASS IRIS GL termination signals: SVR3 handler re-arms, pending signal stops the loop before input, cleanup restores palette and handlers, then the signal is re-raised");
 }
 
 static void check_texture_failure(const char *profile)
@@ -550,10 +680,21 @@ int main(int argc,char **argv)
     int i,j;
     unsigned long before;
     float old_x,old_y;
+    long expected_bits;
+    int expected_double;
     mode_rgba=argc>1&&strcmp(argv[1],"rgba")==0;
-    mode_rgba_single=argc>1&&strcmp(argv[1],"rgba-single")==0;
-    mode_rgb_single=argc>1&&strcmp(argv[1],"rgb-single")==0;
+    mode_alpha_single=argc>1&&strcmp(argv[1],"alpha-single")==0;
     mode_unknown_alpha=argc>1&&strcmp(argv[1],"unknown-alpha")==0;
+    /* Double-buffered RGB channels against 8/8/8 single-buffered ones:
+     * 5/5/5 and the 24-plane 4/4/4 reach the 12-bit threshold, 4/4/3 does
+     * not; an Entry offers 1/2/1 against 3/3/2. */
+    if(argc>1&&strcmp(argv[1],"rgb15")==0)double_bits[0]=double_bits[1]=double_bits[2]=5;
+    if(argc>1&&strcmp(argv[1],"xs24")==0)double_bits[0]=double_bits[1]=double_bits[2]=4;
+    if(argc>1&&strcmp(argv[1],"rgb11")==0){double_bits[0]=double_bits[1]=4;double_bits[2]=3;}
+    if(argc>1&&strcmp(argv[1],"entry")==0){
+        double_bits[0]=1;double_bits[1]=2;double_bits[2]=1;
+        single_bits[0]=3;single_bits[1]=3;single_bits[2]=2;
+    }
     mode_single=argc>1&&(strcmp(argv[1],"single")==0||strcmp(argv[1],"indexed-single")==0);
     mode_indexed=argc>1&&(strcmp(argv[1],"indexed")==0||strcmp(argv[1],"indexed-single")==0);
     mode_noz=argc>1&&strcmp(argv[1],"noz")==0;
@@ -566,17 +707,42 @@ int main(int argc,char **argv)
     if(argc>1&&strncmp(argv[1],"soft",4)==0)mode_notexture=1;
     for(i=0;i<4;++i)identity(matrices[i]);
     for(i=0;i<256;++i)for(j=0;j<3;++j)actual_palette[i][j]=saved_palette[i][j]=(short)((i+j*37)&255);
+    /* A runner may start the test with signals ignored (background jobs,
+     * nohup); the signal profiles fix them, with SIGHUP ignored as by nohup. */
+    if(argc>2){
+        for(i=0;i<4;++i)(void)signal(test_signals[i],SIG_DFL);
+        (void)signal(SIGHUP,SIG_IGN);
+    }
+    for(i=0;i<4;++i)saved_dispositions[i]=disposition(test_signals[i]);
     drv_ext_init();drv_init(&argc,argv);assert(!drv_texture_enabled);
     assert(drv_init_window(0,0,0,0));
-    assert(window_open&&double_mode==!(mode_single||mode_rgba_single||mode_rgb_single)&&rgb_mode==!mode_indexed);
-    assert(drv_bits_per_pixel==(mode_indexed?8U:((mode_rgba||mode_rgba_single)?32U:24U)));
+    expected_double=!mode_single;
+    expected_bits=mode_indexed?8L:(mode_rgba?32L:24L);
+    if(strcmp(argc>1?argv[1]:"","rgb15")==0)expected_bits=15;
+    if(strcmp(argc>1?argv[1]:"","xs24")==0)expected_bits=12;
+    if(strcmp(argc>1?argv[1]:"","rgb11")==0)expected_double=0;
+    if(strcmp(argc>1?argv[1]:"","entry")==0){expected_double=0;expected_bits=8;}
+    assert(window_open&&double_mode==expected_double&&rgb_mode==!mode_indexed);
+    assert((long)drv_bits_per_pixel==expected_bits);
     assert(drv_colormapped==mode_indexed);
     assert(sizeof(Color)==1);
     assert(requested[KEYBD]&&requested[LEFTMOUSE]&&requested[RIGHTMOUSE]&&requested[MOUSEX]&&requested[MOUSEY]&&requested[REDRAW]&&requested[INPUTCHANGE]&&requested[WINQUIT]);
+    assert(foreground_calls==1&&requested[TIMER0]&&timer_noise==IGL_HEARTBEAT_TICKS);
+    assert(texture_queries==(mode_indexed?0UL:1UL)&&!z_enabled==!(IGL_ZBUFFER&&!mode_noz));
+    for(i=0;i<4;++i)assert(disposition(test_signals[i])==
+        (saved_dispositions[i]==SIG_IGN?SIG_IGN:igl_signal));
     globe_init();texture_init();globe_init_verts(GLOBE_DEFAULT_LONGITUDE,-1,GLOBE_RADIUS);
     assert(GLOBE_DEFAULT_LONGITUDE==128&&globe_longitude==128);
+    if(argc>2){
+        check_signal(strcmp(argv[2],"signalwait")==0);
+        return 0;
+    }
     if(argc>1&&failure_profile(argv[1])){
         check_texture_failure(argv[1]);
+        return 0;
+    }
+    if(argc>1&&strcmp(argv[1],"capabilitylost")==0){
+        check_texture_capability();
         return 0;
     }
     if(argc>1&&strcmp(argv[1],"framefail")==0){
@@ -670,6 +836,15 @@ int main(int argc,char **argv)
     igl_keyboard('T');assert(drv_texture_enabled);
     frame();
     check_cull_toggle();
+    if(!software_texture_expected()){
+        unsigned long binds;
+        /* One bind per frame and one unbind for the OSD text, with no
+         * rebind after it; without the OSD the bind state just persists. */
+        binds=texture_binds;frame();assert(texture_binds-binds==2UL&&!texture_bound);
+        igl_keyboard('o');frame();binds=texture_binds;frame();
+        assert(texture_binds==binds&&texture_bound);
+        igl_keyboard('O');
+    }
     if(igl_native_texture){
         assert(igl_object>=0&&isobj(igl_object));
         object_exists[igl_object]=0;

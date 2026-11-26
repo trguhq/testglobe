@@ -40,6 +40,7 @@
 #include "globe.h"
 #include "glob_ext.h"
 #include "tga_cmd.h"
+#include "tga_rlm.h"
 
 /* SDK order matters. Its far-data bindings must see small contiguous
  * packets, never a huge mesh pointer which may cross a segment boundary. */
@@ -48,8 +49,11 @@
 #include <typedefs.h>
 
 #define TGA_WAIT_TICKS (10UL * (unsigned long)CLOCKS_PER_SEC)
+/* set_timeout takes milliseconds (guide p. 4-123). */
 #define TGA_TIMEOUT_MS 5000
 #define TGA_PALET_CHUNK 16
+/* Palette indices are 0-255; this marks the board's fill color unknown. */
+#define TGA_NO_COLOR 0xffffU
 
 static CONFIG tga_config;
 static unsigned short tga_previous_video, tga_previous_mode;
@@ -62,6 +66,7 @@ static unsigned short tga_error_command;
 static short tga_error_code;
 static unsigned short tga_display_page, tga_draw_page;
 static unsigned short tga_black, tga_white;
+static unsigned int tga_fill_color = TGA_NO_COLOR;
 static unsigned int tga_font_width = 8, tga_font_height = 16;
 static unsigned int tga_packet_vertices;
 static PALET tga_saved_palette[256], tga_palette[256];
@@ -112,25 +117,6 @@ static int tga_absolute_path(char *destination, const char *source)
 #endif
 }
 
-static unsigned long tga_payload_u32(const unsigned char *bytes)
-{
-    return (unsigned long)bytes[0] | ((unsigned long)bytes[1] << 8) |
-           ((unsigned long)bytes[2] << 16) | ((unsigned long)bytes[3] << 24);
-}
-
-static unsigned long tga_payload_crc(unsigned long crc,
-                                      const unsigned char *bytes, unsigned int count)
-{
-    unsigned int i, bit;
-    for (i = 0; i < count; ++i)
-    {
-        crc ^= bytes[i];
-        for (bit = 0; bit < 8U; ++bit)
-            crc = (crc >> 1) ^ ((crc & 1UL) != 0UL ? 0xedb88320UL : 0UL);
-    }
-    return crc;
-}
-
 static int tga_remove_temp(void)
 {
     if (tga_temp_path[0] == '\0') return TRUE;
@@ -173,9 +159,8 @@ static int tga_create_temp_at(const char *directory)
 static int tga_extract_module(void)
 {
     FILE *program;
-    unsigned char footer[TGA_RLM_TRAILER_SIZE], header[28], buffer[512];
+    unsigned char footer[TGA_RLM_TRAILER_SIZE], header[TGA_RLM_MZ_HEADER], buffer[512];
     unsigned long offset, length, expected_crc, crc, remaining;
-    unsigned long pages, last_page, image_size, header_size;
     unsigned int chunk, written;
     long size;
     int descriptor = -1, amount, valid = FALSE;
@@ -192,27 +177,21 @@ static int tga_extract_module(void)
     }
     if (fseek(program, 0L, SEEK_END) != 0 || (size = ftell(program)) < 0L ||
         (unsigned long)size > 0x7fffffffUL ||
-        size < 28L + (long)TGA_RLM_TRAILER_SIZE ||
+        size < (long)TGA_RLM_MZ_HEADER + (long)TGA_RLM_TRAILER_SIZE ||
         fseek(program, size - (long)TGA_RLM_TRAILER_SIZE, SEEK_SET) != 0 ||
         fread(footer, 1, sizeof(footer), program) != sizeof(footer)) goto done;
-    if (memcmp(footer, TGA_RLM_MAGIC, 8U) != 0 || tga_payload_u32(footer + 20) != 0UL)
+    if (memcmp(footer, TGA_RLM_MAGIC, 8U) != 0 || TGA_RLM_U32(footer + 20) != 0UL)
         goto done;
-    offset = tga_payload_u32(footer + 8);
-    length = tga_payload_u32(footer + 12);
-    expected_crc = tga_payload_u32(footer + 16);
+    offset = TGA_RLM_U32(footer + 8);
+    length = TGA_RLM_U32(footer + 12);
+    expected_crc = TGA_RLM_U32(footer + 16);
     if (offset < sizeof(header) || offset > (unsigned long)size - TGA_RLM_TRAILER_SIZE ||
         length == 0UL || length > TGA_RLM_MAX_SIZE ||
         length != (unsigned long)size - TGA_RLM_TRAILER_SIZE - offset) goto done;
+    /* The payload must start after the DOS load image, as the packer wrote. */
     if (fseek(program, 0L, SEEK_SET) != 0 ||
         fread(header, 1, sizeof(header), program) != sizeof(header) ||
-        header[0] != 'M' || header[1] != 'Z') goto done;
-    pages = (unsigned long)header[4] | ((unsigned long)header[5] << 8);
-    last_page = (unsigned long)header[2] | ((unsigned long)header[3] << 8);
-    header_size = ((unsigned long)header[8] | ((unsigned long)header[9] << 8)) * 16UL;
-    if (pages == 0UL || last_page > 511UL) goto done;
-    image_size = (pages - 1UL) * 512UL + (last_page != 0UL ? last_page : 512UL);
-    if (header_size < sizeof(header) || header_size > image_size || image_size > offset)
-        goto done;
+        tga_rlm_image_size(header, offset) == 0UL) goto done;
     if (fseek(program, (long)offset, SEEK_SET) != 0) goto done;
     descriptor = tga_create_temp_at(getenv("TEMP"));
     if (descriptor < 0) descriptor = tga_create_temp_at(getenv("TMP"));
@@ -228,7 +207,7 @@ static int tga_extract_module(void)
     {
         chunk = remaining > sizeof(buffer) ? (unsigned int)sizeof(buffer) : (unsigned int)remaining;
         if (fread(buffer, 1, chunk, program) != chunk) goto done;
-        crc = tga_payload_crc(crc, buffer, chunk);
+        crc = tga_rlm_crc(crc, buffer, chunk);
         written = 0;
         while (written < chunk)
         {
@@ -306,9 +285,22 @@ static int tga_wait_page(void)
     return TRUE;
 }
 
+/* set_config returns bit 0 = status and bit 1 = graphics manager reloaded
+ * (guide pp. 2-14 and 4-100). A reload flushes every downloaded extension,
+ * extprims.rlm and our module included, and frees TMS340 memory, so the
+ * guide asks for set_config before any download. drv_init_window selects
+ * its mode before installing either; only cleanup calls it afterwards. */
+static int tga_set_config(short mode)
+{
+    short result = set_config(mode, TRUE);
+    if ((result & 2) != 0) tga_module = -1;
+    return (result & 1) != 0;
+}
+
 /* flush_module is the documented host API: it frees both code and export
- * symbols. Keep ownership when the module is locked or release otherwise
- * fails, so recovery can retry without installing a second copy. */
+ * symbols, returning 1 when flushed and 0 for an invalid, unloaded or locked
+ * module (guide p. 4-21). Keep ownership when the module is locked or
+ * release otherwise fails, so recovery can retry without a second copy. */
 static int tga_release_module(void)
 {
     short released;
@@ -332,9 +324,10 @@ static void TG_ATEXIT_CALL tga_cleanup(void)
         (void)tga_wait_draw();
         if (!tga_io_failed) (void)tga_wait_page();
         if (!tga_io_failed) (void)tga_release_module();
+        /* set_config loads the mode's default palette; restore ours after. */
         if (!tga_io_failed && tga_config_saved)
         {
-            if (set_config((short)tga_previous_mode, TRUE) & 1)
+            if (tga_set_config((short)tga_previous_mode))
                 if (tga_palette_saved)
                     for (i = 0; i < 256 && !tga_io_failed; i += TGA_PALET_CHUNK)
                         set_palet(TGA_PALET_CHUNK, (long)i, tga_saved_palette + i);
@@ -349,6 +342,15 @@ static void TG_ATEXIT_CALL tga_cleanup(void)
     tga_open = tga_video_set = FALSE;
     tga_module = -1;
     tga_cleaning = FALSE;
+}
+
+/* err.c prints and exits, and the atexit cleanup would then reinitialize
+ * the previous video mode, which can erase the message. Restore the display
+ * first; the later atexit call finds nothing left to do. */
+static void tga_fatal(char *message)
+{
+    tga_cleanup();
+    error(message);
 }
 
 void drv_close(void)
@@ -389,37 +391,44 @@ void drv_init(int *argc, char **argv)
     tga_cpu = drv_cpu_detect();
     tga_has_fpu = drv_cpu_has_fpu();
     if (argv == NULL || !tga_absolute_path(tga_program_path, argv[0])) tga_program_path[0] = '\0';
-    tga_temp_sequence = (unsigned long)clock() & 0x00ffffffUL;
-    if (atexit(tga_cleanup) != 0) error("Cannot register TIGA cleanup");
+    /* clock() starts near zero in every DOS run; the date varies between
+     * runs, so a stale file from an interrupted one rarely costs a retry. */
+    tga_temp_sequence = (unsigned long)time(NULL) & 0x00ffffffUL;
+    if (atexit(tga_cleanup) != 0) tga_fatal("Cannot register TIGA cleanup");
+    /* Before TIGA owns the display, so Ctrl-C/Break exits through cleanup. */
+    drv_dos_break_init();
     result = tiga_set(CD_OPEN);
-    if (result < 0L) error("Cannot open TIGA 2.x; install the board's TIGACD driver");
+    if (result < 0L) tga_fatal("Cannot open TIGA 2.x; install the board's TIGACD driver");
     tga_open = TRUE;
     tga_previous_video = get_videomode();
     if (!set_videomode(TIGA, INIT | CLR_SCREEN))
-        error("Cannot initialize the TIGA graphics manager");
+        tga_fatal("Cannot initialize the TIGA graphics manager");
     tga_video_set = TRUE;
     install_usererror((void (far *)())tga_user_error);
     set_timeout(TGA_TIMEOUT_MS);
     get_config(&tga_config);
     if (!tga_check()) return;
     if ((tga_config.version_number >> 8) != 2U)
-        error("This driver requires TIGA 2.x");
+        tga_fatal("This driver requires TIGA 2.x");
     tga_previous_mode = tga_config.current_mode;
     tga_config_saved = TRUE;
     /* Save only the indexed palette we can faithfully restore. Individual
-     * reads avoid assuming a command buffer large enough for 256 entries. */
+     * reads avoid assuming a command buffer large enough for 256 entries.
+     * Boards need not implement get_palet_entry (guide p. 4-22); without a
+     * complete copy, exit keeps set_config's default palette instead. */
     if (tga_config.mode.color_class == 2U && tga_config.mode.palet_size == 256UL)
     {
         unsigned int i;
+        int found;
         for (i = 0; i < 256U; ++i)
         {
-            if (!get_palet_entry((long)i, &tga_saved_palette[i].r,
+            found = get_palet_entry((long)i, &tga_saved_palette[i].r,
                 &tga_saved_palette[i].g, &tga_saved_palette[i].b,
-                &tga_saved_palette[i].i))
-                error("Cannot read TIGA palette");
+                &tga_saved_palette[i].i) != 0;
             if (!tga_check()) return;
+            if (!found) break;
         }
-        tga_palette_saved = TRUE;
+        tga_palette_saved = i == 256U;
     }
     tga_mouse_present = drv_dos_mouse_init();
 }
@@ -430,7 +439,6 @@ int drv_init_window(int x, int y, int width, int height)
     FONTINFO font;
     int selected = -1, best_pages = 0, best_dac = -1, found;
     unsigned int i, brightness, darkest = 766U, lightest = 0U;
-    unsigned long capacity;
     (void)x; (void)y; (void)width; (void)height;
     for (i = 0; i < tga_config.num_modes && i <= 32767U; ++i)
     {
@@ -447,25 +455,25 @@ int drv_init_window(int x, int y, int width, int height)
             best_dac = (int)mode.palet_gun_depth;
         }
     }
-    if (selected < 0) error("TIGA needs a 640x480 programmable 256-color mode");
-    if (!(set_config((short)selected, TRUE) & 1)) error("Cannot select TIGA display mode");
+    if (selected < 0) tga_fatal("TIGA needs a 640x480 programmable 256-color mode");
+    /* The mode is set before extprims.rlm or our module is downloaded, as
+     * the guide recommends, so a graphics-manager reload loses nothing. */
+    if (!tga_set_config((short)selected)) tga_fatal("Cannot select TIGA display mode");
     get_config(&tga_config);
     if (!tga_check()) return FALSE;
-    if (!tga_mode_supported(&tga_config.mode)) error("TIGA returned an incompatible display mode");
+    if (!tga_mode_supported(&tga_config.mode))
+        tga_fatal("TIGA returned an incompatible display mode");
     /* A clipped polygon has at most ten vertices. Palette writes are also
      * deliberately short; never trust a vendor's default FIFO capacity. */
-    if (tga_config.comm_buff_size < 128UL) error("TIGA command buffer is too small");
-    if (install_primitives() < 0) error("Cannot load TIGA extprims.rlm");
+    if (tga_config.comm_buff_size < 128UL) tga_fatal("TIGA command buffer is too small");
+    if (install_primitives() < 0) tga_fatal("Cannot load TIGA extprims.rlm");
     if (!tga_check()) return FALSE;
-    capacity = tga_config.comm_buff_size;
-    tga_packet_vertices = 0U;
-    if (capacity > TGA_GSP_PACKET_OVERHEAD + TGA_GSP_HEADER * 4UL)
-    {
-        capacity = (capacity - TGA_GSP_PACKET_OVERHEAD - TGA_GSP_HEADER * 4UL) /
-                   (TGA_GSP_VERTEX_WORDS * 4UL);
-        if (capacity > TGA_GSP_MAX_VERTICES) capacity = TGA_GSP_MAX_VERTICES;
-        tga_packet_vertices = (unsigned int)capacity;
-    }
+    /* The largest transform packet the queried buffer holds; zero keeps
+     * TI transforms unavailable. */
+    tga_packet_vertices = TGA_GSP_MAX_VERTICES;
+    while (tga_packet_vertices != 0U &&
+           TGA_GSP_PACKET_BYTES(tga_packet_vertices) > tga_config.comm_buff_size)
+        --tga_packet_vertices;
     drv_win_x = drv_win_y = 0;
     drv_win_width = DRV_WIN_WIDTH;
     drv_win_height = DRV_WIN_HEIGHT;
@@ -488,6 +496,7 @@ int drv_init_window(int x, int y, int width, int height)
     if (!tga_check()) return FALSE;
     set_fcolor((long)tga_white);
     if (!tga_check()) return FALSE;
+    tga_fill_color = TGA_NO_COLOR;
     set_bcolor((long)tga_black);
     if (!tga_check()) return FALSE;
     (void)select_font(0);
@@ -500,7 +509,7 @@ int drv_init_window(int x, int y, int width, int height)
     tga_display_page = 0;
     tga_draw_page = tga_config.mode.num_pages >= 2U ? 1 : 0;
     page_flip(tga_display_page, tga_draw_page);
-    if (!tga_wait_page()) return FALSE;
+    if (!tga_check() || !tga_wait_page()) return FALSE;
     tga_ready = TRUE;
     drv_soft3d_requested = drv_soft3d_active = DRV_SOFT3D_DEFAULT;
     tga_dirty = TRUE;
@@ -525,19 +534,50 @@ static unsigned long tga_float_bits(const float TG_HUGE *value)
            ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
 }
 
-static int tga_transform_ti(unsigned int count, const Vertex TG_HUGE *vertices)
+/* The module's input check (tga_gsp_coordinate), for reused rows that stay
+ * on the host: magnitudes below 1/16 become zero, and finite values up to
+ * the proven radius are accepted. Any other bit pattern is rejected. */
+static int tga_coordinate_valid(const float TG_HUGE *value)
 {
-    unsigned int first, n, i, j, base, at;
+    unsigned long bits = tga_float_bits(value), magnitude;
+    int exponent = (int)((bits >> 23) & 255UL);
+    if (exponent < 123) return TRUE;
+    if (exponent > 153) return FALSE;
+    magnitude = (bits & 0x7fffffUL) | 0x800000UL;
+    if (exponent < 146) magnitude >>= 146 - exponent;
+    else magnitude <<= exponent - 146;
+    return magnitude <= (unsigned long)SOFT3D_MAX_RADIUS * 16UL;
+}
+
+/* With row reuse, the even (top) row repeats the previous band's odd row,
+ * whose camera and screen results the host already holds. Only the new odd
+ * row crosses to the TMS340, nearly halving packet traffic; the reused
+ * inputs are still checked here, so malformed vertices cannot hide. */
+static int tga_transform_ti(unsigned int count, const Vertex TG_HUGE *vertices,
+                            unsigned int reuse)
+{
+    unsigned int step, next, n, i, j, base, at;
     unsigned long words;
-    if (tga_module < 0 || tga_packet_vertices == 0U) return FALSE;
-    (void)soft3d_project_cache_begin(&tga_cache, count, drv_win_width, drv_win_height, 0U);
-    for (first = 0; first < count; first += n)
+    if (tga_module < 0 || tga_packet_vertices == 0U ||
+        (reuse != 0U && ((count & 1U) != 0U || reuse != count / 2U))) return FALSE;
+    for (i = 0; reuse != 0U && i < count; i += 2U)
     {
-        n = count - first;
+        if (!tga_coordinate_valid(&vertices[i].x) ||
+            !tga_coordinate_valid(&vertices[i].y) ||
+            !tga_coordinate_valid(&vertices[i].z)) return FALSE;
+        tga_points.fixed[i] = tga_points.fixed[i + 1U];
+    }
+    (void)soft3d_project_cache_begin(&tga_cache, count, drv_win_width, drv_win_height, reuse);
+    step = reuse != 0U ? 2U : 1U;
+    for (next = reuse != 0U ? 1U : 0U; next < count; next = at)
+    {
+        n = (count - next + step - 1U) / step;
         if (n > tga_packet_vertices) n = tga_packet_vertices;
         words = TGA_GSP_WORDS(n);
-        memset(tga_packet, 0, (size_t)words * sizeof(long));
+        /* The host rewrites every input word and the module every output
+         * word. Reset only the status: a stale success must not pass. */
         tga_packet[TGA_GSP_MAGIC] = TGA_GSP_ABI;
+        tga_packet[TGA_GSP_STATUS] = TGA_GSP_PENDING;
         tga_packet[TGA_GSP_COUNT] = (long)n;
         tga_packet[TGA_GSP_WIDTH] = (long)drv_win_width;
         tga_packet[TGA_GSP_HEIGHT] = (long)drv_win_height;
@@ -547,22 +587,21 @@ static int tga_transform_ti(unsigned int count, const Vertex TG_HUGE *vertices)
         tga_packet[TGA_GSP_FAR] = GLOBE_FAR_DISTANCE;
         for (i = 0; i < 3U; ++i)
             for (j = 0; j < 3U; ++j) tga_packet[TGA_GSP_MATRIX + 3U * i + j] = tga_matrix.fixed[i][j];
-        for (i = 0; i < n; ++i)
+        for (i = 0, at = next; i < n; ++i, at += step)
         {
             base = TGA_GSP_HEADER + TGA_GSP_VERTEX_WORDS * i;
-            tga_packet[base + TGA_GSP_X] = (long)tga_float_bits(&vertices[first + i].x);
-            tga_packet[base + TGA_GSP_Y] = (long)tga_float_bits(&vertices[first + i].y);
-            tga_packet[base + TGA_GSP_Z] = (long)tga_float_bits(&vertices[first + i].z);
+            tga_packet[base + TGA_GSP_X] = (long)tga_float_bits(&vertices[at].x);
+            tga_packet[base + TGA_GSP_Y] = (long)tga_float_bits(&vertices[at].y);
+            tga_packet[base + TGA_GSP_Z] = (long)tga_float_bits(&vertices[at].z);
         }
         (void)cp_alt(USER_CP(tga_module | TGA_GSP_TRANSFORM), 2,
                      _DWORD(words), _ALTDWORD_PTR(words, tga_packet));
         if (!tga_check()) return FALSE;
         if (tga_packet[TGA_GSP_MAGIC] != TGA_GSP_ABI || tga_packet[TGA_GSP_STATUS] != TGA_GSP_OK ||
             tga_packet[TGA_GSP_COUNT] != (long)n) return FALSE;
-        for (i = 0; i < n; ++i)
+        for (i = 0, at = next; i < n; ++i, at += step)
         {
             base = TGA_GSP_HEADER + TGA_GSP_VERTEX_WORDS * i;
-            at = first + i;
             if (tga_packet[base + TGA_GSP_X] < -48000L || tga_packet[base + TGA_GSP_X] > 48000L ||
                 tga_packet[base + TGA_GSP_Y] < -48000L || tga_packet[base + TGA_GSP_Y] > 48000L ||
                 tga_packet[base + TGA_GSP_Z] < -96000L || tga_packet[base + TGA_GSP_Z] > 0L ||
@@ -583,6 +622,29 @@ static int tga_transform_ti(unsigned int count, const Vertex TG_HUGE *vertices)
     return TRUE;
 }
 
+/* Pixel rounding at a silhouette can make a nominal globe quad concave.
+ * Do not feed that case to the convex-only accelerator. Culling leaves a
+ * positive area, so every triangle is convex; larger polygons stop at the
+ * first reflex turn, and each turn reuses the previous edge. */
+static int tga_convex(const short *xy, unsigned int count)
+{
+    unsigned int j, next;
+    long ex, ey, fx, fy;
+    if (count <= 3U) return TRUE;
+    ex = (long)xy[0] - xy[2U * (count - 1U)];
+    ey = (long)xy[1] - xy[2U * (count - 1U) + 1U];
+    for (j = 0; j < count; ++j)
+    {
+        next = j + 1U < count ? j + 1U : 0U;
+        fx = (long)xy[2U * next] - xy[2U * j];
+        fy = (long)xy[2U * next + 1U] - xy[2U * j + 1U];
+        if (ex * fy - ey * fx < 0L) return FALSE;
+        ex = fx;
+        ey = fy;
+    }
+    return TRUE;
+}
+
 void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
                                    const Vertex TG_HUGE *vertices,
                                    unsigned int quad_count,
@@ -593,9 +655,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     Soft3d_screen_point screen[SOFT3D_MAX_POLY];
     short xy[SOFT3D_MAX_POLY * 2];
     unsigned int i, j, corners[4], reuse = 0U;
-    int transformed, count, convex;
-    unsigned int next, after;
-    long turn;
+    int transformed, count;
     if (!tga_ready || drv_frame_failed || tga_io_failed) return;
     if (vertices == NULL || colors == NULL ||
         !drv_validate_quadbatch(vertex_count, quad_count, indices))
@@ -606,7 +666,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     reuse = drv_quadstream_reuse(&tga_stream, vertex_count, vertices, &context);
     if (!drv_soft3d_active)
     {
-        if (!tga_transform_ti(vertex_count, vertices))
+        if (!tga_transform_ti(vertex_count, vertices, reuse))
         {
             tga_module_failed("TI transform failed; soft3d on");
             return;
@@ -650,22 +710,15 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
             xy[2U * j] = (short)screen[count - 1 - (int)j].x;
             xy[2U * j + 1U] = (short)screen[count - 1 - (int)j].y;
         }
-        /* Pixel rounding at a silhouette can make a nominal globe quad
-         * concave. Do not feed that case to the convex-only accelerator. */
-        convex = TRUE;
-        for (j = 0; j < (unsigned int)count; ++j)
+        /* Neighboring facets often share a color (about 43% of fills);
+         * frame start, init and the OSD forget the board's color. */
+        if (colors[i] != tga_fill_color)
         {
-            next = (j + 1U) % (unsigned int)count;
-            after = (j + 2U) % (unsigned int)count;
-            turn = ((long)xy[2U * next] - xy[2U * j]) *
-                   ((long)xy[2U * after + 1U] - xy[2U * next + 1U]) -
-                   ((long)xy[2U * next + 1U] - xy[2U * j + 1U]) *
-                   ((long)xy[2U * after] - xy[2U * next]);
-            if (turn < 0L) convex = FALSE;
+            set_fcolor((long)colors[i]);
+            if (!tga_check()) return;
+            tga_fill_color = colors[i];
         }
-        set_fcolor((long)colors[i]);
-        if (!tga_check()) return;
-        if (convex) fill_convex((short)count, xy);
+        if (tga_convex(xy, (unsigned int)count)) fill_convex((short)count, xy);
         else fill_polygon((short)count, xy);
         if (!tga_check()) return;
         ++globe_quads_num_vis;
@@ -726,6 +779,7 @@ void drv_draw_osd(void)
     unsigned int lines;
     short help_top, bottom;
     set_fcolor((long)tga_white);
+    tga_fill_color = TGA_NO_COLOR;
     if (!tga_check()) return;
     drv_format_stats(status);
     drv_append_soft3d_status(status, sizeof(status), "TI", tga_cpu, tga_has_fpu);
@@ -758,10 +812,27 @@ void drv_draw_osd(void)
     if (!tga_io_failed) (void)tga_text_lines(drv_help, help_top, bottom, TRUE);
 }
 
+/* Core functions run in the order they are queued (guide pp. 1-4, 4-135),
+ * and page_flip directs later drawing to the new page as soon as it returns
+ * (p. 4-91; the guide's examples flip without synchronize). A queued flip
+ * therefore follows this frame's drawing, and page_busy reports both done.
+ * A single page has no flip to wait for: synchronize so FPS counts finished
+ * drawing rather than queued commands. */
+static int tga_present(void)
+{
+    unsigned short previous;
+    if (tga_config.mode.num_pages < 2U) return tga_wait_draw();
+    previous = tga_display_page;
+    page_flip(tga_draw_page, previous);
+    if (!tga_check() || !tga_wait_page()) return FALSE;
+    tga_display_page = tga_draw_page;
+    tga_draw_page = previous;
+    return TRUE;
+}
+
 void drv_render(void)
 {
     int prepared, retry;
-    unsigned short previous;
     if (!tga_ready || tga_rendering || tga_io_failed) return;
     tga_rendering = TRUE;
     /* A bad optional module abandons the hidden partial frame and retries
@@ -770,6 +841,7 @@ void drv_render(void)
     {
         drv_fps_start();
         tga_dirty = FALSE;
+        tga_fill_color = TGA_NO_COLOR;
         clear_page((long)tga_black);
         if (!tga_check()) break;
         globe_quads_num_vis = 0;
@@ -788,20 +860,16 @@ void drv_render(void)
         {
             drv_reset_timing();
             if (tga_dirty && retry == 0) continue;
-            break;
+            /* Present the notice on a cleared page rather than leaving a
+             * stale image, and stop animation until the user acts. */
+            clear_page((long)tga_black);
+            if (!tga_check()) break;
+            globe_quads_num_vis = 0;
         }
-        if (drv_osd_enabled || !globe_ready()) drv_draw_osd();
-        if (!tga_wait_draw()) break;
-        if (tga_config.mode.num_pages >= 2U)
-        {
-            previous = tga_display_page;
-            page_flip(tga_draw_page, previous);
-            if (!tga_wait_page()) break;
-            tga_display_page = tga_draw_page;
-            tga_draw_page = previous;
-        }
-        drv_fps_stop();
-        if (drv_auto_enabled && globe_ready()) drv_globe_rotate();
+        if (drv_status_required()) drv_draw_osd();
+        if (tga_io_failed || !tga_present()) break;
+        if (!drv_frame_failed) drv_fps_stop();
+        if (drv_animation_allowed()) drv_globe_rotate();
         break;
     }
     tga_rendering = FALSE;
@@ -862,14 +930,16 @@ void drv_loop(void)
     int key;
     for (;;)
     {
-        while (kbhit())
+        /* DOS reports Ctrl-C/Break during console calls such as kbhit. */
+        while (!drv_dos_break_pending() && kbhit())
         {
             key = getch();
             if (key == 0 || key == 0xe0) { (void)getch(); continue; }
             tga_keyboard((unsigned char)key);
         }
+        if (drv_dos_break_pending()) drv_close();
         tga_poll_mouse();
-        if (tga_dirty || (drv_auto_enabled && globe_ready())) drv_render();
+        if (tga_dirty || drv_animation_allowed()) drv_render();
     }
 }
 #endif /* DRV_TGA */

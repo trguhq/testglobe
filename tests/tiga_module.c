@@ -65,6 +65,10 @@ static void compare(unsigned int count, float x_angle, float y_angle,
         packet[start] = ieee_word(vertices[i].x);
         packet[start + 1U] = ieee_word(vertices[i].y);
         packet[start + 2U] = ieee_word(vertices[i].z);
+        /* The host no longer clears packets: stale outputs must be replaced. */
+        packet[start + TGA_GSP_SCREEN_X] = 0x5a5a5a5aL;
+        packet[start + TGA_GSP_SCREEN_Y] = -0x5a5a5a5aL;
+        packet[start + TGA_GSP_PROJECTED] = 7L;
     }
     assert(soft3d_fixed_transform(matrix, count, vertices, camera));
     tga_gsp_transform(TGA_GSP_WORDS(count), packet);

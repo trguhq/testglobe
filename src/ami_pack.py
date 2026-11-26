@@ -17,7 +17,10 @@ import tempfile
 
 
 HEADER, CODE, DATA, BSS = 1011, 1001, 1002, 1003
-RELOC32, SYMBOL, DEBUG, END, SHORT = 1004, 1008, 1009, 1010, 1020
+RELOC32, SYMBOL, DEBUG, END = 1004, 1008, 1009, 1010
+# Kickstart 1.3 LoadSeg understands only 32-bit relocations. V37 added the
+# short form (1020) and also reads 1015 (DREL32) that way in executables.
+KICK20_RELOCATIONS = {1015: "HUNK_DREL32", 1020: "HUNK_RELOC32SHORT"}
 MAGIC = b"TGEARTH1"
 TAG = b"\0\0\0\0TGEO"
 
@@ -48,7 +51,8 @@ def earth_inputs():
 def executable_records(data):
     """Validate the linked, non-overlay Hunk subset emitted by vlink.
 
-    Return whole debug-record spans, allowing our own resource record to be
+    Only records that Kickstart 1.3's LoadSeg accepts are allowed. Return whole
+    debug-record spans, allowing our own resource record to be
     replaced without accidentally scanning machine code for marker bytes.
     """
     if len(data) % 4 or len(data) > 0x7fffffff:
@@ -65,9 +69,6 @@ def executable_records(data):
 
     def word():
         return struct.unpack(">I", take(4))[0]
-
-    def short():
-        return struct.unpack(">H", take(2))[0]
 
     if word() != HEADER:
         raise ValueError("input is not a linked Amiga Hunk executable")
@@ -111,20 +112,9 @@ def executable_records(data):
                 for _ in range(count):
                     if word() + 4 > sizes[hunk] * 4:
                         raise ValueError("relocation offset exceeds its Hunk")
-        elif kind == SHORT:
-            if not body:
-                raise ValueError("relocations precede Hunk contents")
-            while True:
-                count = short()
-                if not count:
-                    break
-                if short() >= table:
-                    raise ValueError("short relocation target is outside the Hunk table")
-                for _ in range(count):
-                    if short() + 4 > sizes[hunk] * 4:
-                        raise ValueError("short relocation offset exceeds its Hunk")
-            if position % 4:
-                take(2)
+        elif kind in KICK20_RELOCATIONS:
+            raise ValueError(f"{KICK20_RELOCATIONS[kind]} ({kind}) needs Kickstart 2.0 "
+                             "LoadSeg; link the kick13 executable with 32-bit relocations")
         elif kind == SYMBOL:
             while True:
                 size = word()

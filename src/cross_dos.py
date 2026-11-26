@@ -43,10 +43,15 @@ def _matrox_headers(config):
     root = config["out"] / "sdk"
     output = root / "XGX1" / "HEADERS"
     output.mkdir(parents=True, exist_ok=True)
+    # Copy every header, as the host SDK checks do, so vendor headers that
+    # include each other resolve; the three the driver names must exist.
     for name in ("DEF.H", "LIBFN.H", "IOLIB.H"):
-        header = _find(source, (name,))
+        _find(source, (name,))
+    for header in sorted(source.iterdir()):
+        if not header.is_file() or header.suffix.lower() != ".h":
+            continue
         data = header.read_bytes().split(b"\x1a", 1)[0].replace(b"\r\n", b"\n")
-        (output / name).write_bytes(data.rstrip() + b"\n")
+        (output / header.name.upper()).write_bytes(data.rstrip() + b"\n")
     return root
 
 
@@ -69,12 +74,16 @@ def _compile(config, driver, extra_sources=(), includes=()):
              "main", "soft3d", "soft3fp"]
     sources = [source / (name + ".c") for name in names] + [data] + list(extra_sources)
     objects = []
+    # Per-vertex and per-polygon code omits stack checks (-s): none of it
+    # recurses, and the 16 KiB stack is far larger than its frames.
+    hot = {"drv_" + driver.lower(), "soft3d", "soft3fp"}
     for path in sources:
         obj = out / (path.stem + ".obj")
-        run([compiler] + flags + ["-fo=" + str(obj), path], cwd=out, env=env)
+        run([compiler] + flags + (["-s"] if path.stem in hot else []) +
+            ["-fo=" + str(obj), path], cwd=out, env=env)
         objects.append(obj)
     optimized = out / "soft386.obj"
-    run([compiler] + flags + ["-3", "-dSOFT3D_TRANSFORM_386",
+    run([compiler] + flags + ["-s", "-3", "-dSOFT3D_TRANSFORM_386",
         "-fo=" + str(optimized), source / "soft3d.c"], cwd=out, env=env)
     objects.append(optimized)
     return env, objects

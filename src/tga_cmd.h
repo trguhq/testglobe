@@ -6,14 +6,8 @@
 #ifndef tga_cmd_h
 #define tga_cmd_h
 
-/* Appended executable payload: eight magic bytes followed by little-endian
- * 32-bit base-image length, module length, IEEE CRC-32 and a reserved zero.
- * The DOS MZ image length remains unchanged, so this payload is read from
- * disk only when TI transforms are requested, not retained in DOS memory.
- */
-#define TGA_RLM_MAGIC "TGRLM001"
-#define TGA_RLM_TRAILER_SIZE 24U
-#define TGA_RLM_MAX_SIZE 1048576UL
+/* The TMS340 compiler reads this header too; keep it to declarations.
+ * The host-only executable trailer is described in tga_rlm.h. */
 
 /* A packet consists of 32-bit longs, marshalled by TIGA's _ALTDWORD_PTR.
  * No host pointers, compiler structs, floats or native int widths cross the
@@ -23,6 +17,9 @@
  * depth-crossing polygons use the host's existing clipping path instead.
  * Matrix preparation, polygon clipping/culling and submission remain on the
  * host; rotation, view translation and ordinary projection execute on TMS340.
+ * Vertices are independent, so the host may send any subset of a batch,
+ * such as only the new row of a band whose other row it already holds.
+ * The module overwrites every output word and the status on success.
  */
 #define TGA_GSP_TRANSFORM 0
 #define TGA_GSP_ABI 0x54474131L

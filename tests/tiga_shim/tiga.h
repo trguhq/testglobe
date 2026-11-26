@@ -33,7 +33,7 @@ long del_module(short module);
 short uninstall_module(short module);
 short flush_module(short module);
 void install_usererror(void (*handler)());
-void set_timeout(short seconds);
+void set_timeout(short milliseconds);
 void synchronize(void);
 short tiga_busy(void);
 void get_palet(short count, PALET *entries);

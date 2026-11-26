@@ -59,6 +59,8 @@ typedef unsigned short EventMask;
 typedef unsigned short EventModifiers;
 typedef struct { EventKind what; unsigned long message, when; Point where; EventModifiers modifiers; } EventRecord;
 typedef struct Cursor { short data[16], mask[16]; Point hotSpot; } Cursor;
+typedef Cursor *CursPtr;
+typedef CursPtr *CursHandle;
 typedef struct { long randSeed; BitMap screenBits; Cursor arrow; Pattern dkGray, ltGray, gray, black, white; GrafPtr thePort; } QDGlobals;
 extern QDGlobals qd;
 #define noErr 0
@@ -66,6 +68,9 @@ extern QDGlobals qd;
 #define gestaltQuickdrawVersion 0x71642020UL
 #define gestaltProcessorType 0x63707520UL
 #define gestaltFPUType 0x66707520UL
+#define gestaltSystemVersion 0x73797376UL
+#define gestaltAppleEventsAttr 0x65766E74UL
+#define gestaltAppleEventsPresent 0
 #define gestaltOriginalQD 0x0000
 #define gestalt8BitQD 0x0100
 #define gestalt32BitQD 0x0200
@@ -96,6 +101,12 @@ extern QDGlobals qd;
 #define pmExplicit 0x0008
 #define pmAnimated 0x0004
 #define pmCourteous 0x0000
+#define pmInhibitG2 0x0100
+#define pmInhibitC2 0x0200
+#define pmInhibitG4 0x0400
+#define pmInhibitC4 0x0800
+#define pmInhibitG8 0x1000
+#define pmInhibitC8 0x2000
 #define noUpdates 0
 #define activate 1
 #define deactivate 0
@@ -109,6 +120,7 @@ extern QDGlobals qd;
 #define diskEvt 7
 #define activateEvt 8
 #define osEvt 15
+#define kHighLevelEvent 23
 #define nullEvent 0
 #define charCodeMask 0x000000ffL
 #define keyCodeMask 0x0000ff00L
@@ -128,6 +140,31 @@ extern QDGlobals qd;
 #define documentProc 0
 #define zoomDocProc 8
 #define systemFont 0
+#define watchCursor 4
+/* Apple Event Manager, Universal Interfaces 2.2 spelling. */
+typedef unsigned long DescType;
+typedef unsigned long AEKeyword;
+typedef unsigned long AEEventClass;
+typedef unsigned long AEEventID;
+typedef struct { DescType descriptorType; Handle dataHandle; } AEDesc;
+typedef AEDesc AppleEvent;
+typedef pascal OSErr (*AEEventHandlerProcPtr)(AppleEvent *, AppleEvent *, long);
+typedef AEEventHandlerProcPtr AEEventHandlerUPP;
+#define NewAEEventHandlerProc(proc) ((AEEventHandlerUPP)(proc))
+#define kCoreEventClass 0x61657674UL
+#define kAEOpenApplication 0x6F617070UL
+#define kAEOpenDocuments 0x6F646F63UL
+#define kAEPrintDocuments 0x70646F63UL
+#define kAEQuitApplication 0x71756974UL
+#define keyMissedKeywordAttr 0x6D697373UL
+#define typeWildCard 0x2A2A2A2AUL
+#define errAEDescNotFound (-1701)
+#define errAEEventNotHandled (-1708)
+#define errAEParamMissed (-1715)
+/* Memory Manager grow-zone procedure, 68K routine descriptor macro. */
+typedef pascal long (*GrowZoneProcPtr)(Size);
+typedef GrowZoneProcPtr GrowZoneUPP;
+#define NewGrowZoneProc(proc) ((GrowZoneUPP)(proc))
 
 Ptr NewPtr(Size);
 void DisposePtr(Ptr);
@@ -140,6 +177,13 @@ Handle Get1Resource(OSType, short);
 void ReleaseResource(Handle);
 OSErr ResError(void);
 OSErr MemError(void);
+void MoreMasters(void);
+void SetGrowZone(GrowZoneUPP);
+void EmptyHandle(Handle);
+void ReallocateHandle(Handle, Size);
+Size MaxBlock(void);
+long SetCurrentA5(void);
+long SetA5(long);
 unsigned long TickCount(void);
 void InitGraf(GrafPtr *);
 void InitFonts(void);
@@ -202,6 +246,10 @@ void RGBForeColor(const RGBColor *);
 void RGBBackColor(const RGBColor *);
 void GetForeColor(RGBColor *);
 void GetBackColor(RGBColor *);
+long Color2Index(const RGBColor *);
+void Index2Color(long, RGBColor *);
+CursHandle GetCursor(short);
+void SetCursor(const Cursor *);
 void GetFNum(ConstStr255Param, short *);
 Boolean RealFont(short, short);
 void GetFontInfo(FontInfo *);
@@ -209,6 +257,7 @@ void TextFont(short);
 void TextSize(short);
 void TextMode(short);
 short TextWidth(const void *, short, short);
+short CharWidth(short);
 void DrawText(const void *, short, short);
 void DrawString(ConstStr255Param);
 void CopyBits(const BitMap *, const BitMap *, const Rect *, const Rect *, short, RgnHandle);
@@ -220,12 +269,17 @@ void DisposePalette(PaletteHandle);
 void NSetPalette(WindowPtr, PaletteHandle, short);
 MenuHandle NewMenu(short, ConstStr255Param);
 void AppendMenu(MenuHandle, ConstStr255Param);
+void AppendResMenu(MenuHandle, ResType);
+void GetMenuItemText(MenuHandle, short, Str255);
+short OpenDeskAcc(ConstStr255Param);
 void InsertMenu(MenuHandle, short);
 void DeleteMenu(short);
 void DisposeMenu(MenuHandle);
 void DrawMenuBar(void);
 void ClearMenuBar(void);
 void DrawGrowIcon(WindowPtr);
+void ValidRect(const Rect *);
+RgnHandle GetGrayRgn(void);
 long MenuSelect(Point);
 long MenuKey(short);
 void HiliteMenu(short);
@@ -245,6 +299,10 @@ void GlobalToLocal(Point *);
 void LocalToGlobal(Point *);
 void ParamText(ConstStr255Param, ConstStr255Param, ConstStr255Param, ConstStr255Param);
 short StopAlert(short, void *);
+short NoteAlert(short, void *);
+OSErr AEInstallEventHandler(AEEventClass, AEEventID, AEEventHandlerUPP, long, Boolean);
+OSErr AEProcessAppleEvent(const EventRecord *);
+OSErr AEGetAttributePtr(const AppleEvent *, AEKeyword, DescType, DescType *, void *, Size, Size *);
 void SysBeep(short);
 void ExitToShell(void);
 #endif

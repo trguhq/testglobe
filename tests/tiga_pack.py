@@ -147,7 +147,9 @@ def main():
                     mz_image()[:-1]):
             source.write_bytes(bad)
             rejected()
-        for offset, value in ((2, 512), (4, 0), (8, 0), (8, 0xFFFF)):
+        # The driver shares this MZ check (src/tga_rlm.h); e_cparhdr must
+        # cover the 28-byte formatted header.
+        for offset, value in ((2, 512), (4, 0), (8, 0), (8, 1), (8, 0xFFFF)):
             bad = bytearray(mz_image())
             struct.pack_into("<H", bad, offset, value)
             source.write_bytes(bad)
@@ -169,10 +171,12 @@ def main():
             call(source, output)
             verify(output.read_bytes(), base, large)
         module_path.write_bytes(module)
-        # Full 512-byte MZ pages encode zero in e_cblp.
-        source.write_bytes(mz_image(512))
-        call(source, output)
-        verify(output.read_bytes(), source.read_bytes(), module)
+        # Full 512-byte MZ pages encode zero in e_cblp; 511 is the largest
+        # partial last page.
+        for size in (512, 1023):
+            source.write_bytes(mz_image(size))
+            call(source, output)
+            verify(output.read_bytes(), source.read_bytes(), module)
 
     print("PASS TIGA executable packing: exact embedded module and CRC, unchanged MZ load image, bounded transfers, repeatable builds, host-only copy, malformed input rejection and protected destination replacement")
 

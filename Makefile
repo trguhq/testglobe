@@ -6,20 +6,23 @@
 SRC = src
 
 # Portable Unix cc defaults, including older Solaris math/OpenGL libraries.
+# Libraries follow their users so static GLUT/GLU archives also resolve.
 CC = cc
 CPPFLAGS =
 CFLAGS = -O
 SYS_FLAGS = -DNO_SINF
-LDFLAGS = -lm -lglut -lGL -lGLU -lX11 -lXmu
+LDFLAGS = -lglut -lGLU -lGL -lXmu -lX11 -lm
 # drv_ogl.h selects latitude strips with separately batched pole triangles.
 # OpenGL, IRIS GL and XGL headers enable the runtime C band-culling control.
 OGL_DEFINES = -DFLAT -DDRV_OGL -DDRV
-OGL_OBJECTS = drv.o drv_ogl.o err.o globe.o main.o texture.o texsoft.o e_data.o
+OGL_OBJECTS = drv.o drv_ogl.o ogl_glut.o err.o globe.o main.o texture.o texsoft.o e_data.o
 OGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_ogl.h $(SRC)/err_ext.h \
     $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h \
     $(SRC)/texture.h $(SRC)/tex_ext.h $(SRC)/texsoft.h \
     $(SRC)/e_cmap.h $(SRC)/earthres.h
+# GLUT windows, formats and text for the desktop builds of drv_ogl.c.
+OGL_GLUT_HEADERS = $(OGL_HEADERS) $(SRC)/ogl_glut.h
 
 # Native Solaris OpenGL/GLUT with the installed OpenWindows headers/libraries.
 # s_ objects keep Solaris compiler and linker options separate from other builds.
@@ -30,8 +33,8 @@ SOLARIS_CFLAGS = $(CFLAGS)
 SOLARIS_SYS_FLAGS = -DNO_SINF
 SOLARIS_DEFINES = $(OGL_DEFINES)
 SOLARIS_LDFLAGS = -L$(OPENWINHOME)/lib -R$(OPENWINHOME)/lib \
-    -lglut -lGL -lGLU -lX11 -lXmu -lm
-SOLARIS_OBJECTS = s_drv.o s_ogl.o s_err.o s_globe.o s_main.o s_tex.o s_soft.o s_data.o
+    -lglut -lGLU -lGL -lXmu -lX11 -lm
+SOLARIS_OBJECTS = s_drv.o s_ogl.o s_glut.o s_err.o s_globe.o s_main.o s_tex.o s_soft.o s_data.o
 
 # Native macOS OpenGL/GLUT from the selected Xcode command line tools.
 # Apple objects stay separate from Unix GL/X11 objects. Apple's legacy
@@ -42,7 +45,7 @@ APPLE_CFLAGS = $(CFLAGS)
 APPLE_SYS_FLAGS = -DGLUT_SILENCE_DEPRECATION
 APPLE_DEFINES = $(OGL_DEFINES)
 APPLE_LDFLAGS = -framework GLUT -framework OpenGL -framework Cocoa
-APPLE_OBJECTS = a_drv.o a_ogl.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o a_data.o
+APPLE_OBJECTS = a_drv.o a_ogl.o a_glut.o a_err.o a_globe.o a_main.o a_tex.o a_soft.o a_data.o
 
 # PiStorm3D through the shared MiniGL V29 / dispatch ABI 5 interface.
 # MINIGL_ROOT is the SDK checkout containing libraryroot/include; the root
@@ -58,8 +61,8 @@ AOGL_DEFINES = $(OGL_DEFINES) -DOGL_AMIGA -DNO_SINF
 AOGL_LDFLAGS =
 AOGL_LIBS = -lm881 -lamiga
 AOGL_PYTHON = python3
-AOGL_OBJECTS = ao_drv.o ao_ogl.o ao_ami.o ao_err.o ao_globe.o ao_main.o ao_tex.o ao_soft.o ao_data.o
-AOGL_HEADERS = $(OGL_HEADERS) $(SRC)/ogl_ami.h
+AOGL_OBJECTS = ao_drv.o ao_ogl.o ao_ami.o ao_time.o ao_err.o ao_globe.o ao_main.o ao_tex.o ao_soft.o ao_data.o
+AOGL_HEADERS = $(OGL_HEADERS) $(SRC)/ogl_ami.h $(SRC)/ami_time.h
 AOGL_SDK_HEADERS = $(MINIGL_ROOT)/libraryroot/include/proto/minigl.h \
     $(MINIGL_ROOT)/libraryroot/include/libraries/minigl.h \
     $(MINIGL_ROOT)/libraryroot/include/libraries/minigl_dispatch.h \
@@ -85,13 +88,15 @@ XGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
 
 # Native IRIS GL on 32-bit MIPS IRIX 4.0. These shared-library names follow
 # the IRIS GL Programming Guide; override for the installed SGI toolchain.
+# -xansi selects IRIX's ANSI C mode. Static shared libraries resolve in one
+# pass, so the shared C library comes last for libgl_s and libm references.
 # i_ objects keep this driver separate from both other Unix backends.
 IGL_CC = $(CC)
 IGL_CPPFLAGS =
-IGL_CFLAGS = $(CFLAGS)
+IGL_CFLAGS = $(CFLAGS) -xansi
 IGL_SYS_FLAGS = -DNO_SINF
 IGL_DEFINES = -DFLAT -DDRV_IGL -DDRV
-IGL_LDFLAGS = -lc_s -lgl_s -lm
+IGL_LDFLAGS = -lgl_s -lm -lc_s
 IGL_OBJECTS = i_drv.o i_igl.o i_err.o i_globe.o i_main.o i_tex.o i_soft.o i_data.o
 IGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_igl.h $(SRC)/texsoft.h $(SRC)/err_ext.h \
@@ -102,13 +107,16 @@ IGL_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
 MTX_CC = cl
 MTX_CFLAGS = -AH -G0 -FPi -O -W3
 MTX_386FLAGS = -G3 -DSOFT3D_TRANSFORM_386
+# Per-vertex/per-polygon objects omit stack probes; none recurses.
+MTX_HOTFLAGS = -Gs
 MTX_DEFINES = -DSEG86 -DDRV_MTX -DDRV -DNO_SINF
 XGX_ROOT = .
 MTX_CPPFLAGS = -I$(XGX_ROOT)
 MTX_LIB = $(XGX_ROOT)\libsv5\lscl.lib
 MTX_LDFLAGS = -link /STACK:16384
-MTX_OBJECTS = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj \
-    m_cpu.obj m_soft.obj m_386.obj m_float.obj
+MTX_OBJECTS1 = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj
+MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj
+MTX_OBJECTS = $(MTX_OBJECTS1) $(MTX_OBJECTS2)
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
@@ -125,6 +133,7 @@ MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
 TGA_CC = cl
 TGA_CFLAGS = -AH -G0 -FPi -O -W3
 TGA_386FLAGS = -G3 -DSOFT3D_TRANSFORM_386
+TGA_HOTFLAGS = -Gs
 TGA_DEFINES = -DSEG86 -DDRV_TGA -DDRV -DNO_SINF
 TGA_ROOT = TIGA
 TGA_CPPFLAGS = -I$(TGA_ROOT)\include
@@ -139,11 +148,13 @@ TGA_GSP_LINK = gsplnk
 TGA_GSP_CFLAGS = -c -o -v10
 TGA_GSP_CPPFLAGS = -i$(SRC)
 TGA_GSP_LDFLAGS = -r -cr
-TGA_OBJECTS = t_drv.obj t_tga.obj t_cpu.obj t_err.obj t_globe.obj t_main.obj t_soft.obj t_386.obj t_float.obj t_data.obj
+TGA_OBJECTS1 = t_drv.obj t_tga.obj t_cpu.obj t_err.obj t_globe.obj
+TGA_OBJECTS2 = t_main.obj t_soft.obj t_386.obj t_float.obj t_data.obj
+TGA_OBJECTS = $(TGA_OBJECTS1) $(TGA_OBJECTS2)
 TGA_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_tga.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\tga_cmd.h
+    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\tga_cmd.h $(SRC)\tga_rlm.h
 TGA_SDK_HEADERS = $(TGA_ROOT)\include\tiga.h \
     $(TGA_ROOT)\include\extend.h $(TGA_ROOT)\include\typedefs.h
 
@@ -205,11 +216,11 @@ AMI_DEFINES = -DFLAT -DDRV_AMI -DDRV -DNO_SINF -DAMI_RTG=$(AMI_RTG)
 AMI_LDFLAGS =
 AMI_LIBS = -lmsoft -lamiga
 AMI_PYTHON = python3
-AMI_OBJECTS = am_drv.o am_ami.o am_data.o am_err.o am_globe.o am_main.o am_soft.o am_020.o am_float.o
+AMI_OBJECTS = am_drv.o am_ami.o am_time.o am_data.o am_err.o am_globe.o am_main.o am_soft.o am_020.o am_float.o
 AMI_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_ami.h $(SRC)/err_ext.h \
     $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h $(SRC)/e_cmap.h \
-    $(SRC)/earthres.h $(SRC)/soft3d.h
+    $(SRC)/earthres.h $(SRC)/soft3d.h $(SRC)/ami_time.h
 
 # Binary maps are build inputs only. Keep the helper independent of any SDK.
 # A checked-in src/e_saved.c is available for compilers used outside make.
@@ -272,8 +283,11 @@ testglobe-opengl: $(OGL_OBJECTS) FORCE
 drv.o: $(SRC)/drv.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/drv.c
 
-drv_ogl.o: $(SRC)/drv_ogl.c $(OGL_HEADERS)
+drv_ogl.o: $(SRC)/drv_ogl.c $(OGL_GLUT_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/drv_ogl.c
+
+ogl_glut.o: $(SRC)/ogl_glut.c $(OGL_GLUT_HEADERS)
+	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/ogl_glut.c
 
 err.o: $(SRC)/err.c $(OGL_HEADERS)
 	$(CC) $(CPPFLAGS) $(OGL_DEFINES) $(SYS_FLAGS) $(CFLAGS) -c $(SRC)/err.c
@@ -301,8 +315,11 @@ s_data.o: e_data.c $(OGL_HEADERS)
 s_drv.o: $(SRC)/drv.c $(OGL_HEADERS)
 	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/drv.c -o s_drv.o
 
-s_ogl.o: $(SRC)/drv_ogl.c $(OGL_HEADERS)
+s_ogl.o: $(SRC)/drv_ogl.c $(OGL_GLUT_HEADERS)
 	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/drv_ogl.c -o s_ogl.o
+
+s_glut.o: $(SRC)/ogl_glut.c $(OGL_GLUT_HEADERS)
+	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/ogl_glut.c -o s_glut.o
 
 s_err.o: $(SRC)/err.c $(OGL_HEADERS)
 	$(SOLARIS_CC) $(CPPFLAGS) $(SOLARIS_CPPFLAGS) $(SOLARIS_DEFINES) $(SOLARIS_SYS_FLAGS) $(SOLARIS_CFLAGS) -c $(SRC)/err.c -o s_err.o
@@ -330,8 +347,11 @@ a_data.o: e_data.c $(OGL_HEADERS)
 a_drv.o: $(SRC)/drv.c $(OGL_HEADERS)
 	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/drv.c -o a_drv.o
 
-a_ogl.o: $(SRC)/drv_ogl.c $(OGL_HEADERS)
+a_ogl.o: $(SRC)/drv_ogl.c $(OGL_GLUT_HEADERS)
 	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/drv_ogl.c -o a_ogl.o
+
+a_glut.o: $(SRC)/ogl_glut.c $(OGL_GLUT_HEADERS)
+	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/ogl_glut.c -o a_glut.o
 
 a_err.o: $(SRC)/err.c $(OGL_HEADERS)
 	$(APPLE_CC) $(CPPFLAGS) $(APPLE_CPPFLAGS) $(APPLE_DEFINES) $(APPLE_SYS_FLAGS) $(APPLE_CFLAGS) -c $(SRC)/err.c -o a_err.o
@@ -368,6 +388,9 @@ ao_ogl.o: $(SRC)/drv_ogl.c $(AOGL_HEADERS) $(AOGL_SDK_HEADERS)
 
 ao_ami.o: $(SRC)/ogl_ami.c $(AOGL_HEADERS) $(AOGL_SDK_HEADERS)
 	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/ogl_ami.c -o ao_ami.o
+
+ao_time.o: $(SRC)/ami_time.c $(AOGL_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/ami_time.c -o ao_time.o
 
 ao_err.o: $(SRC)/err.c $(AOGL_HEADERS)
 	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/err.c -o ao_err.o
@@ -449,7 +472,8 @@ matrox: testglob.exe
 # compiler and linker invocations below DOS's 127-character command limit.
 testglob.exe: $(MTX_OBJECTS) $(MTX_LIB) FORCE
 	@echo -AH -FPi -Fetestglob.exe > link.rsp
-	@echo $(MTX_OBJECTS) >> link.rsp
+	@echo $(MTX_OBJECTS1) >> link.rsp
+	@echo $(MTX_OBJECTS2) >> link.rsp
 	@echo $(MTX_LIB) $(MTX_LDFLAGS) >> link.rsp
 	$(MTX_CC) @link.rsp
 
@@ -466,7 +490,7 @@ drv.obj: $(SRC)\drv.c $(MTX_HEADERS)
 	$(MTX_CC) @drv.rsp
 
 drv_mtx.obj: $(SRC)\drv_mtx.c $(MTX_HEADERS)
-	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > drv_mtx.rsp
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > drv_mtx.rsp
 	@echo $(MTX_CPPFLAGS) -c >> drv_mtx.rsp
 	@echo -Fodrv_mtx.obj $(SRC)\drv_mtx.c >> drv_mtx.rsp
 	$(MTX_CC) @drv_mtx.rsp
@@ -480,20 +504,20 @@ m_cpu.obj: $(SRC)\drv_cpu.c $(MTX_HEADERS)
 	$(MTX_CC) @m_cpu.rsp
 
 m_soft.obj: $(SRC)\soft3d.c $(MTX_HEADERS)
-	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > m_soft.rsp
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > m_soft.rsp
 	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_soft.rsp
 	@echo -Fom_soft.obj $(SRC)\soft3d.c >> m_soft.rsp
 	$(MTX_CC) @m_soft.rsp
 
 m_386.obj: $(SRC)\soft3d.c $(MTX_HEADERS)
 	@echo $(MTX_DEFINES) > m_386.rsp
-	@echo $(MTX_CFLAGS) $(MTX_386FLAGS) >> m_386.rsp
+	@echo $(MTX_CFLAGS) $(MTX_386FLAGS) $(MTX_HOTFLAGS) >> m_386.rsp
 	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_386.rsp
 	@echo -Fom_386.obj $(SRC)\soft3d.c >> m_386.rsp
 	$(MTX_CC) @m_386.rsp
 
 m_float.obj: $(SRC)\soft3fp.c $(MTX_HEADERS)
-	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > m_float.rsp
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > m_float.rsp
 	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_float.rsp
 	@echo -Fom_float.obj $(SRC)\soft3fp.c >> m_float.rsp
 	$(MTX_CC) @m_float.rsp
@@ -519,13 +543,14 @@ main.obj: $(SRC)\main.c $(MTX_HEADERS)
 # Relink because the selected DOS/Win16 target shares the 8.3 output name.
 tiga: $(TGA_OBJECTS) $(TGA_LIB) $(TGA_MODULE) tga_pack.exe FORCE
 	@echo -AH -FPi -Fetga_host.exe > t_link.rsp
-	@echo $(TGA_OBJECTS) >> t_link.rsp
+	@echo $(TGA_OBJECTS1) >> t_link.rsp
+	@echo $(TGA_OBJECTS2) >> t_link.rsp
 	@echo $(TGA_LIB) $(TGA_LDFLAGS) >> t_link.rsp
 	$(TGA_CC) @t_link.rsp
 	tga_pack.exe tga_host.exe testglob.exe $(TGA_MODULE)
 
 # The packer preserves the MZ load image and publishes the final EXE safely.
-tga_pack.exe: $(SRC)\tga_pack.c $(SRC)\buildio.h $(SRC)\tga_cmd.h
+tga_pack.exe: $(SRC)\tga_pack.c $(SRC)\buildio.h $(SRC)\tga_rlm.h
 	@echo $(TGA_CFLAGS) -Fetga_pack.exe > t_pack.rsp
 	@echo $(SRC)\tga_pack.c >> t_pack.rsp
 	$(TGA_CC) @t_pack.rsp
@@ -540,7 +565,7 @@ tga_gsp.obj: $(SRC)\tga_gsp.c $(SRC)\tga_cmd.h
 	$(TGA_GSP_CC) $(TGA_GSP_CFLAGS) $(TGA_GSP_CPPFLAGS) $(SRC)\tga_gsp.c
 
 tga_ext.obj: $(SRC)\tga_ext.asm
-	$(TGA_GSP_CC) -c $(SRC)\tga_ext.asm
+	$(TGA_GSP_CC) $(TGA_GSP_CFLAGS) $(SRC)\tga_ext.asm
 
 t_drv.obj: $(SRC)\drv.c $(TGA_HEADERS)
 	@echo $(TGA_DEFINES) > t_drv.rsp
@@ -551,7 +576,7 @@ t_drv.obj: $(SRC)\drv.c $(TGA_HEADERS)
 
 t_tga.obj: $(SRC)\drv_tga.c $(TGA_HEADERS) $(TGA_SDK_HEADERS)
 	@echo $(TGA_DEFINES) > t_tga.rsp
-	@echo $(TGA_CFLAGS) >> t_tga.rsp
+	@echo $(TGA_CFLAGS) $(TGA_HOTFLAGS) >> t_tga.rsp
 	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_tga.rsp
 	@echo -Fot_tga.obj $(SRC)\drv_tga.c >> t_tga.rsp
 	$(TGA_CC) @t_tga.rsp
@@ -586,21 +611,21 @@ t_main.obj: $(SRC)\main.c $(TGA_HEADERS)
 
 t_soft.obj: $(SRC)\soft3d.c $(TGA_HEADERS)
 	@echo $(TGA_DEFINES) > t_soft.rsp
-	@echo $(TGA_CFLAGS) >> t_soft.rsp
+	@echo $(TGA_CFLAGS) $(TGA_HOTFLAGS) >> t_soft.rsp
 	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_soft.rsp
 	@echo -Fot_soft.obj $(SRC)\soft3d.c >> t_soft.rsp
 	$(TGA_CC) @t_soft.rsp
 
 t_386.obj: $(SRC)\soft3d.c $(TGA_HEADERS)
 	@echo $(TGA_DEFINES) > t_386.rsp
-	@echo $(TGA_CFLAGS) $(TGA_386FLAGS) >> t_386.rsp
+	@echo $(TGA_CFLAGS) $(TGA_386FLAGS) $(TGA_HOTFLAGS) >> t_386.rsp
 	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_386.rsp
 	@echo -Fot_386.obj $(SRC)\soft3d.c >> t_386.rsp
 	$(TGA_CC) @t_386.rsp
 
 t_float.obj: $(SRC)\soft3fp.c $(TGA_HEADERS)
 	@echo $(TGA_DEFINES) > t_float.rsp
-	@echo $(TGA_CFLAGS) >> t_float.rsp
+	@echo $(TGA_CFLAGS) $(TGA_HOTFLAGS) >> t_float.rsp
 	@echo $(TGA_CPPFLAGS) -I$(SRC) -c >> t_float.rsp
 	@echo -Fot_float.obj $(SRC)\soft3fp.c >> t_float.rsp
 	$(TGA_CC) @t_float.rsp
@@ -613,7 +638,8 @@ t_data.obj: t_data.c $(TGA_HEADERS)
 	$(TGA_CC) @t_data.rsp
 
 # Use the 16-bit linker, not the compiler's DOS default startup libraries.
-# RC attaches the Earth data resources and marks protected-mode Windows.
+# RC attaches the Earth data resources and marks a protected-mode Windows
+# 3.0 application, matching EXETYPE in gdi.def; it also runs on 3.1.
 # Relink the selected backend because DOS and Win16 targets share testglob.exe.
 gdi: $(GDI_OBJECTS) g_earth.res $(SRC)\gdi.def FORCE
 	@echo $(GDI_OBJECTS) $(GDI_LDFLAGS) > g_link.rsp
@@ -622,7 +648,7 @@ gdi: $(GDI_OBJECTS) g_earth.res $(SRC)\gdi.def FORCE
 	@echo $(GDI_LIBS) >> g_link.rsp
 	@echo $(SRC)\gdi.def; >> g_link.rsp
 	$(GDI_LINK) @g_link.rsp
-	$(GDI_RC) $(GDI_RCFLAGS) g_earth.res testglob.exe
+	$(GDI_RC) -30 $(GDI_RCFLAGS) g_earth.res testglob.exe
 
 # Resources avoid huge initialized C objects and load in bounded chunks.
 g_earth.res: $(SRC)\gdi.rc $(SRC)\earthres.h $(GDI_RESOURCE_DATA)
@@ -686,6 +712,9 @@ am_drv.o: $(SRC)/drv.c $(AMI_HEADERS)
 # Recompile when invoked so changing AMI_RTG cannot reuse the other variant.
 am_ami.o: $(SRC)/drv_ami.c $(AMI_HEADERS) FORCE
 	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/drv_ami.c -o am_ami.o
+
+am_time.o: $(SRC)/ami_time.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/ami_time.c -o am_time.o
 
 am_data.o: $(SRC)/ami_data.c $(AMI_HEADERS)
 	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/ami_data.c -o am_data.o
@@ -761,6 +790,7 @@ clean-opengl:
 	-$(RM) e_data.o
 	-$(RM) drv.o
 	-$(RM) drv_ogl.o
+	-$(RM) ogl_glut.o
 	-$(RM) err.o
 	-$(RM) globe.o
 	-$(RM) main.o
@@ -772,6 +802,7 @@ clean-solaris-opengl:
 	-$(RM) s_data.o
 	-$(RM) s_drv.o
 	-$(RM) s_ogl.o
+	-$(RM) s_glut.o
 	-$(RM) s_err.o
 	-$(RM) s_globe.o
 	-$(RM) s_main.o
@@ -783,6 +814,7 @@ clean-apple-opengl:
 	-$(RM) a_data.o
 	-$(RM) a_drv.o
 	-$(RM) a_ogl.o
+	-$(RM) a_glut.o
 	-$(RM) a_err.o
 	-$(RM) a_globe.o
 	-$(RM) a_main.o
@@ -795,6 +827,7 @@ clean-amiga-opengl:
 	-$(RM) ao_drv.o
 	-$(RM) ao_ogl.o
 	-$(RM) ao_ami.o
+	-$(RM) ao_time.o
 	-$(RM) ao_err.o
 	-$(RM) ao_globe.o
 	-$(RM) ao_main.o
@@ -907,6 +940,7 @@ clean-gdi:
 clean-amiga:
 	-$(RM) am_drv.o
 	-$(RM) am_ami.o
+	-$(RM) am_time.o
 	-$(RM) am_data.o
 	-$(RM) am_err.o
 	-$(RM) am_globe.o

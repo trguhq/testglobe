@@ -16,12 +16,7 @@
 #define TGA_PACK_PATH 260U
 #define BUILD_PATH_MAX TGA_PACK_PATH
 #include "buildio.h"
-#include "tga_cmd.h"
-
-static unsigned long tga_u16(const unsigned char *bytes)
-{
-    return (unsigned long)bytes[0] | ((unsigned long)bytes[1] << 8);
-}
+#include "tga_rlm.h"
 
 static void tga_put32(unsigned char *bytes, unsigned long value)
 {
@@ -35,17 +30,11 @@ static void tga_put32(unsigned char *bytes, unsigned long value)
 
 static int tga_executable(FILE *input, unsigned long size)
 {
-    unsigned char header[28], trailer[TGA_RLM_TRAILER_SIZE];
-    unsigned long last, pages, image, header_size;
+    unsigned char header[TGA_RLM_MZ_HEADER], trailer[TGA_RLM_TRAILER_SIZE];
     if (size < sizeof(header) || fread(header, 1, sizeof(header), input) != sizeof(header))
         return 0;
-    if (header[0] != 'M' || header[1] != 'Z') return 0;
-    last = tga_u16(header + 2);
-    pages = tga_u16(header + 4);
-    header_size = tga_u16(header + 8) * 16UL;
-    if (pages == 0UL || last > 511UL) return 0;
-    image = (pages - 1UL) * 512UL + (last != 0UL ? last : 512UL);
-    if (header_size < sizeof(header) || header_size > image || image > size) return 0;
+    /* The driver applies the same check before trusting a trailer. */
+    if (tga_rlm_image_size(header, size) == 0UL) return 0;
     /* An already packed input would retain an obsolete embedded payload.
      * Build from the linked host EXE instead; repeated builds stay bounded. */
     if (size >= TGA_RLM_TRAILER_SIZE)
@@ -61,20 +50,14 @@ static int tga_copy(FILE *input, FILE *output, unsigned long size,
                      unsigned long *checksum)
 {
     unsigned char bytes[512];
-    unsigned int n, i, bit;
+    unsigned int n;
     unsigned long crc = 0xffffffffUL;
     while (size != 0UL)
     {
         n = size > sizeof(bytes) ? sizeof(bytes) : (unsigned int)size;
         if (fread(bytes, 1, n, input) != n || fwrite(bytes, 1, n, output) != n)
             return 0;
-        if (checksum != NULL)
-            for (i = 0; i < n; ++i)
-            {
-                crc ^= bytes[i];
-                for (bit = 0; bit < 8U; ++bit)
-                    crc = (crc >> 1) ^ ((crc & 1UL) ? 0xedb88320UL : 0UL);
-            }
+        if (checksum != NULL) crc = tga_rlm_crc(crc, bytes, n);
         size -= n;
     }
     if (fgetc(input) != EOF || ferror(input)) return 0;

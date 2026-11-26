@@ -13,6 +13,8 @@
 #include <exec/types.h>
 #include <exec/execbase.h>
 #include <exec/tasks.h>
+#include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <graphics/gfx.h>
 #include <graphics/gfxbase.h>
 #include <graphics/gfxmacros.h>
@@ -36,12 +38,14 @@
 #include <inline/intuition_protos.h>
 #endif
 #include <limits.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include "drv.h"
 #include "drv_ext.h"
 #include "globe.h"
 #include "glob_ext.h"
+#include "ami_time.h"
 
 /* Optional libraries are called through their documented m68k ABI. Keeping
  * these four private veneers here avoids imposing an RTG SDK on native builds.
@@ -51,7 +55,7 @@
 #define AMI_CGX_BYTES 0x80000002UL
 #define AMI_CGX_DEPTH 0x80000007UL
 #define AMI_CGX_IS 0x80000008UL
-#define AMI_P96_DEPTH 2UL
+#define AMI_P96_BYTES 5UL
 #define AMI_P96_BITS 6UL
 #define AMI_P96_IS 8UL
 #ifdef __VBCC__
@@ -89,6 +93,7 @@ extern void ami_p96_fill(struct Library *, struct RastPort *,
 #define AMI_MIN_HEIGHT 80
 #define AMI_OCS_MAX_WIDTH 992U
 #define AMI_OCS_MAX_HEIGHT 1024U
+#define AMI_OCS_MAX_ROW_BYTES 128U
 
 struct GfxBase *GfxBase;
 struct IntuitionBase *IntuitionBase;
@@ -132,16 +137,30 @@ static int ami_cpu = 68000, ami_has_fpu;
 static int ami_big_blits, ami_unsafe_bitmap;
 static const char *ami_fpu_name = "none";
 static const char *ami_chipset = "OCS/ECS";
-static unsigned int ami_aspect_num = 1, ami_aspect_den = 1;
-static unsigned char ami_palette[256][3];
-static unsigned char ami_pen_a[256], ami_pen_b[256], ami_mix[256];
-static unsigned char ami_pen_solid[256];
+/* Precomputed horizontal pixel aspect; 1/1 on RTG and square modes. */
+static Soft3d_aspect ami_aspect = {1L, 1L, LONG_MIN, LONG_MAX};
+/* Earth-color lookups for one destination screen. Workbench and the
+ * private fullscreen screen keep separate maps, so F toggles reuse them;
+ * each is rebuilt only when the colors read back from its screen change. */
+typedef struct Ami_pen_map
+{
+    unsigned char palette[256][3];
+    unsigned char pen_a[256], pen_b[256], mix[256], solid[256];
+    unsigned int count, black, white;
+    unsigned int depth, storage; /* the screen format these were built for */
+    int rtg, valid;
+} Ami_pen_map;
+static Ami_pen_map ami_maps[2]; /* Workbench, fullscreen */
+static Ami_pen_map *ami_map = &ami_maps[0];
 static int ami_dither_enabled;
-static unsigned int ami_color_count;
-static int ami_palette_valid;
-static unsigned int ami_black, ami_white;
 static double ami_auto_time;
+/* RastPort fields last set by ami_set_color; -1/FALSE mean unknown. Other
+ * drawing sets them directly, so each frame and the OSD forget them. */
+static int ami_last_apen, ami_last_bpen, ami_last_mode, ami_last_pattern_known;
+static const UWORD *ami_last_pattern;
 static Soft3d_project_cache *ami_project_cache;
+/* Scene revision of the last optional-storage acquisition attempt. */
+static unsigned long ami_recover_revision;
 static Drv_quad_stream ami_stream;
 static union {
     long fixed[3][3];
@@ -151,6 +170,12 @@ static union {
     Soft3d_fixed_point fixed[SOFT3D_MAX_VERTICES];
     Soft3d_float_point floating[SOFT3D_MAX_VERTICES];
 } ami_points;
+
+static void ami_reset_draw_state(void)
+{
+    ami_last_apen = ami_last_bpen = ami_last_mode = -1;
+    ami_last_pattern_known = FALSE;
+}
 
 static void ami_open_fonts(void)
 {
@@ -275,17 +300,21 @@ static void ami_drop_rasters(void)
     ami_draw_port = NULL;
 }
 
+#define AMI_RELEASED_NOTICE "Amiga direct drawing; optional caches released"
+#define AMI_FS_RELEASED_NOTICE "Amiga fullscreen buffers retained; caches released"
+
 void drv_release_optional(void)
 {
-    /* The common recovery layer calls this only between frames. */
+    /* The common recovery layer calls this only between frames. Memory is
+     * short in this scene revision, so reacquire only after it changes. */
     if (ami_rendering) return;
     ami_drop_back_buffer();
     free(ami_project_cache);
     ami_project_cache = NULL;
     drv_quadstream_reset(&ami_stream);
+    ami_recover_revision = globe_revision;
     ami_dirty = TRUE;
-    drv_notice(ami_fullscreen ? "Amiga fullscreen buffers retained; caches released" :
-                               "Amiga direct drawing; optional caches released");
+    drv_notice(ami_fullscreen ? AMI_FS_RELEASED_NOTICE : AMI_RELEASED_NOTICE);
 }
 
 static void ami_cleanup(void)
@@ -309,6 +338,7 @@ static void ami_cleanup(void)
         ami_window = NULL;
     }
     ami_data_close();
+    ami_clock_close();
 #if AMI_RTG
     if (ami_cgx_base != NULL) CloseLibrary(ami_cgx_base);
     if (ami_p96_base != NULL) CloseLibrary(ami_p96_base);
@@ -346,12 +376,7 @@ void ami_error(char *message)
 
 double ami_time_now(void)
 {
-    ULONG seconds, micros;
-    static Drv_clock clock;
-    if (IntuitionBase == NULL) return clock.elapsed;
-    CurrentTime(&seconds, &micros);
-    return drv_elapsed_time(&clock, (double)seconds +
-                                      (double)micros / 1000000.0);
+    return ami_clock_now();
 }
 
 static void ami_detect_processor(void)
@@ -391,25 +416,42 @@ static void ami_detect_processor(void)
     }
 }
 
+/* The 1.3 CLI runs a command on a separate stack of cli_DefaultStack
+ * longwords without updating tc_SPLower/tc_SPUpper. Trust those bounds only
+ * when they contain the caller's frame, measuring the space below it. */
+static int ami_stack_ok(const struct Process *process, ULONG marker)
+{
+    const struct CommandLineInterface *cli;
+    ULONG lower, upper;
+    if (process == NULL) return FALSE;
+    lower = (ULONG)process->pr_Task.tc_SPLower;
+    upper = (ULONG)process->pr_Task.tc_SPUpper;
+    if (marker > lower && marker <= upper)
+        return marker - lower >= AMI_STACK_BYTES - AMI_STACK_STARTUP;
+    cli = process->pr_CLI != 0 ?
+          (const struct CommandLineInterface *)BADDR(process->pr_CLI) : NULL;
+    if (cli != NULL) return cli->cli_DefaultStack >= (LONG)(AMI_STACK_BYTES / 4UL);
+    /* Neither describes this stack; keep the task's own size check. */
+    return upper >= lower && upper - lower >= AMI_STACK_BYTES;
+}
+
 void drv_init(int *argc, char **argv)
 {
     Drv_result result;
-    struct Task *task;
-    ULONG stack_lower, stack_upper;
+    UBYTE marker;
     ami_ready = ami_rendering = ami_paused = FALSE;
     ami_running = ami_active = ami_dirty = TRUE;
-    ami_palette_valid = FALSE;
+    ami_maps[0].valid = ami_maps[1].valid = FALSE;
+    ami_map = &ami_maps[0];
     ami_dither_enabled = AMI_DITHER_DEFAULT;
     ami_unsafe_bitmap = FALSE;
+    ami_reset_draw_state();
     if (atexit(ami_cleanup) != 0) ami_error("Cannot register Amiga cleanup");
     IntuitionBase = (struct IntuitionBase *)OpenLibrary("intuition.library", 34UL);
     if (IntuitionBase == NULL) ami_error("AmigaOS 1.3 or later is required");
     GfxBase = (struct GfxBase *)OpenLibrary("graphics.library", 34UL);
     if (GfxBase == NULL) ami_error("Cannot open graphics.library");
-    task = FindTask(NULL);
-    stack_lower = task == NULL ? 0UL : (ULONG)task->tc_SPLower;
-    stack_upper = task == NULL ? 0UL : (ULONG)task->tc_SPUpper;
-    if (stack_upper < stack_lower || stack_upper - stack_lower < AMI_STACK_BYTES)
+    if (!ami_stack_ok((struct Process *)FindTask(NULL), (ULONG)&marker))
         ami_error("Set the program's Stack to 32768 bytes, then start it again.");
     ami_detect_processor();
 #if AMI_RTG
@@ -420,38 +462,46 @@ void drv_init(int *argc, char **argv)
         ami_p96_base = OpenLibrary("Picasso96API.library", 2UL);
     }
 #endif
+    ami_clock_open();
     result = ami_data_init(argc == NULL ? 0 : *argc, argv);
     if (result != DRV_OK) drv_notice("Earth data unavailable; select a level to retry");
 }
 
-static unsigned int ami_nearest(unsigned int red, unsigned int green,
-                                 unsigned int blue)
+static unsigned int ami_nearest(const Ami_pen_map *map, unsigned int red,
+                                 unsigned int green, unsigned int blue)
 {
     unsigned int pen, best;
     long r, g, b;
     unsigned long distance, minimum;
     minimum = 0xffffffffUL;
     best = 0;
-    for (pen = 0; pen < ami_color_count; ++pen)
+    for (pen = 0; pen < map->count; ++pen)
     {
-        r = (long)red - ami_palette[pen][0];
-        g = (long)green - ami_palette[pen][1];
-        b = (long)blue - ami_palette[pen][2];
+        r = (long)red - map->palette[pen][0];
+        g = (long)green - map->palette[pen][1];
+        b = (long)blue - map->palette[pen][2];
         distance = (unsigned long)(r * r + g * g + b * b);
         if (distance < minimum) { minimum = distance; best = pen; }
     }
     return best;
 }
 
-static void ami_match_color(unsigned int color)
+/* Match all 256 Earth colors in one pass; above 16 pens the shared matcher
+ * searches each distinct desktop color once. */
+static void ami_match_colors(Ami_pen_map *map)
 {
-    Drv_palette_match match;
-    (void)drv_match_palette_color(&earth_cmap[color][0], &ami_palette[0][0],
-                                  ami_color_count, &match);
-    ami_pen_a[color] = match.first;
-    ami_pen_b[color] = match.second;
-    ami_mix[color] = match.mix;
-    ami_pen_solid[color] = match.solid;
+    static Drv_palette_match matches[256];
+    unsigned int color;
+    if (!drv_match_palette_colors(&earth_cmap[0][0], 256U, &map->palette[0][0],
+                                  map->count, matches))
+        return;
+    for (color = 0; color < 256U; ++color)
+    {
+        map->pen_a[color] = matches[color].first;
+        map->pen_b[color] = matches[color].second;
+        map->mix[color] = matches[color].mix;
+        map->solid[color] = matches[color].solid;
+    }
 }
 
 static void ami_map_palette(void)
@@ -459,17 +509,20 @@ static void ami_map_palette(void)
     struct ColorMap *colors;
     ULONG rgb[3], packed;
     unsigned char sample[3];
-    unsigned int color, pen, channel, count;
+    unsigned int pen, channel, count;
+    Ami_pen_map *map;
     int changed;
     if (ami_window == NULL || ami_depth < 1) return;
+    map = ami_map = &ami_maps[ami_fullscreen ? 1 : 0];
     colors = ami_window->WScreen->ViewPort.ColorMap;
     count = ami_depth > AMI_MAX_DEPTH ? 256U : 1U << ami_depth;
     if (colors != NULL && colors->Count != 0 && colors->Count < count)
         count = colors->Count;
     if (count < 1) count = 1;
-    changed = !ami_palette_valid || count != ami_color_count;
-    ami_color_count = count;
-    for (pen = 0; pen < ami_color_count; ++pen)
+    changed = !map->valid || count != map->count || map->rtg != ami_rtg ||
+              map->depth != ami_depth || map->storage != ami_storage_depth;
+    map->count = count;
+    for (pen = 0; pen < map->count; ++pen)
     {
         if (colors != NULL && GfxBase->LibNode.lib_Version >= 39)
         {
@@ -486,25 +539,27 @@ static void ami_map_palette(void)
         }
         for (channel = 0; channel < 3; ++channel)
         {
-            if (ami_palette[pen][channel] != sample[channel]) changed = TRUE;
-            ami_palette[pen][channel] = sample[channel];
+            if (map->palette[pen][channel] != sample[channel]) changed = TRUE;
+            map->palette[pen][channel] = sample[channel];
         }
     }
-    /* Refresh/resize often leaves Workbench's pens unchanged. Rebuild the
-     * two-pen lookup only when the native values or count actually change. */
+    /* Refresh, resize and F often leave a screen's pens unchanged. Rebuild
+     * its lookup only when the native values, count or format change. */
     if (changed)
     {
-        ami_black = ami_nearest(0, 0, 0);
-        ami_white = ami_nearest(255, 255, 255);
-        for (color = 0; ami_depth <= 8U && color < 256; ++color)
-            ami_match_color(color);
+        map->black = ami_nearest(map, 0, 0, 0);
+        map->white = ami_nearest(map, 255, 255, 255);
+        if (ami_depth <= 8U) ami_match_colors(map);
     }
-    ami_palette_valid = TRUE;
+    map->rtg = ami_rtg;
+    map->depth = ami_depth;
+    map->storage = ami_storage_depth;
+    map->valid = TRUE;
     drv_bits_per_pixel = ami_storage_depth;
     drv_colormapped = ami_depth <= 8U;
     drv_colormap_bits = ami_depth > 24U ? 24U : ami_depth;
-    drv_colormap_colors = ami_depth <= 8U ? ami_color_count : 1UL << drv_colormap_bits;
-    drv_colors = ami_depth > 8U ? drv_colormap_colors : ami_color_count;
+    drv_colormap_colors = ami_depth <= 8U ? map->count : 1UL << drv_colormap_bits;
+    drv_colors = ami_depth > 8U ? drv_colormap_colors : map->count;
     /* Report storage separately: e.g. RGB15 occupies two bytes, RGB32 four. */
     drv_bytes_per_pixel = (ami_storage_depth + 7U) / 8U;
 }
@@ -516,23 +571,24 @@ static unsigned int ami_gcd(unsigned int a, unsigned int b)
     return a;
 }
 
+/* The ratio and its overflow bounds change only with the display mode. */
 static void ami_pixel_aspect(void)
 {
     struct DisplayInfo display;
     ULONG mode;
-    unsigned int divisor;
+    unsigned int divisor, num, den;
     UWORD modes;
     if (ami_rtg)
     {
         /* PAL/NTSC chipset timing does not describe an RTG monitor. */
-        ami_aspect_num = ami_aspect_den = 1U;
+        (void)soft3d_aspect_init(&ami_aspect, 1U, 1U);
         return;
     }
     modes = ami_window->WScreen->ViewPort.Modes;
-    ami_aspect_num = (GfxBase->DisplayFlags & PAL) ? 15U : 6U;
-    ami_aspect_den = (GfxBase->DisplayFlags & PAL) ? 16U : 5U;
-    if (modes & HIRES) ami_aspect_num *= 2U;
-    if (modes & LACE) ami_aspect_den *= 2U;
+    num = (GfxBase->DisplayFlags & PAL) ? 15U : 6U;
+    den = (GfxBase->DisplayFlags & PAL) ? 16U : 5U;
+    if (modes & HIRES) num *= 2U;
+    if (modes & LACE) den *= 2U;
     if (GfxBase->LibNode.lib_Version >= 36)
     {
         mode = GetVPModeID(&ami_window->WScreen->ViewPort);
@@ -541,15 +597,15 @@ static void ami_pixel_aspect(void)
                     sizeof(display), DTAG_DISP, mode) >= sizeof(display) &&
             display.Resolution.x > 0 && display.Resolution.y > 0)
         {
-            ami_aspect_num = (unsigned int)display.Resolution.y;
-            ami_aspect_den = (unsigned int)display.Resolution.x;
+            num = (unsigned int)display.Resolution.y;
+            den = (unsigned int)display.Resolution.x;
         }
     }
-    divisor = ami_gcd(ami_aspect_num, ami_aspect_den);
-    ami_aspect_num /= divisor;
-    ami_aspect_den /= divisor;
-    if (ami_aspect_num > 256U || ami_aspect_den > 256U)
-        ami_aspect_num = ami_aspect_den = 1U;
+    divisor = ami_gcd(num, den);
+    num /= divisor;
+    den /= divisor;
+    if (num > 256U || den > 256U) num = den = 1U;
+    (void)soft3d_aspect_init(&ami_aspect, num, den);
 }
 
 /* Query a real OS bitmap, never a copied opaque RTG BitMap structure. */
@@ -572,8 +628,12 @@ static int ami_bitmap_format(struct BitMap *bitmap, int *backend,
     }
     else if (ami_p96_base != NULL && ami_p96_attr(ami_p96_base, bitmap, AMI_P96_IS))
     {
+        /* Bytes per pixel is the unambiguous storage size; the reported
+         * bits per pixel may be smaller, as in RGB15 or 24-in-32. */
         bits = ami_p96_attr(ami_p96_base, bitmap, AMI_P96_BITS);
-        stored = ami_p96_attr(ami_p96_base, bitmap, AMI_P96_DEPTH);
+        bytes = ami_p96_attr(ami_p96_base, bitmap, AMI_P96_BYTES);
+        if (bytes < 1UL || bytes > 4UL) return FALSE;
+        stored = bytes * 8UL;
         *backend = 2;
     }
     else { bits = stored = 0; }
@@ -609,20 +669,29 @@ static int ami_screen_format(struct Screen *screen, struct BitMap *bitmap)
         drv_notice("Unsupported Workbench bitmap or unavailable RTG library");
         return FALSE;
     }
-    if (ami_rtg != backend || ami_depth != depth || ami_storage_depth != storage)
-        ami_palette_valid = FALSE;
     ami_rtg = backend;
     ami_depth = depth;
     ami_storage_depth = storage;
     return TRUE;
 }
 
+/* OCS Agnus, and chipsets that older OS versions cannot identify, bound
+ * blits to 128-byte plane rows and 992 x 1024 pixels. RTG has neither. */
+static int ami_ocs_limited(void)
+{
+    return !ami_rtg && !ami_big_blits;
+}
+
+static int ami_ocs_stride_unsafe(const struct BitMap *bitmap)
+{
+    return ami_ocs_limited() && bitmap->BytesPerRow > AMI_OCS_MAX_ROW_BYTES;
+}
+
 static int ami_check_raster_bounds(unsigned int width, unsigned int height)
 {
-    ami_unsafe_bitmap = !ami_rtg && !ami_big_blits &&
-        ami_window->RPort->BitMap->BytesPerRow > 128U;
+    ami_unsafe_bitmap = ami_ocs_stride_unsafe(ami_window->RPort->BitMap);
     if (width == 0 || height == 0 || width > 32767U || height > 32767U ||
-        ami_unsafe_bitmap || (!ami_rtg && !ami_big_blits &&
+        ami_unsafe_bitmap || (ami_ocs_limited() &&
         (width > AMI_OCS_MAX_WIDTH || height > AMI_OCS_MAX_HEIGHT)))
     {
         ami_ready = FALSE;
@@ -635,13 +704,80 @@ static int ami_check_raster_bounds(unsigned int width, unsigned int height)
     return TRUE;
 }
 
-static int ami_resize(void)
+/* The optional window back buffer; drawing goes direct without it. */
+static void ami_alloc_back_buffer(void)
 {
-    unsigned int width, height, plane;
+    unsigned int plane;
 #if AMI_RTG
     unsigned int depth, storage;
     int backend;
 #endif
+    if (ami_fullscreen || ami_back_planes != 0 || ami_rtg_bitmap != NULL) return;
+#if AMI_RTG
+    if (ami_rtg)
+    {
+        ami_rtg_bitmap = AllocBitMap(ami_raster_width, ami_raster_height, ami_depth,
+            BMF_MINPLANES | BMF_CLEAR, ami_window->RPort->BitMap);
+        /* A failed or incompatible friend bitmap is optional. Never send
+         * RGB drawing calls to an allocation that fell back to planar.
+         * BMF_CLEAR may still be clearing it when it is rejected. */
+        if (ami_rtg_bitmap != NULL &&
+            (!ami_bitmap_format(ami_rtg_bitmap, &backend, &depth, &storage) ||
+             backend != ami_rtg || depth != ami_depth || storage != ami_storage_depth))
+            ami_drop_back_buffer();
+    }
+    else
+#endif
+    {
+        InitBitMap(&ami_bitmap, ami_depth, ami_raster_width, ami_raster_height);
+        for (plane = 0; plane < ami_depth; ++plane)
+        {
+            ami_bitmap.Planes[plane] = AllocRaster(ami_raster_width, ami_raster_height);
+            if (ami_bitmap.Planes[plane] == NULL) break;
+            ++ami_back_planes;
+        }
+        if (ami_back_planes != ami_depth) ami_drop_back_buffer();
+    }
+    if (ami_back_planes != 0 || ami_rtg_bitmap != NULL)
+    {
+        InitRastPort(&ami_back_port);
+        ami_back_port.BitMap = ami_rtg_bitmap != NULL ? ami_rtg_bitmap : &ami_bitmap;
+        SetFont(&ami_back_port, ami_window->RPort->Font);
+    }
+}
+
+static void ami_alloc_project_cache(void)
+{
+    if (ami_project_cache != NULL) return;
+    ami_project_cache = (Soft3d_project_cache *)malloc(sizeof(Soft3d_project_cache));
+    soft3d_project_cache_reset(ami_project_cache);
+}
+
+/* Reacquire optional storage that is missing after a memory recovery or
+ * an earlier failure: at most once per scene revision and never inside a
+ * render, so a persistent shortage does not cost an attempt every frame. */
+static void ami_recover_optional(void)
+{
+    int buffer_ready;
+    if (ami_rendering || !ami_ready || ami_recover_revision == globe_revision) return;
+    /* Fullscreen draws into its screen buffers; a paused window has none. */
+    buffer_ready = ami_fullscreen || ami_paused || ami_back_planes != 0 || ami_rtg_bitmap != NULL;
+    if (ami_project_cache != NULL && buffer_ready) return;
+    ami_recover_revision = globe_revision;
+    ami_alloc_project_cache();
+    if (!buffer_ready) ami_alloc_back_buffer();
+    /* Clear only this driver's own release notice once nothing is missing. */
+    if (ami_project_cache != NULL &&
+        (ami_fullscreen || ami_back_planes != 0 || ami_rtg_bitmap != NULL) &&
+        (strcmp(drv_get_notice(), AMI_RELEASED_NOTICE) == 0 ||
+         strcmp(drv_get_notice(), AMI_FS_RELEASED_NOTICE) == 0))
+        drv_notice(NULL);
+    ami_dirty = TRUE;
+}
+
+static int ami_resize(void)
+{
+    unsigned int width, height;
     ULONG bytes;
     /* Fullscreen dimensions and required presentation bitmaps are fixed for
      * this screen's lifetime. Never replace them with a window copy buffer. */
@@ -666,40 +802,16 @@ static int ami_resize(void)
     }
     if (!ami_paused)
     {
-#if AMI_RTG
-        if (ami_rtg)
-        {
-            ami_rtg_bitmap = AllocBitMap(width, height, ami_depth,
-                BMF_MINPLANES | BMF_CLEAR, ami_window->RPort->BitMap);
-            /* A failed or incompatible friend bitmap is optional. Never send
-             * RGB drawing calls to an allocation that fell back to planar. */
-            if (ami_rtg_bitmap != NULL &&
-                (!ami_bitmap_format(ami_rtg_bitmap, &backend, &depth, &storage) ||
-                 backend != ami_rtg || depth != ami_depth || storage != ami_storage_depth))
-            {
-                FreeBitMap(ami_rtg_bitmap);
-                ami_rtg_bitmap = NULL;
-            }
-        }
-        else
-#endif
-        {
-            InitBitMap(&ami_bitmap, ami_depth, width, height);
-            for (plane = 0; plane < ami_depth; ++plane)
-            {
-                ami_bitmap.Planes[plane] = AllocRaster(width, height);
-                if (ami_bitmap.Planes[plane] == NULL) break;
-                ++ami_back_planes;
-            }
-            if (ami_back_planes != ami_depth) ami_drop_back_buffer();
-        }
-        if (ami_back_planes != 0 || ami_rtg_bitmap != NULL)
-        {
-            InitRastPort(&ami_back_port);
-            ami_back_port.BitMap = ami_rtg_bitmap != NULL ? ami_rtg_bitmap : &ami_bitmap;
-            SetFont(&ami_back_port, ami_window->RPort->Font);
-        }
-        else drv_notice("Amiga direct drawing; no back buffer");
+        ami_alloc_back_buffer();
+        if (ami_back_planes == 0 && ami_rtg_bitmap == NULL)
+            drv_notice("Amiga direct drawing; no back buffer");
+    }
+    /* Resizing always rebuilds the back buffer; the cache, if missing,
+     * follows the same once-per-revision rule as other recovery. */
+    if (ami_project_cache == NULL && ami_recover_revision != globe_revision)
+    {
+        ami_recover_revision = globe_revision;
+        ami_alloc_project_cache();
     }
     ami_map_palette();
     ami_pixel_aspect();
@@ -730,22 +842,21 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
         if (!ami_screen_format(locked, locked->RastPort.BitMap)) goto failed;
         screen_width = locked->Width;
         screen_height = locked->Height;
-        if (!ami_rtg && !ami_big_blits && locked->RastPort.BitMap->BytesPerRow > 128U)
-            goto unsafe;
+        if (ami_ocs_stride_unsafe(locked->RastPort.BitMap)) goto unsafe;
     }
     else if (GetScreenData(&screen, sizeof(screen), WBENCHSCREEN, NULL))
     {
         if (!ami_screen_format(&screen, &screen.BitMap)) goto failed;
         screen_width = screen.Width;
         screen_height = screen.Height;
-        if (!ami_big_blits && screen.BitMap.BytesPerRow > 128U) goto unsafe;
+        if (ami_ocs_stride_unsafe(&screen.BitMap)) goto unsafe;
     }
     else goto failed;
     if (screen_width < AMI_MIN_WIDTH || screen_height < AMI_MIN_HEIGHT ||
         screen_width > 32767 || screen_height > 32767) goto failed;
     max_width = screen_width;
     max_height = screen_height;
-    if (!ami_rtg && !ami_big_blits)
+    if (ami_ocs_limited())
     {
         /* Conservative outer-window ceilings also bound its client area
          * without assuming the system font's native border dimensions. */
@@ -792,7 +903,8 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     locked = NULL;
     if (ami_window == NULL) return FALSE;
     ami_open_fonts();
-    ami_project_cache = (Soft3d_project_cache *)malloc(sizeof(Soft3d_project_cache));
+    ami_alloc_project_cache();
+    ami_recover_revision = globe_revision;
     return ami_resize();
 unsafe:
     ami_unsafe_bitmap = TRUE;
@@ -820,14 +932,31 @@ static void ami_fs_store_color(unsigned int pen, const unsigned char *rgb,
  * At reduced depths, farthest-color selection covers the Earth colors rather
  * than depending on their arbitrary order in the source palette. Read back
  * each installed color so OCS/ECS RGB12 quantization affects that selection. */
+/* Lower each Earth color's distance to its nearest installed pen. */
+static void ami_fs_nearer(unsigned long distance[256], const unsigned char *rgb)
+{
+    unsigned long d;
+    unsigned int color, channel;
+    long delta;
+    for (color = 0; color < 256; ++color)
+    {
+        d = 0;
+        for (channel = 0; channel < 3; ++channel)
+        {
+            delta = (long)earth_cmap[color][channel] - rgb[channel];
+            d += (unsigned long)(delta * delta);
+        }
+        if (d < distance[color]) distance[color] = d;
+    }
+}
+
 static void ami_fs_palette(unsigned int depth)
 {
     unsigned char colors[256][3], used[256], rgb[3];
-    unsigned long distance[256], d, maximum;
+    unsigned long distance[256], maximum;
     ULONG channels[3], base;
     struct TagItem tags[2];
     unsigned int count, pen, color, channel, best, slot;
-    long delta;
     count = 1U << depth;
     memset(used, 0, sizeof(used));
     base = 16;
@@ -865,17 +994,7 @@ static void ami_fs_palette(unsigned int depth)
     }
     for (color = 0; color < 256; ++color) distance[color] = 0xffffffffUL;
     for (pen = 0; pen < count; ++pen)
-        if (used[pen])
-            for (color = 0; color < 256; ++color)
-            {
-                d = 0;
-                for (channel = 0; channel < 3; ++channel)
-                {
-                    delta = (long)earth_cmap[color][channel] - colors[pen][channel];
-                    d += (unsigned long)(delta * delta);
-                }
-                if (d < distance[color]) distance[color] = d;
-            }
+        if (used[pen]) ami_fs_nearer(distance, colors[pen]);
     for (pen = 0; pen < count; ++pen)
     {
         if (used[pen]) continue;
@@ -886,16 +1005,7 @@ static void ami_fs_palette(unsigned int depth)
                 maximum = distance[color]; best = color;
             }
         ami_fs_store_color(pen, earth_cmap[best], colors[pen]);
-        for (color = 0; color < 256; ++color)
-        {
-            d = 0;
-            for (channel = 0; channel < 3; ++channel)
-            {
-                delta = (long)earth_cmap[color][channel] - colors[pen][channel];
-                d += (unsigned long)(delta * delta);
-            }
-            if (d < distance[color]) distance[color] = d;
-        }
+        ami_fs_nearer(distance, colors[pen]);
     }
 }
 
@@ -991,6 +1101,53 @@ failed:
     return FALSE;
 }
 
+/* Native fullscreen stays on the Workbench's monitor, so a 31 kHz display
+ * driver keeps a visible mode. Without low resolution there, ask for the
+ * best nominal 320 x 200/256 mode on that monitor without special palette
+ * semantics, then try the default monitor. DimensionInfo gives the
+ * mode's nominal size and its depth limit. Called only on V39. */
+static ULONG ami_fs_native_mode(unsigned int *width, unsigned int *height,
+                                unsigned int *depth)
+{
+    struct DimensionInfo dimensions;
+    struct TagItem tags[7];
+    ULONG workbench, mode;
+    unsigned int tag;
+    workbench = GetVPModeID(&ami_window->WScreen->ViewPort);
+    mode = workbench == INVALID_ID ? INVALID_ID :
+           (workbench & MONITOR_ID_MASK) | LORES_KEY;
+    if (mode == INVALID_ID || ModeNotAvailable(mode) != 0)
+    {
+        tag = 0;
+        tags[tag].ti_Tag = BIDTAG_NominalWidth; tags[tag++].ti_Data = 320UL;
+        tags[tag].ti_Tag = BIDTAG_NominalHeight;
+        tags[tag++].ti_Data = GfxBase->DisplayFlags & PAL ? 256UL : 200UL;
+        tags[tag].ti_Tag = BIDTAG_Depth; tags[tag++].ti_Data = *depth;
+        tags[tag].ti_Tag = BIDTAG_DIPFMustNotHave;
+        tags[tag++].ti_Data = DIPF_IS_HAM | DIPF_IS_EXTRAHALFBRITE | DIPF_IS_DUALPF;
+        if (workbench != INVALID_ID)
+        {
+            tags[tag].ti_Tag = BIDTAG_MonitorID;
+            tags[tag++].ti_Data = workbench & MONITOR_ID_MASK;
+        }
+        tags[tag].ti_Tag = TAG_DONE; tags[tag].ti_Data = 0;
+        mode = BestModeIDA(tags);
+        if (mode == INVALID_ID || ModeNotAvailable(mode) != 0)
+            mode = DEFAULT_MONITOR_ID | LORES_KEY;
+        if (ModeNotAvailable(mode) != 0) return INVALID_ID;
+    }
+    memset(&dimensions, 0, sizeof(dimensions));
+    if (GetDisplayInfoData(NULL, (UBYTE *)&dimensions, sizeof(dimensions), DTAG_DIMS,
+                           mode) < offsetof(struct DimensionInfo, MaxOScan) ||
+        dimensions.Nominal.MaxX < dimensions.Nominal.MinX ||
+        dimensions.Nominal.MaxY < dimensions.Nominal.MinY) return INVALID_ID;
+    *width = (unsigned int)(dimensions.Nominal.MaxX - dimensions.Nominal.MinX) + 1U;
+    *height = (unsigned int)(dimensions.Nominal.MaxY - dimensions.Nominal.MinY) + 1U;
+    if (dimensions.MaxDepth != 0 && *depth > dimensions.MaxDepth)
+        *depth = dimensions.MaxDepth;
+    return mode;
+}
+
 static void ami_enter_fullscreen(void)
 {
     unsigned int width, height, depth;
@@ -1012,10 +1169,9 @@ static void ami_enter_fullscreen(void)
     }
     else
     {
-        mode = (GfxBase->DisplayFlags & PAL ? PAL_MONITOR_ID : NTSC_MONITOR_ID) | LORES_KEY;
-        width = 320U;
-        height = GfxBase->DisplayFlags & PAL ? 256U : 200U;
+        width = height = 0;
         depth = GfxBase->ChipRevBits0 & GFXF_AA_ALICE ? 8U : 5U;
+        mode = ami_fs_native_mode(&width, &height, &depth);
     }
     if (mode == INVALID_ID || width > 32767U || height > 32767U ||
         width < AMI_MIN_WIDTH || height < AMI_MIN_HEIGHT)
@@ -1043,7 +1199,6 @@ static void ami_enter_fullscreen(void)
     drv_win_width = width; drv_win_height = height;
     InitRastPort(&ami_back_port);
     SetFont(&ami_back_port, ami_window->RPort->Font);
-    ami_palette_valid = FALSE;
     ami_map_palette();
     ami_pixel_aspect();
     drv_quadstream_reset(&ami_stream);
@@ -1068,7 +1223,6 @@ static void ami_leave_fullscreen(void)
     ami_workbench_window = NULL;
     ami_fullscreen = FALSE;
     ami_drain_window(ami_window);
-    ami_palette_valid = FALSE;
     drv_lmouse_pressed = drv_rmouse_pressed = FALSE;
     (void)ami_resize();
     ami_active = TRUE;
@@ -1100,21 +1254,33 @@ static void ami_fs_present(void)
     else drv_reset_timing();
 }
 
+/* Adjacent facets usually share a pen; skip calls that change nothing. */
 static void ami_set_color(unsigned char color)
 {
+    const UWORD *pattern;
     unsigned int mix;
-    mix = ami_dither_enabled ? ami_mix[color] : 0U;
-    SetAPen(ami_draw_port, !ami_dither_enabled ? ami_pen_solid[color] :
-                           (mix == 16U ? ami_pen_b[color] : ami_pen_a[color]));
-    if (mix == 0U || mix == 16U)
+    int pen, mode;
+    mix = ami_dither_enabled ? ami_map->mix[color] : 0U;
+    pen = !ami_dither_enabled ? ami_map->solid[color] :
+          (mix == 16U ? ami_map->pen_b[color] : ami_map->pen_a[color]);
+    if (pen != ami_last_apen) SetAPen(ami_draw_port, (ULONG)pen);
+    ami_last_apen = pen;
+    mode = JAM1;
+    pattern = NULL;
+    if (mix != 0U && mix != 16U)
     {
-        SetDrMd(ami_draw_port, JAM1);
-        SetAfPt(ami_draw_port, NULL, 0);
-        return;
+        if (ami_map->pen_b[color] != ami_last_bpen)
+            SetBPen(ami_draw_port, ami_map->pen_b[color]);
+        ami_last_bpen = ami_map->pen_b[color];
+        mode = JAM2;
+        pattern = (const UWORD *)drv_dither_pattern(mix);
     }
-    SetBPen(ami_draw_port, ami_pen_b[color]);
-    SetDrMd(ami_draw_port, JAM2);
-    SetAfPt(ami_draw_port, (UWORD *)drv_dither_pattern(mix), 2);
+    if (mode != ami_last_mode) SetDrMd(ami_draw_port, (ULONG)mode);
+    ami_last_mode = mode;
+    if (!ami_last_pattern_known || pattern != ami_last_pattern)
+        SetAfPt(ami_draw_port, (UWORD *)pattern, pattern != NULL ? 2 : 0);
+    ami_last_pattern = pattern;
+    ami_last_pattern_known = TRUE;
 }
 
 #if AMI_RTG
@@ -1203,23 +1369,35 @@ static int ami_fill_polygon(const Soft3d_screen_point *points, int count,
 }
 #endif
 
-static int ami_aspect_polygon(Soft3d_screen_point *points, int count)
+#ifdef DRV_QUAD_TRIM
+/* Describe this frame's projection for back-face trimming in globe.c. Both
+ * projectors truncate below one pixel, and a non-square aspect scales that
+ * error and truncates again. The 68000 transform's Q4/Q14 rounding and its
+ * 1/256-degree angles move a vertex well under 0.002 * radius + 1 unit. The
+ * camera is D times the prepared matrix's last row, without trigonometry. */
+int drv_quad_trim_view(Drv_quad_trim *view)
 {
-    long center, delta, scaled;
-    int i;
-    if (ami_aspect_num == ami_aspect_den) return count;
-    center = (long)drv_win_width / 2L;
-    for (i = 0; i < count; ++i)
-    {
-        delta = points[i].x - center;
-        if (delta > LONG_MAX / (long)ami_aspect_num ||
-            delta < LONG_MIN / (long)ami_aspect_num) return 0;
-        scaled = delta * (long)ami_aspect_num / (long)ami_aspect_den;
-        if (scaled > LONG_MAX - center) return 0;
-        points[i].x = center + scaled;
-    }
-    return count;
+    double ratio;
+    unsigned int i;
+    if (view == NULL || !ami_rendering || ami_window == NULL) return FALSE;
+    for (i = 0; i < 3U; ++i)
+        view->eye[i] = (double)GLOBE_VIEW_DISTANCE * (ami_has_fpu ?
+            (double)ami_matrix.floating[2][i] : (double)ami_matrix.fixed[2][i] / 16384.0);
+    ratio = (double)ami_aspect.num / (double)ami_aspect.den;
+    view->focal_y = ami_has_fpu ? (double)drv_win_height * GLOBE_FOCAL_SCALE :
+        (double)((long)drv_win_height * GLOBE_FOCAL_Q14 / 16384L);
+    view->focal_x = view->focal_y * ratio;
+    view->center_x = (double)(drv_win_width / 2U);
+    view->center_y = (double)(drv_win_height / 2U);
+    view->limit_x = (double)drv_win_width - 1.0;
+    view->limit_y = (double)drv_win_height - 1.0;
+    view->pixel_x = ami_aspect.num == ami_aspect.den ? 1.0 : ratio + 1.0;
+    view->pixel_y = 1.0;
+    view->world_error = 1.0;
+    view->world_scale = 0.002;
+    return TRUE;
 }
+#endif
 
 void drv_draw_quad_flat_color(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
                                Vertex TG_HUGE *third, Vertex TG_HUGE *fourth,
@@ -1237,7 +1415,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     Drv_quad_context context;
     Soft3d_screen_point polygon[AMI_MAX_POLY];
     unsigned int corners[4], reuse, facet, corner;
-    int count, point, transformed;
+    int count, point, transformed, corner_aspect;
     if (!ami_rendering || ami_draw_port == NULL || drv_frame_failed || ami_paused) return;
     if (vertices == NULL || colors == NULL || !drv_validate_quadbatch(vertex_count, quad_count, indices))
     {
@@ -1246,7 +1424,16 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     }
     reuse = drv_quadstream_reuse(&ami_stream, vertex_count,
                                       vertices, &context);
-    soft3d_project_cache_begin(ami_project_cache, vertex_count, drv_win_width, drv_win_height, reuse);
+    /* The fixed cache scales each vertex for the pixel aspect once, as it
+     * is cached. The FPU projector, or a missing cache, scales each corner. */
+    if (ami_has_fpu)
+    {
+        (void)soft3d_project_cache_begin(ami_project_cache, vertex_count,
+                                         drv_win_width, drv_win_height, reuse);
+        corner_aspect = TRUE;
+    }
+    else corner_aspect = !soft3d_project_cache_begin_aspect(ami_project_cache,
+        vertex_count, drv_win_width, drv_win_height, reuse, &ami_aspect);
     if (ami_has_fpu)
         transformed = soft3d_float_transform_reuse(ami_matrix.floating, vertex_count,
                                vertices, ami_points.floating, reuse, SOFT3D_FLOAT_DOUBLE);
@@ -1269,11 +1456,16 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         if (ami_has_fpu)
             count = soft3d_float_project_cached(ami_points.floating, vertex_count, corners, 4U,
                 drv_win_width, drv_win_height, SOFT3D_FLOAT_DOUBLE, ami_project_cache, polygon);
+        else if (ami_cpu >= 68020)
+            count = soft3d_020_project_cached(ami_points.fixed, vertex_count, corners, 4U,
+                drv_win_width, drv_win_height, ami_project_cache, polygon);
         else
             count = soft3d_fixed_project_cached(ami_points.fixed, vertex_count, corners, 4U,
                 drv_win_width, drv_win_height, ami_project_cache, polygon);
-        count = ami_aspect_polygon(polygon, count);
-        count = soft3d_finish_polygon(polygon, count, drv_win_width - 1U, drv_win_height - 1U);
+        if (corner_aspect) count = soft3d_aspect_points(&ami_aspect, drv_win_width, polygon, count);
+        if (ami_cpu >= 68020)
+            count = soft3d_020_finish_polygon(polygon, count, drv_win_width - 1U, drv_win_height - 1U);
+        else count = soft3d_finish_polygon(polygon, count, drv_win_width - 1U, drv_win_height - 1U);
         if (count < 3) continue;
 #if AMI_RTG
         if (ami_rtg && ami_depth > 8U)
@@ -1283,8 +1475,8 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
             continue;
         }
 #endif
+        /* AreaEnd reinitializes the vector table for the next AreaMove. */
         ami_set_color(colors[facet]);
-        InitArea(&ami_area_info, ami_area_storage, AMI_AREA_VECTORS);
         if (AreaMove(ami_draw_port, (WORD)polygon[0].x, (WORD)polygon[0].y) != 0) goto failed;
         for (point = 1; point < count; ++point)
             if (AreaDraw(ami_draw_port, (WORD)polygon[point].x, (WORD)polygon[point].y) != 0) goto failed;
@@ -1293,6 +1485,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     }
     return;
 failed:
+    /* A rejected vector may leave a partial area: discard it explicitly. */
     InitArea(&ami_area_info, ami_area_storage, AMI_AREA_VECTORS);
     ami_area_failed = TRUE;
     drv_abort_frame("Amiga area fill failed");
@@ -1337,8 +1530,8 @@ void drv_draw_osd(void)
     if (font != NULL) SetFont(ami_draw_port, font);
     SetAfPt(ami_draw_port, NULL, 0);
     SetDrMd(ami_draw_port, JAM2);
-    SetAPen(ami_draw_port, ami_white);
-    SetBPen(ami_draw_port, ami_black);
+    SetAPen(ami_draw_port, ami_map->white);
+    SetBPen(ami_draw_port, ami_map->black);
     drv_format_stats(status);
     drv_append_status(status, sizeof(status), ami_depth > 8U ? ", dither n/a" :
                       (ami_dither_enabled ? ", dither on" : ", dither off"));
@@ -1352,7 +1545,7 @@ void drv_draw_osd(void)
                 (ami_rtg_bitmap != NULL ? "buffered" : "direct"));
     else
         sprintf(detail, "%s, %d, %s, %u colors, %s", ami_chipset, ami_cpu,
-                ami_has_fpu ? ami_fpu_name : "fixed-point", ami_color_count,
+                ami_has_fpu ? ami_fpu_name : "fixed-point", ami_map->count,
                 ami_fullscreen ? "fullscreen, double buffered" :
                 (ami_back_planes != 0 ? "buffered" : "direct"));
     next_line = ami_text_lines(detail, baseline, TRUE);
@@ -1364,6 +1557,7 @@ void drv_draw_osd(void)
     baseline = (int)drv_win_height - 3 - descent - help_height + step;
     if (baseline >= next_line) (void)ami_text_lines(drv_help, baseline, TRUE);
     if (saved_font != NULL) SetFont(ami_draw_port, saved_font);
+    ami_reset_draw_state();
 }
 
 static void ami_render_pass(void)
@@ -1381,9 +1575,10 @@ static void ami_render_pass(void)
     ami_draw_port->TmpRas = ami_scratch != NULL ? &ami_tmp_ras : NULL;
     ami_draw_port->Flags &= ~AREAOUTLINE;
     InitArea(&ami_area_info, ami_area_storage, AMI_AREA_VECTORS);
+    ami_reset_draw_state();
     SetAfPt(ami_draw_port, NULL, 0);
     SetDrMd(ami_draw_port, JAM1);
-    SetAPen(ami_draw_port, ami_black);
+    SetAPen(ami_draw_port, ami_map->black);
 #if AMI_RTG
     if (ami_rtg && ami_depth > 8U)
         ami_rtg_fill(ami_draw_port, 0, 0, drv_win_width - 1U, drv_win_height - 1U, 0UL);
@@ -1404,10 +1599,12 @@ static void ami_render_pass(void)
     if (!drv_frame_failed)
     {
         if (drv_osd_enabled || ami_paused || !globe_ready()) drv_draw_osd();
+        /* graphics.library and the RTG libraries serialize their own blits,
+         * so the next frame cannot overtake this copy. Wait only before
+         * freeing a bitmap or handing one to ChangeScreenBuffer. */
         if (!ami_fullscreen && (ami_back_planes != 0 || ami_rtg_bitmap != NULL))
             BltBitMapRastPort(ami_rtg_bitmap != NULL ? ami_rtg_bitmap : &ami_bitmap, 0, 0, ami_window->RPort, 0, 0,
                               drv_win_width, drv_win_height, 0xc0);
-        WaitBlit();
         ami_dirty = FALSE;
         if (ami_fullscreen)
         {
@@ -1442,6 +1639,7 @@ void drv_render(void)
     }
     if (!ami_check_raster_bounds(ami_window->GZZWidth, ami_window->GZZHeight)) return;
     if (!ami_ready) return;
+    ami_recover_optional();
     for (attempt = 0; attempt < 2; ++attempt)
     {
         ami_area_failed = FALSE;
@@ -1494,6 +1692,8 @@ static void ami_keyboard(unsigned char key)
     else if (!drv_handle_key(key)) return;
     if ((ami_depth <= 8U && ami_scratch == NULL) || !ami_ready) (void)ami_resize();
     else ami_paused = FALSE;
+    /* A resolution key may have freed memory by replacing the scene. */
+    ami_recover_optional();
     ami_auto_time = ami_time_now();
     ami_dirty = TRUE;
 }

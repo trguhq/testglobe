@@ -43,6 +43,67 @@ void globe_toggle_tex(void)
 }
 #endif
 
+#ifdef TEXTURE
+static unsigned int fit_releases;
+static unsigned int fit_sizes[16];
+static unsigned int fit_attempts;
+static unsigned int fit_limit;
+static unsigned int fit_shortages;
+static Drv_result fit_failure;
+
+void drv_release_optional(void)
+{
+    ++fit_releases;
+}
+
+/* The first fit_shortages attempts and widths above fit_limit run out of
+ * memory; any other attempt returns fit_failure. */
+static Drv_result fit_attempt(unsigned int size)
+{
+    assert(fit_attempts < 16U);
+    fit_sizes[fit_attempts++] = size;
+    if (fit_attempts <= fit_shortages || size > fit_limit) return DRV_NO_MEMORY;
+    return fit_failure;
+}
+
+static void fit_run(unsigned int start, unsigned int shortages, unsigned int limit,
+                    Drv_result failure, Drv_result expected,
+                    const unsigned int *sizes, unsigned int count,
+                    unsigned int releases, const char *notice)
+{
+    unsigned int i;
+    fit_releases = fit_attempts = 0;
+    fit_shortages = shortages;
+    fit_limit = limit;
+    fit_failure = failure;
+    drv_notice(NULL);
+    assert(drv_texture_fit(start, fit_attempt) == expected);
+    assert(fit_attempts == count);
+    for (i = 0; i < count; ++i) assert(fit_sizes[i] == sizes[i]);
+    assert(fit_releases == releases);
+    assert(strcmp(drv_get_notice(), notice) == 0);
+}
+
+static void test_texture_fit(void)
+{
+    static const unsigned int full[] = { 512U };
+    static const unsigned int released[] = { 512U, 512U };
+    static const unsigned int reduced[] = { 512U, 512U, 256U, 128U };
+    static const unsigned int exhausted[] = { 512U, 512U, 256U, 128U, 64U, 32U };
+    static const unsigned int capped[] = { 128U, 128U, 64U };
+    static const unsigned int failed[] = { 512U, 512U, 256U };
+    fit_run(512U, 0U, 512U, DRV_OK, DRV_OK, full, 1U, 0U, "");
+    fit_run(512U, 1U, 512U, DRV_OK, DRV_OK, released, 2U, 1U, "");
+    fit_run(512U, 0U, 128U, DRV_OK, DRV_OK, reduced, 4U, 1U,
+            "Texture reduced to 128 x 64");
+    fit_run(512U, 0U, 16U, DRV_OK, DRV_NO_MEMORY, exhausted, 6U, 1U, "");
+    fit_run(128U, 0U, 64U, DRV_OK, DRV_OK, capped, 3U, 1U,
+            "Texture reduced to 64 x 32");
+    fit_run(512U, 0U, 256U, DRV_NATIVE_FAILED, DRV_NATIVE_FAILED, failed, 3U, 1U, "");
+    puts("PASS texture size search: one eviction, halving to 32 pixels, reduced-size notice and non-memory failures end the search");
+}
+#endif
+
 #ifdef DRV_EARTH_RESOURCES
 Drv_result drv_load_earth_chunk(unsigned int resource, unsigned long length,
                            unsigned char TG_HUGE *destination)
@@ -715,6 +776,57 @@ static unsigned long palette_pair_optimum(const unsigned char *rgb,
     return best;
 }
 
+/* The batched matcher de-duplicates large palettes; every result must equal
+ * the single-color matcher, including palettes made mostly of repeats. */
+static void test_palette_batch(void)
+{
+    static const unsigned int counts[] = {1, 7, 16, 17, 20, 64, 256};
+    static unsigned char colors[256][3], palette[256][3];
+    static Drv_palette_match batch[256];
+    Drv_palette_match single;
+    unsigned int test, count, color, a, distinct, layout;
+    for (color = 0; color < 256U; ++color)
+    {
+        colors[color][0] = (unsigned char)(color * 37U + 11U);
+        colors[color][1] = (unsigned char)(color * 101U + 3U);
+        colors[color][2] = (unsigned char)(color * 59U + 7U);
+    }
+    for (layout = 0; layout < 3U; ++layout)
+        for (test = 0; test < sizeof(counts) / sizeof(counts[0]); ++test)
+        {
+            count = counts[test];
+            /* Layouts: all distinct; 40 distinct colors interleaved, as in a
+             * background Windows palette; long runs of one repeated color. */
+            distinct = layout == 0U ? count : (layout == 1U ? 40U : 5U);
+            for (a = 0; a < count; ++a)
+            {
+                color = layout == 2U ? a / 13U % distinct : (a * 7U) % distinct;
+                palette[a][0] = (unsigned char)(color * 61U);
+                palette[a][1] = (unsigned char)(255U - color * 23U);
+                palette[a][2] = (unsigned char)(color * 149U);
+            }
+            if (count > 3U) memcpy(palette[count - 1U], colors[5], 3U);
+            assert(drv_match_palette_colors(&colors[0][0], 256U, &palette[0][0],
+                                            count, batch));
+            for (color = 0; color < 256U; ++color)
+            {
+                assert(drv_match_palette_color(colors[color], &palette[0][0],
+                                               count, &single));
+                assert(batch[color].first == single.first &&
+                       batch[color].second == single.second &&
+                       batch[color].mix == single.mix &&
+                       batch[color].solid == single.solid);
+            }
+            assert(batch[5].mix == 0U || count <= 3U);
+        }
+    assert(!drv_match_palette_colors(NULL, 1U, &palette[0][0], 1U, batch));
+    assert(!drv_match_palette_colors(&colors[0][0], 1U, NULL, 1U, batch));
+    assert(!drv_match_palette_colors(&colors[0][0], 1U, &palette[0][0], 1U, NULL));
+    assert(!drv_match_palette_colors(&colors[0][0], 0U, &palette[0][0], 1U, batch));
+    assert(!drv_match_palette_colors(&colors[0][0], 1U, &palette[0][0], 0U, batch));
+    assert(!drv_match_palette_colors(&colors[0][0], 1U, &palette[0][0], 257U, batch));
+}
+
 static void test_palette_helpers(void)
 {
     static const unsigned int counts[] = {1, 2, 3, 16, 17, 32, 64, 128, 255, 256};
@@ -798,6 +910,7 @@ static void test_palette_helpers(void)
     }
     assert(!drv_match_palette_color(rgb, saved_palette, 1U, NULL));
     assert(!drv_match_palette_color(rgb, saved_palette, UINT_MAX, &result.value));
+    test_palette_batch();
     for (mix = 0; mix <= 16U; ++mix)
     {
         pattern = drv_dither_pattern(mix);
@@ -826,6 +939,9 @@ int main(void)
 #ifdef TEXTURE
     test_uv_expansion();
 #endif
+#endif
+#ifdef TEXTURE
+    test_texture_fit();
 #endif
 #ifdef DRV_QUAD_BATCH
     test_quad_helpers();
