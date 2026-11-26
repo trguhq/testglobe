@@ -176,14 +176,18 @@ ordinary data pointers; the project's `SEG68` option is specific to the Macintos
 memory model. Baseline code uses 68000 instructions and IEEE software floating point,
 and Exec's CPU/FPU flags select separately compiled enhanced math routines:
 
-| Available hardware | Transform path |
-| --- | --- |
-| 68000/68010 | Shared fixed point |
-| 68020 or later without FPU | 68020 integer transform |
-| 68020 or later with a usable 68881/68882 or integrated FPU | Shared hardware floating point |
+| Available hardware | Transform and projection | Clipping and back-face rejection |
+| --- | --- | --- |
+| 68000/68010 | Shared fixed point | Shared fixed point |
+| 68020 or later without FPU | 68020 integer object | 68020 integer object |
+| 68020 or later with a usable 68881/68882 or integrated FPU | Shared hardware floating point | 68020 integer object |
 
-The enhanced integer object uses `-cpu=68020`, and the FPU object
-`-cpu=68020 -fpu=68881`; all other objects keep the baseline options.
+The enhanced integer object compiles the same fixed-point transform, projection,
+clipping, and back-face code from `soft3d.c` with `-cpu=68020`, so results match the
+baseline exactly; the FPU object uses `-cpu=68020 -fpu=68881`, and all other objects
+keep the baseline options. The fixed-point projection cache applies the display's
+pixel aspect once per cached vertex; the FPU path scales each projected corner, with
+the aspect's overflow bounds precomputed when the display mode changes.
 Pointer-and-integer interfaces preserve the baseline calling boundary. The FPU helper
 uses only basic arithmetic and bounded IEEE conversion, avoiding transcendental and
 integer-conversion opcodes that later FPUs lack. Mesh construction and shared

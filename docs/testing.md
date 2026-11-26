@@ -752,11 +752,15 @@ cross-build uses the [Amiga build instructions](amiga.md#build) separately.
   mode selection follows the Workbench monitor, including a 31 kHz monitor, then
   `BestModeIDA` and the default monitor, taking size and depth limits from
   `DimensionInfo`; with no available mode the window is kept.
-- **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch,
-  including a reported FPU without a supporting CPU. Cached and uncached drawing
-  must retain polygon coordinates and colors, including projection-cache allocation
-  failure; the default streamed globe requires 561 transforms. Resizing and pixel-aspect
-  changes rebuild projection state; all five resolution keys remain available.
+- **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch of
+  the transform, projection, and clipping/back-face stages, including a reported FPU
+  without a supporting CPU. Cached and uncached drawing must retain polygon
+  coordinates and colors, including projection-cache allocation failure; the default
+  streamed globe requires 561 transforms and 512 projections. Randomized polygons,
+  including near-plane crossings, must give identical results from both integer
+  objects, and the cache's once-per-vertex pixel aspect must round like scaling each
+  corner, including rejected overflow. Resizing and pixel-aspect changes rebuild
+  projection state; all five resolution keys remain available.
 - **Clock:** `timer.device` ownership, E-clock samples across the low-word carry on
   V36 and later, `TR_GETSYSTIME` with backward adjustment on 1.3, and `CurrentTime`
   fallback after each failed port, request, or device acquisition.

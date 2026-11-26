@@ -137,7 +137,8 @@ static int ami_cpu = 68000, ami_has_fpu;
 static int ami_big_blits, ami_unsafe_bitmap;
 static const char *ami_fpu_name = "none";
 static const char *ami_chipset = "OCS/ECS";
-static unsigned int ami_aspect_num = 1, ami_aspect_den = 1;
+/* Precomputed horizontal pixel aspect; 1/1 on RTG and square modes. */
+static Soft3d_aspect ami_aspect = {1L, 1L, LONG_MIN, LONG_MAX};
 /* Earth-color lookups for one destination screen. Workbench and the
  * private fullscreen screen keep separate maps, so F toggles reuse them;
  * each is rebuilt only when the colors read back from its screen change. */
@@ -570,23 +571,24 @@ static unsigned int ami_gcd(unsigned int a, unsigned int b)
     return a;
 }
 
+/* The ratio and its overflow bounds change only with the display mode. */
 static void ami_pixel_aspect(void)
 {
     struct DisplayInfo display;
     ULONG mode;
-    unsigned int divisor;
+    unsigned int divisor, num, den;
     UWORD modes;
     if (ami_rtg)
     {
         /* PAL/NTSC chipset timing does not describe an RTG monitor. */
-        ami_aspect_num = ami_aspect_den = 1U;
+        (void)soft3d_aspect_init(&ami_aspect, 1U, 1U);
         return;
     }
     modes = ami_window->WScreen->ViewPort.Modes;
-    ami_aspect_num = (GfxBase->DisplayFlags & PAL) ? 15U : 6U;
-    ami_aspect_den = (GfxBase->DisplayFlags & PAL) ? 16U : 5U;
-    if (modes & HIRES) ami_aspect_num *= 2U;
-    if (modes & LACE) ami_aspect_den *= 2U;
+    num = (GfxBase->DisplayFlags & PAL) ? 15U : 6U;
+    den = (GfxBase->DisplayFlags & PAL) ? 16U : 5U;
+    if (modes & HIRES) num *= 2U;
+    if (modes & LACE) den *= 2U;
     if (GfxBase->LibNode.lib_Version >= 36)
     {
         mode = GetVPModeID(&ami_window->WScreen->ViewPort);
@@ -595,15 +597,15 @@ static void ami_pixel_aspect(void)
                     sizeof(display), DTAG_DISP, mode) >= sizeof(display) &&
             display.Resolution.x > 0 && display.Resolution.y > 0)
         {
-            ami_aspect_num = (unsigned int)display.Resolution.y;
-            ami_aspect_den = (unsigned int)display.Resolution.x;
+            num = (unsigned int)display.Resolution.y;
+            den = (unsigned int)display.Resolution.x;
         }
     }
-    divisor = ami_gcd(ami_aspect_num, ami_aspect_den);
-    ami_aspect_num /= divisor;
-    ami_aspect_den /= divisor;
-    if (ami_aspect_num > 256U || ami_aspect_den > 256U)
-        ami_aspect_num = ami_aspect_den = 1U;
+    divisor = ami_gcd(num, den);
+    num /= divisor;
+    den /= divisor;
+    if (num > 256U || den > 256U) num = den = 1U;
+    (void)soft3d_aspect_init(&ami_aspect, num, den);
 }
 
 /* Query a real OS bitmap, never a copied opaque RTG BitMap structure. */
@@ -1367,24 +1369,6 @@ static int ami_fill_polygon(const Soft3d_screen_point *points, int count,
 }
 #endif
 
-static int ami_aspect_polygon(Soft3d_screen_point *points, int count)
-{
-    long center, delta, scaled;
-    int i;
-    if (ami_aspect_num == ami_aspect_den) return count;
-    center = (long)drv_win_width / 2L;
-    for (i = 0; i < count; ++i)
-    {
-        delta = points[i].x - center;
-        if (delta > LONG_MAX / (long)ami_aspect_num ||
-            delta < LONG_MIN / (long)ami_aspect_num) return 0;
-        scaled = delta * (long)ami_aspect_num / (long)ami_aspect_den;
-        if (scaled > LONG_MAX - center) return 0;
-        points[i].x = center + scaled;
-    }
-    return count;
-}
-
 void drv_draw_quad_flat_color(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
                                Vertex TG_HUGE *third, Vertex TG_HUGE *fourth,
                                unsigned char color)
@@ -1401,7 +1385,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     Drv_quad_context context;
     Soft3d_screen_point polygon[AMI_MAX_POLY];
     unsigned int corners[4], reuse, facet, corner;
-    int count, point, transformed;
+    int count, point, transformed, corner_aspect;
     if (!ami_rendering || ami_draw_port == NULL || drv_frame_failed || ami_paused) return;
     if (vertices == NULL || colors == NULL || !drv_validate_quadbatch(vertex_count, quad_count, indices))
     {
@@ -1410,7 +1394,16 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     }
     reuse = drv_quadstream_reuse(&ami_stream, vertex_count,
                                       vertices, &context);
-    soft3d_project_cache_begin(ami_project_cache, vertex_count, drv_win_width, drv_win_height, reuse);
+    /* The fixed cache scales each vertex for the pixel aspect once, as it
+     * is cached. The FPU projector, or a missing cache, scales each corner. */
+    if (ami_has_fpu)
+    {
+        (void)soft3d_project_cache_begin(ami_project_cache, vertex_count,
+                                         drv_win_width, drv_win_height, reuse);
+        corner_aspect = TRUE;
+    }
+    else corner_aspect = !soft3d_project_cache_begin_aspect(ami_project_cache,
+        vertex_count, drv_win_width, drv_win_height, reuse, &ami_aspect);
     if (ami_has_fpu)
         transformed = soft3d_float_transform_reuse(ami_matrix.floating, vertex_count,
                                vertices, ami_points.floating, reuse, SOFT3D_FLOAT_DOUBLE);
@@ -1433,11 +1426,16 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         if (ami_has_fpu)
             count = soft3d_float_project_cached(ami_points.floating, vertex_count, corners, 4U,
                 drv_win_width, drv_win_height, SOFT3D_FLOAT_DOUBLE, ami_project_cache, polygon);
+        else if (ami_cpu >= 68020)
+            count = soft3d_020_project_cached(ami_points.fixed, vertex_count, corners, 4U,
+                drv_win_width, drv_win_height, ami_project_cache, polygon);
         else
             count = soft3d_fixed_project_cached(ami_points.fixed, vertex_count, corners, 4U,
                 drv_win_width, drv_win_height, ami_project_cache, polygon);
-        count = ami_aspect_polygon(polygon, count);
-        count = soft3d_finish_polygon(polygon, count, drv_win_width - 1U, drv_win_height - 1U);
+        if (corner_aspect) count = soft3d_aspect_points(&ami_aspect, drv_win_width, polygon, count);
+        if (ami_cpu >= 68020)
+            count = soft3d_020_finish_polygon(polygon, count, drv_win_width - 1U, drv_win_height - 1U);
+        else count = soft3d_finish_polygon(polygon, count, drv_win_width - 1U, drv_win_height - 1U);
         if (count < 3) continue;
 #if AMI_RTG
         if (ami_rtg && ami_depth > 8U)

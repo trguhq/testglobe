@@ -17,6 +17,8 @@ static void test_set_area_pattern(struct RastPort *port, UWORD *pattern, int siz
 #undef SetAfPt
 #define SetAfPt(rp,pattern,size) test_set_area_pattern((rp), (pattern), (size))
 static unsigned long baseline_vertices, enhanced_vertices, fpu_vertices;
+static unsigned long baseline_projects, enhanced_projects, fpu_projects;
+static unsigned long baseline_finishes, enhanced_finishes;
 static int fail_cache_allocation;
 static unsigned int cache_attempts;
 static void *ami_test_malloc(size_t size);
@@ -30,12 +32,33 @@ static int record_fpu(float matrix[3][3], unsigned int count,
                       const Vertex *vertices, Soft3d_float_point *out,
                       unsigned int reuse, int precision);
 static unsigned int palette_rebuilds;
+static int record_project_baseline(const Soft3d_fixed_point *points, unsigned int count,
+                                   const unsigned int *indices, unsigned int corners,
+                                   unsigned int width, unsigned int height,
+                                   Soft3d_project_cache *cache, Soft3d_screen_point *out);
+static int record_project_enhanced(const Soft3d_fixed_point *points, unsigned int count,
+                                   const unsigned int *indices, unsigned int corners,
+                                   unsigned int width, unsigned int height,
+                                   Soft3d_project_cache *cache, Soft3d_screen_point *out);
+static int record_project_fpu(const Soft3d_float_point *points, unsigned int count,
+                              const unsigned int *indices, unsigned int corners,
+                              unsigned int width, unsigned int height, int precision,
+                              Soft3d_project_cache *cache, Soft3d_screen_point *out);
+static int record_finish_baseline(Soft3d_screen_point *points, int count,
+                                  unsigned int width, unsigned int height);
+static int record_finish_enhanced(Soft3d_screen_point *points, int count,
+                                  unsigned int width, unsigned int height);
 static int record_palette_match(const unsigned char *rgb, unsigned int count,
                                 const unsigned char *palette, unsigned int palette_count,
                                 Drv_palette_match *matches);
 #define soft3d_fixed_transform_reuse record_baseline
 #define soft3d_020_transform_reuse record_enhanced
 #define soft3d_float_transform_reuse record_fpu
+#define soft3d_fixed_project_cached record_project_baseline
+#define soft3d_020_project_cached record_project_enhanced
+#define soft3d_float_project_cached record_project_fpu
+#define soft3d_finish_polygon record_finish_baseline
+#define soft3d_020_finish_polygon record_finish_enhanced
 #define drv_match_palette_colors record_palette_match
 #define malloc ami_test_malloc
 #include "../src/drv_ami.c"
@@ -43,6 +66,11 @@ static int record_palette_match(const unsigned char *rgb, unsigned int count,
 #undef soft3d_fixed_transform_reuse
 #undef soft3d_020_transform_reuse
 #undef soft3d_float_transform_reuse
+#undef soft3d_fixed_project_cached
+#undef soft3d_020_project_cached
+#undef soft3d_float_project_cached
+#undef soft3d_finish_polygon
+#undef soft3d_020_finish_polygon
 #undef drv_match_palette_colors
 #include "ami_shim/timer_record.h"
 /* Each call is one rebuild of a screen's complete Earth-pen lookup. */
@@ -79,6 +107,45 @@ static int record_fpu(float matrix[3][3], unsigned int count,
 {
     assert(ami_cpu >= 68020 && ami_has_fpu); fpu_vertices += count - reuse;
     return soft3d_float_transform_reuse(matrix, count, vertices, out, reuse, precision);
+}
+/* Projection follows the transform's CPU/FPU selection; clipping and
+ * back-face rejection use the 68020 object whenever the CPU allows. */
+static int record_project_baseline(const Soft3d_fixed_point *points, unsigned int count,
+                                   const unsigned int *indices, unsigned int corners,
+                                   unsigned int width, unsigned int height,
+                                   Soft3d_project_cache *cache, Soft3d_screen_point *out)
+{
+    assert(ami_cpu < 68020 && !ami_has_fpu); ++baseline_projects;
+    return soft3d_fixed_project_cached(points, count, indices, corners, width, height, cache, out);
+}
+static int record_project_enhanced(const Soft3d_fixed_point *points, unsigned int count,
+                                   const unsigned int *indices, unsigned int corners,
+                                   unsigned int width, unsigned int height,
+                                   Soft3d_project_cache *cache, Soft3d_screen_point *out)
+{
+    assert(ami_cpu >= 68020 && !ami_has_fpu); ++enhanced_projects;
+    return soft3d_020_project_cached(points, count, indices, corners, width, height, cache, out);
+}
+static int record_project_fpu(const Soft3d_float_point *points, unsigned int count,
+                              const unsigned int *indices, unsigned int corners,
+                              unsigned int width, unsigned int height, int precision,
+                              Soft3d_project_cache *cache, Soft3d_screen_point *out)
+{
+    assert(ami_cpu >= 68020 && ami_has_fpu); ++fpu_projects;
+    return soft3d_float_project_cached(points, count, indices, corners, width, height,
+                                       precision, cache, out);
+}
+static int record_finish_baseline(Soft3d_screen_point *points, int count,
+                                  unsigned int width, unsigned int height)
+{
+    assert(ami_cpu < 68020); ++baseline_finishes;
+    return soft3d_finish_polygon(points, count, width, height);
+}
+static int record_finish_enhanced(Soft3d_screen_point *points, int count,
+                                  unsigned int width, unsigned int height)
+{
+    assert(ami_cpu >= 68020); ++enhanced_finishes;
+    return soft3d_020_finish_polygon(points, count, width, height);
 }
 
 static struct ExecBase exec_base;
@@ -931,6 +998,8 @@ static void test_render(void)
 {
     rendered_hash = rendered_count = 0; osd_text[0] = 0;
     baseline_vertices = enhanced_vertices = fpu_vertices = 0;
+    baseline_projects = enhanced_projects = fpu_projects = 0;
+    baseline_finishes = enhanced_finishes = 0;
     check_osd_layout = TRUE; osd_last_bottom = -1;
     drv_render();
     check_osd_layout = FALSE;
@@ -1264,6 +1333,78 @@ static void test_recovery(unsigned long reference_hash, unsigned long reference_
     assert(rendered_hash == reference_hash && rendered_count == reference_count);
 }
 
+static unsigned long test_random(unsigned long *seed)
+{
+    *seed = (*seed * 1103515245UL + 12345UL) & 0x7fffffffUL;
+    return *seed >> 8;
+}
+
+/* Both CPU objects project, clip and cull identically. The cache's
+ * once-per-vertex aspect rounds exactly like scaling every projected
+ * corner, and an overflowing vertex is rejected each time it is used. */
+static void test_projection_objects(void)
+{
+    static const unsigned int ratios[][2] = {{1, 1}, {15, 8}, {6, 5}, {1, 2}, {5, 12}, {256, 1}};
+    Soft3d_fixed_point points[8];
+    Soft3d_project_cache cache, enhanced_cache;
+    Soft3d_screen_point base[SOFT3D_MAX_POLY], fast[SOFT3D_MAX_POLY], plain[SOFT3D_MAX_POLY];
+    Soft3d_aspect aspect;
+    unsigned int indices[4], ratio, trial, i, pass, width, height;
+    unsigned long seed;
+    int counted, enhanced, uncached;
+    seed = 12345UL;
+    for (ratio = 0; ratio < sizeof(ratios) / sizeof(ratios[0]) + 1U; ++ratio)
+    {
+        if (ratio < sizeof(ratios) / sizeof(ratios[0]))
+            assert(soft3d_aspect_init(&aspect, ratios[ratio][0], ratios[ratio][1]));
+        else
+        {
+            /* Narrow bounds stand in for a 32-bit long's overflow limit. */
+            aspect.num = 2; aspect.den = 1; aspect.low = -40; aspect.high = 40;
+        }
+        for (trial = 0; trial < 400U; ++trial)
+        {
+            width = 64U + (unsigned int)(test_random(&seed) % 900UL);
+            height = 64U + (unsigned int)(test_random(&seed) % 700UL);
+            for (i = 0; i < 8U; ++i)
+            {
+                points[i].x = (long)(test_random(&seed) % 40001UL) - 20000L;
+                points[i].y = (long)(test_random(&seed) % 40001UL) - 20000L;
+                points[i].z = -(long)(test_random(&seed) % 64001UL) - 16000L;
+                if (test_random(&seed) % 16UL == 0UL) points[i].z = (long)(test_random(&seed) % 64UL) - 48L;
+            }
+            assert(soft3d_project_cache_begin_aspect(&cache, 8U, width, height, 0U, &aspect));
+            assert(soft3d_project_cache_begin_aspect(&enhanced_cache, 8U, width, height, 0U, &aspect));
+            for (pass = 0; pass < 6U; ++pass)
+            {
+                for (i = 0; i < 4U; ++i) indices[i] = (unsigned int)(test_random(&seed) % 8UL);
+                counted = soft3d_fixed_project_cached(points, 8U, indices, 4U, width, height, &cache, base);
+                enhanced = soft3d_020_project_cached(points, 8U, indices, 4U, width, height, &enhanced_cache, fast);
+                uncached = soft3d_aspect_points(&aspect, width, plain,
+                    soft3d_fixed_project_polygon(points, 8U, indices, 4U, width, height, plain));
+                assert(counted == enhanced && counted == uncached);
+                assert(soft3d_020_project_polygon(points, 8U, indices, 4U, width, height, fast) ==
+                       soft3d_fixed_project_polygon(points, 8U, indices, 4U, width, height, base));
+                counted = soft3d_fixed_project_cached(points, 8U, indices, 4U, width, height, &cache, base);
+                enhanced = soft3d_020_project_cached(points, 8U, indices, 4U, width, height, &enhanced_cache, fast);
+                assert(counted == uncached && enhanced == uncached);
+                for (i = 0; i < (unsigned int)uncached; ++i)
+                    assert(base[i].x == plain[i].x && base[i].y == plain[i].y &&
+                           fast[i].x == plain[i].x && fast[i].y == plain[i].y);
+                counted = soft3d_finish_polygon(base, counted, width - 1U, height - 1U);
+                enhanced = soft3d_020_finish_polygon(fast, enhanced, width - 1U, height - 1U);
+                assert(counted == enhanced);
+                for (i = 0; i < (unsigned int)counted; ++i)
+                    assert(base[i].x == fast[i].x && base[i].y == fast[i].y);
+            }
+        }
+    }
+    /* Plain begin restores 1/1, and a changed aspect never reuses a row. */
+    assert(soft3d_aspect_init(&aspect, 15U, 8U) && !soft3d_aspect_init(&aspect, 0U, 8U));
+    assert(aspect.num == 1L && aspect.den == 1L);
+    assert(soft3d_project_cache_begin(&cache, 8U, 640U, 256U, 0U) && cache.aspect.num == cache.aspect.den);
+}
+
 static void test_fpu_integer_conversion(void)
 {
     static const double targets[] = {
@@ -1489,7 +1630,7 @@ static int test_rtg(int argc, char **argv, const char *mode)
     }
     assert(drv_init_window(0, 0, 0, 0));
     assert(ami_rtg == (int)rtg_backend && ami_depth == rtg_depth);
-    assert(pubscreen_locks == 0 && ami_aspect_num == ami_aspect_den);
+    assert(pubscreen_locks == 0 && ami_aspect.num == ami_aspect.den);
     assert(!ami_big_blits && !ami_unsafe_bitmap);
     assert(drv_bits_per_pixel == rtg_storage_depth);
     assert(drv_colormapped == (rtg_depth <= 8U));
@@ -1778,6 +1919,7 @@ int main(int argc, char **argv)
     fail_fonts = strcmp(mode, "fontfail") == 0;
     oversize_fonts = strcmp(mode, "fontlarge") == 0;
     test_fpu_integer_conversion();
+    if (strcmp(mode, "ocs") == 0) test_projection_objects();
     fail_cache_allocation = strcmp(mode, "cachefail") == 0;
     cli13_stack = strncmp(mode, "cli13", 5) == 0;
     if (strcmp(mode, "stack") == 0 || strcmp(mode, "cli13stack") == 0)
@@ -1927,6 +2069,10 @@ int main(int argc, char **argv)
     assert(strstr(osd_text, "FPS") != NULL);
     assert(strstr(strstr(osd_text, "FPS") + 3, "FPS") == NULL);
     assert(baseline_vertices + enhanced_vertices + fpu_vertices == 561);
+    assert(baseline_projects + enhanced_projects + fpu_projects == 512UL);
+    assert(baseline_finishes + enhanced_finishes == 512UL);
+    assert(ami_has_fpu ? fpu_projects != 0 : ami_cpu >= 68020 ? enhanced_projects != 0 : baseline_projects != 0);
+    assert(ami_cpu >= 68020 ? enhanced_finishes != 0 : baseline_finishes != 0);
     test_draw_state();
     test_dither_toggle();
     reference_hash = rendered_hash; reference_count = rendered_count;

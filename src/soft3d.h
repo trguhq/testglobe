@@ -23,14 +23,24 @@ typedef struct Soft3d_screen_point
     long x, y;
 } Soft3d_screen_point;
 
+/* Horizontal pixel-aspect scale num/den about width/2 for non-square
+ * pixels: x' = center + (x - center) * num / den. low/high are the offsets
+ * whose product with num fits a long, precomputed by soft3d_aspect_init. */
+typedef struct Soft3d_aspect
+{
+    long num, den, low, high;
+} Soft3d_aspect;
+
 /* Optional bounded cache for original packet vertices. Newly generated
  * clipping intersections use the uncached polygon path. A valid byte means
- * screen[] contains this packet's projection at the recorded dimensions. */
+ * screen[] contains this packet's projection at the recorded dimensions,
+ * already scaled by the recorded aspect (1/1 unless begun with one). */
 typedef struct Soft3d_project_cache
 {
     Soft3d_screen_point screen[SOFT3D_MAX_VERTICES];
     unsigned char valid[SOFT3D_MAX_VERTICES];
     unsigned int count, width, height;
+    Soft3d_aspect aspect;
 } Soft3d_project_cache;
 
 typedef struct Soft3d_float_point
@@ -49,6 +59,24 @@ extern int soft3d_project_cache_begin(Soft3d_project_cache TG_HUGE *cache,
                                       unsigned int count,
                                       unsigned int width, unsigned int height,
                                       unsigned int reuse_count);
+/* Precompute a num/den aspect (each 1..32767); zero leaves the identity. */
+extern int soft3d_aspect_init(Soft3d_aspect *aspect, unsigned int num,
+                              unsigned int den);
+/* Scale count points in place with the same rounding as the cache. Return
+ * count, or zero if a result would overflow; 1/1 does no work. */
+extern int soft3d_aspect_points(const Soft3d_aspect *aspect, unsigned int width,
+                                Soft3d_screen_point *points, int count);
+/* As soft3d_project_cache_begin, recording an aspect (NULL: 1/1) that the
+ * fixed cached projector applies once to each vertex it caches. On
+ * success, every point it returns for this packet is already scaled; a
+ * row is reused only under the same aspect. The floating projector
+ * ignores the aspect, so begin its packets without one. */
+extern int soft3d_project_cache_begin_aspect(Soft3d_project_cache TG_HUGE *cache,
+                                             unsigned int count,
+                                             unsigned int width,
+                                             unsigned int height,
+                                             unsigned int reuse_count,
+                                             const Soft3d_aspect *aspect);
 
 /* Float inputs are decoded through their IEEE single-precision bytes;
  * these functions execute no floating-point arithmetic. The matrix is Q14
@@ -86,11 +114,27 @@ extern int soft3d_fixed_transform_reuse(long matrix[3][3], unsigned int count,
                                         Soft3d_fixed_point *out,
                                         unsigned int reuse_count);
 #if defined(DRV_AMI) || defined(SOFT3D_TRANSFORM_020)
-/* Compiled separately for 68020 instructions; call only after CPU detection. */
+/* Compiled separately for 68020 instructions; call only after CPU detection.
+ * Each matches its baseline counterpart below, including its rounding. */
 extern int soft3d_020_transform_reuse(long matrix[3][3], unsigned int count,
                                       const Vertex TG_HUGE *vertices,
                                       Soft3d_fixed_point *out,
                                       unsigned int reuse_count);
+extern int soft3d_020_project_polygon(const Soft3d_fixed_point *points,
+                                      unsigned int point_count,
+                                      const unsigned int TG_HUGE *indices,
+                                      unsigned int corners, unsigned int width,
+                                      unsigned int height,
+                                      Soft3d_screen_point *out);
+extern int soft3d_020_project_cached(const Soft3d_fixed_point *points,
+                                     unsigned int point_count,
+                                     const unsigned int TG_HUGE *indices,
+                                     unsigned int corners, unsigned int width,
+                                     unsigned int height,
+                                     Soft3d_project_cache TG_HUGE *cache,
+                                     Soft3d_screen_point *out);
+extern int soft3d_020_finish_polygon(Soft3d_screen_point *points, int count,
+                                     unsigned int width, unsigned int height);
 #endif
 #if defined(DRV_TGA) || defined(DRV_MTX) || defined(SOFT3D_TRANSFORM_386)
 /* Compiled separately with Microsoft C /G3; use only on 386 or later CPUs.

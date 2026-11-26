@@ -8,6 +8,7 @@
  * optional native FPU code remains behind each driver's own boundary.
  */
 #include "testglob.h"
+#include <limits.h>
 #include "soft3d.h"
 #include "globe.h"
 
@@ -254,18 +255,54 @@ int soft3d_project_cache_begin(Soft3d_project_cache TG_HUGE *cache,
                                unsigned int width, unsigned int height,
                                unsigned int reuse_count)
 {
+    return soft3d_project_cache_begin_aspect(cache, count, width, height,
+                                             reuse_count, NULL);
+}
+
+int soft3d_aspect_init(Soft3d_aspect *aspect, unsigned int num, unsigned int den)
+{
+    if (aspect == NULL) return 0;
+    aspect->num = aspect->den = 1L;
+    aspect->low = LONG_MIN;
+    aspect->high = LONG_MAX;
+    if (num == 0U || den == 0U || num > 32767U || den > 32767U) return 0;
+    aspect->num = (long)num;
+    aspect->den = (long)den;
+    /* The bounds' divisions run once here, not for every projected point. */
+    aspect->low = LONG_MIN / aspect->num;
+    aspect->high = LONG_MAX / aspect->num;
+    return 1;
+}
+
+int soft3d_project_cache_begin_aspect(Soft3d_project_cache TG_HUGE *cache,
+                                      unsigned int count,
+                                      unsigned int width, unsigned int height,
+                                      unsigned int reuse_count,
+                                      const Soft3d_aspect *aspect)
+{
     unsigned int i;
     int reuse;
     if (cache == NULL) return 0;
     if (count == 0U || count > SOFT3D_MAX_VERTICES ||
         width == 0U || height == 0U || width > 32767U || height > 32767U ||
-        (reuse_count != 0U && ((count & 1U) != 0U || reuse_count != count / 2U)))
+        (reuse_count != 0U && ((count & 1U) != 0U || reuse_count != count / 2U)) ||
+        (aspect != NULL && (aspect->num < 1L || aspect->den < 1L)))
     {
         soft3d_project_cache_reset(cache);
         return 0;
     }
+    /* Cached points carry their aspect, so a row survives only under it. */
     reuse = reuse_count != 0U && cache->count == count &&
-            cache->width == width && cache->height == height;
+            cache->width == width && cache->height == height &&
+            cache->aspect.num == (aspect != NULL ? aspect->num : 1L) &&
+            cache->aspect.den == (aspect != NULL ? aspect->den : 1L);
+    if (aspect != NULL) cache->aspect = *aspect;
+    else
+    {
+        cache->aspect.num = cache->aspect.den = 1L;
+        cache->aspect.low = LONG_MIN;
+        cache->aspect.high = LONG_MAX;
+    }
     for (i = 0; i < count; ++i)
     {
         if (reuse && (i & 1U) == 0U)
@@ -280,6 +317,56 @@ int soft3d_project_cache_begin(Soft3d_project_cache TG_HUGE *cache,
     cache->height = height;
     return 1;
 }
+
+#endif /* baseline transform wrappers, orthographic and cache helpers */
+
+#ifndef SOFT3D_TRANSFORM_386
+/* The 68020 object also compiles the projection, clipping and back-face
+ * code below, under its own names and with identical arithmetic, so a
+ * stock A1200 does not run them through 68000 multiply/divide helpers. */
+#ifdef SOFT3D_TRANSFORM_020
+#define SOFT3D_PROJECT_POLYGON soft3d_020_project_polygon
+#define SOFT3D_PROJECT_CACHED soft3d_020_project_cached
+#define SOFT3D_FINISH_POLYGON soft3d_020_finish_polygon
+#else
+#define SOFT3D_PROJECT_POLYGON soft3d_fixed_project_polygon
+#define SOFT3D_PROJECT_CACHED soft3d_fixed_project_cached
+#define SOFT3D_FINISH_POLYGON soft3d_finish_polygon
+#endif
+
+/* center + (x - center) * num / den, rejecting a result outside a long.
+ * center is non-negative, so only the upper sum can overflow. */
+static int soft3d_aspect_x(const Soft3d_aspect *aspect, long center, long *x)
+{
+    long delta, scaled;
+    delta = *x - center;
+    if (delta > aspect->high || delta < aspect->low) return 0;
+    scaled = delta * aspect->num / aspect->den;
+    if (scaled > LONG_MAX - center) return 0;
+    *x = center + scaled;
+    return 1;
+}
+
+static int soft3d_aspect_scale(const Soft3d_aspect *aspect, unsigned int width,
+                               Soft3d_screen_point *points, int count)
+{
+    long center;
+    int i;
+    if (aspect->num == aspect->den || count < 1) return count;
+    center = (long)width / 2L;
+    for (i = 0; i < count; ++i)
+        if (!soft3d_aspect_x(aspect, center, &points[i].x)) return 0;
+    return count;
+}
+
+#ifndef SOFT3D_TRANSFORM_020
+int soft3d_aspect_points(const Soft3d_aspect *aspect, unsigned int width,
+                         Soft3d_screen_point *points, int count)
+{
+    if (aspect == NULL || points == NULL) return count < 1 ? count : 0;
+    return soft3d_aspect_scale(aspect, width, points, count);
+}
+#endif
 
 /* a*numerator/denominator, |numerator| <= |denominator|. Intersections
  * stay below 2^29, so remainder*2+numerator also fits a native 32-bit long. */
@@ -338,6 +425,7 @@ static int soft3d_clip_fixed_z(const Soft3d_fixed_point *in, int count,
     return total;
 }
 
+#ifndef SOFT3D_TRANSFORM_020
 int soft3d_fixed_project(const Soft3d_fixed_point *points,
                           unsigned int point_count,
                           unsigned int first, unsigned int second,
@@ -351,12 +439,13 @@ int soft3d_fixed_project(const Soft3d_fixed_point *points,
     return soft3d_fixed_project_polygon(points, point_count, indices, 3U,
                                          width, height, out);
 }
+#endif
 
-int soft3d_fixed_project_polygon(const Soft3d_fixed_point *points,
-                                  unsigned int point_count,
-                                  const unsigned int TG_HUGE *indices,
-                                  unsigned int corners, unsigned int width,
-                                  unsigned int height, Soft3d_screen_point *out)
+int SOFT3D_PROJECT_POLYGON(const Soft3d_fixed_point *points,
+                           unsigned int point_count,
+                           const unsigned int TG_HUGE *indices,
+                           unsigned int corners, unsigned int width,
+                           unsigned int height, Soft3d_screen_point *out)
 {
     Soft3d_fixed_point a[SOFT3D_MAX_POLY], b[SOFT3D_MAX_POLY];
     long focal;
@@ -403,16 +492,17 @@ int soft3d_fixed_project_polygon(const Soft3d_fixed_point *points,
     return count;
 }
 
-int soft3d_fixed_project_cached(const Soft3d_fixed_point *points,
-                                 unsigned int point_count,
-                                 const unsigned int TG_HUGE *indices,
-                                 unsigned int corners, unsigned int width,
-                                 unsigned int height,
-                                 Soft3d_project_cache TG_HUGE *cache,
-                                 Soft3d_screen_point *out)
+int SOFT3D_PROJECT_CACHED(const Soft3d_fixed_point *points,
+                          unsigned int point_count,
+                          const unsigned int TG_HUGE *indices,
+                          unsigned int corners, unsigned int width,
+                          unsigned int height,
+                          Soft3d_project_cache TG_HUGE *cache,
+                          Soft3d_screen_point *out)
 {
     unsigned int i, index;
-    long focal;
+    long focal, center;
+    int scaled;
     if (points == NULL || indices == NULL || out == NULL ||
         point_count == 0U || point_count > SOFT3D_MAX_VERTICES ||
         corners < 3U || corners > 4U || width == 0U || height == 0U ||
@@ -421,8 +511,8 @@ int soft3d_fixed_project_cached(const Soft3d_fixed_point *points,
         if (indices[i] >= point_count) return 0;
     if (cache == NULL || cache->count != point_count ||
         cache->width != width || cache->height != height)
-        return soft3d_fixed_project_polygon(points, point_count, indices,
-                                             corners, width, height, out);
+        return SOFT3D_PROJECT_POLYGON(points, point_count, indices,
+                                      corners, width, height, out);
     /* Clipping generates new intersection vertices. Preserve the original
      * polygon path, ordering, and integer rounding for every crossing. */
     for (i = 0; i < corners; ++i)
@@ -430,19 +520,26 @@ int soft3d_fixed_project_cached(const Soft3d_fixed_point *points,
         index = indices[i];
         if (points[index].z > -GLOBE_NEAR_DISTANCE * SOFT3D_COORD_SCALE ||
             points[index].z < -GLOBE_FAR_DISTANCE * SOFT3D_COORD_SCALE)
-            return soft3d_fixed_project_polygon(points, point_count, indices,
-                                                 corners, width, height, out);
+            return soft3d_aspect_scale(&cache->aspect, width, out,
+                SOFT3D_PROJECT_POLYGON(points, point_count, indices,
+                                       corners, width, height, out));
     }
     focal = (long)height * SOFT3D_FOCAL_Q14 / SOFT3D_Q14;
+    center = (long)width / 2L;
+    scaled = cache->aspect.num != cache->aspect.den;
     for (i = 0; i < corners; ++i)
     {
         index = indices[i];
         if (!cache->valid[index])
         {
-            cache->screen[index].x = (long)width / 2L +
+            cache->screen[index].x = center +
                                     points[index].x * focal / -points[index].z;
             cache->screen[index].y = (long)height / 2L -
                                     points[index].y * focal / -points[index].z;
+            /* The aspect divide runs once per vertex, not once per corner.
+             * An overflowing vertex stays uncached and rejects each use. */
+            if (scaled && !soft3d_aspect_x(&cache->aspect, center,
+                                           &cache->screen[index].x)) return 0;
             cache->valid[index] = 1;
         }
         out[i] = cache->screen[index];
@@ -529,8 +626,8 @@ static int soft3d_finish_inside(Soft3d_screen_point *points, int count)
     return area_high < 0 ? count : 0;
 }
 
-int soft3d_finish_polygon(Soft3d_screen_point *points, int count,
-                           unsigned int width, unsigned int height)
+int SOFT3D_FINISH_POLYGON(Soft3d_screen_point *points, int count,
+                          unsigned int width, unsigned int height)
 {
     Soft3d_screen_point clipped[SOFT3D_MAX_POLY];
     unsigned int outside, common, flags;
@@ -572,4 +669,4 @@ int soft3d_finish_polygon(Soft3d_screen_point *points, int count,
     if (count < 3) return 0;
     return soft3d_finish_inside(points, count);
 }
-#endif /* baseline geometry, excluding separately compiled CPU kernels */
+#endif /* !SOFT3D_TRANSFORM_386: geometry shared with the 68020 object */
