@@ -83,6 +83,17 @@ Picasso96's `p96RectFill`, which the RTG driver can accelerate. Collapsed pole p
 become triangles. Native `Text` draws the wrapped OSD, including the chipset or RTG
 backend, CPU and math, color depth, and buffering.
 
+An optional build, `make amiga AMI_CPPFLAGS=-DAMI_QUAD_TRIM=1` after `make
+clean-amiga`, leaves out longitude runs of each quad packet that face away from the
+camera, using the latitude-band ranges that the GL drivers' culling also uses.
+Integer rounding can turn a back face that projects thinner than about a pixel into a
+drawn sliver, so to keep the drawn polygons identical only cells at least 4 pixels
+thick are omitted, and only when the whole globe fits inside the window. In host
+measurements this skipped 8–10% of the projections at key 1, about 1% at key 2, and
+none at keys 3–5, while each trimmed latitude band costs a software-float `acos` per
+frame. It is therefore off by default; a mesh and window with no trimmable band costs
+no trigonometry.
+
 ### Palette and dithering
 
 On indexed Workbench screens, the driver reads the desktop palette and maps Earth

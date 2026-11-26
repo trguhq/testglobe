@@ -590,7 +590,12 @@ def main():
             enhanced = output / "ami_020.o"
             run(cc + common + ami + ["-DSOFT3D_TRANSFORM_020", "-c",
                 str(ROOT / "src/soft3d.c"), "-o", str(enhanced)])
-            run(cc + common + ami + [str(ROOT / "tests/amiga.c"),
+            # The RTG recorder also enables optional quad trimming; the native-only
+            # build below keeps the default, untrimmed traversal.
+            trim_ami = ami + ["-DAMI_QUAD_TRIM=1"]
+            check_production_units(cc, common, trim_ami, output, "Amiga_trim",
+                ("drv_ami.c", "globe.c"))
+            run(cc + common + trim_ami + [str(ROOT / "tests/amiga.c"),
                 str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
                 str(ROOT / "src/err.c"), str(ROOT / "src/ami_time.c"), str(enhanced),

@@ -1369,6 +1369,36 @@ static int ami_fill_polygon(const Soft3d_screen_point *points, int count,
 }
 #endif
 
+#ifdef DRV_QUAD_TRIM
+/* Describe this frame's projection for back-face trimming in globe.c. Both
+ * projectors truncate below one pixel, and a non-square aspect scales that
+ * error and truncates again. The 68000 transform's Q4/Q14 rounding and its
+ * 1/256-degree angles move a vertex well under 0.002 * radius + 1 unit. The
+ * camera is D times the prepared matrix's last row, without trigonometry. */
+int drv_quad_trim_view(Drv_quad_trim *view)
+{
+    double ratio;
+    unsigned int i;
+    if (view == NULL || !ami_rendering || ami_window == NULL) return FALSE;
+    for (i = 0; i < 3U; ++i)
+        view->eye[i] = (double)GLOBE_VIEW_DISTANCE * (ami_has_fpu ?
+            (double)ami_matrix.floating[2][i] : (double)ami_matrix.fixed[2][i] / 16384.0);
+    ratio = (double)ami_aspect.num / (double)ami_aspect.den;
+    view->focal_y = ami_has_fpu ? (double)drv_win_height * GLOBE_FOCAL_SCALE :
+        (double)((long)drv_win_height * GLOBE_FOCAL_Q14 / 16384L);
+    view->focal_x = view->focal_y * ratio;
+    view->center_x = (double)(drv_win_width / 2U);
+    view->center_y = (double)(drv_win_height / 2U);
+    view->limit_x = (double)drv_win_width - 1.0;
+    view->limit_y = (double)drv_win_height - 1.0;
+    view->pixel_x = ami_aspect.num == ami_aspect.den ? 1.0 : ratio + 1.0;
+    view->pixel_y = 1.0;
+    view->world_error = 1.0;
+    view->world_scale = 0.002;
+    return TRUE;
+}
+#endif
+
 void drv_draw_quad_flat_color(Vertex TG_HUGE *first, Vertex TG_HUGE *second,
                                Vertex TG_HUGE *third, Vertex TG_HUGE *fourth,
                                unsigned char color)

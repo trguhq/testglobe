@@ -761,6 +761,12 @@ cross-build uses the [Amiga build instructions](amiga.md#build) separately.
   objects, and the cache's once-per-vertex pixel aspect must round like scaling each
   corner, including rejected overflow. Resizing and pixel-aspect changes rebuild
   projection state; all five resolution keys remain available.
+- **Quad trimming:** the main recorder enables the optional `AMI_QUAD_TRIM` traversal
+  (the native-only build keeps the default). On the 68000, 68020, FPU and RTG paths,
+  every drawn polygon, corner and pen must match an untrimmed render at all five
+  resolutions, eight poses and three window sizes, and fewer quads must be projected.
+  Compiling `tests/amiga.c` with `-DTEST_TRIM_PROFILE` also prints per-level
+  projection, transform and back-face counts with and without trimming.
 - **Clock:** `timer.device` ownership, E-clock samples across the low-word carry on
   V36 and later, `TR_GETSYSTIME` with backward adjustment on 1.3, and `CurrentTime`
   fallback after each failed port, request, or device acquisition.

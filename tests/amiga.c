@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef TEST_TRIM_PROFILE
+#include <time.h>
+#endif
 #include <Amiga.h>
 #include "testglob.h"
 #include "drv.h"
@@ -60,6 +63,9 @@ static int record_palette_match(const unsigned char *rgb, unsigned int count,
 #define soft3d_finish_polygon record_finish_baseline
 #define soft3d_020_finish_polygon record_finish_enhanced
 #define drv_match_palette_colors record_palette_match
+#ifdef DRV_QUAD_TRIM
+#define drv_quad_trim_view record_trim_view
+#endif
 #define malloc ami_test_malloc
 #include "../src/drv_ami.c"
 #undef malloc
@@ -72,6 +78,9 @@ static int record_palette_match(const unsigned char *rgb, unsigned int count,
 #undef soft3d_finish_polygon
 #undef soft3d_020_finish_polygon
 #undef drv_match_palette_colors
+#ifdef DRV_QUAD_TRIM
+#undef drv_quad_trim_view
+#endif
 #include "ami_shim/timer_record.h"
 /* Each call is one rebuild of a screen's complete Earth-pen lookup. */
 static int record_palette_match(const unsigned char *rgb, unsigned int count,
@@ -81,6 +90,16 @@ static int record_palette_match(const unsigned char *rgb, unsigned int count,
     ++palette_rebuilds;
     return drv_match_palette_colors(rgb, count, palette, palette_count, matches);
 }
+#ifdef DRV_QUAD_TRIM
+/* globe.c asks for the projection model once per frame; the reference
+ * renders below decline it, which draws every quad as before trimming. */
+static int trim_disabled;
+int drv_quad_trim_view(Drv_quad_trim *view)
+{
+    if (trim_disabled) return FALSE;
+    return record_trim_view(view);
+}
+#endif
 static void *ami_test_malloc(size_t size)
 {
     if (size == sizeof(Soft3d_project_cache)) ++cache_attempts;
@@ -1405,6 +1424,96 @@ static void test_projection_objects(void)
     assert(soft3d_project_cache_begin(&cache, 8U, 640U, 256U, 0U) && cache.aspect.num == cache.aspect.den);
 }
 
+#ifdef DRV_QUAD_TRIM
+/* Back-face trimming must leave the drawn polygon sequence, including
+ * every corner and pen, unchanged at each resolution, pose and window
+ * size, while projecting fewer quads where the whole globe fits. */
+static void test_quad_trim(const char *mode)
+{
+    static const float poses[][2] = {
+        {0.0f, 0.0f}, {12.0f, 34.0f}, {319.0f, 181.0f}, {67.5f, 271.25f},
+        {89.75f, 90.0f}, {270.0f, 5.0f}, {200.0f, 359.5f}, {45.0f, 135.0f}
+    };
+    static const int sizes[][2] = {{480, 200}, {800, 400}, {320, 120}};
+    unsigned long hash, count, full, trimmed, full_work, trimmed_work;
+    unsigned int level, pose, size, saved_width, saved_height;
+    float saved_x, saved_y;
+    int saved_auto;
+#ifdef TEST_TRIM_PROFILE
+    unsigned long level_full[6], level_trimmed[6], level_vertices[6][2], level_finishes[6][2];
+    double level_seconds[6][2];
+    clock_t started;
+    memset(level_seconds, 0, sizeof(level_seconds));
+    memset(level_full, 0, sizeof(level_full)); memset(level_trimmed, 0, sizeof(level_trimmed));
+    memset(level_vertices, 0, sizeof(level_vertices)); memset(level_finishes, 0, sizeof(level_finishes));
+#endif
+    saved_width = (unsigned int)window_record.GZZWidth; saved_height = (unsigned int)window_record.GZZHeight;
+    saved_x = drv_rot_x; saved_y = drv_rot_y; saved_auto = drv_auto_enabled;
+    drv_auto_enabled = FALSE;
+    full = trimmed = full_work = trimmed_work = 0;
+    for (level = 1; level <= 5U; ++level)
+    {
+        ami_keyboard((unsigned char)('0' + level));
+        assert(globe_ready() && globe_longitude == 16 << level);
+        for (size = 0; size < sizeof(sizes) / sizeof(sizes[0]); ++size)
+        {
+            window_record.GZZWidth = (WORD)sizes[size][0];
+            window_record.GZZHeight = (WORD)sizes[size][1];
+            ami_event(NEWSIZE, 0, 0, 0); assert(ami_ready);
+            for (pose = 0; pose < sizeof(poses) / sizeof(poses[0]); ++pose)
+            {
+                if (level == 5U && (pose & 1U)) continue;
+                drv_rot_x = poses[pose][0]; drv_rot_y = poses[pose][1];
+#ifdef TEST_TRIM_PROFILE
+                started = clock();
+#endif
+                trim_disabled = 1; test_render();
+#ifdef TEST_TRIM_PROFILE
+                level_seconds[level][0] += (double)(clock() - started) / CLOCKS_PER_SEC;
+#endif
+                hash = rendered_hash; count = rendered_count;
+                full += baseline_projects + enhanced_projects + fpu_projects;
+                full_work += baseline_vertices + enhanced_vertices + fpu_vertices;
+#ifdef TEST_TRIM_PROFILE
+                level_full[level] += baseline_projects + enhanced_projects + fpu_projects;
+                level_vertices[level][0] += baseline_vertices + enhanced_vertices + fpu_vertices;
+                level_finishes[level][0] += baseline_finishes + enhanced_finishes;
+#endif
+#ifdef TEST_TRIM_PROFILE
+                started = clock();
+#endif
+                trim_disabled = 0; test_render();
+#ifdef TEST_TRIM_PROFILE
+                level_seconds[level][1] += (double)(clock() - started) / CLOCKS_PER_SEC;
+#endif
+                assert(rendered_hash == hash && rendered_count == count);
+                trimmed += baseline_projects + enhanced_projects + fpu_projects;
+                trimmed_work += baseline_vertices + enhanced_vertices + fpu_vertices;
+#ifdef TEST_TRIM_PROFILE
+                level_trimmed[level] += baseline_projects + enhanced_projects + fpu_projects;
+                level_vertices[level][1] += baseline_vertices + enhanced_vertices + fpu_vertices;
+                level_finishes[level][1] += baseline_finishes + enhanced_finishes;
+#endif
+            }
+        }
+    }
+    assert(trimmed < full && trimmed_work < full_work);
+#ifdef TEST_TRIM_PROFILE
+    for (level = 1; level <= 5U; ++level)
+        printf("TRIM %s level %u: projections %lu -> %lu, transformed vertices %lu -> %lu, finishes %lu -> %lu, host %.4f -> %.4f s\n",
+               mode, level, level_full[level], level_trimmed[level], level_vertices[level][0],
+               level_vertices[level][1], level_finishes[level][0], level_finishes[level][1],
+               level_seconds[level][0], level_seconds[level][1]);
+#endif
+    window_record.GZZWidth = (WORD)saved_width; window_record.GZZHeight = (WORD)saved_height;
+    ami_event(NEWSIZE, 0, 0, 0);
+    ami_keyboard('1');
+    drv_rot_x = saved_x; drv_rot_y = saved_y; drv_auto_enabled = saved_auto;
+    printf("PASS Amiga %s quad trimming: identical drawn polygons at five resolutions, eight poses and three windows, with %lu of %lu quads projected\n",
+           mode, trimmed, full);
+}
+#endif
+
 static void test_fpu_integer_conversion(void)
 {
     static const double targets[] = {
@@ -1437,16 +1546,18 @@ static void test_fpu_integer_conversion(void)
 static void test_clock(void)
 {
     unsigned int calls, eclock, systime, fail;
-    double before, after;
+    double before, after, seconds;
     assert(timer_opens == 1U && timer_requests == 1U && timer_ports == 1U);
     eclock = timer_eclock_calls; systime = timer_systime_calls; calls = intuition_clock_calls;
     if (timer_version >= 36U)
     {
         /* Consecutive samples crossing the low word carry exactly one step. */
         timer_eclock_hi = 0; timer_eclock_lo = 0xffffffffUL - timer_eclock_step - 1UL;
-        before = ami_time_now(); after = ami_time_now();
+        before = ami_time_now(); seconds = timer_eclock_seconds();
+        after = ami_time_now();
         assert(timer_eclock_hi == 1UL && timer_eclock_lo == timer_eclock_step - 2UL);
         assert(fabs(after - before - (double)timer_eclock_step / timer_eclock_rate) < 1e-9);
+        assert(fabs(after - before - (timer_eclock_seconds() - seconds)) < 1e-9);
         assert(timer_eclock_calls == eclock + 2U && timer_systime_calls == systime);
     }
     else
@@ -1689,6 +1800,9 @@ static int test_rtg(int argc, char **argv, const char *mode)
     ami_event(NEWSIZE, 0, 0, 0); drv_render();
     assert(!ami_ready && span_calls == spans && copy_calls == copies);
     window_record.GZZWidth = 320; ami_event(NEWSIZE, 0, 0, 0); test_render();
+#ifdef DRV_QUAD_TRIM
+    if (strcmp(mode, "cgx16") == 0) test_quad_trim(mode);
+#endif
     for (i = 0; i < 2; ++i) ami_cleanup();
     assert(library_count == 0 && window_count == 0 && raster_count == 0);
     assert(friend_count == 0 && pubscreen_locks == 0 && ami_project_cache == NULL);
@@ -2141,6 +2255,10 @@ int main(int argc, char **argv)
     ami_event(ACTIVEWINDOW, 0, 0, 0);
     assert(ami_map->black == 0U && ami_map->white == colormap.Count - 1U);
     assert(memcmp(saved_palette, desktop_palette, saved_palette_size) == 0);
+#ifdef DRV_QUAD_TRIM
+    if (strcmp(mode, "ocs") == 0 || strcmp(mode, "aga") == 0 || strcmp(mode, "fpu") == 0)
+        test_quad_trim(mode);
+#endif
     messages[0].Class = VANILLAKEY; messages[0].Code = 'p';
     messages[1].Class = MOUSEBUTTONS; messages[1].Code = SELECTDOWN;
     messages[2].Class = MOUSEMOVE; messages[2].MouseX = 20; messages[2].MouseY = 10;
