@@ -145,10 +145,12 @@ and TIGA builds.
 does not use that test-only file I/O.
 
 `tests/ami_pack.py` checks the Amiga packer without an SDK. It compares all embedded
-chunks and resource IDs with the canonical data, preserves loadable hunks and unrelated
-debug records, and verifies that repacking does not duplicate maps. Malformed hunks,
-incorrect map lengths, and input/output aliases must fail without replacing a valid
-output. These checks run in the baseline suite and can also be run directly:
+chunks and resource IDs with the canonical data, preserves loadable hunks and
+unrelated debug records, and verifies that repacking does not duplicate maps.
+Malformed hunks, Kickstart 2.0 relocation records (`HUNK_RELOC32SHORT` and
+`HUNK_DREL32`), incorrect map lengths, and input/output aliases must fail without
+replacing a valid output; ordinary 32-bit relocations still pack. These checks run in
+the baseline suite and can also be run directly:
 
 ```sh
 python3 tests/ami_pack.py
@@ -373,8 +375,8 @@ uses the [Amiga OpenGL build instructions](opengl.md#amiga-opengl).
   and reupload, textured display lists, and flat-colored list bypass. Native OSD
   text must follow presentation so it remains visible.
 - **Amiga integration:** runtime library/dispatch validation, window creation,
-  keyboard and mouse events, resize/recovery, and context/bitmap/window/library
-  ownership. Presentation bounds follow the allocated RTG bitmap even if the
+  keyboard and mouse events, resize/recovery, the shared `timer.device` E-clock and
+  its `CurrentTime` fallback, and context/bitmap/window/library/device ownership. Presentation bounds follow the allocated RTG bitmap even if the
   window dimensions change before resize handling.
   Resident-font selection, oversized/missing-font fallback, restoration, and
   status/help separation are checked across window sizes.
@@ -868,11 +870,15 @@ cross-build uses the [Amiga build instructions](amiga.md#build) separately.
   `D`/`d` switches between mixtures and independently verified nearest solid pens;
   the setting survives palette refreshes, resizing, and resolution changes. Tests
   check OSD/help, unchanged resource ownership, and unaffected truecolor RTG output.
+  Skipping unchanged pens, draw modes, and patterns must leave every fill's RastPort
+  state identical to setting all four per polygon, with fewer calls; a windowed
+  present issues no `WaitBlit`.
 - **OSD fonts:** resident Topaz sizes, open failure and oversized substitution,
   selection restoration, glyph bounds, and status/help separation are checked.
 - **RTG:** optional CyberGraphX/Picasso96 detection, indexed and 15/16/24/32-bit
   screens, opaque bitmap attributes, RGB span bounds and colors, and native fallback
-  when RTG libraries are absent. The native-only `AMI_RTG=0` build is checked separately.
+  when RTG libraries are absent. Picasso96 storage comes from bytes per pixel, and a
+  depth larger than that storage is rejected. The native-only `AMI_RTG=0` build is checked separately.
   Display-compatible bitmap allocation, direct-drawing fallback, resizing, and cleanup
   must not depend on native chipset limits or planar bitmap fields.
 - **Fullscreen:** V39 screen-buffer allocation and presentation, delayed safe/display
@@ -881,17 +887,38 @@ cross-build uses the [Amiga build instructions](amiga.md#build) separately.
   not copy into the displayed bitmap or discard its buffers during cache recovery.
   `F`/`f` switches presentation and `P`/`p` toggles FPS. Tests cover retained scene
   settings, Workbench window restoration, private palettes, older-OS fallback and
-  incompatible RTG buffers.
-- **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch,
-  including a reported FPU without a supporting CPU. Cached and uncached drawing
-  must retain polygon coordinates and colors, including projection-cache allocation
-  failure; the default streamed globe requires 561 transforms. Resizing and pixel-aspect
-  changes rebuild projection state; all five resolution keys remain available.
-- **Lifecycle and recovery:** native event input, activation/refresh, close,
-  Chip RAM allocation/release, the 32 KiB stack guard, back-buffer failure selecting
-  direct drawing, scratch-allocation pause/retry, and bounded recovery from area-fill
-  errors. Refresh drawing is deferred outside Intuition's damage-clipping scope;
-  invalid display changes can recover when valid dimensions return.
+  incompatible RTG buffers. Repeated toggles must not rebuild either screen's pen
+  map, while a Workbench palette change made during fullscreen is detected. Native
+  mode selection follows the Workbench monitor, including a 31 kHz monitor, then
+  `BestModeIDA` and the default monitor, taking size and depth limits from
+  `DimensionInfo`; with no available mode the window is kept.
+- **CPU and geometry:** 68000 fixed-point, enhanced integer, and FPU dispatch of
+  the transform, projection, and clipping/back-face stages, including a reported FPU
+  without a supporting CPU. Cached and uncached drawing must retain polygon
+  coordinates and colors, including projection-cache allocation failure; the default
+  streamed globe requires 561 transforms and 512 projections. Randomized polygons,
+  including near-plane crossings, must give identical results from both integer
+  objects, and the cache's once-per-vertex pixel aspect must round like scaling each
+  corner, including rejected overflow. Resizing and pixel-aspect changes rebuild
+  projection state; all five resolution keys remain available.
+- **Quad trimming:** the main recorder enables the optional `AMI_QUAD_TRIM` traversal
+  (the native-only build keeps the default). On the 68000, 68020, FPU and RTG paths,
+  every drawn polygon, corner and pen must match an untrimmed render at all five
+  resolutions, eight poses and three window sizes, and fewer quads must be projected.
+  Compiling `tests/amiga.c` with `-DTEST_TRIM_PROFILE` also prints per-level
+  projection, transform and back-face counts with and without trimming.
+- **Clock:** `timer.device` ownership, E-clock samples across the low-word carry on
+  V36 and later, `TR_GETSYSTIME` with backward adjustment on 1.3, and `CurrentTime`
+  fallback after each failed port, request, or device acquisition.
+- **Lifecycle and recovery:** native event input, activation/refresh, close, Chip RAM
+  allocation/release, the 32 KiB stack guard (measured below the caller's frame, or
+  from `cli_DefaultStack` on a 1.3 CLI whose stack lies outside the task bounds),
+  back-buffer failure selecting direct drawing, scratch-allocation pause/retry,
+  bounded recovery from area-fill errors, and reacquisition of a released projection
+  cache and back buffer only after the scene revision changes, with one allocation
+  attempt per revision. Refresh drawing is deferred outside Intuition's
+  damage-clipping scope; invalid display changes can recover when valid dimensions
+  return.
 - **Executable data:** the production reader opens a real packed Hunk file through
   CLI, Workbench, program-directory, and old CLI search-path cases. Tests compare
   selected chunks with canonical bytes, enforce bounded reads, reject malformed

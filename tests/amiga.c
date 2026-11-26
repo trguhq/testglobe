@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef TEST_TRIM_PROFILE
+#include <time.h>
+#endif
 #include <Amiga.h>
 #include "testglob.h"
 #include "drv.h"
@@ -12,8 +15,15 @@
 #include "glob_ext.h"
 #include "globe.h"
 #include "earth_resources.h"
+/* gfxmacros.h assigns the pattern fields directly; count each use too. */
+static void test_set_area_pattern(struct RastPort *port, UWORD *pattern, int size);
+#undef SetAfPt
+#define SetAfPt(rp,pattern,size) test_set_area_pattern((rp), (pattern), (size))
 static unsigned long baseline_vertices, enhanced_vertices, fpu_vertices;
+static unsigned long baseline_projects, enhanced_projects, fpu_projects;
+static unsigned long baseline_finishes, enhanced_finishes;
 static int fail_cache_allocation;
+static unsigned int cache_attempts;
 static void *ami_test_malloc(size_t size);
 static int record_baseline(long matrix[3][3], unsigned int count,
                            const Vertex *vertices, Soft3d_fixed_point *out,
@@ -24,17 +34,75 @@ static int record_enhanced(long matrix[3][3], unsigned int count,
 static int record_fpu(float matrix[3][3], unsigned int count,
                       const Vertex *vertices, Soft3d_float_point *out,
                       unsigned int reuse, int precision);
+static unsigned int palette_rebuilds;
+static int record_project_baseline(const Soft3d_fixed_point *points, unsigned int count,
+                                   const unsigned int *indices, unsigned int corners,
+                                   unsigned int width, unsigned int height,
+                                   Soft3d_project_cache *cache, Soft3d_screen_point *out);
+static int record_project_enhanced(const Soft3d_fixed_point *points, unsigned int count,
+                                   const unsigned int *indices, unsigned int corners,
+                                   unsigned int width, unsigned int height,
+                                   Soft3d_project_cache *cache, Soft3d_screen_point *out);
+static int record_project_fpu(const Soft3d_float_point *points, unsigned int count,
+                              const unsigned int *indices, unsigned int corners,
+                              unsigned int width, unsigned int height, int precision,
+                              Soft3d_project_cache *cache, Soft3d_screen_point *out);
+static int record_finish_baseline(Soft3d_screen_point *points, int count,
+                                  unsigned int width, unsigned int height);
+static int record_finish_enhanced(Soft3d_screen_point *points, int count,
+                                  unsigned int width, unsigned int height);
+static int record_palette_match(const unsigned char *rgb, unsigned int count,
+                                const unsigned char *palette, unsigned int palette_count,
+                                Drv_palette_match *matches);
 #define soft3d_fixed_transform_reuse record_baseline
 #define soft3d_020_transform_reuse record_enhanced
 #define soft3d_float_transform_reuse record_fpu
+#define soft3d_fixed_project_cached record_project_baseline
+#define soft3d_020_project_cached record_project_enhanced
+#define soft3d_float_project_cached record_project_fpu
+#define soft3d_finish_polygon record_finish_baseline
+#define soft3d_020_finish_polygon record_finish_enhanced
+#define drv_match_palette_colors record_palette_match
+#ifdef DRV_QUAD_TRIM
+#define drv_quad_trim_view record_trim_view
+#endif
 #define malloc ami_test_malloc
 #include "../src/drv_ami.c"
 #undef malloc
 #undef soft3d_fixed_transform_reuse
 #undef soft3d_020_transform_reuse
 #undef soft3d_float_transform_reuse
+#undef soft3d_fixed_project_cached
+#undef soft3d_020_project_cached
+#undef soft3d_float_project_cached
+#undef soft3d_finish_polygon
+#undef soft3d_020_finish_polygon
+#undef drv_match_palette_colors
+#ifdef DRV_QUAD_TRIM
+#undef drv_quad_trim_view
+#endif
+#include "ami_shim/timer_record.h"
+/* Each call is one rebuild of a screen's complete Earth-pen lookup. */
+static int record_palette_match(const unsigned char *rgb, unsigned int count,
+                                const unsigned char *palette, unsigned int palette_count,
+                                Drv_palette_match *matches)
+{
+    ++palette_rebuilds;
+    return drv_match_palette_colors(rgb, count, palette, palette_count, matches);
+}
+#ifdef DRV_QUAD_TRIM
+/* globe.c asks for the projection model once per frame; the reference
+ * renders below decline it, which draws every quad as before trimming. */
+static int trim_disabled;
+int drv_quad_trim_view(Drv_quad_trim *view)
+{
+    if (trim_disabled) return FALSE;
+    return record_trim_view(view);
+}
+#endif
 static void *ami_test_malloc(size_t size)
 {
+    if (size == sizeof(Soft3d_project_cache)) ++cache_attempts;
     if (fail_cache_allocation && size == sizeof(Soft3d_project_cache)) return NULL;
     return malloc(size);
 }
@@ -59,9 +127,49 @@ static int record_fpu(float matrix[3][3], unsigned int count,
     assert(ami_cpu >= 68020 && ami_has_fpu); fpu_vertices += count - reuse;
     return soft3d_float_transform_reuse(matrix, count, vertices, out, reuse, precision);
 }
+/* Projection follows the transform's CPU/FPU selection; clipping and
+ * back-face rejection use the 68020 object whenever the CPU allows. */
+static int record_project_baseline(const Soft3d_fixed_point *points, unsigned int count,
+                                   const unsigned int *indices, unsigned int corners,
+                                   unsigned int width, unsigned int height,
+                                   Soft3d_project_cache *cache, Soft3d_screen_point *out)
+{
+    assert(ami_cpu < 68020 && !ami_has_fpu); ++baseline_projects;
+    return soft3d_fixed_project_cached(points, count, indices, corners, width, height, cache, out);
+}
+static int record_project_enhanced(const Soft3d_fixed_point *points, unsigned int count,
+                                   const unsigned int *indices, unsigned int corners,
+                                   unsigned int width, unsigned int height,
+                                   Soft3d_project_cache *cache, Soft3d_screen_point *out)
+{
+    assert(ami_cpu >= 68020 && !ami_has_fpu); ++enhanced_projects;
+    return soft3d_020_project_cached(points, count, indices, corners, width, height, cache, out);
+}
+static int record_project_fpu(const Soft3d_float_point *points, unsigned int count,
+                              const unsigned int *indices, unsigned int corners,
+                              unsigned int width, unsigned int height, int precision,
+                              Soft3d_project_cache *cache, Soft3d_screen_point *out)
+{
+    assert(ami_cpu >= 68020 && ami_has_fpu); ++fpu_projects;
+    return soft3d_float_project_cached(points, count, indices, corners, width, height,
+                                       precision, cache, out);
+}
+static int record_finish_baseline(Soft3d_screen_point *points, int count,
+                                  unsigned int width, unsigned int height)
+{
+    assert(ami_cpu < 68020); ++baseline_finishes;
+    return soft3d_finish_polygon(points, count, width, height);
+}
+static int record_finish_enhanced(Soft3d_screen_point *points, int count,
+                                  unsigned int width, unsigned int height)
+{
+    assert(ami_cpu >= 68020); ++enhanced_finishes;
+    return soft3d_020_finish_polygon(points, count, width, height);
+}
 
 static struct ExecBase exec_base;
-static struct Task task_record;
+static struct Process process_record;
+static struct CommandLineInterface cli_record;
 static unsigned char task_stack[32768];
 struct ExecBase *SysBase = &exec_base;
 static struct GfxBase graphics_base;
@@ -80,10 +188,13 @@ static unsigned int raster_calls, raster_fail_at, area_calls, area_failures;
 static unsigned int copy_calls, text_calls, refresh_count, reply_count, rect_calls;
 static unsigned int resource_calls, resource_max, resource_first, resource_failure;
 static unsigned int area_count;
+static unsigned int state_calls, wait_calls;
+static int uncached_draw_state;
 static long area_x[16], area_y[16];
 static unsigned long rendered_hash, rendered_count;
-static int blitter_busy, event_outstanding, small_stack;
+static int blitter_busy, event_outstanding, small_stack, cli13_stack;
 static unsigned long clock_micros;
+static unsigned int intuition_clock_calls;
 static struct IntuiMessage messages[8];
 static unsigned int message_count, message_next;
 static struct IntuiMessage fullscreen_events[8];
@@ -124,6 +235,38 @@ static int fullscreen_incompatible;
 static int private_screen_visible;
 static unsigned int pointer_base = 16;
 static unsigned int fullscreen_loop_script, fullscreen_loop_step, hold_after_safe;
+/* A small display database. Native fullscreen must follow the Workbench
+ * mode's monitor; profiles remove its low resolution to reach BestModeIDA
+ * and then the default monitor. Depth is each mode's DimensionInfo limit. */
+#define TEST_MULTISCAN_ID 0x00031000UL
+typedef struct Test_display_mode
+{
+    ULONG id;
+    unsigned int width, height, depth;
+    int available;
+} Test_display_mode;
+static Test_display_mode display_modes[] = {
+    {PAL_MONITOR_ID | LORES_KEY, 320, 256, 8, 1},
+    {NTSC_MONITOR_ID | LORES_KEY, 320, 200, 8, 1},
+    {TEST_MULTISCAN_ID | LORES_KEY, 320, 480, 4, 1},
+    {TEST_MULTISCAN_ID | 4UL, 320, 240, 4, 1},
+    {DEFAULT_MONITOR_ID | LORES_KEY, 320, 0, 8, 1}
+};
+static ULONG workbench_mode, best_mode = INVALID_ID, expected_fs_mode;
+static unsigned int best_mode_calls;
+
+static Test_display_mode *test_display_mode(ULONG id)
+{
+    unsigned int i;
+    for (i = 0; i < sizeof(display_modes) / sizeof(display_modes[0]); ++i)
+        if (display_modes[i].id == id)
+        {
+            /* The default monitor is PAL or NTSC as the machine boots. */
+            if (id == DEFAULT_MONITOR_ID) display_modes[i].height = (graphics_base.DisplayFlags & PAL) ? 256U : 200U;
+            return display_modes + i;
+        }
+    return NULL;
+}
 
 static unsigned int test_pointer_base(void)
 {
@@ -146,7 +289,7 @@ static void test_safe_draw(const struct RastPort *port)
     assert(port->Layer == NULL);
 }
 #if AMI_RTG
-static int friend_incompatible;
+static int friend_incompatible, p96_short_storage;
 static unsigned int cgx_calls, p96_calls, span_calls;
 static int coverage_active;
 static unsigned int coverage[64][64];
@@ -178,8 +321,21 @@ struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
     assert(strcmp(name, "intuition.library") == 0);
     return (struct Library *)&intuition_base;
 }
+/* Host frames never lie inside task_stack, as on a 1.3 CLI. Its process
+ * bounds describe the CLI's own 4000-byte stack, not the command's. */
 struct Task *FindTask(CONST_STRPTR name)
-{ assert(name == NULL); task_record.tc_SPLower = task_stack; task_record.tc_SPUpper = task_stack + (small_stack ? 4096 : sizeof(task_stack)); return &task_record; }
+{
+    assert(name == NULL);
+    process_record.pr_Task.tc_SPLower = task_stack;
+    process_record.pr_Task.tc_SPUpper = task_stack + (cli13_stack ? 4000 : small_stack ? 4096 : sizeof(task_stack));
+    process_record.pr_CLI = 0;
+    if (cli13_stack)
+    {
+        cli_record.cli_DefaultStack = small_stack ? 1024 : 8192;
+        process_record.pr_CLI = (BPTR)((ULONG)&cli_record >> 2);
+    }
+    return &process_record.pr_Task;
+}
 void CloseLibrary(struct Library *library)
 { assert(library != NULL && library_count != 0); --library_count; }
 APTR AllocMem(ULONG size, ULONG flags)
@@ -303,7 +459,13 @@ void DeleteMsgPort(struct MsgPort *port)
     assert(pending_display == NULL || pending_display->mn_ReplyPort != port);
     reply_port_alive[i] = 0; --reply_port_count;
 }
+/* Intuition's clock is only the fallback while timer.device is closed. */
 void CurrentTime(ULONG *seconds, ULONG *micros)
+{
+    assert(!timer_opens); ++intuition_clock_calls;
+    clock_micros += 16667UL; *seconds = clock_micros / 1000000UL; *micros = clock_micros % 1000000UL;
+}
+static void test_timer_systime(ULONG *seconds, ULONG *micros)
 { clock_micros += 16667UL; *seconds = clock_micros / 1000000UL; *micros = clock_micros % 1000000UL; }
 LONG GetScreenData(APTR out, ULONG size, ULONG kind, struct Screen *screen)
 {
@@ -356,9 +518,12 @@ struct Screen *OpenScreenTagList(const struct NewScreen *settings, const struct 
     }
     else
     {
-        assert(width == 320UL && height == ((graphics_base.DisplayFlags & PAL) ? 256UL : 200UL));
-        assert(fullscreen_mode == ((graphics_base.DisplayFlags & PAL) ? PAL_MONITOR_ID : NTSC_MONITOR_ID));
-        assert(depth == 5UL || ((graphics_base.ChipRevBits0 & GFXF_AA_ALICE) && depth == 8UL));
+        const Test_display_mode *expected;
+        expected = test_display_mode(fullscreen_mode);
+        assert(fullscreen_mode == expected_fs_mode && expected != NULL && expected->available);
+        assert(width == expected->width && height == expected->height);
+        assert(depth == (expected->depth < 5U ? expected->depth : 5UL) ||
+               ((graphics_base.ChipRevBits0 & GFXF_AA_ALICE) && depth == 8UL && expected->depth >= 8U));
     }
     memset(&fullscreen_screen, 0, sizeof(fullscreen_screen));
     fullscreen_screen.Width = (WORD)width; fullscreen_screen.Height = (WORD)height;
@@ -604,10 +769,12 @@ struct TmpRas *InitTmpRas(struct TmpRas *tmp, PLANEPTR raster, LONG size)
     tmp->RasPtr = raster; tmp->Size = size; return tmp;
 }
 void SetAPen(struct RastPort *port, ULONG pen)
-{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->FgPen = (UBYTE)pen; }
+{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->FgPen = (UBYTE)pen; ++state_calls; }
 void SetBPen(struct RastPort *port, ULONG pen)
-{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->BgPen = (UBYTE)pen; }
-void SetDrMd(struct RastPort *port, ULONG mode) { port->DrawMode = (UBYTE)mode; }
+{ assert(pen < (test_screen_bitmap(port->BitMap) ? fullscreen_colormap.Count : colormap.Count)); port->BgPen = (UBYTE)pen; ++state_calls; }
+void SetDrMd(struct RastPort *port, ULONG mode) { port->DrawMode = (UBYTE)mode; ++state_calls; }
+static void test_set_area_pattern(struct RastPort *port, UWORD *pattern, int size)
+{ port->AreaPtrn = pattern; port->AreaPtSz = (BYTE)size; ++state_calls; }
 void RectFill(struct RastPort *port, LONG x0, LONG y0, LONG x1, LONG y1)
 {
     assert(port != NULL && x0 == 0 && y0 == 0);
@@ -650,6 +817,8 @@ static LONG record_corner(struct RastPort *port, LONG x, LONG y)
 }
 LONG AreaMove(struct RastPort *port, LONG x, LONG y) { assert(area_count == 0); return record_corner(port, x, y); }
 LONG AreaDraw(struct RastPort *port, LONG x, LONG y) { return record_corner(port, x, y); }
+/* The hash covers every RastPort field that selects fill pixels. AreaEnd
+ * reinitializes the vector table, as graphics.library documents. */
 LONG AreaEnd(struct RastPort *port)
 {
     unsigned int i;
@@ -658,9 +827,18 @@ LONG AreaEnd(struct RastPort *port)
         assert(port->DrawMode == JAM1 && port->AreaPtrn == NULL);
     for (i = 0; i < area_count; ++i) rendered_hash = rendered_hash * 33UL + (ULONG)(area_x[i] * 32768L + area_y[i]);
     rendered_hash = rendered_hash * 33UL + port->FgPen;
+    rendered_hash = rendered_hash * 33UL + port->BgPen;
+    rendered_hash = rendered_hash * 33UL + port->DrawMode;
+    rendered_hash = rendered_hash * 33UL + (ULONG)port->AreaPtSz;
+    if (port->AreaPtrn != NULL)
+        for (i = 0; i < 4U; ++i) rendered_hash = rendered_hash * 33UL + port->AreaPtrn[i];
+    area_count = 0;
+    /* The reference mode forgets the driver's state after each polygon,
+     * which sends every pen, mode and pattern call as before caching. */
+    if (uncached_draw_state) ami_reset_draw_state();
     ++rendered_count; ++area_calls; blitter_busy = 1; return 0;
 }
-void WaitBlit(void) { blitter_busy = 0; }
+void WaitBlit(void) { blitter_busy = 0; ++wait_calls; }
 void BltBitMapRastPort(const struct BitMap *bitmap, LONG sx, LONG sy,
                       struct RastPort *port, LONG dx, LONG dy, LONG width, LONG height, ULONG minterm)
 {
@@ -688,11 +866,54 @@ void GetRGB32(struct ColorMap *colors, ULONG first, ULONG count, ULONG *out)
     for (i = 0; i < 3; ++i) out[i] = (ULONG)palette[first][i] * 0x01010101UL;
 }
 ULONG GetVPModeID(struct ViewPort *view)
-{ assert(display_version >= 36 && (view == &desktop.ViewPort || view == &fullscreen_screen.ViewPort)); return view == &fullscreen_screen.ViewPort ? fullscreen_mode : rtg_backend ? 0x50000UL : 0; }
+{ assert(display_version >= 36 && (view == &desktop.ViewPort || view == &fullscreen_screen.ViewPort)); return view == &fullscreen_screen.ViewPort ? fullscreen_mode : rtg_backend ? 0x50000UL : workbench_mode; }
+ULONG ModeNotAvailable(ULONG id)
+{
+    const Test_display_mode *mode;
+    assert(display_version >= 36);
+    mode = test_display_mode(id);
+    return mode != NULL && mode->available ? 0UL : 2UL;
+}
+ULONG BestModeIDA(const struct TagItem *tags)
+{
+    ULONG width, height, depth, excluded, monitor;
+    assert(display_version >= 39 && !rtg_backend);
+    width = height = depth = excluded = 0; monitor = INVALID_ID;
+    for (; tags->ti_Tag != TAG_DONE; ++tags)
+        switch (tags->ti_Tag)
+        {
+            case BIDTAG_NominalWidth: width = tags->ti_Data; break;
+            case BIDTAG_NominalHeight: height = tags->ti_Data; break;
+            case BIDTAG_Depth: depth = tags->ti_Data; break;
+            case BIDTAG_DIPFMustNotHave: excluded = tags->ti_Data; break;
+            case BIDTAG_MonitorID: monitor = tags->ti_Data; break;
+            default: assert(!"Unexpected BestModeIDA tag");
+        }
+    assert(width == 320UL && height == ((graphics_base.DisplayFlags & PAL) ? 256UL : 200UL));
+    assert(depth == ((graphics_base.ChipRevBits0 & GFXF_AA_ALICE) ? 8UL : 5UL));
+    assert(excluded == (DIPF_IS_HAM | DIPF_IS_EXTRAHALFBRITE | DIPF_IS_DUALPF));
+    assert(monitor == (workbench_mode & MONITOR_ID_MASK));
+    ++best_mode_calls;
+    return best_mode;
+}
 ULONG GetDisplayInfoData(APTR handle, UBYTE *buffer, ULONG length, ULONG tag, ULONG id)
 {
     struct DisplayInfo *info;
-    assert(display_version >= 36 && handle == NULL && length == sizeof(*info) && tag == DTAG_DISP && (id == 0 || id == fullscreen_mode));
+    struct DimensionInfo *dimensions;
+    const Test_display_mode *mode;
+    assert(display_version >= 36 && handle == NULL);
+    if (tag == DTAG_DIMS)
+    {
+        mode = test_display_mode(id);
+        assert(display_version >= 39 && length == sizeof(*dimensions) && mode != NULL && mode->available);
+        dimensions = (struct DimensionInfo *)buffer;
+        dimensions->MaxDepth = (UWORD)mode->depth;
+        dimensions->Nominal.MinX = dimensions->Nominal.MinY = 0;
+        dimensions->Nominal.MaxX = (WORD)(mode->width - 1U);
+        dimensions->Nominal.MaxY = (WORD)(mode->height - 1U);
+        return sizeof(*dimensions);
+    }
+    assert(length == sizeof(*info) && tag == DTAG_DISP && (id == workbench_mode || id == fullscreen_mode));
     info = (struct DisplayInfo *)buffer; info->Resolution.x = (WORD)pixel_x; info->Resolution.y = (WORD)pixel_y;
     return sizeof(*info);
 }
@@ -717,7 +938,8 @@ ULONG ami_p96_attr(struct Library *base, struct BitMap *bitmap, ULONG attribute)
         return rtg_backend == 2 && !(bitmap == &friend_bitmap && friend_incompatible) &&
                !(bitmap == &fullscreen_alternate && fullscreen_incompatible);
     assert(rtg_backend == 2);
-    if (attribute == AMI_P96_DEPTH) return rtg_storage_depth;
+    /* P96BMA_DEPTH (2) need not describe storage; it is never queried. */
+    if (attribute == AMI_P96_BYTES) return p96_short_storage ? 2U : (rtg_storage_depth + 7U) / 8U;
     assert(attribute == AMI_P96_BITS); return rtg_depth;
 }
 static void record_rgb_fill(struct RastPort *port, unsigned int x0, unsigned int y0,
@@ -795,6 +1017,8 @@ static void test_render(void)
 {
     rendered_hash = rendered_count = 0; osd_text[0] = 0;
     baseline_vertices = enhanced_vertices = fpu_vertices = 0;
+    baseline_projects = enhanced_projects = fpu_projects = 0;
+    baseline_finishes = enhanced_finishes = 0;
     check_osd_layout = TRUE; osd_last_bottom = -1;
     drv_render();
     check_osd_layout = FALSE;
@@ -874,15 +1098,15 @@ static void test_palette_mapping(int exhaustive)
     unsigned int color;
     unsigned long actual;
     memcpy(before, desktop_palette, sizeof(before));
-    ami_palette_valid = FALSE;
+    ami_map->valid = FALSE;
     ami_map_palette();
-    assert(ami_color_count == colormap.Count);
+    assert(ami_map->count == colormap.Count);
     assert(memcmp(before, desktop_palette, sizeof(before)) == 0);
     for (color = 0; color < 256U; ++color)
     {
-        assert(ami_pen_a[color] < colormap.Count && ami_pen_b[color] < colormap.Count);
-        assert(ami_mix[color] <= 16U);
-        actual = test_palette_error(color, ami_pen_a[color], ami_pen_b[color], ami_mix[color]);
+        assert(ami_map->pen_a[color] < colormap.Count && ami_map->pen_b[color] < colormap.Count);
+        assert(ami_map->mix[color] <= 16U);
+        actual = test_palette_error(color, ami_map->pen_a[color], ami_map->pen_b[color], ami_map->mix[color]);
         if (exhaustive) assert(actual == test_palette_optimum(color));
         else assert(actual <= test_palette_previous(color));
     }
@@ -931,33 +1155,33 @@ static void test_palette_quality(void)
         for (pen = 0; pen < colormap.Count; ++pen)
             memcpy(desktop_palette[pen], difficult[pen < 4U ? pen : 0], 3);
         test_palette_mapping(index == 0);
-        actual = test_palette_error(0, ami_pen_a[0], ami_pen_b[0], ami_mix[0]);
+        actual = test_palette_error(0, ami_map->pen_a[0], ami_map->pen_b[0], ami_map->mix[0]);
         assert(actual == 128UL && actual < test_palette_previous(0));
-        assert(ami_mix[0] == 8U);
-        assert((ami_pen_a[0] == 2U && ami_pen_b[0] == 3U) ||
-               (ami_pen_a[0] == 3U && ami_pen_b[0] == 2U));
+        assert(ami_map->mix[0] == 8U);
+        assert((ami_map->pen_a[0] == 2U && ami_map->pen_b[0] == 3U) ||
+               (ami_map->pen_a[0] == 3U && ami_map->pen_b[0] == 2U));
     }
     /* An exact entry, including duplicates, must stay solid without noise. */
     colormap.Count = 16;
     memcpy(desktop_palette[1], earth_cmap[0], 3);
     memcpy(desktop_palette[5], earth_cmap[0], 3);
     test_palette_mapping(TRUE);
-    assert(ami_mix[0] == 0U && test_palette_error(0, ami_pen_a[0], ami_pen_a[0], 0U) == 0UL);
+    assert(ami_map->mix[0] == 0U && test_palette_error(0, ami_map->pen_a[0], ami_map->pen_a[0], 0U) == 0UL);
     colormap.Count = 2;
     memset(desktop_palette[0], 0, 3); memset(desktop_palette[1], 255, 3);
     for (index = 0; index < 2U; ++index)
     {
         memset(earth_cmap[0], index ? 255 : 0, 3);
         test_palette_mapping(TRUE);
-        assert(ami_mix[0] == 0U && ami_pen_a[0] == index);
+        assert(ami_map->mix[0] == 0U && ami_map->pen_a[0] == index);
     }
     /* Test the native draw state and actual bit coverage, not just the
      * lookup's mixture number. Clear pattern bits select the background pen. */
-    ami_draw_port = &window_port;
-    ami_pen_a[0] = 0; ami_pen_b[0] = 1;
+    ami_draw_port = &window_port; ami_reset_draw_state();
+    ami_map->pen_a[0] = 0; ami_map->pen_b[0] = 1;
     for (mix = 0; mix <= 16U; ++mix)
     {
-        ami_mix[0] = (unsigned char)mix;
+        ami_map->mix[0] = (unsigned char)mix;
         ami_set_color(0);
         if (mix == 0U || mix == 16U)
         {
@@ -984,7 +1208,7 @@ static void test_palette_quality(void)
     memcpy(earth_cmap[0], saved_earth, sizeof(saved_earth));
     memcpy(desktop_palette, saved_palette, sizeof(saved_palette));
     colormap.Count = (UWORD)saved_count;
-    ami_palette_valid = FALSE;
+    ami_map->valid = FALSE;
     ami_map_palette();
     puts("PASS Amiga palette matching: exhaustive small-palette colors, bounded-search quality, exact/duplicate pens and Bayer coverage");
 }
@@ -1008,23 +1232,23 @@ static void test_solid_palette(void)
     unsigned long error, best;
     assert(!ami_dither_enabled && ami_draw_port == NULL && ami_depth <= 8U);
     saved_port = window_port;
-    ami_draw_port = &window_port;
+    ami_draw_port = &window_port; ami_reset_draw_state();
     for (color = 0; color < 256U; ++color)
     {
         nearest = 0; best = ULONG_MAX;
-        for (pen = 0; pen < ami_color_count; ++pen)
+        for (pen = 0; pen < ami_map->count; ++pen)
         {
             error = 0;
             /* The effective desktop palette includes RGB12 quantization on
              * older graphics.library versions; compare the colors read. */
             for (channel = 0; channel < 3U; ++channel)
             {
-                difference = (long)earth_cmap[color][channel] - ami_palette[pen][channel];
+                difference = (long)earth_cmap[color][channel] - ami_map->palette[pen][channel];
                 error += (unsigned long)(difference * difference);
             }
             if (error < best) { best = error; nearest = pen; }
         }
-        assert(ami_pen_solid[color] == nearest);
+        assert(ami_map->solid[color] == nearest);
         ami_set_color((unsigned char)color);
         assert(window_port.FgPen == nearest);
         assert(window_port.DrawMode == JAM1 && window_port.AreaPtrn == NULL);
@@ -1081,6 +1305,215 @@ static void test_dither_toggle(void)
     test_osd_contains(ami_depth <= 8U ? "dither on" : "dither n/a");
 }
 
+/* Unchanged pens, modes and patterns are skipped, yet every fill sees the
+ * RastPort state of setting all four before each polygon. A windowed
+ * present relies on the libraries' own blit ordering and does not wait. */
+static void test_draw_state(void)
+{
+    unsigned long hash, count;
+    unsigned int calls, waits;
+    uncached_draw_state = 1; calls = state_calls;
+    test_render(); hash = rendered_hash; count = rendered_count;
+    calls = state_calls - calls;
+    uncached_draw_state = 0; waits = wait_calls; state_calls = 0;
+    test_render();
+    assert(rendered_hash == hash && rendered_count == count && count > 20UL);
+    assert(state_calls < calls);
+    if (!ami_fullscreen) assert(wait_calls == waits);
+}
+
+/* Released optional storage stays released for the rest of that scene
+ * revision, then returns at the next key press or render after the scene
+ * changes. A failing allocation is retried once per revision, not per frame. */
+static void test_recovery(unsigned long reference_hash, unsigned long reference_count)
+{
+    unsigned int attempts, copies;
+    int cache_fails;
+    cache_fails = fail_cache_allocation;
+    drv_release_optional();
+    assert(ami_project_cache == NULL && ami_back_planes == 0 && ami_rtg_bitmap == NULL);
+    assert(strcmp(drv_get_notice(), AMI_RELEASED_NOTICE) == 0);
+    attempts = cache_attempts; copies = copy_calls;
+    test_render(); test_render();
+    assert(rendered_hash == reference_hash && rendered_count == reference_count);
+    ami_keyboard('d'); ami_keyboard('d');
+    assert(copy_calls == copies && cache_attempts == attempts && ami_project_cache == NULL);
+    fail_cache_allocation = 1;
+    ami_keyboard('2');
+    assert(globe_longitude == 64 && cache_attempts == attempts + 1U && ami_project_cache == NULL);
+    assert(ami_back_planes == ami_depth);
+    test_render(); test_render(); assert(cache_attempts == attempts + 1U);
+    fail_cache_allocation = cache_fails;
+    ami_keyboard('1'); assert(cache_attempts == attempts + 2U);
+    assert(cache_fails ? ami_project_cache == NULL : ami_project_cache != NULL);
+    if (!cache_fails) assert(drv_get_notice()[0] == 0);
+    copies = copy_calls; test_render();
+    assert(copy_calls == copies + 1U);
+    assert(rendered_hash == reference_hash && rendered_count == reference_count);
+}
+
+static unsigned long test_random(unsigned long *seed)
+{
+    *seed = (*seed * 1103515245UL + 12345UL) & 0x7fffffffUL;
+    return *seed >> 8;
+}
+
+/* Both CPU objects project, clip and cull identically. The cache's
+ * once-per-vertex aspect rounds exactly like scaling every projected
+ * corner, and an overflowing vertex is rejected each time it is used. */
+static void test_projection_objects(void)
+{
+    static const unsigned int ratios[][2] = {{1, 1}, {15, 8}, {6, 5}, {1, 2}, {5, 12}, {256, 1}};
+    Soft3d_fixed_point points[8];
+    Soft3d_project_cache cache, enhanced_cache;
+    Soft3d_screen_point base[SOFT3D_MAX_POLY], fast[SOFT3D_MAX_POLY], plain[SOFT3D_MAX_POLY];
+    Soft3d_aspect aspect;
+    unsigned int indices[4], ratio, trial, i, pass, width, height;
+    unsigned long seed;
+    int counted, enhanced, uncached;
+    seed = 12345UL;
+    for (ratio = 0; ratio < sizeof(ratios) / sizeof(ratios[0]) + 1U; ++ratio)
+    {
+        if (ratio < sizeof(ratios) / sizeof(ratios[0]))
+            assert(soft3d_aspect_init(&aspect, ratios[ratio][0], ratios[ratio][1]));
+        else
+        {
+            /* Narrow bounds stand in for a 32-bit long's overflow limit. */
+            aspect.num = 2; aspect.den = 1; aspect.low = -40; aspect.high = 40;
+        }
+        for (trial = 0; trial < 400U; ++trial)
+        {
+            width = 64U + (unsigned int)(test_random(&seed) % 900UL);
+            height = 64U + (unsigned int)(test_random(&seed) % 700UL);
+            for (i = 0; i < 8U; ++i)
+            {
+                points[i].x = (long)(test_random(&seed) % 40001UL) - 20000L;
+                points[i].y = (long)(test_random(&seed) % 40001UL) - 20000L;
+                points[i].z = -(long)(test_random(&seed) % 64001UL) - 16000L;
+                if (test_random(&seed) % 16UL == 0UL) points[i].z = (long)(test_random(&seed) % 64UL) - 48L;
+            }
+            assert(soft3d_project_cache_begin_aspect(&cache, 8U, width, height, 0U, &aspect));
+            assert(soft3d_project_cache_begin_aspect(&enhanced_cache, 8U, width, height, 0U, &aspect));
+            for (pass = 0; pass < 6U; ++pass)
+            {
+                for (i = 0; i < 4U; ++i) indices[i] = (unsigned int)(test_random(&seed) % 8UL);
+                counted = soft3d_fixed_project_cached(points, 8U, indices, 4U, width, height, &cache, base);
+                enhanced = soft3d_020_project_cached(points, 8U, indices, 4U, width, height, &enhanced_cache, fast);
+                uncached = soft3d_aspect_points(&aspect, width, plain,
+                    soft3d_fixed_project_polygon(points, 8U, indices, 4U, width, height, plain));
+                assert(counted == enhanced && counted == uncached);
+                assert(soft3d_020_project_polygon(points, 8U, indices, 4U, width, height, fast) ==
+                       soft3d_fixed_project_polygon(points, 8U, indices, 4U, width, height, base));
+                counted = soft3d_fixed_project_cached(points, 8U, indices, 4U, width, height, &cache, base);
+                enhanced = soft3d_020_project_cached(points, 8U, indices, 4U, width, height, &enhanced_cache, fast);
+                assert(counted == uncached && enhanced == uncached);
+                for (i = 0; i < (unsigned int)uncached; ++i)
+                    assert(base[i].x == plain[i].x && base[i].y == plain[i].y &&
+                           fast[i].x == plain[i].x && fast[i].y == plain[i].y);
+                counted = soft3d_finish_polygon(base, counted, width - 1U, height - 1U);
+                enhanced = soft3d_020_finish_polygon(fast, enhanced, width - 1U, height - 1U);
+                assert(counted == enhanced);
+                for (i = 0; i < (unsigned int)counted; ++i)
+                    assert(base[i].x == fast[i].x && base[i].y == fast[i].y);
+            }
+        }
+    }
+    /* Plain begin restores 1/1, and a changed aspect never reuses a row. */
+    assert(soft3d_aspect_init(&aspect, 15U, 8U) && !soft3d_aspect_init(&aspect, 0U, 8U));
+    assert(aspect.num == 1L && aspect.den == 1L);
+    assert(soft3d_project_cache_begin(&cache, 8U, 640U, 256U, 0U) && cache.aspect.num == cache.aspect.den);
+}
+
+#ifdef DRV_QUAD_TRIM
+/* Back-face trimming must leave the drawn polygon sequence, including
+ * every corner and pen, unchanged at each resolution, pose and window
+ * size, while projecting fewer quads where the whole globe fits. */
+static void test_quad_trim(const char *mode)
+{
+    static const float poses[][2] = {
+        {0.0f, 0.0f}, {12.0f, 34.0f}, {319.0f, 181.0f}, {67.5f, 271.25f},
+        {89.75f, 90.0f}, {270.0f, 5.0f}, {200.0f, 359.5f}, {45.0f, 135.0f}
+    };
+    static const int sizes[][2] = {{480, 200}, {800, 400}, {320, 120}};
+    unsigned long hash, count, full, trimmed, full_work, trimmed_work;
+    unsigned int level, pose, size, saved_width, saved_height;
+    float saved_x, saved_y;
+    int saved_auto;
+#ifdef TEST_TRIM_PROFILE
+    unsigned long level_full[6], level_trimmed[6], level_vertices[6][2], level_finishes[6][2];
+    double level_seconds[6][2];
+    clock_t started;
+    memset(level_seconds, 0, sizeof(level_seconds));
+    memset(level_full, 0, sizeof(level_full)); memset(level_trimmed, 0, sizeof(level_trimmed));
+    memset(level_vertices, 0, sizeof(level_vertices)); memset(level_finishes, 0, sizeof(level_finishes));
+#endif
+    saved_width = (unsigned int)window_record.GZZWidth; saved_height = (unsigned int)window_record.GZZHeight;
+    saved_x = drv_rot_x; saved_y = drv_rot_y; saved_auto = drv_auto_enabled;
+    drv_auto_enabled = FALSE;
+    full = trimmed = full_work = trimmed_work = 0;
+    for (level = 1; level <= 5U; ++level)
+    {
+        ami_keyboard((unsigned char)('0' + level));
+        assert(globe_ready() && globe_longitude == 16 << level);
+        for (size = 0; size < sizeof(sizes) / sizeof(sizes[0]); ++size)
+        {
+            window_record.GZZWidth = (WORD)sizes[size][0];
+            window_record.GZZHeight = (WORD)sizes[size][1];
+            ami_event(NEWSIZE, 0, 0, 0); assert(ami_ready);
+            for (pose = 0; pose < sizeof(poses) / sizeof(poses[0]); ++pose)
+            {
+                if (level == 5U && (pose & 1U)) continue;
+                drv_rot_x = poses[pose][0]; drv_rot_y = poses[pose][1];
+#ifdef TEST_TRIM_PROFILE
+                started = clock();
+#endif
+                trim_disabled = 1; test_render();
+#ifdef TEST_TRIM_PROFILE
+                level_seconds[level][0] += (double)(clock() - started) / CLOCKS_PER_SEC;
+#endif
+                hash = rendered_hash; count = rendered_count;
+                full += baseline_projects + enhanced_projects + fpu_projects;
+                full_work += baseline_vertices + enhanced_vertices + fpu_vertices;
+#ifdef TEST_TRIM_PROFILE
+                level_full[level] += baseline_projects + enhanced_projects + fpu_projects;
+                level_vertices[level][0] += baseline_vertices + enhanced_vertices + fpu_vertices;
+                level_finishes[level][0] += baseline_finishes + enhanced_finishes;
+#endif
+#ifdef TEST_TRIM_PROFILE
+                started = clock();
+#endif
+                trim_disabled = 0; test_render();
+#ifdef TEST_TRIM_PROFILE
+                level_seconds[level][1] += (double)(clock() - started) / CLOCKS_PER_SEC;
+#endif
+                assert(rendered_hash == hash && rendered_count == count);
+                trimmed += baseline_projects + enhanced_projects + fpu_projects;
+                trimmed_work += baseline_vertices + enhanced_vertices + fpu_vertices;
+#ifdef TEST_TRIM_PROFILE
+                level_trimmed[level] += baseline_projects + enhanced_projects + fpu_projects;
+                level_vertices[level][1] += baseline_vertices + enhanced_vertices + fpu_vertices;
+                level_finishes[level][1] += baseline_finishes + enhanced_finishes;
+#endif
+            }
+        }
+    }
+    assert(trimmed < full && trimmed_work < full_work);
+#ifdef TEST_TRIM_PROFILE
+    for (level = 1; level <= 5U; ++level)
+        printf("TRIM %s level %u: projections %lu -> %lu, transformed vertices %lu -> %lu, finishes %lu -> %lu, host %.4f -> %.4f s\n",
+               mode, level, level_full[level], level_trimmed[level], level_vertices[level][0],
+               level_vertices[level][1], level_finishes[level][0], level_finishes[level][1],
+               level_seconds[level][0], level_seconds[level][1]);
+#endif
+    window_record.GZZWidth = (WORD)saved_width; window_record.GZZHeight = (WORD)saved_height;
+    ami_event(NEWSIZE, 0, 0, 0);
+    ami_keyboard('1');
+    drv_rot_x = saved_x; drv_rot_y = saved_y; drv_auto_enabled = saved_auto;
+    printf("PASS Amiga %s quad trimming: identical drawn polygons at five resolutions, eight poses and three windows, with %lu of %lu quads projected\n",
+           mode, trimmed, full);
+}
+#endif
+
 static void test_fpu_integer_conversion(void)
 {
     static const double targets[] = {
@@ -1108,9 +1541,87 @@ static void test_fpu_integer_conversion(void)
     }
 }
 
+/* timer.device supplies the animation clock: the E-clock from V36, system
+ * time on 1.3. Each failed acquisition step falls back to CurrentTime. */
+static void test_clock(void)
+{
+    unsigned int calls, eclock, systime, fail;
+    double before, after, seconds;
+    assert(timer_opens == 1U && timer_requests == 1U && timer_ports == 1U);
+    eclock = timer_eclock_calls; systime = timer_systime_calls; calls = intuition_clock_calls;
+    if (timer_version >= 36U)
+    {
+        /* Consecutive samples crossing the low word carry exactly one step. */
+        timer_eclock_hi = 0; timer_eclock_lo = 0xffffffffUL - timer_eclock_step - 1UL;
+        before = ami_time_now(); seconds = timer_eclock_seconds();
+        after = ami_time_now();
+        assert(timer_eclock_hi == 1UL && timer_eclock_lo == timer_eclock_step - 2UL);
+        assert(fabs(after - before - (double)timer_eclock_step / timer_eclock_rate) < 1e-9);
+        assert(fabs(after - before - (timer_eclock_seconds() - seconds)) < 1e-9);
+        assert(timer_eclock_calls == eclock + 2U && timer_systime_calls == systime);
+    }
+    else
+    {
+        /* System time may be adjusted backward; progress resumes from there. */
+        clock_micros = 100000000UL;
+        before = ami_time_now();
+        clock_micros = 90000000UL;
+        assert(ami_time_now() == before);
+        clock_micros = 91000000UL;
+        assert(fabs(ami_time_now() - before - 1.0) < 0.000001);
+        assert(timer_systime_calls == systime + 3U && timer_eclock_calls == eclock);
+    }
+    assert(intuition_clock_calls == calls);
+    for (fail = 1U; fail <= 3U; ++fail)
+    {
+        timer_fail = fail; ami_clock_open(); assert(timer_idle());
+        calls = intuition_clock_calls;
+        before = ami_time_now(); after = ami_time_now();
+        assert(intuition_clock_calls == calls + 2U && after > before);
+    }
+    timer_fail = 0; ami_clock_open();
+    assert(timer_opens == 1U && timer_requests == 1U && timer_ports == 1U);
+    before = ami_time_now(); assert(ami_time_now() > before);
+    ami_auto_time = ami_time_now();
+    drv_reset_timing();
+}
+
+/* Bounds containing the probe are measured from it, leaving room for the
+ * frames above it; otherwise a CLI's configured size is used. */
+static void test_stack_probe(void)
+{
+    struct Process process;
+    struct CommandLineInterface cli;
+    ULONG base;
+    memset(&process, 0, sizeof(process)); memset(&cli, 0, sizeof(cli));
+    base = 0x10000UL;
+    process.pr_Task.tc_SPLower = (APTR)base;
+    process.pr_Task.tc_SPUpper = (APTR)(base + AMI_STACK_BYTES);
+    assert(ami_stack_ok(&process, base + AMI_STACK_BYTES - AMI_STACK_STARTUP));
+    assert(!ami_stack_ok(&process, base + AMI_STACK_BYTES - AMI_STACK_STARTUP - 1UL));
+    assert(ami_stack_ok(&process, base + AMI_STACK_BYTES));
+    /* A large configured stack does not hide one already consumed. */
+    process.pr_Task.tc_SPUpper = (APTR)(base + 4UL * AMI_STACK_BYTES);
+    assert(!ami_stack_ok(&process, base + 4096UL));
+    /* Outside the bounds without a CLI: only the task's own size remains. */
+    assert(ami_stack_ok(&process, base - 4UL) && ami_stack_ok(&process, base));
+    process.pr_Task.tc_SPUpper = (APTR)(base + AMI_STACK_BYTES - 4UL);
+    assert(!ami_stack_ok(&process, base + 8UL * AMI_STACK_BYTES));
+    /* A 1.3 CLI's command stack is cli_DefaultStack longwords. */
+    process.pr_CLI = (BPTR)((ULONG)&cli >> 2);
+    cli.cli_DefaultStack = (LONG)(AMI_STACK_BYTES / 4UL);
+    assert(ami_stack_ok(&process, base + 8UL * AMI_STACK_BYTES));
+    cli.cli_DefaultStack = (LONG)(AMI_STACK_BYTES / 4UL) - 1L;
+    assert(!ami_stack_ok(&process, base + 8UL * AMI_STACK_BYTES));
+    cli.cli_DefaultStack = -1L;
+    assert(!ami_stack_ok(&process, base + 8UL * AMI_STACK_BYTES));
+    assert(!ami_stack_ok(NULL, base));
+}
+
 static void test_fatal_cleanup(void)
 {
     assert(small_stack && library_count == 0 && window_count == 0 && raster_count == 0);
+    assert(timer_idle());
     puts("PASS Amiga stack guard: insufficient startup stack reports a native error and closes libraries before exit");
 }
 
@@ -1219,18 +1730,18 @@ static int test_rtg(int argc, char **argv, const char *mode)
     unsigned int i, copies, spans, raster_attempts;
     unsigned char saved_palette[sizeof(desktop_palette)];
     drv_ext_init(); globe_init(); drv_init(&argc, argv);
-    if (rtg_unknown || rtg_depth == 12 || pubscreen_failure)
+    if (rtg_unknown || rtg_depth == 12 || pubscreen_failure || p96_short_storage)
     {
         assert(!drv_init_window(0, 0, 0, 0)); ami_cleanup();
         assert(library_count == 0 && window_count == 0 && raster_count == 0);
-        assert(friend_count == 0 && pubscreen_locks == 0);
+        assert(friend_count == 0 && pubscreen_locks == 0 && timer_idle());
         assert(area_calls == 0 && span_calls == 0 && rect_calls == 0);
         printf("PASS Amiga %s: unsupported RTG screen is rejected before drawing and releases resources\n", mode);
         return 0;
     }
     assert(drv_init_window(0, 0, 0, 0));
     assert(ami_rtg == (int)rtg_backend && ami_depth == rtg_depth);
-    assert(pubscreen_locks == 0 && ami_aspect_num == ami_aspect_den);
+    assert(pubscreen_locks == 0 && ami_aspect.num == ami_aspect.den);
     assert(!ami_big_blits && !ami_unsafe_bitmap);
     assert(drv_bits_per_pixel == rtg_storage_depth);
     assert(drv_colormapped == (rtg_depth <= 8U));
@@ -1251,13 +1762,20 @@ static int test_rtg(int argc, char **argv, const char *mode)
         test_span_coverage();
         test_render();
     }
-    else assert(area_calls > 20 && span_calls == 0);
+    else { assert(area_calls > 20 && span_calls == 0); test_draw_state(); }
     test_dither_toggle();
     reference_hash = rendered_hash; reference_count = rendered_count;
     copies = copy_calls; drv_release_optional();
     assert(friend_count == 0 && ami_project_cache == NULL);
     test_render(); assert(copy_calls == copies);
     assert(rendered_hash == reference_hash && rendered_count == reference_count);
+    /* The cache and friend bitmap return once the scene revision changes. */
+    ami_keyboard('2'); ami_keyboard('1');
+    assert(ami_project_cache != NULL);
+    assert((friend_failure || friend_incompatible) ? friend_count == 0 : friend_count == 1);
+    copies = copy_calls; test_render();
+    assert(rendered_hash == reference_hash && rendered_count == reference_count);
+    assert(copy_calls == copies + friend_count);
     /* Native OCS dimensions/stride never constrain an identified RTG screen. */
     window_record.GZZWidth = 1200; window_record.GZZHeight = 1100;
     ami_event(NEWSIZE, 0, 0, 0);
@@ -1282,9 +1800,13 @@ static int test_rtg(int argc, char **argv, const char *mode)
     ami_event(NEWSIZE, 0, 0, 0); drv_render();
     assert(!ami_ready && span_calls == spans && copy_calls == copies);
     window_record.GZZWidth = 320; ami_event(NEWSIZE, 0, 0, 0); test_render();
+#ifdef DRV_QUAD_TRIM
+    if (strcmp(mode, "cgx16") == 0) test_quad_trim(mode);
+#endif
     for (i = 0; i < 2; ++i) ami_cleanup();
     assert(library_count == 0 && window_count == 0 && raster_count == 0);
     assert(friend_count == 0 && pubscreen_locks == 0 && ami_project_cache == NULL);
+    assert(timer_idle());
     globe_free();
     printf("PASS Amiga %s: opaque RTG bitmaps, RGB/palette rendering, exact span coverage, direct fallback, resize and cleanup\n", mode);
     return 0;
@@ -1298,6 +1820,39 @@ static void test_fullscreen_windowed(void)
     assert(!pending_safe && !pending_display);
     assert(drv_win_width == (unsigned int)window_record.GZZWidth &&
            drv_win_height == (unsigned int)window_record.GZZHeight);
+}
+
+/* Workbench and fullscreen keep separate pen maps. Once each exists, F
+ * toggles read back unchanged colors and rebuild neither; a Workbench
+ * palette change made while fullscreen is noticed on return. */
+static void test_fullscreen_pen_maps(void)
+{
+    unsigned char saved_pen[3];
+    unsigned int rebuilds, first, i;
+    int indexed;
+    indexed = ami_depth <= 8U;
+    rebuilds = palette_rebuilds;
+    ami_keyboard('f');
+    assert(ami_window == &fullscreen_window && ami_map == &ami_maps[1]);
+    first = palette_rebuilds - rebuilds;
+    assert(first == (ami_depth <= 8U ? 1U : 0U));
+    ami_keyboard('f'); test_fullscreen_windowed(); assert(ami_map == &ami_maps[0]);
+    for (i = 0; i < 3U; ++i)
+    {
+        ami_keyboard('F'); assert(ami_window == &fullscreen_window);
+        ami_keyboard('F'); test_fullscreen_windowed();
+    }
+    assert(palette_rebuilds == rebuilds + first);
+    if (!indexed) return;
+    ami_keyboard('f'); assert(ami_window == &fullscreen_window);
+    memcpy(saved_pen, desktop_palette[1], 3);
+    desktop_palette[1][0] ^= 0x80U;
+    ami_keyboard('f'); test_fullscreen_windowed();
+    assert(palette_rebuilds == rebuilds + first + 1U);
+    assert(ami_map->palette[1][0] == desktop_palette[1][0]);
+    memcpy(desktop_palette[1], saved_pen, 3);
+    ami_event(ACTIVEWINDOW, 0, 0, 0);
+    assert(palette_rebuilds == rebuilds + first + 2U);
 }
 
 static int test_fullscreen(int argc, char **argv, const char *mode)
@@ -1326,7 +1881,7 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
         assert(fullscreen_loop_step == 5U && reply_count == 6U && swap_successes >= 2U);
         assert(!screen_count && !screenbuffer_count && !reply_port_count && !fullscreen_window_count);
         assert(!window_count && !library_count && !raster_count && !friend_count);
-        assert(!pending_safe && !pending_display && !blitter_busy);
+        assert(!pending_safe && !pending_display && !blitter_busy && timer_idle());
         assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
         globe_free();
         puts("PASS Amiga fullscreen event loop: delayed display/safe notifications, combined wait masks, scene changes and retained-window F");
@@ -1339,8 +1894,18 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
         assert(screen_calls == 0 && reply_port_calls == 0 && drv_fps_enabled == old_fps);
         test_render();
         ami_cleanup(); globe_free();
-        assert(!library_count && !raster_count && !window_count);
+        assert(!library_count && !raster_count && !window_count && timer_idle());
         puts("PASS Amiga fullscreen legacy: F/f retains windowed mode without newer OS calls; P/p toggles FPS");
+        return 0;
+    }
+    if (strcmp(mode, "fs-nomode") == 0)
+    {
+        ami_keyboard('f'); test_fullscreen_windowed();
+        assert(screen_calls == 0 && best_mode_calls == 1U);
+        assert(strstr(drv_get_notice(), "No compatible fullscreen display mode") != NULL);
+        test_render(); ami_cleanup(); globe_free();
+        assert(!library_count && !raster_count && !window_count && timer_idle());
+        puts("PASS Amiga fullscreen without an available mode: the Workbench window is retained");
         return 0;
     }
     /* Each failed acquisition unwinds its partial graph and preserves the
@@ -1374,6 +1939,7 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
         buffer_fail_at = 0;
         ami_keyboard('f'); test_fullscreen_windowed();
     }
+    test_fullscreen_pen_maps();
     copies = copy_calls;
     ami_keyboard('f');
     assert(ami_window == &fullscreen_window && screen_count == 1 && screenbuffer_count == 2);
@@ -1448,9 +2014,10 @@ static int test_fullscreen(int argc, char **argv, const char *mode)
     assert(notification_waits > calls);
     assert(!screen_count && !screenbuffer_count && !reply_port_count && !fullscreen_window_count);
     assert(!window_count && !library_count && !raster_count && !friend_count);
-    assert(!pending_safe && !pending_display && !blitter_busy);
+    assert(!pending_safe && !pending_display && !blitter_busy && timer_idle());
     assert(memcmp(saved_palette, desktop_palette, sizeof(saved_palette)) == 0);
     ami_cleanup(); globe_free();
+    assert((best_mode_calls != 0U) == (strcmp(mode, "fs-bestmode") == 0 || strcmp(mode, "fs-default") == 0));
     printf("PASS Amiga %s: safe fullscreen swaps, independent notifications, palette ownership, failure rollback, input and cleanup\n", mode);
     return 0;
 }
@@ -1461,14 +2028,16 @@ int main(int argc, char **argv)
     unsigned char saved_palette[sizeof(desktop_palette)];
     unsigned long reference_hash, reference_count;
     float old_rotation;
-    double time_before;
     const char *mode;
     mode = argc > 1 ? argv[1] : "ocs";
     fail_fonts = strcmp(mode, "fontfail") == 0;
     oversize_fonts = strcmp(mode, "fontlarge") == 0;
     test_fpu_integer_conversion();
+    if (strcmp(mode, "ocs") == 0) test_projection_objects();
     fail_cache_allocation = strcmp(mode, "cachefail") == 0;
-    if (strcmp(mode, "stack") == 0) { small_stack = 1; assert(atexit(test_fatal_cleanup) == 0); }
+    cli13_stack = strncmp(mode, "cli13", 5) == 0;
+    if (strcmp(mode, "stack") == 0 || strcmp(mode, "cli13stack") == 0)
+    { small_stack = 1; assert(atexit(test_fatal_cleanup) == 0); }
     font.tf_YSize = 8; font.tf_XSize = 8; font.tf_Baseline = 6;
     desktop.Width = 640; desktop.Height = 256;
     desktop.BitMap.Depth = 5;
@@ -1533,6 +2102,7 @@ int main(int argc, char **argv)
         friend_failure = strcmp(mode, "rtgbackfail") == 0;
         friend_incompatible = strcmp(mode, "rtgbadfriend") == 0;
         pubscreen_failure = strcmp(mode, "rtglockfail") == 0;
+        p96_short_storage = strcmp(mode, "p96short") == 0;
         if (strcmp(mode, "rtgbaddepth") == 0) rtg_depth = rtg_storage_depth = 12;
         if (strcmp(mode, "rtgnative") == 0)
         { rtg_libraries_native = 1; rtg_backend = rtg_depth = rtg_storage_depth = 0; }
@@ -1546,10 +2116,25 @@ int main(int argc, char **argv)
     }
 #endif
     graphics_base.LibNode.lib_Version = intuition_base.LibNode.lib_Version = (UWORD)display_version;
+    timer_version = display_version;
     colormap.Count = rtg_backend ? 256U : (UWORD)(1U << desktop.BitMap.Depth);
     desktop.ViewPort.ColorMap = &colormap;
     desktop.ViewPort.Modes = HIRES; graphics_base.DisplayFlags = PAL;
     if (strcmp(mode, "fs-ntsc") == 0) graphics_base.DisplayFlags = 0;
+    workbench_mode = ((graphics_base.DisplayFlags & PAL) ? PAL_MONITOR_ID : NTSC_MONITOR_ID) | HIRES_KEY;
+    expected_fs_mode = workbench_mode & MONITOR_ID_MASK;
+    /* A Workbench on a 31 kHz monitor keeps fullscreen on that monitor. */
+    if (strcmp(mode, "fs-multiscan") == 0 || strcmp(mode, "fs-bestmode") == 0 ||
+        strcmp(mode, "fs-default") == 0 || strcmp(mode, "fs-nomode") == 0)
+    {
+        graphics_base.ChipRevBits0 = GFXF_HR_AGNUS | GFXF_HR_DENISE;
+        workbench_mode = TEST_MULTISCAN_ID | HIRES_KEY;
+        expected_fs_mode = TEST_MULTISCAN_ID | LORES_KEY;
+        if (strcmp(mode, "fs-multiscan") != 0) test_display_mode(expected_fs_mode)->available = 0;
+        if (strcmp(mode, "fs-bestmode") == 0) best_mode = expected_fs_mode = TEST_MULTISCAN_ID | 4UL;
+        if (strcmp(mode, "fs-default") == 0) expected_fs_mode = DEFAULT_MONITOR_ID | LORES_KEY;
+        if (strcmp(mode, "fs-nomode") == 0) test_display_mode(DEFAULT_MONITOR_ID)->available = 0;
+    }
     if (strcmp(mode, "ham") == 0) desktop.ViewPort.Modes |= HAM;
     for (i = 0; i < colormap.Count; ++i)
     {
@@ -1569,7 +2154,7 @@ int main(int argc, char **argv)
     if (strcmp(mode, "ham") == 0 || strcmp(mode, "ocswide") == 0 || strcmp(mode, "denisewide") == 0 || strcmp(mode, "nativeunknown") == 0)
     {
         assert(!drv_init_window(0, 0, 0, 0)); ami_cleanup();
-        assert(library_count == 0 && window_count == 0 && raster_count == 0);
+        assert(library_count == 0 && window_count == 0 && raster_count == 0 && timer_idle());
         assert(area_calls == 0 && copy_calls == 0 && rect_calls == 0);
         puts("PASS Amiga unsupported desktop: special palette modes and unsafe OCS stride are rejected before drawing");
         return 0;
@@ -1577,17 +2162,8 @@ int main(int argc, char **argv)
     if (strcmp(mode, "oversize") == 0)
         assert(drv_init_window(INT_MAX, INT_MAX, INT_MAX, INT_MAX));
     else assert(drv_init_window(0, 0, 0, 0));
-    if (strcmp(mode, "ocs") == 0)
-    {
-        clock_micros = 100000000UL;
-        time_before = ami_time_now();
-        clock_micros = 90000000UL;
-        assert(ami_time_now() == time_before);
-        clock_micros = 91000000UL;
-        assert(fabs(ami_time_now() - time_before - 1.0) < 0.000001);
-        ami_auto_time = ami_time_now();
-        drv_reset_timing();
-    }
+    if (strcmp(mode, "ocs") == 0 || strcmp(mode, "aga") == 0) test_clock();
+    if (strcmp(mode, "ocs") == 0) test_stack_probe();
     assert(window_count == 1 && drv_win_width < (unsigned int)desktop.Width && drv_win_height < 240);
     if (fail_cache_allocation) assert(ami_project_cache == NULL);
     assert(ami_cpu == (strcmp(mode, "040") == 0 ? 68040 : (exec_base.AttnFlags & AFF_68020 ? 68020 : 68000)));
@@ -1607,11 +2183,14 @@ int main(int argc, char **argv)
     assert(strstr(osd_text, "FPS") != NULL);
     assert(strstr(strstr(osd_text, "FPS") + 3, "FPS") == NULL);
     assert(baseline_vertices + enhanced_vertices + fpu_vertices == 561);
+    assert(baseline_projects + enhanced_projects + fpu_projects == 512UL);
+    assert(baseline_finishes + enhanced_finishes == 512UL);
+    assert(ami_has_fpu ? fpu_projects != 0 : ami_cpu >= 68020 ? enhanced_projects != 0 : baseline_projects != 0);
+    assert(ami_cpu >= 68020 ? enhanced_finishes != 0 : baseline_finishes != 0);
+    test_draw_state();
     test_dither_toggle();
     reference_hash = rendered_hash; reference_count = rendered_count;
-    drv_release_optional(); assert(ami_project_cache == NULL && ami_back_planes == 0);
-    test_render(); assert(rendered_hash == reference_hash && rendered_count == reference_count);
-    ami_project_cache = malloc(sizeof(*ami_project_cache)); assert(ami_project_cache != NULL);
+    test_recovery(reference_hash, reference_count);
     /* Each resize replaces obsolete rasters and invalidates coordinates. */
     window_record.GZZWidth = 160; window_record.GZZHeight = 300;
     ami_event(NEWSIZE, 0, 0, 0); assert(drv_win_width == 160 && drv_win_height == 300);
@@ -1669,13 +2248,17 @@ int main(int argc, char **argv)
     memset(desktop_palette[0], 255, 3);
     memset(desktop_palette[colormap.Count - 1], 0, 3);
     ami_event(REFRESHWINDOW, 0, 0, 0);
-    assert(ami_black == colormap.Count - 1U && ami_white == 0U);
-    assert(ami_palette[0][0] == 255 && ami_palette[colormap.Count - 1U][0] == 0);
+    assert(ami_map->black == colormap.Count - 1U && ami_map->white == 0U);
+    assert(ami_map->palette[0][0] == 255 && ami_map->palette[colormap.Count - 1U][0] == 0);
     assert(desktop_palette[0][0] == 255 && desktop_palette[colormap.Count - 1U][0] == 0);
     memcpy(desktop_palette, saved_palette, saved_palette_size);
     ami_event(ACTIVEWINDOW, 0, 0, 0);
-    assert(ami_black == 0U && ami_white == colormap.Count - 1U);
+    assert(ami_map->black == 0U && ami_map->white == colormap.Count - 1U);
     assert(memcmp(saved_palette, desktop_palette, saved_palette_size) == 0);
+#ifdef DRV_QUAD_TRIM
+    if (strcmp(mode, "ocs") == 0 || strcmp(mode, "aga") == 0 || strcmp(mode, "fpu") == 0)
+        test_quad_trim(mode);
+#endif
     messages[0].Class = VANILLAKEY; messages[0].Code = 'p';
     messages[1].Class = MOUSEBUTTONS; messages[1].Code = SELECTDOWN;
     messages[2].Class = MOUSEMOVE; messages[2].MouseX = 20; messages[2].MouseY = 10;
@@ -1683,6 +2266,7 @@ int main(int argc, char **argv)
     messages[4].Class = CLOSEWINDOW; message_count = 5;
     drv_loop();
     assert(reply_count == 5 && library_count == 0 && window_count == 0 && raster_count == 0);
+    assert(timer_idle());
     assert(!ami_running && !ami_ready && ami_project_cache == NULL);
     assert(font_opens == font_closes);
     if (!fail_fonts && !oversize_fonts) assert(font_draws[0] > 0U);

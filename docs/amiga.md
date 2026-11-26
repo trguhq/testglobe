@@ -10,7 +10,8 @@ The driver opens a resizable Workbench window on a 68000 or later CPU.
 - **Native chipset:** OCS, ECS, or AGA on AmigaOS 1.3 or later, with planar screens of
   1–8 bitplanes.
 - **RTG (optional):** CyberGraphX or Picasso96 on AmigaOS 3.0 or later, with 8-bit
-  indexed or 15/16/24/32-bit truecolor desktops.
+  indexed or 15/16/24/32-bit truecolor desktops. Storage size comes from each
+  library's bytes-per-pixel attribute.
 - **Fullscreen (optional):** AmigaOS 3.0 or later and a display mode that supports
   synchronized screen buffers.
 
@@ -42,7 +43,10 @@ Stack 32768
 testglobe-amiga
 ```
 
-The driver checks the available stack before opening its window. Override `AMI_CC`,
+The driver checks the available stack before opening its window. When the task's
+stack bounds contain the running program, it measures the space left below its own
+frame. The 1.3 CLI runs commands on a separate stack without updating those bounds, so
+there the CLI's configured `Stack` size is checked instead. Override `AMI_CC`,
 `AMI_CONFIG`, `AMI_CFLAGS`, `AMI_020FLAGS`, `AMI_FPUFLAGS`, `AMI_CPPFLAGS`,
 `AMI_LDFLAGS`, `AMI_LIBS`, or `AMI_PYTHON` for another toolchain. Keep the baseline
 objects at `-cpu=68000 -fpu=0`; `-rmcfg-amiga-softfloat` and `-lmsoft` select IEEE
@@ -57,7 +61,11 @@ to omit RTG support; changing this setting recompiles the driver.
 The build packs all 13 canonical `data/*.bin` chunks into an executable `HUNK_DEBUG`
 record, so no map files are needed on the Amiga. Keep the packed executable intact:
 stripping its debug records removes the maps. Copy it as binary and keep its
-executable protection bit.
+executable protection bit. The packer accepts only records that Kickstart 1.3's
+`LoadSeg` understands; it rejects `HUNK_RELOC32SHORT` (1020) and `HUNK_DREL32`
+(1015), which need Kickstart 2.0, so link with ordinary 32-bit relocations. Whether
+`LoadSeg` reads or seeks past the 170.5 KiB map record when loading from floppy has
+not been measured.
 
 The program reads its own executable through the Workbench launch lock or the CLI
 program path, loading only the selected map in reads of at most 16 KiB. Later
@@ -75,6 +83,17 @@ Picasso96's `p96RectFill`, which the RTG driver can accelerate. Collapsed pole p
 become triangles. Native `Text` draws the wrapped OSD, including the chipset or RTG
 backend, CPU and math, color depth, and buffering.
 
+An optional build, `make amiga AMI_CPPFLAGS=-DAMI_QUAD_TRIM=1` after `make
+clean-amiga`, leaves out longitude runs of each quad packet that face away from the
+camera, using the latitude-band ranges that the GL drivers' culling also uses.
+Integer rounding can turn a back face that projects thinner than about a pixel into a
+drawn sliver, so to keep the drawn polygons identical only cells at least 4 pixels
+thick are omitted, and only when the whole globe fits inside the window. In host
+measurements this skipped 8–10% of the projections at key 1, about 1% at key 2, and
+none at keys 3–5, while each trimmed latitude band costs a software-float `acos` per
+frame. It is therefore off by default; a mesh and window with no trimmable band costs
+no trigonometry.
+
 ### Palette and dithering
 
 On indexed Workbench screens, the driver reads the desktop palette and maps Earth
@@ -83,7 +102,11 @@ two-pen patterns approximate missing colors by comparing their mixed RGB values.
 Palettes of up to 16 entries use the closest pair and a 1/16 mixture; larger palettes
 use two bounded searches to improve the mixture without a costly full pair search.
 Exact matches stay solid. Mappings are cached until the desktop palette changes, and
-precomputed patterns avoid per-polygon work.
+precomputed patterns avoid per-polygon work. Workbench and fullscreen keep separate
+mappings, each rebuilt only when the colors read back from its screen change, so
+switching with `F` does not repeat the search. A pen, draw mode, or pattern is set only
+when it differs from the previous polygon's, and `AreaEnd` reinitializes the vector
+table for the next polygon.
 
 `D` toggles dithering, which starts enabled; with it off, each polygon uses its
 nearest solid palette color. Both mappings stay cached, so toggling neither rebuilds
@@ -105,10 +128,15 @@ display-compatible bitmap from `AllocBitMap`. Indexed area fills also need a Chi
 scratch raster, which truecolor RTG fills do not; geometry and other working data use
 ordinary memory. If the back buffer cannot be allocated, the driver draws directly; if
 the indexed scratch raster is missing, filled rendering pauses while controls stay
-available to retry. Buffering hides each polygon's construction but does not
-guarantee tear-free presentation. Native input handles dragging, keys, close,
-activation, refresh, and resizing. The projection follows the client area and
-corrects the display mode's pixel proportions; RTG uses square pixels.
+available to retry. When memory recovery releases the back buffer and projection
+cache, they are reacquired at the next key press, resize, or frame after the scene
+changes, with at most one attempt per scene revision. Buffering hides each polygon's
+construction but does not guarantee tear-free presentation. The window copy does not
+wait for the blitter: `graphics.library` and the RTG libraries order later blits
+behind it, and the driver waits only before freeing a bitmap or swapping fullscreen
+buffers. Native input handles dragging, keys, close, activation, refresh, and
+resizing. The projection follows the client area and corrects the display mode's pixel
+proportions; RTG uses square pixels.
 
 OCS, and hardware that older OS versions cannot identify, use conservative window
 limits of 992 × 1024 pixels and need a Workbench bitmap stride of at most 128 bytes
@@ -131,8 +159,13 @@ displayed frame. A slow render or blocked swap leaves the previous complete fram
 visible. The OS keeps running, including Intuition input and reads of Earth data from
 the executable.
 
-Native fullscreen uses non-interlaced low resolution: 320 × 200 for NTSC or 320 × 256
-for PAL, with 32 colors on OCS/ECS and 256 on AGA. AGA retries with 32 colors if the
+Native fullscreen uses low resolution on the Workbench screen's monitor, so a 31 kHz
+monitor driver from `DEVS:Monitors` keeps a visible mode; on PAL or NTSC this is 320 ×
+256 or 320 × 200. If that monitor has no available low-resolution mode, `BestModeIDA`
+picks the nearest nominal 320 × 200/256 mode on it without HAM, extra-half-brite, or
+dual playfield, and then the default monitor's low resolution is tried. The screen
+takes its size from the mode's nominal `DimensionInfo` and uses 32 colors on OCS/ECS
+or 256 on AGA, within the mode's maximum depth. AGA retries with 32 colors if the
 larger buffers cannot be allocated. Its private palette is based on the Earth colors,
 with pointer and OSD colors accounted for, and Workbench's palette is preserved. RTG
 fullscreen stays on the current graphics backend and needs compatible screen buffers.
@@ -154,18 +187,29 @@ ordinary data pointers; the project's `SEG68` option is specific to the Macintos
 memory model. Baseline code uses 68000 instructions and IEEE software floating point,
 and Exec's CPU/FPU flags select separately compiled enhanced math routines:
 
-| Available hardware | Transform path |
-| --- | --- |
-| 68000/68010 | Shared fixed point |
-| 68020 or later without FPU | 68020 integer transform |
-| 68020 or later with a usable 68881/68882 or integrated FPU | Shared hardware floating point |
+| Available hardware | Transform and projection | Clipping and back-face rejection |
+| --- | --- | --- |
+| 68000/68010 | Shared fixed point | Shared fixed point |
+| 68020 or later without FPU | 68020 integer object | 68020 integer object |
+| 68020 or later with a usable 68881/68882 or integrated FPU | Shared hardware floating point | 68020 integer object |
 
-The enhanced integer object uses `-cpu=68020`, and the FPU object
-`-cpu=68020 -fpu=68881`; all other objects keep the baseline options.
+The enhanced integer object compiles the same fixed-point transform, projection,
+clipping, and back-face code from `soft3d.c` with `-cpu=68020`, so results match the
+baseline exactly; the FPU object uses `-cpu=68020 -fpu=68881`, and all other objects
+keep the baseline options. The fixed-point projection cache applies the display's
+pixel aspect once per cached vertex; the FPU path scales each projected corner, with
+the aspect's overflow bounds precomputed when the display mode changes.
 Pointer-and-integer interfaces preserve the baseline calling boundary. The FPU helper
 uses only basic arithmetic and bounded IEEE conversion, avoiding transcendental and
 integer-conversion opcodes that later FPUs lack. Mesh construction and shared
 bookkeeping still use the baseline software floating-point runtime.
+
+Animation and FPS timing read `timer.device`: the free-running E-clock through
+`ReadEClock` on AmigaOS 2.0 and later, or `TR_GETSYSTIME` through `DoIO` on 1.3.
+Intuition's `CurrentTime`, which advances only with input and vertical-blank updates,
+remains the fallback if the device cannot be opened. The device is opened at startup
+and closed at exit; the [PiStorm3D target](opengl.md#amiga-opengl) shares the same
+clock helper, `src/ami_time.c`.
 
 ## Validation
 

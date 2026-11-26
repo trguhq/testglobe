@@ -571,7 +571,7 @@ def main():
                          "-I" + str(ROOT / "tests/mgl_shim"),
                          "-I" + str(ROOT / "tests/ami_shim")]
             check_production_units(cc, common, amiga_ogl, output, "Amiga_OpenGL",
-                ("drv.c", "drv_ogl.c", "ogl_ami.c", "err.c", "globe.c", "main.c",
+                ("drv.c", "drv_ogl.c", "ogl_ami.c", "ami_time.c", "err.c", "globe.c", "main.c",
                  "texture.c", "texsoft.c"))
             run(cc + common + amiga_ogl + [str(ROOT / "tests/amiga_ogl.c"),
                 str(ROOT / "src/drv.c"), str(ROOT / "src/globe.c"),
@@ -581,7 +581,7 @@ def main():
             run([str(output / "amiga_ogl")],
                 expected_stderr="OpenGL texture: Insufficient memory for texture; drawing flat colors\n")
             run(cc + common + amiga_ogl + [str(ROOT / "tests/ogl_ami.c"),
-                "-lm", "-o", str(output / "ogl_ami")])
+                str(ROOT / "src/ami_time.c"), "-lm", "-o", str(output / "ogl_ami")])
             for mode in ("normal", "fontfail", "fontlarge", "nomipmap", "rgb24-in32", "native", "windowfail", "lockfail", "contextfail",
                          "bitmapfail", "wrong16", "wrong24", "unknownbitmap", "wrongformat",
                          "rounded", "shortbitmap", "hugebitmap"):
@@ -593,33 +593,44 @@ def main():
         if args.ami_contract:
             ami = ["-DFLAT", "-DDRV_AMI", "-DAMI_RTG=1", "-I" + str(ROOT / "tests/ami_shim")]
             check_production_units(cc, common, ami, output, "Amiga",
-                ("drv.c", "drv_ami.c", "ami_data.c", "err.c", "globe.c", "main.c",
+                ("drv.c", "drv_ami.c", "ami_time.c", "ami_data.c", "err.c", "globe.c", "main.c",
                  "soft3d.c", "soft3fp.c"))
             enhanced = output / "ami_020.o"
             run(cc + common + ami + ["-DSOFT3D_TRANSFORM_020", "-c",
                 str(ROOT / "src/soft3d.c"), "-o", str(enhanced)])
-            run(cc + common + ami + [str(ROOT / "tests/amiga.c"),
+            # The RTG recorder also enables optional quad trimming; the native-only
+            # build below keeps the default, untrimmed traversal.
+            trim_ami = ami + ["-DAMI_QUAD_TRIM=1"]
+            check_production_units(cc, common, trim_ami, output, "Amiga_trim",
+                ("drv_ami.c", "globe.c"))
+            run(cc + common + trim_ami + [str(ROOT / "tests/amiga.c"),
                 str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
-                str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga")])
+                str(ROOT / "src/err.c"), str(ROOT / "src/ami_time.c"), str(enhanced),
+                "-lm", "-o", str(output / "amiga")])
             for mode in ("ocs", "fontfail", "fontlarge", "mono", "two", "three", "four", "ecs", "aga", "aga64", "aga128", "020", "fpu", "040",
                          "falsefpu", "aspect", "backfail", "scratchfail", "ham", "oversize", "cachefail", "ocswide", "denisewide", "ecswide",
                          "cgx8", "cgx15", "cgx16", "cgx24", "cgx32", "p968", "p9615", "p9616", "p9624", "p9632",
-                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop", "fs-cgx8", "fs-cgx15", "fs-cgx16", "fs-cgx24", "fs-cgx32",
+                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop",
+                         "fs-multiscan", "fs-bestmode", "fs-default", "fs-nomode", "fs-cgx8", "fs-cgx15", "fs-cgx16", "fs-cgx24", "fs-cgx32",
                          "fs-p968", "fs-p9615", "fs-p9616", "fs-p9624", "fs-p9632",
-                         "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative"):
+                         "rtgboth", "p96both", "rtgbackfail", "rtgbadfriend", "rtgunknown", "rtgbaddepth", "rtglockfail", "rtgnative",
+                         "p96short", "cli13"):
                 run([str(output / "amiga"), mode])
-            run([str(output / "amiga"), "stack"], expected_returncode=1,
-                required_output="PASS Amiga stack guard:")
+            for mode in ("stack", "cli13stack"):
+                run([str(output / "amiga"), mode], expected_returncode=1,
+                    required_output="PASS Amiga stack guard:")
             native_ami = ["-DAMI_RTG=0" if option == "-DAMI_RTG=1" else option for option in ami]
             check_production_units(cc, common, native_ami, output, "Amiga_native",
                 ("drv_ami.c",))
             run(cc + common + native_ami + [str(ROOT / "tests/amiga.c"),
                 str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"),
                 str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
-                str(ROOT / "src/err.c"), str(enhanced), "-lm", "-o", str(output / "amiga_native")])
+                str(ROOT / "src/err.c"), str(ROOT / "src/ami_time.c"), str(enhanced),
+                "-lm", "-o", str(output / "amiga_native")])
             for mode in ("ocs", "fontfail", "fontlarge", "mono", "two", "three", "four", "aga", "aga64", "aga128", "backfail", "ocswide", "nativeunknown",
-                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop"):
+                         "fs-old", "fs-ocs", "fs-aga", "fs-ntsc", "fs-pointer", "fs-loop",
+                         "fs-multiscan", "fs-bestmode", "fs-default", "fs-nomode"):
                 run([str(output / "amiga_native"), mode])
             # A real packed Hunk file exercises the production DOS resource reader.
             source = output / "amiga-input.hunk"

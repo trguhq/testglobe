@@ -61,8 +61,8 @@ AOGL_DEFINES = $(OGL_DEFINES) -DOGL_AMIGA -DNO_SINF
 AOGL_LDFLAGS =
 AOGL_LIBS = -lm881 -lamiga
 AOGL_PYTHON = python3
-AOGL_OBJECTS = ao_drv.o ao_ogl.o ao_ami.o ao_err.o ao_globe.o ao_main.o ao_tex.o ao_soft.o ao_data.o
-AOGL_HEADERS = $(OGL_HEADERS) $(SRC)/ogl_ami.h
+AOGL_OBJECTS = ao_drv.o ao_ogl.o ao_ami.o ao_time.o ao_err.o ao_globe.o ao_main.o ao_tex.o ao_soft.o ao_data.o
+AOGL_HEADERS = $(OGL_HEADERS) $(SRC)/ogl_ami.h $(SRC)/ami_time.h
 AOGL_SDK_HEADERS = $(MINIGL_ROOT)/libraryroot/include/proto/minigl.h \
     $(MINIGL_ROOT)/libraryroot/include/libraries/minigl.h \
     $(MINIGL_ROOT)/libraryroot/include/libraries/minigl_dispatch.h \
@@ -216,11 +216,11 @@ AMI_DEFINES = -DFLAT -DDRV_AMI -DDRV -DNO_SINF -DAMI_RTG=$(AMI_RTG)
 AMI_LDFLAGS =
 AMI_LIBS = -lmsoft -lamiga
 AMI_PYTHON = python3
-AMI_OBJECTS = am_drv.o am_ami.o am_data.o am_err.o am_globe.o am_main.o am_soft.o am_020.o am_float.o
+AMI_OBJECTS = am_drv.o am_ami.o am_time.o am_data.o am_err.o am_globe.o am_main.o am_soft.o am_020.o am_float.o
 AMI_HEADERS = $(SRC)/testglob.h $(SRC)/types.h $(SRC)/drv.h \
     $(SRC)/drv_ext.h $(SRC)/drv_ami.h $(SRC)/err_ext.h \
     $(SRC)/globe.h $(SRC)/glob_ext.h $(SRC)/e_ext.h $(SRC)/e_cmap.h \
-    $(SRC)/earthres.h $(SRC)/soft3d.h
+    $(SRC)/earthres.h $(SRC)/soft3d.h $(SRC)/ami_time.h
 
 # Binary maps are build inputs only. Keep the helper independent of any SDK.
 # A checked-in src/e_saved.c is available for compilers used outside make.
@@ -388,6 +388,9 @@ ao_ogl.o: $(SRC)/drv_ogl.c $(AOGL_HEADERS) $(AOGL_SDK_HEADERS)
 
 ao_ami.o: $(SRC)/ogl_ami.c $(AOGL_HEADERS) $(AOGL_SDK_HEADERS)
 	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/ogl_ami.c -o ao_ami.o
+
+ao_time.o: $(SRC)/ami_time.c $(AOGL_HEADERS)
+	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/ami_time.c -o ao_time.o
 
 ao_err.o: $(SRC)/err.c $(AOGL_HEADERS)
 	$(AOGL_CC) $(AOGL_CONFIG) $(AOGL_CFLAGS) $(AOGL_CPPFLAGS) $(AOGL_INCLUDES) $(AOGL_DEFINES) -I$(SRC) -c $(SRC)/err.c -o ao_err.o
@@ -710,6 +713,9 @@ am_drv.o: $(SRC)/drv.c $(AMI_HEADERS)
 am_ami.o: $(SRC)/drv_ami.c $(AMI_HEADERS) FORCE
 	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/drv_ami.c -o am_ami.o
 
+am_time.o: $(SRC)/ami_time.c $(AMI_HEADERS)
+	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/ami_time.c -o am_time.o
+
 am_data.o: $(SRC)/ami_data.c $(AMI_HEADERS)
 	$(AMI_CC) $(AMI_CONFIG) $(AMI_CFLAGS) $(AMI_CPPFLAGS) $(AMI_DEFINES) -I$(SRC) -c $(SRC)/ami_data.c -o am_data.o
 
@@ -821,6 +827,7 @@ clean-amiga-opengl:
 	-$(RM) ao_drv.o
 	-$(RM) ao_ogl.o
 	-$(RM) ao_ami.o
+	-$(RM) ao_time.o
 	-$(RM) ao_err.o
 	-$(RM) ao_globe.o
 	-$(RM) ao_main.o
@@ -933,6 +940,7 @@ clean-gdi:
 clean-amiga:
 	-$(RM) am_drv.o
 	-$(RM) am_ami.o
+	-$(RM) am_time.o
 	-$(RM) am_data.o
 	-$(RM) am_err.o
 	-$(RM) am_globe.o

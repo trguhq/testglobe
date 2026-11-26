@@ -25,13 +25,26 @@ struct WBArg { BPTR wa_Lock; STRPTR wa_Name; };
 struct WBStartup { LONG sm_NumArgs; struct WBArg *sm_ArgList; };
 struct Task { APTR tc_SPLower, tc_SPUpper; };
 struct Process { struct Task pr_Task; BPTR pr_CLI; };
-struct CommandLineInterface { BPTR cli_CommandName, cli_CommandDir; };
+struct CommandLineInterface { BPTR cli_CommandName, cli_CommandDir; LONG cli_DefaultStack; };
 
 struct ExecBase { struct Library LibNode; UWORD AttnFlags; };
 struct GfxBase { struct Library LibNode; UBYTE ChipRevBits0; UWORD DisplayFlags; };
 struct IntuitionBase { struct Library LibNode; };
+struct Device { struct Library dd_Library; };
+struct Unit { int unused; };
+struct EClockVal { ULONG ev_hi, ev_lo; };
 struct Message { struct Node mn_Node; struct MsgPort *mn_ReplyPort; UWORD mn_Length; };
 struct MsgPort { struct Node mp_Node; UBYTE mp_Flags, mp_SigBit; APTR mp_SigTask; };
+struct IORequest {
+    struct Message io_Message;
+    struct Device *io_Device;
+    struct Unit *io_Unit;
+    UWORD io_Command;
+    UBYTE io_Flags;
+    BYTE io_Error;
+};
+/* The NDK names this member's type struct timeval, which POSIX hosts own. */
+struct timerequest { struct IORequest tr_node; struct { ULONG tv_secs, tv_micro; } tr_time; };
 struct TextFont { UWORD tf_YSize; UBYTE tf_Style, tf_Flags; UWORD tf_XSize, tf_Baseline; };
 struct TextAttr { STRPTR ta_Name; UWORD ta_YSize; UBYTE ta_Style, ta_Flags; };
 struct BitMap { UWORD BytesPerRow, Rows; UBYTE Flags, Depth; UWORD pad; PLANEPTR Planes[8]; };
@@ -93,6 +106,12 @@ struct NewWindow {
 };
 struct Point { WORD x, y; };
 struct DisplayInfo { struct Point Resolution; };
+struct Rectangle { WORD MinX, MinY, MaxX, MaxY; };
+struct DimensionInfo {
+    UWORD MaxDepth;
+    UWORD MinRasterWidth, MinRasterHeight, MaxRasterWidth, MaxRasterHeight;
+    struct Rectangle Nominal, MaxOScan, VideoOScan, TxtOScan, StdOScan;
+};
 struct IntuiText { UBYTE FrontPen, BackPen, DrawMode; WORD LeftEdge, TopEdge; struct TextAttr *ITextFont; UBYTE *IText; struct IntuiText *NextText; };
 struct IntuiMessage {
     struct Message ExecMessage;
@@ -168,6 +187,10 @@ struct IntuiMessage {
 #define LACE 0x0004U
 #define INVALID_ID 0xffffffffUL
 #define DTAG_DISP 0x80000000UL
+#define DTAG_DIMS 0x80001000UL
+#define DIPF_IS_DUALPF 0x00000002UL
+#define DIPF_IS_HAM 0x00000008UL
+#define DIPF_IS_EXTRAHALFBRITE 0x00001000UL
 #define PAL 0x0004U
 #define GFXF_AA_ALICE 4U
 #define GFXF_HR_AGNUS 1U
@@ -198,12 +221,25 @@ struct IntuiMessage {
 #define SA_Exclusive (SA_Dummy + 31UL)
 #define SB_SCREEN_BITMAP 1UL
 #define SB_COPY_BITMAP 2UL
+#define MONITOR_ID_MASK 0xffff1000UL
+#define DEFAULT_MONITOR_ID 0x00000000UL
 #define NTSC_MONITOR_ID 0x00011000UL
 #define PAL_MONITOR_ID 0x00021000UL
 #define LORES_KEY 0UL
+#define HIRES_KEY 0x8000UL
+#define BIDTAG_DIPFMustNotHave 0x80000002UL
+#define BIDTAG_NominalWidth 0x80000004UL
+#define BIDTAG_NominalHeight 0x80000005UL
+#define BIDTAG_Depth 0x80000008UL
+#define BIDTAG_MonitorID 0x80000009UL
 #define VTAG_SPEVEN_BASE_GET 0x80000028UL
+#define TIMERNAME "timer.device"
+#define UNIT_MICROHZ 0UL
+#define UNIT_VBLANK 1UL
+#define TR_GETSYSTIME 10U
 
 extern struct ExecBase *SysBase;
+extern struct IntuitionBase *IntuitionBase;
 struct Library *OpenLibrary(CONST_STRPTR, ULONG);
 void CloseLibrary(struct Library *);
 struct Task *FindTask(CONST_STRPTR);
@@ -214,6 +250,14 @@ void ReplyMsg(struct Message *);
 ULONG Wait(ULONG);
 struct MsgPort *CreateMsgPort(void);
 void DeleteMsgPort(struct MsgPort *);
+BYTE OpenDevice(CONST_STRPTR, ULONG, struct IORequest *, ULONG);
+void CloseDevice(struct IORequest *);
+BYTE DoIO(struct IORequest *);
+/* amiga.lib */
+struct MsgPort *CreatePort(CONST_STRPTR, LONG);
+void DeletePort(struct MsgPort *);
+struct IORequest *CreateExtIO(struct MsgPort *, LONG);
+void DeleteExtIO(struct IORequest *);
 void CurrentTime(ULONG *, ULONG *);
 LONG GetScreenData(APTR, ULONG, ULONG, struct Screen *);
 struct Screen *LockPubScreen(CONST_STRPTR);
@@ -261,6 +305,8 @@ struct TextFont *OpenFont(struct TextAttr *);
 void CloseFont(struct TextFont *);
 ULONG GetVPModeID(struct ViewPort *);
 ULONG GetDisplayInfoData(APTR, UBYTE *, ULONG, ULONG, ULONG);
+ULONG ModeNotAvailable(ULONG);
+ULONG BestModeIDA(const struct TagItem *);
 BOOL AutoRequest(struct Window *, struct IntuiText *, struct IntuiText *, struct IntuiText *, ULONG, ULONG, WORD, WORD);
 
 BPTR Open(STRPTR, LONG);
