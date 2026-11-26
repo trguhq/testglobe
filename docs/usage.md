@@ -31,9 +31,11 @@ the sample. The running average updates after each completed frame once the cloc
 advances, over about one second or 60 frames. A frame lasting a second or longer
 reports its own rate immediately.
 
-Unix uses a monotonic clock where the platform provides one. Older Unix and Amiga
-clocks accumulate elapsed time and rebase when the system clock moves backward, so
-adjusting the clock does not stall rotation or FPS.
+Unix uses a monotonic clock where the platform provides one. Both Amiga drivers read
+`timer.device`: the free-running E-clock on AmigaOS 2.0 and later, or system time on
+1.3, with Intuition's coarser `CurrentTime` as a fallback. Older Unix and the Amiga
+system-time clocks accumulate elapsed time and rebase when the clock moves backward,
+so adjusting it does not stall rotation or FPS.
 
 ## Status messages
 
@@ -117,10 +119,10 @@ When a new mesh cannot be allocated, optional rendering caches are released befo
 retrying. The application can then restore the previous resolution or choose a
 smaller one; startup uses the same fallback. The OSD shows the result and any
 recovery notice, including the failure category. If no scene can be built, the window
-stays responsive so another resolution can be selected. GDI and QuickDraw bring
-their released back buffers, projection caches, masks, palettes, and patterns back at
-most once per scene revision, after the next successful resolution change; a failed
-attempt waits for the following revision. Bad data and invalid requests are
+stays responsive so another resolution can be selected. GDI, QuickDraw, and Amiga
+bring their released back buffers, projection caches, masks, palettes, and patterns
+back at most once per scene revision, after the next successful resolution change;
+a failed attempt waits for the following revision. Bad data and invalid requests are
 reported separately from insufficient memory. OpenGL, IRIS GL, and XGL
 show a failed-frame diagnostic even with the OSD off, and stop automatic redraws until
 input requests another attempt.

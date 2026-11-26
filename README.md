@@ -172,7 +172,9 @@ test runner.
   replies, and row-reusing software transforms; TIGA row reuse in the TI module; GDI
   partial updates and Windows 3.0 marking; QuickDraw memory reserve, palette policy,
   and Apple events; IRIS GL buffering, signal handling, and affine native texturing;
-  a GLUT adapter and fewer OpenGL round trips; recovery of optional resources; and
+  a GLUT adapter and fewer OpenGL round trips; Amiga `timer.device` clocks, a
+  Kickstart 1.3 CLI stack check, separate Workbench and fullscreen pen maps, and
+  fullscreen modes from the Workbench monitor; recovery of optional resources; and
   faster mesh construction, palette matching, and software texturing.
 
 ### [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)

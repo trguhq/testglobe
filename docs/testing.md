@@ -68,7 +68,7 @@ python3 tests/cross_binary.py \
 ```
 
 Each argument is optional. The inspector checks DOS MZ loading and relocation
-bounds, Windows 3.1 NE segments/imports and on-demand resources, Macintosh MacBinary
+bounds, Windows 3.0 NE segments/imports and on-demand resources, Macintosh MacBinary
 and resource-fork structure, all required Earth-map bytes, and the embedded TIGA
 module's bounds and CRC. It does not execute graphics calls or establish CPU/ABI
 compatibility. The GDI build also verifies its NE format and Earth resources before
@@ -204,7 +204,9 @@ FPS checks cover prompt subsecond samples, bounded averaging windows, coarse clo
 ticks, and slow-frame, reset, and failure transitions.
 Elapsed-clock checks include backward adjustments without a long freeze. Quad stream
 helpers validate consecutive successful packets and explicit resets; strip-range
-checks preserve winding independently of native color/UV packing.
+checks preserve winding independently of native color/UV packing. The shared texture
+size search must evict optional caches once, halve to 32 pixels, honor a capped
+start, stop on non-memory failures, and announce only reduced sizes.
 Configuration checks cover platform and architecture defaults, conflicting settings,
 Amiga's FLAT/no-texture configuration, and explicit errors for unsupported legacy drivers.
 

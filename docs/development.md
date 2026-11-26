@@ -15,7 +15,7 @@ primitive and capabilities. Keep those responsibilities separate.
 | TIGA | `SEG86`, `DRV_TGA` | `QUAD` | `DRV_QUAD_BATCH` |
 | GDI | `SEG86`, `DRV_GDI` | `QUAD` | `DRV_QUAD_BATCH` |
 | QuickDraw | `SEG68`, `DRV_QD` | `QUAD` | `DRV_QUAD_BATCH` |
-| Amiga | `FLAT`, `DRV_AMI` | `QUAD` | `DRV_QUAD_BATCH` |
+| Amiga | `FLAT`, `DRV_AMI` | `QUAD` | `DRV_QUAD_BATCH`; optional `DRV_QUAD_TRIM` |
 
 - All native application targets also define `DRV`; Microsoft C builds use `-AH`. The
   GDI header supplies `GDI` for Windows-specific integration.
@@ -37,7 +37,7 @@ primitive and capabilities. Keep those responsibilities separate.
 | `src/globe.c` | Scene ownership, recoverable mesh construction, and the plural traversals `globe_draw_tris()`, `globe_draw_tristrips()`, `globe_draw_quads()`, `globe_draw_quadbatches()`, and OpenGL pole-cap traversal. |
 | `src/drv_*.c` | Singular native callbacks such as `drv_draw_tri_*`, `drv_draw_tristrip_*`, `drv_draw_quad_*`, and `drv_draw_quadbatch_*`, with color/RGB/UV variants grouped by primitive. |
 | `src/drv.c` | Shared allocation and clock services, input, rotation, FPS/OSD, palette matching, geometry-packet helpers, and Earth-resource traversal. |
-| Driver-private helpers | Backend-prefixed windowing, events, timing, transforms and caches, and drawing state. `src/ogl_glut.c`/`.h` adapt the OpenGL driver to GLUT; `src/ogl_ami.c`/`.h` integrate it with MiniGL and the Amiga. |
+| Driver-private helpers | Backend-prefixed windowing, events, timing, transforms and caches, and drawing state. `src/ogl_glut.c`/`.h` adapt the OpenGL driver to GLUT; `src/ogl_ami.c`/`.h` integrate it with MiniGL and the Amiga; `src/ami_time.c`/`.h` supply both Amiga drivers' `timer.device` clock. |
 | `src/drv_cpu.c` / `src/tga_gsp.c` | Shared Matrox/TIGA DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
 | `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader, and both use the format and MZ/CRC-32 checks in `tga_rlm.h`. |
 | `src/cross*.py` | Linux-hosted build orchestration for the DOS, Win16, and QuickDraw drivers. |
@@ -150,15 +150,19 @@ Back-face rejection uses the complete rounded polygon, preserving silhouette and
 collapsed-pole behavior, and clearly rejected polygons skip later processing.
 
 The GDI and Amiga projection caches are optional and bounded to one packet; without
-them, the uncached path is used. After `drv_release_optional()`, GDI and QuickDraw
-reacquire their optional resources at most once per scene revision, outside
-rendering. QuickDraw, TIGA, and Matrox use bounded static packet storage. Frame, pose,
-viewport, and interrupted-stream changes invalidate reuse. QuickDraw's
-`qd_fpu.c`/`qd_math.h` boundary and Amiga's runtime CPU/FPU dispatch keep hardware
-floating-point code apart from baseline 68000 execution. Resource-backed indices load
-directly into their final storage without an extra full-map allocation. TIGA's host
-path selects the shared integer or floating-point helpers; its TI module uses the same
-fixed-point rounding and validates each command's version and bounds.
+them, the uncached path is used. After `drv_release_optional()`, GDI, QuickDraw, and
+Amiga reacquire their optional resources at most once per scene revision, outside
+rendering. Amiga's cache also applies the display's pixel aspect once per vertex
+(`soft3d_project_cache_begin_aspect()`); the plain `soft3d_project_cache_begin()`
+records a 1/1 ratio for the other drivers. QuickDraw, TIGA, and Matrox use bounded
+static packet storage. Frame, pose, viewport, and interrupted-stream changes
+invalidate reuse. QuickDraw's `qd_fpu.c`/`qd_math.h` boundary and Amiga's runtime
+CPU/FPU dispatch keep hardware floating-point code apart from baseline 68000
+execution; Amiga's separate 68020 object also carries the integer projection,
+clipping, and back-face code. Resource-backed indices load directly into their final
+storage without an extra full-map allocation. TIGA's host path selects the shared
+integer or floating-point helpers; its TI module uses the same fixed-point rounding
+and validates each command's version and bounds.
 
 OpenGL and IRIS GL share `src/texsoft.c`/`.h` for software texturing: homogeneous
 clipping, depth testing and culling, perspective-correct UVs, repeat sampling, and
