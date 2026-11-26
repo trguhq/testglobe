@@ -687,36 +687,20 @@ failed:
     return result;
 }
 
+static Drv_result xgl_texture_try(unsigned int size)
+{
+    xgl_texture_begin();
+    return xgl_texture_load_size(size);
+}
+
 static int xgl_texture_load(void)
 {
-    unsigned int size;
-    int released;
     Drv_result result;
     if (drv_texture_loaded) return TRUE;
-    size = TEXTURE_DEFAULT_SIZE;
-    released = FALSE;
-    for (;;)
-    {
-        xgl_texture_begin();
-        result = xgl_texture_load_size(size);
-        if (result == DRV_OK)
-        {
-            if (size != TEXTURE_DEFAULT_SIZE)
-                drv_notice("XGL uses a smaller texture");
-            return TRUE;
-        }
-        if (result == DRV_BAD_DATA || result == DRV_BAD_INPUT)
-            error("Invalid XGL texture Earth data");
-        if (result != DRV_NO_MEMORY) break;
-        if (!released)
-        {
-            drv_release_optional();
-            released = TRUE;
-            continue;
-        }
-        if (size <= 32U) break;
-        size /= 2U;
-    }
+    result = drv_texture_fit(TEXTURE_DEFAULT_SIZE, xgl_texture_try);
+    if (result == DRV_OK) return TRUE;
+    if (result == DRV_BAD_DATA || result == DRV_BAD_INPUT)
+        error("Invalid XGL texture Earth data");
     xgl_texture_failure(xgl_texture_reason != NULL ? xgl_texture_reason :
                          "Cannot allocate XGL texture");
     return FALSE;

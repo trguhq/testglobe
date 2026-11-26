@@ -168,6 +168,38 @@ const char *drv_result_text(Drv_result result)
     }
 }
 
+#ifdef TEXTURE
+/* Try texture widths from start down to 32 pixels. A memory shortage first
+ * evicts optional caches and retries the same width, then halves it; any
+ * other result ends the search. A reduced width is announced. */
+Drv_result drv_texture_fit(unsigned int start, Drv_texture_attempt attempt)
+{
+    Drv_result result;
+    unsigned int size;
+    int released;
+    char message[64];
+    released = FALSE;
+    result = DRV_NO_MEMORY;
+    for (size = start; size >= 32U; size /= 2U)
+    {
+        result = attempt(size);
+        if (result == DRV_NO_MEMORY && !released)
+        {
+            drv_release_optional();
+            released = TRUE;
+            result = attempt(size);
+        }
+        if (result != DRV_NO_MEMORY) break;
+    }
+    if (result == DRV_OK && size < TEXTURE_DEFAULT_SIZE)
+    {
+        sprintf(message, "Texture reduced to %u x %u", size, size / 2U);
+        drv_notice(message);
+    }
+    return result;
+}
+#endif
+
 void drv_append_status(char *buffer, unsigned int capacity, const char *message)
 {
     unsigned int used;

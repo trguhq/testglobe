@@ -752,16 +752,20 @@ static Drv_result ogl_texture_attempt(unsigned int size, const char **reason)
     return DRV_OK;
 }
 
+/* The size search passes only a width; keep the failure reason here. */
+static const char *ogl_texture_reason;
+
+static Drv_result ogl_texture_try(unsigned int size)
+{
+    return ogl_texture_attempt(size, &ogl_texture_reason);
+}
+
 /* Try each supported size, with at most one optional-resource eviction. */
 static int ogl_texture_load(void)
 {
     Drv_result result;
     unsigned int size;
     GLint maximum;
-    int released;
-    const char *reason;
-    char message[64];
-    released = FALSE;
     size = TEXTURE_DEFAULT_SIZE;
     if (!ogl_indexed)
     {
@@ -781,28 +785,18 @@ static int ogl_texture_load(void)
         while (size > (unsigned int)maximum && size > 32U)
             size /= 2U;
     }
-    for (; size >= 32U; size /= 2U)
+    ogl_texture_reason = NULL;
+    result = drv_texture_fit(size, ogl_texture_try);
+    if (result == DRV_OK)
     {
-        result = ogl_texture_attempt(size, &reason);
-        if (result == DRV_NO_MEMORY && !released)
-        {
-            drv_release_optional();
-            released = TRUE;
-            result = ogl_texture_attempt(size, &reason);
-        }
-        if (result == DRV_NO_MEMORY) continue;
-        if (result != DRV_OK)
-        {
-            ogl_texture_failure(reason != NULL ? reason : "Cannot load OpenGL texture");
-            return FALSE;
-        }
         drv_texture_loaded = TRUE;
-        if (size < TEXTURE_DEFAULT_SIZE)
-        {
-            sprintf(message, "Texture reduced to %u x %u", size, size / 2U);
-            drv_notice(message);
-        }
         return TRUE;
+    }
+    if (result != DRV_NO_MEMORY)
+    {
+        ogl_texture_failure(ogl_texture_reason != NULL ? ogl_texture_reason :
+                            "Cannot load OpenGL texture");
+        return FALSE;
     }
     ogl_texture_failure("Insufficient memory for texture; drawing flat colors");
     drv_notice("Texture unavailable; drawing flat colors");

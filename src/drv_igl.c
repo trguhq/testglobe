@@ -482,35 +482,19 @@ static Drv_result igl_texture_attempt(unsigned int size)
 
 static int igl_texture_load(void)
 {
-    unsigned int size;
     Drv_result result;
-    int released;
-    char message[64];
-    released = FALSE;
-    for (size = TEXTURE_DEFAULT_SIZE; size >= 32U; size /= 2U)
+    result = drv_texture_fit(TEXTURE_DEFAULT_SIZE, igl_texture_attempt);
+    if (result == DRV_OK)
     {
-        result = igl_texture_attempt(size);
-        if (result == DRV_NO_MEMORY && !released)
-        {
-            drv_release_optional();
-            released = TRUE;
-            result = igl_texture_attempt(size);
-        }
-        if (result == DRV_NO_MEMORY) continue;
-        if (result == DRV_BAD_DATA || result == DRV_BAD_INPUT)
-            error("Invalid embedded IRIS GL texture data");
-        if (result != DRV_OK)
-        {
-            igl_texture_failure("Native texture operation failed");
-            return FALSE;
-        }
         drv_texture_loaded = TRUE;
-        if (size < TEXTURE_DEFAULT_SIZE)
-        {
-            sprintf(message, "Texture reduced to %u x %u", size, size / 2U);
-            drv_notice(message);
-        }
         return TRUE;
+    }
+    if (result == DRV_BAD_DATA || result == DRV_BAD_INPUT)
+        error("Invalid embedded IRIS GL texture data");
+    if (result != DRV_NO_MEMORY)
+    {
+        igl_texture_failure("Native texture operation failed");
+        return FALSE;
     }
     igl_texture_failure("Insufficient memory for texture; drawing flat colors");
     drv_notice("Texture unavailable; drawing flat colors");

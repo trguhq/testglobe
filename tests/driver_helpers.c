@@ -43,6 +43,67 @@ void globe_toggle_tex(void)
 }
 #endif
 
+#ifdef TEXTURE
+static unsigned int fit_releases;
+static unsigned int fit_sizes[16];
+static unsigned int fit_attempts;
+static unsigned int fit_limit;
+static unsigned int fit_shortages;
+static Drv_result fit_failure;
+
+void drv_release_optional(void)
+{
+    ++fit_releases;
+}
+
+/* The first fit_shortages attempts and widths above fit_limit run out of
+ * memory; any other attempt returns fit_failure. */
+static Drv_result fit_attempt(unsigned int size)
+{
+    assert(fit_attempts < 16U);
+    fit_sizes[fit_attempts++] = size;
+    if (fit_attempts <= fit_shortages || size > fit_limit) return DRV_NO_MEMORY;
+    return fit_failure;
+}
+
+static void fit_run(unsigned int start, unsigned int shortages, unsigned int limit,
+                    Drv_result failure, Drv_result expected,
+                    const unsigned int *sizes, unsigned int count,
+                    unsigned int releases, const char *notice)
+{
+    unsigned int i;
+    fit_releases = fit_attempts = 0;
+    fit_shortages = shortages;
+    fit_limit = limit;
+    fit_failure = failure;
+    drv_notice(NULL);
+    assert(drv_texture_fit(start, fit_attempt) == expected);
+    assert(fit_attempts == count);
+    for (i = 0; i < count; ++i) assert(fit_sizes[i] == sizes[i]);
+    assert(fit_releases == releases);
+    assert(strcmp(drv_get_notice(), notice) == 0);
+}
+
+static void test_texture_fit(void)
+{
+    static const unsigned int full[] = { 512U };
+    static const unsigned int released[] = { 512U, 512U };
+    static const unsigned int reduced[] = { 512U, 512U, 256U, 128U };
+    static const unsigned int exhausted[] = { 512U, 512U, 256U, 128U, 64U, 32U };
+    static const unsigned int capped[] = { 128U, 128U, 64U };
+    static const unsigned int failed[] = { 512U, 512U, 256U };
+    fit_run(512U, 0U, 512U, DRV_OK, DRV_OK, full, 1U, 0U, "");
+    fit_run(512U, 1U, 512U, DRV_OK, DRV_OK, released, 2U, 1U, "");
+    fit_run(512U, 0U, 128U, DRV_OK, DRV_OK, reduced, 4U, 1U,
+            "Texture reduced to 128 x 64");
+    fit_run(512U, 0U, 16U, DRV_OK, DRV_NO_MEMORY, exhausted, 6U, 1U, "");
+    fit_run(128U, 0U, 64U, DRV_OK, DRV_OK, capped, 3U, 1U,
+            "Texture reduced to 64 x 32");
+    fit_run(512U, 0U, 256U, DRV_NATIVE_FAILED, DRV_NATIVE_FAILED, failed, 3U, 1U, "");
+    puts("PASS texture size search: one eviction, halving to 32 pixels, reduced-size notice and non-memory failures end the search");
+}
+#endif
+
 #ifdef DRV_EARTH_RESOURCES
 Drv_result drv_load_earth_chunk(unsigned int resource, unsigned long length,
                            unsigned char TG_HUGE *destination)
@@ -878,6 +939,9 @@ int main(void)
 #ifdef TEXTURE
     test_uv_expansion();
 #endif
+#endif
+#ifdef TEXTURE
+    test_texture_fit();
 #endif
 #ifdef DRV_QUAD_BATCH
     test_quad_helpers();

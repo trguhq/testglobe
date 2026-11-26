@@ -107,6 +107,12 @@ extern const char *drv_result_text(Drv_result result);
 /* Called only outside primitive/render scopes. Native drivers may evict
  * optional caches, but must retain a usable window and requested settings. */
 extern void drv_release_optional(void);
+#ifdef TEXTURE
+/* One attempt at a texture width; DRV_NO_MEMORY permits a smaller one. */
+typedef Drv_result (*Drv_texture_attempt)(unsigned int size);
+/* Shared size search for the texture drivers; see drv.c. */
+extern Drv_result drv_texture_fit(unsigned int start, Drv_texture_attempt attempt);
+#endif
 
 #ifdef DRV_PALETTE_DITHER
 /* Flat RGB bytes, three per palette entry. A mixture uses second in mix/16
