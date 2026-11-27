@@ -36,13 +36,9 @@ static int mtx_io_failed;
 static short mtx_previous_error_reporting;
 static int mtx_dirty = TRUE;
 static int mtx_mouse_present;
-static int mtx_cpu, mtx_has_fpu;
 static int mtx_native_failed;
 static int mtx_mask_saved;
-static union {
-    long fixed[3][3];
-    float floating[3][3];
-} mtx_matrix;
+static Soft3d_matrix mtx_matrix;
 static unsigned short mtx_previous_lut;
 static unsigned short mtx_previous_mask;
 static unsigned short mtx_background;
@@ -58,10 +54,7 @@ static struct Lutval mtx_palette[256];
 /* Software mode's bounded packet state: transformed and projected points of
  * the current band, whose lower row the next band of a stream reuses. */
 static Drv_quad_stream mtx_stream;
-static union {
-    Soft3d_fixed_point fixed[SOFT3D_MAX_VERTICES];
-    Soft3d_float_point floating[SOFT3D_MAX_VERTICES];
-} mtx_points;
+static Soft3d_points mtx_points;
 static Soft3d_screen_point mtx_screen[SOFT3D_MAX_VERTICES];
 /* The native path uses this eye vector only for visibility rejection.
  * Software mode performs the whole geometry stage before screen filling.
@@ -418,15 +411,14 @@ void drv_init(int *argc, char **argv)
     unsigned short reporting;
     (void)argc;
     (void)argv;
-    mtx_cpu = drv_cpu_detect();
+    drv_soft3d_select();
 #ifndef MTX_8086_BINDING
     /* The supplied LSCL.LIB, linked by both compilers, uses ENTER/LEAVE even
      * in its 2D binding; an 8086 misexecutes them inside lsinit. The host
      * probe remains 8086-safe. Define MTX_8086_BINDING only when linking a
      * binding built for 8086 instructions. */
-    if (mtx_cpu < 286) error("This LibShell library requires an 80286 or later CPU");
+    if (drv_soft3d_cpu < 286) error("This LibShell library requires an 80286 or later CPU");
 #endif
-    mtx_has_fpu = drv_cpu_has_fpu();
     mtx_native_failed = FALSE;
     /* Before the board changes state: Ctrl-C/Break then only sets a flag,
      * and the event loop exits through the cleanup registered below. */
@@ -548,7 +540,7 @@ static short mtx_angle(float angle)
 
 static int mtx_prepare_software(short yaw, short pitch)
 {
-    if (mtx_has_fpu)
+    if (drv_soft3d_kernel == DRV_KERNEL_FLOAT)
         return soft3d_float_prepare_ortho(mtx_matrix.floating, yaw, pitch);
     return soft3d_fixed_prepare_ortho(mtx_matrix.fixed, yaw, pitch);
 }
@@ -584,7 +576,7 @@ static int mtx_set_transform(void)
     mtx_eye_x = (float)(-sin(yaw_radians) * sin_pitch);
     mtx_eye_y = (float)(-cos(yaw_radians) * sin_pitch);
     mtx_eye_z = (float)cos(pitch_radians);
-    if (!mtx_has_fpu)
+    if (drv_soft3d_kernel != DRV_KERNEL_FLOAT)
         mtx_integer_cull = soft3d_fixed_prepare_ortho(mtx_matrix.fixed, yaw, pitch);
     return TRUE;
 }
@@ -657,7 +649,8 @@ static int mtx_integer_facing(const Vertex TG_HUGE *kept[4])
     unsigned int i;
     int transformed;
     for (i = 0; i < 3U; ++i) corners[i] = *kept[i];
-    if (mtx_cpu >= 386)
+    /* Only without an x87, so the selected kernel is an integer one. */
+    if (drv_soft3d_kernel == DRV_KERNEL_386)
         transformed = soft3d_386_transform_reuse(mtx_matrix.fixed, 3U,
                                                  corners, points, 0U);
     else
@@ -728,7 +721,7 @@ static void mtx_software_failed(const char *message)
 static int mtx_project(unsigned int first, unsigned int count)
 {
     int projected;
-    if (mtx_has_fpu)
+    if (drv_soft3d_kernel == DRV_KERNEL_FLOAT)
         projected = soft3d_float_project_ortho(mtx_points.floating + first, count,
             DRV_WIN_WIDTH, DRV_WIN_HEIGHT, 3200U, 2400U, mtx_screen + first);
     else
@@ -748,15 +741,21 @@ static int mtx_software_points(unsigned int vertex_count,
 {
     unsigned int i;
     int transformed;
-    if (mtx_has_fpu)
+    switch (drv_soft3d_kernel)
+    {
+    case DRV_KERNEL_FLOAT:
         transformed = soft3d_float_transform_xy_reuse(mtx_matrix.floating,
             vertex_count, vertices, mtx_points.floating, reuse);
-    else if (mtx_cpu >= 386)
+        break;
+    case DRV_KERNEL_386:
         transformed = soft3d_386_transform_xy_reuse(mtx_matrix.fixed,
             vertex_count, vertices, mtx_points.fixed, reuse);
-    else
+        break;
+    default:
         transformed = soft3d_fixed_transform_xy_reuse(mtx_matrix.fixed,
             vertex_count, vertices, mtx_points.fixed, reuse);
+        break;
+    }
     if (!transformed)
     {
         mtx_software_failed("Matrox software coordinate is out of range");
@@ -870,7 +869,7 @@ void drv_draw_osd(void)
     lines = mtx_text_lines(drv_help, 0, FALSE);
     (void)mtx_text_lines(drv_help, (short)(DRV_WIN_HEIGHT - 4U - 16U * lines), TRUE);
     drv_format_stats(status);
-    drv_append_soft3d_status(status, sizeof(status), "LibShell", mtx_cpu, mtx_has_fpu);
+    drv_append_soft3d_status(status, sizeof(status), "LibShell");
     (void)mtx_text_lines(status, 8, TRUE);
     /* The manual does not say text leaves the foreground color unchanged. */
     mtx_color_valid = FALSE;

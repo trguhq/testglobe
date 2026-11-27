@@ -51,6 +51,20 @@ typedef struct Soft3d_float_point
 #define SOFT3D_FLOAT_SINGLE 0
 #define SOFT3D_FLOAT_DOUBLE 1
 
+/* Storage for drivers that choose integer or x87 kernels at run time; the
+ * driver's selected kernel decides which member holds data. */
+typedef union Soft3d_matrix
+{
+    long fixed[3][3];
+    float floating[3][3];
+} Soft3d_matrix;
+
+typedef union Soft3d_points
+{
+    Soft3d_fixed_point fixed[SOFT3D_MAX_VERTICES];
+    Soft3d_float_point floating[SOFT3D_MAX_VERTICES];
+} Soft3d_points;
+
 extern void soft3d_project_cache_reset(Soft3d_project_cache TG_HUGE *cache);
 /* reuse_count is zero, or count/2 when an explicitly identified band's
  * old odd-indexed bottom row becomes this band's even-indexed top row.

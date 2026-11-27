@@ -57,8 +57,13 @@ winding for indexed, RGB, and UV packets. Shared input uses `drv_handle_key()`,
 use `drv_dos_mouse_init()` and `drv_dos_mouse_poll()`. Matrox and TIGA also call
 `drv_dos_break_init()`, which turns Ctrl-C and Ctrl-Break into a flag that the event
 loop reads with `drv_dos_break_pending()` and, from DOS 3.1, fails critical disk
-errors instead of prompting. `drv_match_palette_colors()` matches a whole palette for
-GDI and Amiga, searching each distinct realized color once. Backend resize and
+errors instead of prompting. Their `drv_soft3d_select()` runs the CPU and x87 probes
+once and sets `drv_soft3d_kernel` (x87, 386 integer, or baseline integer), which the
+OSD reports. Each driver calls the selected kernel itself, keeping the kernel calls
+visible to its recorder tests, and holds its matrix and points in the shared
+`Soft3d_matrix` and `Soft3d_points` unions. `drv_match_palette_colors()`
+matches a whole palette for GDI and Amiga, searching each distinct realized color
+once. Backend resize and
 texture-loading helpers stay private; `drv_render()` and `drv_close()` are the common
 driver entry points.
 
@@ -160,9 +165,9 @@ invalidate reuse. QuickDraw's `qd_fpu.c`/`qd_math.h` boundary and Amiga's runtim
 CPU/FPU dispatch keep hardware floating-point code apart from baseline 68000
 execution; Amiga's separate 68020 object also carries the integer projection,
 clipping, and back-face code. Resource-backed indices load directly into their final
-storage without an extra full-map allocation. TIGA's host path selects the shared
-integer or floating-point helpers; its TI module uses the same fixed-point rounding
-and validates each command's version and bounds.
+storage without an extra full-map allocation. TIGA's TI module uses the same
+fixed-point rounding as the host integer kernels and validates each command's
+version and bounds.
 
 OpenGL and IRIS GL share `src/texsoft.c`/`.h` for software texturing: homogeneous
 clipping, depth testing and culling, perspective-correct UVs, repeat sampling, and

@@ -75,10 +75,11 @@ has not been measured. DOS builds use normalized huge pointers, `_halloc`/`_hfre
 long mesh counts, and DOS timing.
 
 Matrox and TIGA share `drv_cpu.c` to detect 8086-class, 286, 386, and 486-or-later
-CPUs. A usable x87 selects floating-point host transforms; the presence probe works
-with 8087/287/387-compatible instructions but does not identify the exact model.
-Without an x87, 386-or-later CPUs use the separate 386 integer kernel and older CPUs
-the baseline integer code. `NO87=1` forces integer transforms. `/FPi` keeps runtime
+CPUs, and one selection in `drv.c` (`drv_soft3d_select()`) picks their host kernel
+at startup. A usable x87 selects floating-point host transforms; the presence probe
+works with 8087/287/387-compatible instructions but does not identify the exact
+model. Without an x87, 386-or-later CPUs use the separate 386 integer kernel and
+older CPUs the baseline integer code. `NO87=1` forces integer transforms. `/FPi` keeps runtime
 emulation for other floating-point work, including mesh generation.
 
 LibShell reports each error as an 8-bit value in its error register and waits until
