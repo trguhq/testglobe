@@ -148,34 +148,14 @@ test runner.
 - Added Matrox LibShell, TIGA, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga
   backends.
 - Added a static WebGL 2 browser frontend using the canonical Earth maps and palette.
-- Added native macOS, Solaris, and PiStorm3D Amiga OpenGL build targets.
 - Embedded the canonical binary Earth maps through bounded C arrays or native
-  resources, with disposable build sources and a supplied fallback copy.
-- Switched OpenGL and IRIS GL to latitude strips and GDI/QuickDraw/Amiga to
-  shared-vertex quad batches with bounded transform/projection reuse, keeping the
-  independent triangle and quad reference paths.
-- Standardized the driver and traversal APIs and shared rendering, input, and data
-  helpers.
+  resources, with disposable build sources and a supplied fallback copy..
 - Added FPS, automatic rotation, display-list control, and texture-use status.
 - Added selectable host/TI transforms and DOS CPU/FPU dispatch for TIGA, and embedded
   the TI transform module for single-executable distribution.
 - Hardened allocation, file generation, coordinate and packet bounds, input recovery,
   and driver error handling; reduced retained rendering memory.
 - Converted comments to C style and fixed bitmap OSD text in Mesa.
-- Tuned Sun XGL for the Sun ZX: ASTI globe submission, one model transform write per
-  frame, device inquiry, point-sampled software texturing, cached help layout,
-  detailed error diagnostics, CPU culling on by default, and optional argument
-  checking.
-- Moved detailed documentation into `docs`.
-- Reviewed the Matrox, TIGA, GDI, QuickDraw, IRIS GL, OpenGL, and Amiga drivers:
-  DOS Ctrl-C/Break and critical-error handling; Matrox startup draining, grouped
-  replies, and row-reusing software transforms; TIGA row reuse in the TI module; GDI
-  partial updates and Windows 3.0 marking; QuickDraw memory reserve, palette policy,
-  and Apple events; IRIS GL buffering, signal handling, and affine native texturing;
-  a GLUT adapter and fewer OpenGL round trips; Amiga `timer.device` clocks, a
-  Kickstart 1.3 CLI stack check, separate Workbench and fullscreen pen maps, and
-  fullscreen modes from the Workbench monitor; recovery of optional resources; and
-  faster mesh construction, palette matching, and software texturing.
 
 ### [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
 
