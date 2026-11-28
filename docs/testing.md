@@ -534,18 +534,20 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 ### Coverage
 
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
-  triangle/quad statistics, and cleanup. Independent normal transforms check every
-  expected fill and cap count at several noncardinal poses. Without an x87, every
-  facing the integer culling test decides, at 81 poses including cardinal ones, must
-  equal the float test, and the Q14 rows' eye must stay within its assumed error at
-  every integer-degree pose.
+  triangle/quad statistics, and cleanup. Independent view-space facing tests check
+  every expected fill and cap count at several noncardinal poses; caps must appear
+  whenever a pole is in view. The native recorder requires LibShell's 45° projection,
+  the 3,000-unit viewing distance, the square window and viewport, and the restored
+  clipping rectangle. Without an x87, every facing the integer culling test decides,
+  at 81 poses including cardinal ones, must equal the float test, and the integer eye
+  must stay within its assumed error (2/16384 in direction, 7 Q4 units in position)
+  at every integer-degree pose.
 - **Software transforms:** LibShell is the default; `S`/`s` selects host transforms
-  while keeping indexed LibShell polygon filling. An independent orthographic
-  reference checks orientation, integer-degree rotation, screen coordinates and
-  viewport bounds. Packet checks match every fill to its quad in order, verify the
-  packet vertices against the mesh, and require each mesh vertex to be transformed
-  and projected once per frame; the x/y kernels must equal the full kernels' x and
-  y, row reuse and rejected inputs. CPU profiles exercise baseline, 386 and
+  while keeping indexed LibShell polygon filling. An independent perspective camera
+  checks orientation, integer-degree rotation, screen coordinates within 1.5 pixels
+  and viewport bounds. Packet checks match every fill to its quad in order, verify
+  the packet vertices against the mesh, and require each mesh vertex to be
+  transformed and projected once per frame. CPU profiles exercise baseline, 386 and
   floating-point dispatch, including 286/287 combinations. The `8086` and `8087`
   profiles check that the supplied 286 binding is rejected before `lsinit`; a second
   build with `MTX_8086_BINDING` runs them through the whole contract. The OSD reports

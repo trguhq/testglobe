@@ -55,15 +55,20 @@ static struct Lutval mtx_palette[256];
  * the current band, whose lower row the next band of a stream reuses. */
 static Drv_quad_stream mtx_stream;
 static Soft3d_points mtx_points;
-static Soft3d_screen_point mtx_screen[SOFT3D_MAX_VERTICES];
-/* The native path uses this eye vector only for visibility rejection.
- * Software mode performs the whole geometry stage before screen filling.
- * Without an x87, native frames also prepare the integer ortho matrix in
- * mtx_matrix.fixed and decide most facings without emulated floats. */
+static Soft3d_project_cache mtx_cache;
+/* The native path uses the eye's object-space position only for visibility
+ * rejection; software mode performs the whole geometry stage before screen
+ * filling. Without an x87, native frames also keep the eye in Q4 integers
+ * and decide most facings without emulated floats. */
 static float mtx_eye_x;
 static float mtx_eye_y;
-static float mtx_eye_z = 1.0f;
+static float mtx_eye_z = (float)GLOBE_VIEW_DISTANCE;
+static long mtx_eye_fixed[3];
 static int mtx_integer_cull;
+/* Q4 object coordinates: the transform kernels' 16 units per world unit. */
+#define MTX_Q4 16L
+/* Q14 matrix entries, as in the shared fixed-point kernels. */
+#define MTX_Q14 16384L
 
 /* LSERROR stalls the shell before a second unread error. A blocking
  * lslibsync() cannot service that register, so use a counted LSINQ reply
@@ -460,12 +465,28 @@ void drv_init(int *argc, char **argv)
 }
 
 /* Reissue all native projection state after failed initialization or S retry.
- * Screen-coordinate fills do not depend on these optional settings. */
+ * Screen-coordinate fills do not depend on these optional settings.
+ *   LibShell's perspective uses the other drivers' camera: the shared field
+ * of view, in LibShell's integer degrees, from the shared viewing distance.
+ * The manual gives no projection formula. It does not say whether the
+ * viewing angle spans the window's width or its height, or whether the
+ * window lies on the view plane through the reference point. A square
+ * viewport, and a square window GLOBE_VIEW_DISTANCE * tan(angle / 2) on
+ * each side of the reference point, give the same image under each of
+ * those readings. Setting the viewport also resets the clipping rectangle
+ * to it, so the full screen is restored for the OSD and screen fills. */
 static int mtx_native_projection(void)
 {
-    /* 4:3 aspect, 400-pixel globe diameter, room for the status display. */
-    MTX_TRANSFORM(v2gpswdw(-1600.0, 1600.0, -1200.0, 1200.0), "world window");
-    MTX_TRANSFORM(v3gpsproj(0), "projection");
+    double half;
+    half = (double)GLOBE_VIEW_DISTANCE *
+           tan((double)GLOBE_FIELD_OF_VIEW * PI / 360.0);
+    MTX_TRANSFORM(v2gpsvwp((DRV_WIN_WIDTH - DRV_WIN_HEIGHT) / 2,
+                           (DRV_WIN_WIDTH + DRV_WIN_HEIGHT) / 2 - 1,
+                           0, DRV_WIN_HEIGHT - 1), "viewport");
+    MTX_TRANSFORM(krhwsclipr(0, 0, DRV_WIN_WIDTH - 1, DRV_WIN_HEIGHT - 1),
+                  "clipping rectangle");
+    MTX_TRANSFORM(v2gpswdw(-half, half, -half, half), "world window");
+    MTX_TRANSFORM(v3gpsproj((short)GLOBE_FIELD_OF_VIEW), "projection");
     MTX_TRANSFORM(v3gpsdist((double)GLOBE_VIEW_DISTANCE), "view distance");
     MTX_TRANSFORM(v3gpshclip(0), "hither clipping");
     MTX_TRANSFORM(v3gpsyclip(0), "yon clipping");
@@ -541,15 +562,28 @@ static short mtx_angle(float angle)
 static int mtx_prepare_software(short yaw, short pitch)
 {
     if (drv_soft3d_kernel == DRV_KERNEL_FLOAT)
-        return soft3d_float_prepare_ortho(mtx_matrix.floating, yaw, pitch);
-    return soft3d_fixed_prepare_ortho(mtx_matrix.fixed, yaw, pitch);
+        return soft3d_float_prepare_degrees(mtx_matrix.floating, yaw, pitch);
+    return soft3d_fixed_prepare_degrees(mtx_matrix.fixed, yaw, pitch);
+}
+
+/* The eye's Q4 object-space position for integer culling: the matrix's
+ * last row, the direction to the eye, scaled to the viewing distance.
+ * 16384 * 48000 fits a 32-bit long. */
+static int mtx_prepare_integer_eye(short yaw, short pitch)
+{
+    long matrix[3][3];
+    int i;
+    if (!soft3d_fixed_prepare_degrees(matrix, yaw, pitch)) return FALSE;
+    for (i = 0; i < 3; ++i)
+        mtx_eye_fixed[i] = matrix[2][i] * (GLOBE_VIEW_DISTANCE * MTX_Q4) / MTX_Q14;
+    return TRUE;
 }
 
 static int mtx_set_transform(void)
 {
     short yaw = mtx_angle(drv_rot_y);
     short pitch = mtx_angle(90.0f + drv_rot_x);
-    double yaw_radians, pitch_radians, sin_pitch;
+    double yaw_radians, pitch_radians, sin_pitch, distance;
     mtx_integer_cull = FALSE;
     if (drv_soft3d_active) return mtx_prepare_software(yaw, pitch);
     yaw_radians = (double)yaw * PI / 180.0;
@@ -569,15 +603,17 @@ static int mtx_set_transform(void)
     v3vwrpt(0.0, 0.0, 0.0);
     v3vwrotx(pitch);
     if (!mtx_checkpoint("model/view transform", TRUE)) return FALSE;
-    /* Inverse model yaw applied to the viewer's world-space direction.
-     * Use exactly the integer-degree angles sent to LibShell. The float
-     * eye stays even without an x87: undecided integer facings use it, so
-     * the submitted polygons are those of the float test alone. */
-    mtx_eye_x = (float)(-sin(yaw_radians) * sin_pitch);
-    mtx_eye_y = (float)(-cos(yaw_radians) * sin_pitch);
-    mtx_eye_z = (float)cos(pitch_radians);
+    /* The eye sits at the viewing distance from the reference point (the
+     * origin): inverse model yaw applied to the viewer's direction, using
+     * exactly the integer-degree angles sent to LibShell. The float eye
+     * stays even without an x87: undecided integer facings use it, so the
+     * submitted polygons are those of the float test alone. */
+    distance = (double)GLOBE_VIEW_DISTANCE;
+    mtx_eye_x = (float)(-sin(yaw_radians) * sin_pitch * distance);
+    mtx_eye_y = (float)(-cos(yaw_radians) * sin_pitch * distance);
+    mtx_eye_z = (float)(cos(pitch_radians) * distance);
     if (drv_soft3d_kernel != DRV_KERNEL_FLOAT)
-        mtx_integer_cull = soft3d_fixed_prepare_ortho(mtx_matrix.fixed, yaw, pitch);
+        mtx_integer_cull = mtx_prepare_integer_eye(yaw, pitch);
     return TRUE;
 }
 
@@ -613,11 +649,12 @@ static unsigned short mtx_compact(const Vertex TG_HUGE *source[4],
 /* Base LIB Shell fills do not remove hidden surfaces. Rejecting back faces
  * is sufficient for a convex globe: the retained facets overlap only at
  * edges. LibShell performs all vertex transforms, projection, clipping and
- * polygon filling. */
+ * polygon filling. A facet faces the eye when its normal points toward the
+ * eye's position, seen from one of its vertices. */
 static int mtx_float_visible(const struct V3coord *vertices)
 {
     float ax, ay, az, bx, by, bz;
-    float nx, ny, nz;
+    float nx, ny, nz, wx, wy, wz;
     ax = vertices[1].x - vertices[0].x;
     ay = vertices[1].y - vertices[0].y;
     az = vertices[1].z - vertices[0].z;
@@ -627,50 +664,64 @@ static int mtx_float_visible(const struct V3coord *vertices)
     nx = ay * bz - az * by;
     ny = az * bx - ax * bz;
     nz = ax * by - ay * bx;
-    return !(nx * mtx_eye_x + ny * mtx_eye_y + nz * mtx_eye_z <= 0.0f);
+    wx = mtx_eye_x - vertices[0].x;
+    wy = mtx_eye_y - vertices[0].y;
+    wz = mtx_eye_z - vertices[0].z;
+    return !(nx * wx + ny * wy + nz * wz <= 0.0f);
 }
 
-/* The same facing test without floating point: rows 0 and 1 of the integer
- * ortho matrix cross to its row 2, the eye, so the eye-space edge cross
- * product's z is the facing dot product. Return 1 or -1 only when that sign
- * must equal the float test's; 0 asks the caller to run the float test.
- *   Each Q4 coordinate is within 2.74 units of the exact image under the
- * Q14 rows (input truncation below one unit through a row of norm 1, and
- * output truncation below one), so each edge component is within 6 and
- * the area within 6(|ux|+|uy|+|vx|+|vy|) + 72. The Q14 rows' cross product
- * is within 4/16384 of the exact eye, and the float test's own rounding is
- * below 2^-18 |a|_1 |b|_1; with the 3D edge lengths bounded by lu and lv,
- * (lu lv) / 2^11 covers both with a factor of two to spare. */
+/* The same facing test without floating point, in object space: n.(e - p0)
+ * with Q4 vertex coordinates p and the Q4 integer eye e. Return 1 or -1
+ * only when that sign must equal the float test's; 0 asks the caller to
+ * run the float test.
+ *   In Q4 units, each p is within 1 of its float vertex (truncation) and e
+ * within 7 of the exact eye (Q14 last row within 2/16384 of the exact
+ * direction, times 48000, plus truncation), so the edges u = p1 - p0 and
+ * v = p2 - p0 are within 2 of the exact edges and w = e - p0 within 8.
+ * Each component of n = u x v (Q8) is then within twice the sum of the four
+ * edge components it uses, plus 8, so n.w (Q12) is within
+ * (4(|u|_1 + |v|_1) + 24)(|w|_inf + 8) + 8|n|_1 of the exact product. T is that product in world units cubed,
+ * from n / 256 and w / 16, which adds below |w|_1/16 + |n|_1/256 + 3. The
+ * float test's own rounding, about 12 operations of 2^-24 each on terms
+ * bounded by |u|_1 |v|_1 |w|_1 in world units, stays below a quarter of
+ * (|u|_1 + 6)(|v|_1 + 6)(|w|_1 + 24) / 2^30. When |T| exceeds the sum, the
+ * exact facing, and so the float test, has T's sign. The bounds' factors
+ * are rounded up, and every product fits a 32-bit long. */
 static int mtx_integer_facing(const Vertex TG_HUGE *kept[4])
 {
-    Vertex corners[3];
-    Soft3d_fixed_point points[3];
-    long ux, uy, vx, vy, lu, lv, area, bound;
+    Soft3d_fixed_point p[3];
+    long u[3], v[3], n[3], w[3], u1, v1, n1, w1, wmax, t, bound;
     unsigned int i;
-    int transformed;
-    for (i = 0; i < 3U; ++i) corners[i] = *kept[i];
-    /* Only without an x87, so the selected kernel is an integer one. */
-    if (drv_soft3d_kernel == DRV_KERNEL_386)
-        transformed = soft3d_386_transform_reuse(mtx_matrix.fixed, 3U,
-                                                 corners, points, 0U);
-    else
-        transformed = soft3d_fixed_transform_reuse(mtx_matrix.fixed, 3U,
-                                                   corners, points, 0U);
-    if (!transformed) return 0;
-    ux = points[1].x - points[0].x;
-    uy = points[1].y - points[0].y;
-    vx = points[2].x - points[0].x;
-    vy = points[2].y - points[0].y;
-    /* Keeps both products, and their difference, within a 32-bit long. */
-    if (labs(ux) > 32767L || labs(uy) > 32767L ||
-        labs(vx) > 32767L || labs(vy) > 32767L) return 0;
-    area = ux * vy - uy * vx;
-    lu = labs(ux) + labs(uy) + labs(points[1].z - points[0].z) + 18L;
-    lv = labs(vx) + labs(vy) + labs(points[2].z - points[0].z) + 18L;
-    bound = 6L * (labs(ux) + labs(uy) + labs(vx) + labs(vy)) + 72L +
-            ((lu >> 5) + 1L) * ((lv >> 6) + 1L);
-    if (area > bound) return 1;
-    if (area < -bound) return -1;
+    for (i = 0; i < 3U; ++i)
+        if (!soft3d_fixed_vertex(kept[i], &p[i])) return 0;
+    u[0] = p[1].x - p[0].x; u[1] = p[1].y - p[0].y; u[2] = p[1].z - p[0].z;
+    v[0] = p[2].x - p[0].x; v[1] = p[2].y - p[0].y; v[2] = p[2].z - p[0].z;
+    w[0] = mtx_eye_fixed[0] - p[0].x;
+    w[1] = mtx_eye_fixed[1] - p[0].y;
+    w[2] = mtx_eye_fixed[2] - p[0].z;
+    u1 = v1 = w1 = wmax = 0;
+    for (i = 0; i < 3U; ++i)
+    {
+        /* 256-unit edges keep n within 2^25 and T below 2^31. */
+        if (labs(u[i]) > 4096L || labs(v[i]) > 4096L) return 0;
+        u1 += labs(u[i]);
+        v1 += labs(v[i]);
+        w1 += labs(w[i]);
+        if (labs(w[i]) > wmax) wmax = labs(w[i]);
+    }
+    n[0] = u[1] * v[2] - u[2] * v[1];
+    n[1] = u[2] * v[0] - u[0] * v[2];
+    n[2] = u[0] * v[1] - u[1] * v[0];
+    n1 = labs(n[0]) + labs(n[1]) + labs(n[2]);
+    t = 0;
+    for (i = 0; i < 3U; ++i) t += (n[i] / 256L) * (w[i] / 16L);
+    bound = w1 / 16L + 1L + n1 / 256L + 1L + 3L +
+            ((4L * (u1 + v1) + 24L) / 64L + 1L) * ((wmax + 8L) / 64L + 1L) +
+            n1 / 512L + 1L +
+            ((u1 + 6L) / 1024L + 1L) * ((v1 + 6L) / 1024L + 1L) *
+            ((w1 + 24L) / 1024L + 1L);
+    if (t > bound) return 1;
+    if (t < -bound) return -1;
     return 0;
 }
 
@@ -693,9 +744,8 @@ static void mtx_draw_native(const Vertex TG_HUGE *source[4],
     mtx_fill_sent(TRUE);
 }
 
-/* Software mode: the host transforms, projects, clips and culls; LibShell
- * fills screen polygons. Unlike the perspective drivers, Matrox maps its
- * fixed orthographic world window to the screen. */
+/* Software mode: the host transforms, projects, clips and culls with the
+ * shared perspective pipeline; LibShell fills screen polygons. */
 static void mtx_draw_screen(const Soft3d_screen_point *points, int count,
                             unsigned char color)
 {
@@ -715,44 +765,30 @@ static void mtx_draw_screen(const Soft3d_screen_point *points, int count,
 static void mtx_software_failed(const char *message)
 {
     drv_quadstream_reset(&mtx_stream);
+    soft3d_project_cache_reset(&mtx_cache);
     drv_abort_frame(message);
 }
 
-static int mtx_project(unsigned int first, unsigned int count)
-{
-    int projected;
-    if (drv_soft3d_kernel == DRV_KERNEL_FLOAT)
-        projected = soft3d_float_project_ortho(mtx_points.floating + first, count,
-            DRV_WIN_WIDTH, DRV_WIN_HEIGHT, 3200U, 2400U, mtx_screen + first);
-    else
-        projected = soft3d_fixed_project_ortho(mtx_points.fixed + first, count,
-            DRV_WIN_WIDTH, DRV_WIN_HEIGHT, 3200U, 2400U, mtx_screen + first);
-    if (projected != 0) return TRUE;
-    mtx_software_failed("Matrox software projection failed");
-    return FALSE;
-}
-
-/* Each packet vertex is transformed (x/y only) and projected once; with a
- * stream's row reuse, the previous band's lower row is not recomputed.
- * Points are identical to transforming and projecting each quad alone. */
+/* Each packet vertex is transformed once; with a stream's row reuse, the
+ * previous band's lower row is neither transformed nor projected again.
+ * The cache projects each remaining vertex the first time a quad uses it. */
 static int mtx_software_points(unsigned int vertex_count,
                                const Vertex TG_HUGE *vertices,
                                unsigned int reuse)
 {
-    unsigned int i;
     int transformed;
     switch (drv_soft3d_kernel)
     {
     case DRV_KERNEL_FLOAT:
-        transformed = soft3d_float_transform_xy_reuse(mtx_matrix.floating,
-            vertex_count, vertices, mtx_points.floating, reuse);
+        transformed = soft3d_float_transform_reuse(mtx_matrix.floating,
+            vertex_count, vertices, mtx_points.floating, reuse, SOFT3D_FLOAT_SINGLE);
         break;
     case DRV_KERNEL_386:
-        transformed = soft3d_386_transform_xy_reuse(mtx_matrix.fixed,
+        transformed = soft3d_386_transform_reuse(mtx_matrix.fixed,
             vertex_count, vertices, mtx_points.fixed, reuse);
         break;
     default:
-        transformed = soft3d_fixed_transform_xy_reuse(mtx_matrix.fixed,
+        transformed = soft3d_fixed_transform_reuse(mtx_matrix.fixed,
             vertex_count, vertices, mtx_points.fixed, reuse);
         break;
     }
@@ -761,11 +797,8 @@ static int mtx_software_points(unsigned int vertex_count,
         mtx_software_failed("Matrox software coordinate is out of range");
         return FALSE;
     }
-    if (reuse == 0U) return mtx_project(0U, vertex_count);
-    /* As in the transform, old odd entries become the new even entries. */
-    for (i = 0; i < reuse; ++i) mtx_screen[2U * i] = mtx_screen[2U * i + 1U];
-    for (i = 1U; i < vertex_count; i += 2U)
-        if (!mtx_project(i, 1U)) return FALSE;
+    (void)soft3d_project_cache_begin(&mtx_cache, vertex_count,
+                                     DRV_WIN_WIDTH, DRV_WIN_HEIGHT, reuse);
     return TRUE;
 }
 
@@ -778,6 +811,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     Drv_quad_context context;
     Soft3d_screen_point screen[SOFT3D_MAX_POLY];
     const Vertex TG_HUGE *source[4];
+    unsigned int corners[4];
     unsigned int i, j, reuse;
     int count;
     if (drv_frame_failed || mtx_io_failed) return;
@@ -802,8 +836,16 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     drv_quadstream_commit(&mtx_stream, &context);
     for (i = 0; i < quad_count; ++i)
     {
-        for (j = 0; j < 4U; ++j) screen[j] = mtx_screen[indices[4U * i + j]];
-        count = soft3d_finish_polygon(screen, 4, DRV_WIN_WIDTH - 1U,
+        for (j = 0; j < 4U; ++j) corners[j] = indices[4U * i + j];
+        if (drv_soft3d_kernel == DRV_KERNEL_FLOAT)
+            count = soft3d_float_project_cached(mtx_points.floating, vertex_count,
+                corners, 4U, DRV_WIN_WIDTH, DRV_WIN_HEIGHT, SOFT3D_FLOAT_SINGLE,
+                &mtx_cache, screen);
+        else
+            count = soft3d_fixed_project_cached(mtx_points.fixed, vertex_count,
+                corners, 4U, DRV_WIN_WIDTH, DRV_WIN_HEIGHT, &mtx_cache, screen);
+        /* LibShell screen fills take pixels 0..639 and 0..479. */
+        count = soft3d_finish_polygon(screen, count, DRV_WIN_WIDTH - 1U,
                                        DRV_WIN_HEIGHT - 1U);
         if (count < 3) continue;
         mtx_draw_screen(screen, count, colors[i]);
@@ -886,6 +928,7 @@ void drv_render(void)
         drv_fps_start();
         mtx_native_failed = FALSE;
         drv_quadstream_reset(&mtx_stream);
+        soft3d_project_cache_reset(&mtx_cache);
         MTX_COMMAND(krhwcclr(mtx_background), "clear screen");
         mtx_color_valid = FALSE;
         globe_quads_num_vis = 0;
@@ -945,6 +988,7 @@ static void mtx_keyboard(unsigned char key)
             drv_notice(NULL);
         }
         drv_quadstream_reset(&mtx_stream);
+        soft3d_project_cache_reset(&mtx_cache);
         mtx_dirty = TRUE;
     }
     else if (drv_handle_key(key)) mtx_dirty = TRUE;

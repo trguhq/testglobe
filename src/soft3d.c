@@ -112,8 +112,8 @@ int soft3d_fixed_prepare(long matrix[3][3],
 }
 
 #ifdef DRV_MTX
-int soft3d_fixed_prepare_ortho(long matrix[3][3],
-                               int yaw_degrees, int pitch_degrees)
+int soft3d_fixed_prepare_degrees(long matrix[3][3],
+                                 int yaw_degrees, int pitch_degrees)
 {
     long yaw, pitch, sy, cy, sp, cp;
     if (matrix == NULL) return 0;
@@ -122,8 +122,8 @@ int soft3d_fixed_prepare_ortho(long matrix[3][3],
     sy = soft3d_sine(yaw); cy = soft3d_sine(yaw + 90L * 256L);
     sp = soft3d_sine(pitch); cp = soft3d_sine(pitch + 90L * 256L);
     /* Model rotates the object; view rotates the eye in the opposite
-     * sense. The last row is the eye direction used by object-space
-     * backface rejection: (-sy*sp, -cy*sp, cp). */
+     * sense. The last row is the direction from the reference point to the
+     * eye: (-sy*sp, -cy*sp, cp). */
     matrix[0][0] = cy;
     matrix[0][1] = -sy;
     matrix[0][2] = 0;
@@ -134,6 +134,21 @@ int soft3d_fixed_prepare_ortho(long matrix[3][3],
     matrix[2][1] = -sp * cy / SOFT3D_Q14;
     matrix[2][2] = cp;
     return 1;
+}
+
+int soft3d_fixed_vertex(const Vertex TG_HUGE *vertex, Soft3d_fixed_point *out)
+{
+    if (vertex == NULL || out == NULL ||
+        !soft3d_float_fixed(&vertex->x, 4, &out->x) ||
+        !soft3d_float_fixed(&vertex->y, 4, &out->y) ||
+        !soft3d_float_fixed(&vertex->z, 4, &out->z))
+        return 0;
+    return out->x >= -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE &&
+           out->x <= SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE &&
+           out->y >= -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE &&
+           out->y <= SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE &&
+           out->z >= -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE &&
+           out->z <= SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE;
 }
 #endif
 #endif
@@ -191,56 +206,6 @@ int soft3d_fixed_transform_reuse(long matrix[3][3], unsigned int count,
     return 1;
 }
 
-#if defined(DRV_MTX) && !defined(SOFT3D_TRANSFORM_020)
-/* ---- Orthographic x/y transform (Matrox software mode) ----------------
- * The orthographic projector reads only x and y. This is the transform
- * above without its third row: the same validation, reuse and rounding
- * give identical x and y, and z is stored as zero. Like the full kernel,
- * the same source also builds the separately compiled 386 variant. */
-#ifdef SOFT3D_TRANSFORM_386
-int soft3d_386_transform_xy_reuse(long matrix[3][3], unsigned int count,
-#else
-int soft3d_fixed_transform_xy_reuse(long matrix[3][3], unsigned int count,
-#endif
-                                    const Vertex TG_HUGE *vertices,
-                                    Soft3d_fixed_point *out,
-                                    unsigned int reuse_count)
-{
-    unsigned int i;
-    long x, y, z;
-    if (matrix == NULL || vertices == NULL || out == NULL ||
-        count > SOFT3D_MAX_VERTICES ||
-        (reuse_count != 0U && (count == 0U || (count & 1U) != 0U ||
-                              reuse_count != count / 2U)))
-        return 0;
-    for (i = 0; i < count; ++i)
-    {
-        if (!soft3d_float_fixed(&vertices[i].x, 4, &x) ||
-            !soft3d_float_fixed(&vertices[i].y, 4, &y) ||
-            !soft3d_float_fixed(&vertices[i].z, 4, &z))
-            return 0;
-        if (x < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            x > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            y < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            y > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            z < -SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            z > SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE)
-            return 0;
-        if (reuse_count != 0U && (i & 1U) == 0U)
-        {
-            out[i] = out[i + 1U];
-            continue;
-        }
-        out[i].x = (matrix[0][0] * x + matrix[0][1] * y +
-                    matrix[0][2] * z) / SOFT3D_Q14;
-        out[i].y = (matrix[1][0] * x + matrix[1][1] * y +
-                    matrix[1][2] * z) / SOFT3D_Q14;
-        out[i].z = 0;
-    }
-    return 1;
-}
-#endif /* orthographic x/y transform */
-
 #if !defined(SOFT3D_TRANSFORM_020) && !defined(SOFT3D_TRANSFORM_386)
 int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
                             const Vertex TG_HUGE *vertices,
@@ -248,51 +213,6 @@ int soft3d_fixed_transform(long matrix[3][3], unsigned int count,
 {
     return soft3d_fixed_transform_reuse(matrix, count, vertices, out, 0U);
 }
-
-#ifdef DRV_MTX
-/* floor(coordinate * extent / denominator + extent/2), without forming
- * denominator*extent. The bounded Q4 coordinate times a 32766-pixel extent
- * fits signed 32-bit long; adding the world-window offset first would not. */
-static long soft3d_ortho_pixel(long coordinate, unsigned int extent,
-                               unsigned int world_extent)
-{
-    long numerator, denominator, whole, remainder;
-    numerator = coordinate * (long)extent;
-    denominator = (long)world_extent * SOFT3D_COORD_SCALE;
-    whole = numerator / denominator + (long)(extent / 2U);
-    remainder = numerator % denominator;
-    if (extent & 1U) remainder += denominator / 2L;
-    if (remainder < 0L) --whole;
-    else if (remainder >= denominator) ++whole;
-    return whole;
-}
-
-int soft3d_fixed_project_ortho(const Soft3d_fixed_point *points,
-                               unsigned int count,
-                               unsigned int width, unsigned int height,
-                               unsigned int world_width,
-                               unsigned int world_height,
-                               Soft3d_screen_point *out)
-{
-    unsigned int i;
-    if (points == NULL || out == NULL || count == 0U ||
-        count > SOFT3D_MAX_VERTICES || width == 0U || height == 0U ||
-        width > 32767U || height > 32767U ||
-        world_width == 0U || world_height == 0U ||
-        world_width > 32767U || world_height > 32767U) return 0;
-    for (i = 0; i < count; ++i)
-        if (points[i].x < -3L * SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            points[i].x > 3L * SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            points[i].y < -3L * SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE ||
-            points[i].y > 3L * SOFT3D_MAX_RADIUS * SOFT3D_COORD_SCALE) return 0;
-    for (i = 0; i < count; ++i)
-    {
-        out[i].x = soft3d_ortho_pixel(points[i].x, width - 1U, world_width);
-        out[i].y = soft3d_ortho_pixel(-points[i].y, height - 1U, world_height);
-    }
-    return (int)count;
-}
-#endif
 
 void soft3d_project_cache_reset(Soft3d_project_cache TG_HUGE *cache)
 {
@@ -368,7 +288,7 @@ int soft3d_project_cache_begin_aspect(Soft3d_project_cache TG_HUGE *cache,
     return 1;
 }
 
-#endif /* baseline transform wrappers, orthographic and cache helpers */
+#endif /* baseline transform wrappers and cache helpers */
 
 #ifndef SOFT3D_TRANSFORM_386
 /* The 68020 object also compiles the projection, clipping and back-face

@@ -66,8 +66,8 @@ int soft3d_float_prepare(float matrix[3][3],
 }
 
 #ifdef DRV_MTX
-int soft3d_float_prepare_ortho(float matrix[3][3],
-                               int yaw_degrees, int pitch_degrees)
+int soft3d_float_prepare_degrees(float matrix[3][3],
+                                 int yaw_degrees, int pitch_degrees)
 {
     double yaw, pitch, sy, cy, sp, cp;
     if (matrix == NULL) return FALSE;
@@ -256,81 +256,6 @@ static int soft3d_float_project_point(const Soft3d_float_point *point,
 #endif
     return TRUE;
 }
-
-#ifdef DRV_MTX
-int soft3d_float_project_ortho(const Soft3d_float_point *points,
-                               unsigned int count,
-                               unsigned int width, unsigned int height,
-                               unsigned int world_width,
-                               unsigned int world_height,
-                               Soft3d_screen_point *out)
-{
-    unsigned int i;
-    double x, y;
-    if (points == NULL || out == NULL || count == 0U ||
-        count > SOFT3D_MAX_VERTICES || width == 0U || height == 0U ||
-        width > 32767U || height > 32767U ||
-        world_width == 0U || world_height == 0U ||
-        world_width > 32767U || world_height > 32767U) return 0;
-    for (i = 0; i < count; ++i)
-        if (!soft3d_float_valid(points + i) ||
-            !(points[i].x >= -3.0f * SOFT3D_MAX_RADIUS &&
-              points[i].x <= 3.0f * SOFT3D_MAX_RADIUS &&
-              points[i].y >= -3.0f * SOFT3D_MAX_RADIUS &&
-              points[i].y <= 3.0f * SOFT3D_MAX_RADIUS)) return 0;
-    for (i = 0; i < count; ++i)
-    {
-        /* The validated bounds keep both results within +/-100 million,
-         * even with a one-unit world window and maximum viewport extent.
-         * Floor matches the fixed projector on either side of the window;
-         * no x87 generation-specific instructions are required by /FPi. */
-        x = (0.5 + (double)points[i].x / world_width) * (width - 1U);
-        y = (0.5 - (double)points[i].y / world_height) * (height - 1U);
-        out[i].x = (long)x;
-        out[i].y = (long)y;
-        if ((double)out[i].x > x) --out[i].x;
-        if ((double)out[i].y > y) --out[i].y;
-    }
-    return (int)count;
-}
-#endif
-
-#ifdef DRV_MTX
-/* ---- Orthographic x/y transform (Matrox software mode) ----------------
- * soft3d_float_transform_reuse without its third row: the same validation,
- * reuse and float stores give identical x and y (precision only affects
- * z there), and z is stored as zero for the orthographic projector. */
-int soft3d_float_transform_xy_reuse(float matrix[3][3], unsigned int count,
-                                    const Vertex TG_HUGE *vertices,
-                                    Soft3d_float_point *out,
-                                    unsigned int reuse_count)
-{
-    unsigned int i;
-    float x, y, z;
-    if (matrix == NULL || vertices == NULL || out == NULL || count == 0U ||
-        count > SOFT3D_MAX_VERTICES ||
-        (reuse_count != 0U && (count % 2U != 0U || reuse_count != count / 2U)))
-        return FALSE;
-    for (i = 0; i < count; ++i)
-        if (!(vertices[i].x >= -FLT_MAX && vertices[i].x <= FLT_MAX &&
-              vertices[i].y >= -FLT_MAX && vertices[i].y <= FLT_MAX &&
-              vertices[i].z >= -FLT_MAX && vertices[i].z <= FLT_MAX))
-            return FALSE;
-    for (i = 0; i < reuse_count; ++i) out[2U * i] = out[2U * i + 1U];
-    for (i = 0; i < count; ++i)
-    {
-        if (reuse_count != 0U && i % 2U == 0U) continue;
-        x = vertices[i].x;
-        y = vertices[i].y;
-        z = vertices[i].z;
-        out[i].x = matrix[0][0] * x + matrix[0][1] * y + matrix[0][2] * z;
-        out[i].y = matrix[1][0] * x + matrix[1][1] * y + matrix[1][2] * z;
-        out[i].z = 0.0f;
-        if (!soft3d_float_valid(out + i)) return FALSE;
-    }
-    return TRUE;
-}
-#endif /* orthographic x/y transform */
 
 int soft3d_float_project_cached(const Soft3d_float_point *points,
                                 unsigned int point_count,

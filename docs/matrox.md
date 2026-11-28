@@ -44,42 +44,52 @@ The default globe is key 1. Only keys 1 and 2 are available, and there is no tex
 mapping. Patches are quads, with coincident pole vertices collapsed to triangles. All
 256 LUT entries come from `earth_cmap`, and polygons use the original palette indices.
 
-By default, LibShell transforms, projects, clips, and fills world-coordinate polygons
-through `v3arwplygn` (`V3ARWPLYGN`, winding-number fill). The driver selects
-LibShell's orthographic projection with `v3gpsproj(0)`; LibShell's default is a 60°
-perspective view.
+Both modes use the other drivers' perspective camera: a 45° field of view across the
+screen height, with the eye 3,000 units (three globe radii) from the globe's center.
 
-Press `S` to switch to host software transforms. This path keeps LibShell's
-orthographic world window, integer-degree rotations (LibShell's `ANGLE` type), and
-viewport orientation. The CPU transforms, projects, clips, and culls bounded packets
-of up to 64 quads (two latitude rows of at most 65 vertices), then sends
-screen-coordinate polygons through `scarwplygn` (`SCARWPLYGN`). LibShell still fills
-them with the same LUT. Each packet's lower row becomes the next packet's upper row,
-so every mesh vertex is transformed and projected once per frame (561 points at key
-1 rather than 2,048 quad corners). The orthographic kernels compute only x and y,
-with results identical to the full transforms. The packets need about 4.7 KB of
-bounded buffers (2.1 KB from the shared traversal, 2.6 KB of driver points), not a
-second mesh. Native LibShell 3D keeps sending each quad's world vertices. Press `S`
-again to return to LibShell 3D.
+By default, LibShell transforms, projects, clips, and fills world-coordinate polygons
+through `v3arwplygn` (`V3ARWPLYGN`, winding-number fill). The driver sets a 45°
+perspective with `v3gpsproj(45)` and the viewing distance with `v3gpsdist(3000)`;
+LibShell's default angle is 60°, and 0 selects an orthogonal projection. The
+*Command Reference* gives no projection formula. It does not say whether the viewing
+angle spans the window's width or its height, or whether the window lies on the view
+plane through the reference point. The driver therefore maps a square window, ±1,242.6
+units (3,000 × tan 22.5°), to a centered 480 × 480 viewport, which gives the same
+image under each of those readings. Because `v2gpsvwp` also resets the clipping
+rectangle to the viewport, `krhwsclipr` then restores the full screen for the OSD.
+
+Press `S` to switch to host software transforms. This path uses LibShell's
+integer-degree rotations (its `ANGLE` type) and the same camera. The CPU transforms,
+projects, clips, and culls bounded packets of up to 64 quads (two latitude rows of at
+most 65 vertices) with the shared perspective pipeline that TIGA, GDI, and QuickDraw
+use, then sends screen-coordinate polygons through `scarwplygn` (`SCARWPLYGN`).
+LibShell still fills them with the same LUT. Each packet's lower row becomes the next
+packet's upper row, and a projection cache projects each vertex once, so every mesh
+vertex is transformed and projected once per frame (561 points at key 1 rather than
+2,048 quad corners). The packets need about 4.8 KB of bounded buffers (2.1 KB from the
+shared traversal, 2.7 KB of driver points and projection cache), not a second mesh.
+Native LibShell 3D keeps sending each quad's world vertices. Press `S` again to return
+to LibShell 3D.
 
 ## Platform notes
 
 The *LIB Shell Command Reference Manual* documents no depth buffer or back-face
-control, so the host rejects back-facing polygons itself. Without an x87, native
-mode decides most facings with the integer orthographic transform instead of emulated
-floating point (99% at key 1, 98% at key 2 in the recorder). A proven error bound
-covers the fixed-point rounding and the float test's own rounding; facings within it,
-near the silhouette or at thin pole caps, fall back to the float test, so the
-submitted polygons are exactly those of the float test. Its speed on real hardware
+control, so the host rejects back-facing polygons itself: a polygon is drawn when its
+normal points toward the eye's position, seen from one of its vertices. Without an
+x87, native mode decides most facings with an integer object-space test instead of
+emulated floating point (99.7% at key 1, 98.1% at key 2 in the recorder). A proven
+error bound covers the fixed-point rounding and the float test's own rounding; facings
+within it, near the silhouette or at thin pole caps, fall back to the float test, so
+the submitted polygons are exactly those of the float test. Its speed on real hardware
 has not been measured. DOS builds use normalized huge pointers, `_halloc`/`_hfree`,
 long mesh counts, and DOS timing.
 
 Matrox and TIGA share `drv_cpu.c` to detect 8086-class, 286, 386, and 486-or-later
-CPUs, and one selection in `drv.c` (`drv_soft3d_select()`) picks their host kernel
-at startup. A usable x87 selects floating-point host transforms; the presence probe
-works with 8087/287/387-compatible instructions but does not identify the exact
-model. Without an x87, 386-or-later CPUs use the separate 386 integer kernel and
-older CPUs the baseline integer code. `NO87=1` forces integer transforms. `/FPi` keeps runtime
+CPUs, and one selection in `drv.c` (`drv_soft3d_select()`) picks their host kernel at
+startup. A usable x87 selects floating-point host transforms; the presence probe works
+with 8087/287/387-compatible instructions but does not identify the exact model.
+Without an x87, 386-or-later CPUs use the separate 386 integer kernel and older CPUs
+the baseline integer code. `NO87=1` forces integer transforms. `/FPi` keeps runtime
 emulation for other floating-point work, including mesh generation.
 
 LibShell reports each error as an 8-bit value in its error register and waits until
@@ -128,4 +138,6 @@ units or whether a word is available atomically; verify these against the instal
 binding and board. The 228-byte packet budget assumes the manual's command formats
 and a command FIFO of at least 256 bytes; the startup quiet interval, the INT 23h
 exit path and the speed of grouped checkpoints and integer culling also need the
-board to confirm.
+board to confirm. So does the native perspective: if the globe's size or position
+changes when `S` switches modes, LibShell reads the viewing angle or window
+differently from the assumptions above.

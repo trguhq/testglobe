@@ -146,9 +146,10 @@ make it slower than host transforms. Individual quad submission remains availabl
 
 Matrox, TIGA, GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer
 IEEE-float decoding, fixed-point transforms, projection, clipping, and back-face
-rejection; `src/soft3fp.c` provides the floating-point equivalents. Matrox uses
-orthographic kernels that compute only x and y over the same row-reusing packets; the
-other four use perspective projection with bounded packet caches. Indexed projection
+rejection; `src/soft3fp.c` provides the floating-point equivalents. All five use
+perspective projection over row-reusing packets with bounded projection caches;
+Matrox prepares its matrix from LibShell's integer-degree yaw and pitch
+(`soft3d_*_prepare_degrees()`). Indexed projection
 validates indices against the initialized packet. Whole polygons inside the depth and
 viewport bounds skip clipping, while polygons crossing them take the general path.
 Back-face rejection uses the complete rounded polygon, preserving silhouette and
