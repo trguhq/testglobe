@@ -30,6 +30,16 @@ primitive and capabilities. Keep those responsibilities separate.
 - GDI and Amiga select `DRV_PALETTE_DITHER` for the shared color matcher and ordered
   patterns; QuickDraw leaves that work to its native color machinery.
 
+## Versions
+
+Versions have three fields, major.minor.patch, defined in `src/testglob.h`
+(`TESTGLOBE_VERSION_MAJOR`, `_MINOR` and `_PATCH`). Applications print the version at
+startup; QuickDraw shows it in its About box. Every push to GitHub that changes code
+increments the patch field; a push that changes only documentation does not. Each
+field runs from 0 to 99 and then rolls over into the next: 0.2.99 is followed by
+0.3.0, and 0.99.99 by 1.0.0. `testglob.h` stops the build if a field exceeds 99. The
+README's version history has one section per minor series, such as v0.2.x.
+
 ## Source layout
 
 | Location | Responsibility |

@@ -519,6 +519,14 @@ pointer keywords removed for host compilation.
   two-byte `PROJCT`, and an IBM PGC, which ignores `FLAGRD 30`, `LUT` and the one-byte
   angle. Closing must let queued commands run and restore ASCII mode and error
   reporting.
+- **PGC timing and restarts:** in a fast-host model the simulated board's processor
+  runs only after the host has paused since its last access, as HOLD stops it during
+  host accesses; the probe, a FIFO wrap and a `FLAGRD` reply must still complete, so
+  every wait must pause between polls. The probe must issue a warm restart, which
+  ends a PG-640A's endless Self-test B5; wait out a cold restart in progress, giving
+  up on one that never ends and finding the next board; and give a board that ignores
+  the warm restart flag its old value back while still discarding stale data. Builds
+  without the pauses or without the warm restart fail these checks.
 
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
   triangle/quad statistics, and cleanup. Independent view-space facing tests check

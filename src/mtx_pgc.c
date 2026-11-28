@@ -15,6 +15,15 @@
  * Commands are hex mode: an opcode byte, Ints as two bytes (low first) and
  * Reals as 16.16 with the integer word first. Matrox's PG-640A reports
  * board type 2 at offset 3F8h and has FLAGRD flags beyond the PGC's 25.
+ *
+ * The communication area is the board processor's own memory. For each
+ * host access the board holds its 8088 off its bus (HOLD) and stretches
+ * the host's cycle with I/O CH RDY until it may proceed (IBM Technical
+ * Reference: system-bus interface and processor-card logic). A host that
+ * polls back to back keeps the board's processor stopped; a fast CPU does
+ * little else between accesses and can starve the very command it waits
+ * for. Every wait therefore pauses between polls for a time set by I/O
+ * bus cycles, not CPU speed.
  */
 #include "testglob.h"
 #if defined(DRV_MTX)
@@ -30,6 +39,8 @@
 #define PGC_IN_READ 0x303U
 #define PGC_ERR_WRITE 0x304U
 #define PGC_ERR_READ 0x305U
+#define PGC_COLD_RESTART 0x306U
+#define PGC_WARM_RESTART 0x307U
 #define PGC_ERROR_ENABLE 0x308U
 #define PGC_BOARD 0x3F8U
 #define PGC_BOARD_PG640A 2U
@@ -38,20 +49,36 @@
  * shorter wait when probing for a board or identifying it. */
 #define PGC_WAIT_TICKS (10UL * (unsigned long)CLOCKS_PER_SEC)
 #define PGC_PROBE_TICKS (2UL * (unsigned long)CLOCKS_PER_SEC)
+/* A cold restart (a previous program's, or power-up on a fast machine)
+ * runs the board's self-tests before it clears the flag. */
+#define PGC_RESET_TICKS (15UL * (unsigned long)CLOCKS_PER_SEC)
+/* Port reads between polls: ISA I/O cycles of about a microsecond each, so
+ * the board's 8088 has the bus for all but a few percent of a wait. */
+#define PGC_PAUSE_READS 64U
 
 #ifdef MTX_PGC_TEST
 extern unsigned char mtx_pgc_test_read(unsigned int offset);
 extern void mtx_pgc_test_write(unsigned int offset, unsigned char value);
 extern clock_t mtx_pgc_test_clock(void);
 extern void mtx_pgc_test_select(unsigned int segment);
+extern void mtx_pgc_test_pause(void);
 #define PGC_READ(offset) mtx_pgc_test_read(offset)
 #define PGC_WRITE(offset, value) mtx_pgc_test_write((offset), (unsigned char)(value))
 #define PGC_CLOCK() mtx_pgc_test_clock()
+#define PGC_PAUSE() mtx_pgc_test_pause()
 #else
+#include <conio.h>
 static volatile unsigned char _far *pgc_area;
 #define PGC_READ(offset) (pgc_area[offset])
 #define PGC_WRITE(offset, value) (pgc_area[offset] = (unsigned char)(value))
 #define PGC_CLOCK() clock()
+#define PGC_PAUSE() pgc_pause()
+/* System control port B (61h): reading it changes nothing. */
+static void pgc_pause(void)
+{
+    unsigned int i;
+    for (i = 0; i < PGC_PAUSE_READS; ++i) (void)inp(0x61);
+}
 #endif
 
 static const unsigned int pgc_segments[] = { 0xC600U, 0xC640U };
@@ -140,6 +167,7 @@ static void pgc_byte(unsigned char value)
                 pgc_stopped = TRUE;
                 return;
             }
+            PGC_PAUSE();
         }
     }
     PGC_WRITE(PGC_OUT + pgc_write, value);
@@ -200,6 +228,7 @@ static int pgc_read(unsigned char *reply, unsigned int count,
             if (fail) pgc_stopped = TRUE;
             return FALSE;
         }
+        PGC_PAUSE();
     }
     /* Commands run in order: errors from those before the request are
      * already in the error FIFO once its reply is. */
@@ -214,13 +243,34 @@ int pgc_flagrd(unsigned char flag, unsigned char *reply, unsigned int bytes)
     return pgc_read(reply, bytes, pgc_limit, TRUE);
 }
 
+/* TRUE once the board clears a restart flag within limit ticks. */
+static int pgc_flag_clears(unsigned int offset, unsigned long limit)
+{
+    Pgc_wait wait;
+    pgc_wait_begin(&wait);
+    while (PGC_READ(offset) != 0U)
+    {
+        if (pgc_wait_over(&wait, limit)) return FALSE;
+        PGC_PAUSE();
+    }
+    return TRUE;
+}
+
 /* Shared memory must keep the error enable flag's 0 and 1, and the board
  * must answer FLAGRD 4 after "CX ", which selects hex mode from either
- * mode. Otherwise the flag is restored and nothing else is touched but
- * the five bytes sent and the pointers. */
+ * mode. Otherwise the flags are restored and nothing else is touched but
+ * the five bytes sent and the pointers.
+ *   A cold restart in progress (flag 1) is waited out first. A warm
+ * restart then stops a command list or DMA left by another program and
+ * resets the FIFO pointers; on a PG-640A it also ends Self-test B, whose
+ * last test exercises the FIFOs until the host writes this flag, so a
+ * board with its self-test switch on answers nothing until then. The
+ * board clears the flag when done; a board that leaves it set gets its
+ * old value back and is probed as before. */
 static int pgc_try(unsigned int segment)
 {
-    unsigned char saved, reply;
+    unsigned char saved, warm, reply;
+    int restarted;
     pgc_seg = segment;
 #ifdef MTX_PGC_TEST
     mtx_pgc_test_select(segment);
@@ -232,6 +282,12 @@ static int pgc_try(unsigned int segment)
     if (PGC_READ(PGC_ERROR_ENABLE) != 0U) goto absent;
     PGC_WRITE(PGC_ERROR_ENABLE, 1U);
     if (PGC_READ(PGC_ERROR_ENABLE) != 1U) goto absent;
+    if (PGC_READ(PGC_COLD_RESTART) == 1U &&
+        !pgc_flag_clears(PGC_COLD_RESTART, PGC_RESET_TICKS)) goto absent;
+    warm = PGC_READ(PGC_WARM_RESTART);
+    PGC_WRITE(PGC_WARM_RESTART, 1U);
+    restarted = pgc_flag_clears(PGC_WARM_RESTART, PGC_PROBE_TICKS);
+    if (!restarted) PGC_WRITE(PGC_WARM_RESTART, warm);
     /* Stale replies and errors from an earlier program are discarded. */
     PGC_WRITE(PGC_IN_READ, PGC_READ(PGC_IN_WRITE));
     PGC_WRITE(PGC_ERR_READ, PGC_READ(PGC_ERR_WRITE));
@@ -243,7 +299,9 @@ static int pgc_try(unsigned int segment)
     pgc_limit = PGC_PROBE_TICKS;
     pgc_byte('C'); pgc_byte('X'); pgc_byte(' ');
     pgc_byte(0x51U); pgc_byte(4U);
-    if (pgc_read(&reply, 1U, PGC_PROBE_TICKS, FALSE))
+    /* A board that acknowledged the warm restart is there; allow it the
+     * full reply deadline. */
+    if (pgc_read(&reply, 1U, restarted ? PGC_WAIT_TICKS : PGC_PROBE_TICKS, FALSE))
     {
         pgc_saved_enable = saved;
         return TRUE;
@@ -289,7 +347,10 @@ void pgc_close(void)
         pgc_wait_begin(&wait);
         while (PGC_READ(PGC_OUT_READ) != pgc_write &&
                !pgc_wait_over(&wait, PGC_PROBE_TICKS))
+        {
             pgc_drain_errors();
+            PGC_PAUSE();
+        }
     }
     PGC_WRITE(PGC_ERROR_ENABLE, pgc_saved_enable);
     pgc_found = FALSE;

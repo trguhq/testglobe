@@ -29,6 +29,15 @@ static unsigned int queued_errors;
 static unsigned char error_codes[8];
 static clock_t now;
 static unsigned long writes_to_area;
+/* Restarts and bus sharing. hold_model: the board's processor runs only
+ * after the host paused since its last turn, as HOLD stops it during host
+ * accesses. warm_ignored: a board that leaves the warm restart flag set.
+ * self_test_loop: PG-640A Self-test B5, which ends only on a warm restart.
+ * cold_polls: polls left before a cold restart in progress clears 306h. */
+static unsigned long pauses, pauses_seen;
+static int hold_model, warm_ignored, self_test_loop;
+static unsigned int cold_polls, warm_restarts;
+void mtx_pgc_test_pause(void) { ++pauses; }
 
 clock_t mtx_pgc_test_clock(void) { now += CLOCKS_PER_SEC / 20; return now; }
 
@@ -95,6 +104,26 @@ static void run_board(int which)
     unsigned char *area = areas[which];
     int length;
     if (kinds[which] != KIND_PGC) return;
+    if (hold_model)
+    {
+        if (pauses == pauses_seen) return;
+        pauses_seen = pauses;
+    }
+    if (area[0x306] == 1U)
+    {
+        if (cold_polls != 0U) { --cold_polls; return; }
+        area[0x306] = 0;
+    }
+    if (area[0x307] != 0U && !warm_ignored)
+    {
+        /* Halt, reset the FIFO pointers, then clear the flag. */
+        memset(area + 0x300, 0, 6);
+        pending_count = 0;
+        self_test_loop = 0;
+        area[0x307] = 0;
+        ++warm_restarts;
+    }
+    if (self_test_loop) return;
     if (paused_polls != 0U) { --paused_polls; return; }
     while (queued_errors != 0U &&
            (unsigned char)(area[0x304] + 1) != area[0x305])
@@ -140,7 +169,8 @@ unsigned char mtx_pgc_test_read(unsigned int offset)
     int which = area_for();
     assert(which >= 0 && offset < 1024U);
     if (kinds[which] == KIND_ABSENT) return 0xFF;
-    if (offset == 0x301U || offset == 0x302U || offset == 0x304U) run_board(which);
+    if (offset == 0x301U || offset == 0x302U || offset == 0x304U ||
+        offset == 0x306U || offset == 0x307U) run_board(which);
     return areas[which][offset];
 }
 
@@ -169,6 +199,8 @@ static void reset(int kind0, int kind1, int model_640a)
     hex_mode[0] = hex_mode[1] = 0;
     pending_count = 0; logged_count = 0;
     paused_polls = 0; overrun = 0; stall_errors = 0; queued_errors = 0;
+    pauses = pauses_seen = 0UL; hold_model = warm_ignored = self_test_loop = 0;
+    cold_polls = warm_restarts = 0U;
     pg640a_model = model_640a;
     selected = 0;
 }
@@ -201,13 +233,14 @@ int main(void)
     assert(open_board());
     assert(pgc_segment() == 0xC600U && !pgc_pg640a() && !pgc_failed());
     assert(hex_mode[0] && areas[0][0x308] == 1);
+    assert(warm_restarts == 1U && areas[0][0x307] == 0);
     assert(areas[0][0x303] == areas[0][0x302] && areas[0][0x305] == areas[0][0x304]);
     {
         static const unsigned char probe[] = { 0x43, 'X', ' ', 0x51, 4 };
         expect(probe, sizeof(probe));
     }
     assert(pgc_take_errors() == 0U);
-    puts("PASS PGC probe: shared-memory flag test, hex mode from ASCII, a FLAGRD answer, stale replies and errors discarded");
+    puts("PASS PGC probe: shared-memory flag test, warm restart, hex mode from ASCII, a FLAGRD answer, stale replies and errors discarded");
 
     /* Commands, as the IBM Technical Reference encodes them. */
     pgc_resetf(); pgc_displa(0); pgc_clears(7); pgc_color(200); pgc_prmfil(1);
@@ -369,5 +402,44 @@ int main(void)
     assert(pgc_open() && pgc_segment() == 0xC640U && hex_mode[1]);
     pgc_close();
     puts("PASS PGC absence: memory without a board processor and an empty address both fail the probe, restoring the flag they touched; a board at C6400h is found next");
+
+    /* A fast host: the board's processor runs only between host accesses,
+     * so every wait must leave the bus alone between polls. */
+    reset(KIND_PGC, KIND_ABSENT, 0);
+    hold_model = 1;
+    assert(open_board() && !pgc_failed());
+    logged_count = 0;
+    for (i = 0; i < 300U; ++i) pgc_color((unsigned char)i);
+    assert(pgc_flagrd(4, &value, 1) && value == 104 && !pgc_failed() && !overrun);
+    assert(logged_count == 602U && pauses != 0UL);
+    pgc_close();
+    puts("PASS PGC fast host: waits pause between polls, so a board stopped by every host access still runs and answers");
+
+    /* Restarts. A PG-640A with its self-test switch on loops in Self-test
+     * B5 until the warm restart; a cold restart in progress is waited out,
+     * but not forever; a board that ignores the warm restart flag gets its
+     * value back, still has stale data discarded and is still found. */
+    reset(KIND_PGC, KIND_ABSENT, 1);
+    areas[0][0x3F8] = 2;
+    self_test_loop = 1;
+    assert(open_board() && pgc_pg640a() && warm_restarts == 1U);
+    pgc_close();
+    reset(KIND_PGC, KIND_ABSENT, 0);
+    areas[0][0x306] = 1;
+    cold_polls = 50;
+    assert(open_board() && areas[0][0x306] == 0 && warm_restarts == 1U);
+    pgc_close();
+    reset(KIND_PGC, KIND_PGC, 0);
+    areas[0][0x306] = 1; areas[0][0x308] = 0x21;
+    cold_polls = 0xFFFFFFFFU;
+    assert(open_board() && pgc_segment() == 0xC640U && areas[0][0x308] == 0x21);
+    pgc_close();
+    reset(KIND_PGC, KIND_ABSENT, 0);
+    warm_ignored = 1;
+    areas[0][0x307] = 0x40; areas[0][0x302] = 3; areas[0][0x304] = 2;
+    assert(open_board() && areas[0][0x307] == 0x40 && warm_restarts == 0U);
+    assert(areas[0][0x303] == areas[0][0x302] && areas[0][0x305] == areas[0][0x304]);
+    pgc_close();
+    puts("PASS PGC restarts: a warm restart ends the PG-640A's endless self-test, a cold restart in progress is waited out within a limit, and a board that ignores the flag gets it back and is probed as before");
     return 0;
 }

@@ -138,12 +138,11 @@ test runner.
 - Shadows.
 - City lights.
 - A one-button benchmark.
-- An IBM PGC or compatible driver; performance may be limiting.
 - Other possible backends: IBM Adapter Interface and VBE/AF.
 
 ## Version history
 
-### v0.2 (in development)
+### v0.2.x (in development)
 
 - Added Matrox LibShell and PGC, TIGA, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga
   backends.

@@ -1575,8 +1575,9 @@ static void qd_about(void)
     char about[128];
     Str255 text;
     static const unsigned char empty[] = "";
-    sprintf(about, "%s %d.%d draws an Earth globe with QuickDraw.",
-            TESTGLOBE_NAME, TESTGLOBE_VERSION_MAJOR, TESTGLOBE_VERSION_MINOR);
+    sprintf(about, "%s %d.%d.%d draws an Earth globe with QuickDraw.",
+            TESTGLOBE_NAME, TESTGLOBE_VERSION_MAJOR, TESTGLOBE_VERSION_MINOR,
+            TESTGLOBE_VERSION_PATCH);
     qd_pascal(text, about);
     ParamText(text, empty, empty, empty);
     (void)NoteAlert(QD_ABOUT_ALERT, NULL);

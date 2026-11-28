@@ -106,15 +106,15 @@ communication area as the IBM PGC; LibShell's registers follow it: the processor
 host-interface address, data and control words at offsets 318h–31Eh, the FIFO data
 entry at 320h, and the 8-bit ERROR register at 3B0h. Matrox's library source gives
 the command and reply FIFOs 4,096 words each. Their counts, and a status word whose
-bit 9 marks an unread error, are read through the host interface. A command is its opcode word and parameter
-words, in the formats the *LIB Shell Command Reference* gives; a FIXPT value is sent
-as 16.16, fraction word first, and vertex coordinates are converted from their IEEE
-bits without floating-point arithmetic. At startup the binding halts the processor
-briefly to check that two of its scratch registers keep test patterns, as Matrox's
-`lsinit` does; if they do not, the driver looks for a PGC-compatible board instead.
-Matrox's `iogeterror()` first waits for the command FIFO to drain, sending a no-op
-each time, so a shell stalled on two unread errors can hang it; `src/mtx_ls.c` reads
-the error register without waiting.
+bit 9 marks an unread error, are read through the host interface. A command is its
+opcode word and parameter words, in the formats the *LIB Shell Command Reference*
+gives; a FIXPT value is sent as 16.16, fraction word first, and vertex coordinates
+are converted from their IEEE bits without floating-point arithmetic. At startup the
+binding halts the processor briefly to check that two of its scratch registers keep
+test patterns, as Matrox's `lsinit` does; if they do not, the driver looks for a
+PGC-compatible board instead. Matrox's `iogeterror()` first waits for the command
+FIFO to drain, sending a no-op each time, so a shell stalled on two unread errors can
+hang it; `src/mtx_ls.c` reads the error register without waiting.
 
 A PGC-compatible board takes commands through its 1 KB communication area: a
 256-byte command FIFO at offset 0, a readback FIFO at 100h and an error FIFO at 200h,
@@ -127,11 +127,45 @@ is full. Coordinates are Reals, 16.16 with the integer word first; vertices are
 converted from their IEEE bits without floating-point arithmetic.
 
 To find a board, `src/mtx_pgc.c` checks that the error-reporting flag holds two test
-values, discards replies and errors left by a previous program, sends `CX` and waits
-up to two seconds for the answer to `FLAGRD 4`. A board that fails is left with its
-flag restored, and the next address is tried. At startup the driver reads the
+values. If the cold restart flag (306h) is 1, a restart is still running its
+self-tests, and the driver waits up to 15 seconds for the board to clear it. It then
+writes 1 to the warm restart flag (307h), which, in the PG-640A manual's words, halts
+command lists, DMA transfers and Self-test B and resets the FIFO pointers; the board
+clears the flag when done. That matters on a PG-640A with its self-test switch on:
+the last test of Self-test B exercises the FIFOs until the host writes this flag,
+so the board answers no commands until then. The IBM manual lists the flag without
+describing it, so a board that leaves it set for two seconds gets its old value back
+and is probed as before. The driver then discards replies and errors left by a
+previous program, sends `CX` and waits for the answer to `FLAGRD 4`: ten seconds
+after an acknowledged warm restart, otherwise two. A board that fails is left with
+its flags restored, and the next address is tried. At startup the driver reads the
 displayed screen with `FLAGRD 5`, saves the board's LUT with `LUTSAV`, shows graphics
 with `DISPLA 0` and enables error reporting.
+
+### Fast machines
+
+The communication area is the PGC processor's own memory, not dual-ported RAM. The
+IBM *Technical Reference* and its processor-card logic diagrams show each host access
+raising HOLD on the board's 8088 and holding the host's bus cycle with I/O CH RDY
+until the 8088 lets go of its bus; the host's address and data then go onto the
+board's local bus. While the host reads or writes the area, the board's processor is
+stopped. A host that polls a FIFO pointer in a tight loop therefore slows the board
+in proportion to how little time it spends between accesses. On a 4.77 MHz PC the
+loop's own instructions leave the board most of the bus; a fast CPU can keep it
+stopped almost continuously, so the command being waited for never finishes.
+
+Every wait in `src/mtx_pgc.c` (for FIFO room, replies, a restart flag or the final
+drain) therefore pauses between polls by reading port 61h, which changes nothing,
+64 times. ISA I/O cycles take about a microsecond whatever the CPU speed, so the
+board gets the bus for all but a few percent of the wait, and the timing no longer
+depends on the CPU. The deadlines use `clock()`, not loop counts.
+
+Software cannot fix two other hazards of fast machines. BIOS options that shadow or
+cache C0000h–C7FFFh (often labeled video BIOS shadow) cover the communication area:
+writes then miss the board, or reads return stale values, and the board is not found
+or stops answering. Disable shadowing and caching for C4000h–C7FFFh. The board also
+stretches every host cycle through I/O CH RDY, which some fast ISA bus settings
+handle poorly; an 8 MHz ISA clock is the safe setting if the board is unreliable.
 
 ## Platform notes
 
@@ -227,8 +261,9 @@ formula above.
 
 The PGC path follows the IBM *Technical Reference* and the PG-640A manual, and is
 tested against simulated boards and a command recorder only. Hardware still needs to
-confirm the communication-area probe and the switch to hexadecimal commands, the
-PG-640A identification and its `LUTX` and two-byte `PROJCT`, the frame
-synchronization's speed, and the 3D projection, which `S` should leave unchanged in
+confirm the communication-area probe and the switch to hexadecimal commands, an IBM
+PGC's response to the warm restart flag, that the pause between polls is long enough
+on a fast machine, the PG-640A identification and its `LUTX` and two-byte `PROJCT`,
+the frame synchronization's speed, and the 3D projection, which `S` should leave unchanged in
 size and position. `MTXFIFO` settings above 256 need a LIB Shell board to confirm the
 4,096-word FIFO.

@@ -60,7 +60,8 @@ int main(int argc, char **argv)
         error("Cannot initialize application window");
 
 #ifndef DRV_NO_CONSOLE
-    printf("%s %i.%i\n", TESTGLOBE_NAME, TESTGLOBE_VERSION_MAJOR, TESTGLOBE_VERSION_MINOR);
+    printf("%s %i.%i.%i\n", TESTGLOBE_NAME, TESTGLOBE_VERSION_MAJOR,
+           TESTGLOBE_VERSION_MINOR, TESTGLOBE_VERSION_PATCH);
     printf("Driver: %s\n", drv_name);
     printf("Resolution: %u x %u\n", drv_win_width, drv_win_height);
     printf("Color depth: %u bpp (%lu colors)\n", drv_bits_per_pixel, drv_colors);
