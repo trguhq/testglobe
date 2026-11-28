@@ -738,8 +738,9 @@ python3 tests/run.py --gdi-contract
   window: startup must match the palette exactly once, in the foreground, and an
   active window must keep its foreground mapping when another application changes
   the palette. Each paint or render realizes the palette once.
-  Font tests cover size tiers, substitution, allocation failure, restoration of
-  selected objects, and bounded ownership across resize.
+  Font tests cover size tiers under Small and Large Fonts, Windows 3.0 and scalable
+  faces, requests only for sizes `EnumFonts` lists, substitution, allocation failure,
+  restoration of selected objects, and bounded ownership across resize.
 - **Palette dithering:** realized palette RGBs, exact solid brushes, two-color DIB
   patterns, cache refreshes after palette changes, and solid fallback when queries
   or pattern creation fail. Packed DIB layout, logical palette indices, pattern

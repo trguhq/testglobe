@@ -83,13 +83,14 @@ def build(config):
     for name in names:
         run(["wcc"] + options + ["-fo=" + name + ".obj", src / (name + ".c")],
             cwd=out, env=env)
-    # Full -zw Windows prologues and the exported callback work with the
-    # driver's MakeProcInstance thunk; no smart-callback ABI is assumed.
+    # Full -zw Windows prologues and the exported callbacks work with the
+    # driver's MakeProcInstance thunks; no smart-callback ABI is assumed.
     link = ["system windows", "option quiet", "option map=testglob.map",
             "option stack=16384", "option heapsize=8192",
             "option alignment=16", "name testglob.exe",
             "segment type code preload moveable discardable",
-            "segment type data preload moveable", "export GDI_WINDOW_PROC.1"]
+            "segment type data preload moveable", "export GDI_WINDOW_PROC.1",
+            "export GDI_FONT_PROC.2"]
     link.extend("file " + name + ".obj" for name in names)
     (out / "gdi.lnk").write_text("\n".join(link) + "\n", encoding="ascii")
     run(["wlink", "@gdi.lnk"], cwd=out, env=env)
