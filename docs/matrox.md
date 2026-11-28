@@ -174,7 +174,7 @@ the driver reads the displayed screen with `FLAGRD 5`, saves the board's LUT wit
 `LUTSAV`, reads the screen size, shows graphics with `DISPLA 0` and enables error
 reporting.
 
-### Fast machines
+### IBM PGC on fast machines
 
 The communication area is the PGC processor's own memory, not dual-ported RAM. The
 IBM *Technical Reference* and its processor-card logic diagrams show each host access
