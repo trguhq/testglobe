@@ -88,7 +88,7 @@ OpenGL binaries for IRIX (MIPS IV), Linux (ARM64), macOS (x86-64 and ARM64), and
 Solaris (SPARCv8).
 
 Development builds (0.2.3 for Matrox, 0.2.2 for the others) are in the
-[`downloads`](downloads/README.md) folder:
+[`downloads`](downloads/README.md) folder (these may not always be tested on the target system):
 
 | Application | Download |
 | --- | --- |
