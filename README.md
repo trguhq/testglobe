@@ -87,8 +87,8 @@ The [v0.1 release](https://github.com/trguhq/testglobe/releases/tag/v0.1) provid
 OpenGL binaries for IRIX (MIPS IV), Linux (ARM64), macOS (x86-64 and ARM64), and
 Solaris (SPARCv8).
 
-Development builds (0.2.3 for Matrox, 0.2.2 for the others) are in the
-[`downloads`](downloads/README.md) folder (these may not always be tested on the target system):
+For your convenience, cross-compiled development builds (0.2.3 for Matrox, 0.2.2 for the others) are in the
+[`downloads`](downloads/README.md) folder. Bear in mind that these may not always be tested on the target system before being released here:
 
 | Application | Download |
 | --- | --- |
