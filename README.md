@@ -87,20 +87,20 @@ The [v0.1 release](https://github.com/trguhq/testglobe/releases/tag/v0.1) provid
 OpenGL binaries for IRIX (MIPS IV), Linux (ARM64), macOS (x86-64 and ARM64), and
 Solaris (SPARCv8).
 
-Development builds are in the [`downloads`](downloads/README.md) folder:
+Development builds of 0.2.2 are in the [`downloads`](downloads/README.md) folder:
 
 | Application | Download |
 | --- | --- |
-| Windows 3.1 GDI | [ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-cross.zip) or [testglob.exe](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglob.exe) |
-| System 7 QuickDraw, 68000 | [ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-quickdraw-cross.zip) (MacBinary file and 800 KiB HFS disk image) |
-| DOS TIGA | [ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-tiga-cross.zip) |
-| DOS Matrox LibShell | [ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-cross.zip) |
-| Amiga chipset / RTG | [ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-palette-fix.zip) (predates fullscreen support) |
+| DOS Matrox LibShell and IBM PGC | [testglobe-matrox-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-0.2.2.zip) |
+| Windows 3.0 and 3.1 GDI | [testglobe-gdi-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-0.2.2.zip) |
+| System 7 QuickDraw, 68000 | [testglobe-quickdraw-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-quickdraw-0.2.2.zip) (MacBinary file and 800 KiB HFS disk image) |
+| Amiga chipset / RTG | [testglobe-amiga-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-0.2.2.zip) |
+| Amiga PiStorm3D (MiniGL) | [testglobe-amiga-opengl-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-opengl-0.2.2.zip) |
 
-Each archive includes installation notes, a license, and checksums. The archives
-predate the latest driver revisions; see the [downloads notes](downloads/README.md).
-The DOS and Windows applications embed their data in `testglob.exe`. Decode the
-Macintosh MacBinary file with a resource-fork-aware utility, or use the disk image.
+Each archive includes installation notes, a license, and checksums; see the
+[downloads notes](downloads/README.md). There is currently no TIGA build. The DOS and
+Windows applications embed their data in `testglob.exe`. Decode the Macintosh
+MacBinary file with a resource-fork-aware utility, or use the disk image.
 
 ## Testing
 

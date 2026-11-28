@@ -142,9 +142,8 @@ options such as `--build-dir /path/to/builds`, `--host-cc clang`, or
 cross-toolchains.
 
 The packaged cross-builds pass executable-structure and embedded-data checks
-(`tests/cross_binary.py`), host API tests, and DOSBox arithmetic checks. Windows and
-Macintosh desktop behavior and Matrox/TIGA hardware rendering still need testing on
-the target systems.
+(`tests/cross_binary.py`) and the host API tests. Windows, Macintosh and Amiga
+behavior and Matrox hardware rendering still need testing on the target systems.
 
 ## Earth map data
 

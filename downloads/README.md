@@ -1,40 +1,34 @@
 # Development binaries
 
-These archives contain builds from the source revision that last updated each archive.
-See the [build instructions](../docs/build.md#linux-hosted-cross-builds) for compilers
-and SDK requirements. Each ZIP includes installation notes, a license, and file
-checksums; [SHA256SUMS](SHA256SUMS) covers the ZIPs and standalone executables.
+These archives are testglobe 0.2.2, cross-compiled on Linux from source revision
+[`a93349b`](https://github.com/trguhq/testglobe/tree/a93349b38a3dd65a1eb5eee0cf7cf27264999cad).
+Each archive is named `testglobe-<target>-<version>.zip` after its make target and
+contains the application, installation notes (`README.txt`), the license and a
+`SHA256SUMS` file for its contents. [SHA256SUMS](SHA256SUMS) here covers the archives.
+See the [build instructions](../docs/build.md#linux-hosted-cross-builds) to build them
+yourself.
 
-| Build | Archive | Application |
+| Target | Archive | Contents |
 | --- | --- | --- |
-| Windows 3.1 GDI | [Download ZIP](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-cross.zip) | [testglob.exe](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglob.exe), Win16 protected mode |
-| Classic Macintosh QuickDraw | [Download](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-quickdraw-cross.zip) | System 7 / 68000 application in MacBinary and HFS disk-image formats |
-| DOS TIGA | [Download](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-tiga-cross.zip) | `testglob.exe`, embedded TI transform module |
-| DOS Matrox LibShell | [Download](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-cross.zip) | `testglob.exe`, 286 or later |
-| Amiga chipset / RTG palette build | [Download](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-palette-fix.zip) | Application and Workbench icon; predates fullscreen support |
-| Earlier Amiga build | [Download](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-50a89c3.zip) | Archived build from `50a89c3` |
+| DOS, Matrox LIB Shell and IBM PGC-compatible boards | [testglobe-matrox-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-0.2.2.zip) | `testglob.exe`, 8086 or later |
+| Windows 3.0 and 3.1 GDI | [testglobe-gdi-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-0.2.2.zip) | `testglob.exe`, Win16 protected mode |
+| Classic Macintosh QuickDraw | [testglobe-quickdraw-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-quickdraw-0.2.2.zip) | System 7 / 68000 application as a MacBinary file and an 800 KiB HFS disk image |
+| Amiga chipset / RTG | [testglobe-amiga-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-0.2.2.zip) | Application and Workbench icon |
+| Amiga PiStorm3D (MiniGL) | [testglobe-amiga-opengl-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-opengl-0.2.2.zip) | Application and Workbench icon |
 
-The archives have not been rebuilt since the latest driver revisions, which changed
-DOS break handling, the Matrox and TIGA protocols, GDI's Windows version marking, and
-QuickDraw memory and events. Build the current code with the
-[cross-build targets](../docs/build.md#linux-hosted-cross-builds). The GDI executable
-here is still marked for Windows 3.1, so the current `tests/cross_binary.py` check,
-which expects the Windows 3.0 marking, rejects it.
+There is no TIGA archive: its build needs TI's TMS340 tools and the TIGA SDK, which
+are not available here.
 
-All Earth data is embedded in the applications. Decode the Macintosh MacBinary
-file with a resource-fork-aware utility, or use the included disk image.
+Toolchains: OpenWatcom 2.0 beta (Matrox, GDI); Retro68 with GCC 16.1.0 and the
+Multiversal interfaces (QuickDraw); VBCC 0.9h patch 3, vasm 2.0f, vlink 0.18a and
+the NDK 3.2 Release 4 headers (Amiga), plus the MiniGL SDK at `d950a3a1` (Amiga
+OpenGL). The Matrox build uses no Matrox library or headers.
 
-The GDI build closes every Win16 polygon explicitly and fills its boundary through
-a monochrome mask, preserving palette dithering across the edges. If mask allocation
-fails, solid fills and matching outlines remain available. The ZIP and standalone
-executable contain the same application.
-Its FPS counter reports subsecond frames promptly instead of waiting for 60 frames.
+All Earth data is embedded in the applications. Decode the Macintosh MacBinary file
+with a resource-fork-aware utility, or use the disk image.
 
-The Matrox archive predates the built-in LibShell binding and PGC support: it links
-Matrox's `LSCL.LIB`, which the source no longer uses, and needs a 286 or later. The
-current `make matrox-cross` needs no Matrox library or headers.
-
-The four cross-builds passed compilation, executable/resource inspection, and host
-regression tests. The Matrox library adapter also passed DOSBox tests with x87 and
-forced floating-point emulation. Native Windows/Macintosh execution and physical
-Matrox/TIGA graphics remain untested in the build environment.
+Each build compiled and linked, and the Matrox, GDI and QuickDraw executables passed
+the format and embedded-data checks in `tests/cross_binary.py`; the Amiga
+application's embedded maps were read back by the host data test. The host
+regression tests cover each driver through call recorders. None of these builds has
+been run on its target hardware here.
