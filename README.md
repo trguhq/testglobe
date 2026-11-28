@@ -87,8 +87,8 @@ The [v0.1 release](https://github.com/trguhq/testglobe/releases/tag/v0.1) provid
 OpenGL binaries for IRIX (MIPS IV), Linux (ARM64), macOS (x86-64 and ARM64), and
 Solaris (SPARCv8).
 
-Development builds (0.2.3 for Matrox, 0.2.2 for the others) are in the
-[`downloads`](downloads/README.md) folder:
+For your convenience, cross-compiled development builds (0.2.3 for Matrox, 0.2.2 for the others) are in the
+[`downloads`](downloads/README.md) folder. Bear in mind that these may not always be tested on the target system before being released here:
 
 | Application | Download |
 | --- | --- |
@@ -147,15 +147,11 @@ test runner.
 ### v0.2.x (in development)
 
 - Added Matrox LibShell and PGC, TIGA, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga
-  backends.
+  backends with AI coding.
 - Added a static WebGL 2 browser frontend using the canonical Earth maps and palette.
 - Embedded the canonical binary Earth maps through bounded C arrays or native
-  resources, with disposable build sources and a supplied fallback copy..
+  resources, with disposable build sources and a supplied fallback copy.
 - Added FPS, automatic rotation, display-list control, and texture-use status.
-- Added selectable host/TI transforms and DOS CPU/FPU dispatch for TIGA, and embedded
-  the TI transform module for single-executable distribution.
-- Hardened allocation, file generation, coordinate and packet bounds, input recovery,
-  and driver error handling; reduced retained rendering memory.
 - Converted comments to C style and fixed bitmap OSD text in Mesa.
 
 ### [v0.1](https://github.com/trguhq/testglobe/releases/tag/v0.1)
