@@ -101,7 +101,12 @@ make tiga-cross CROSS_FLAGS="--tiga-root /path/to/TIGA --tiga-tools /path/to/ti-
   PGC-compatible boards.
 - **TIGA** needs `include` and `libs/ai.lib`; the original SDK archive layout is also
   accepted. Install DOSBox on the host and put the TI compiler, assembler, and linker
-  together in `--tiga-tools`. The build compiles `tga_gsp.c` and `tga_ext.asm` and
+  together in `--tiga-tools`. TI's TMS340 Family Code Generation Tools 5.01 and TIGA
+  SDK 2.01 are archived in
+  [tms34010guy/tms34010-sdk](https://github.com/tms34010guy/tms34010-sdk) under
+  `1990-11 TMS340 Family SDK`: unzip both tools disks into one directory, and the
+  SDK disk's `tigainc.zip` and `tigalibs.zip` into `tigainc` and `tigalibs` under the
+  `--tiga-root` directory. The build compiles `tga_gsp.c` and `tga_ext.asm` and
   embeds the module in `testglob.exe`, so no separate RLM is shipped. To reuse an
   already-built matching module, pass `--tiga-module /path/to/tga_gsp.rlm` instead of
   `--tiga-tools`.
@@ -143,7 +148,8 @@ cross-toolchains.
 
 The packaged cross-builds pass executable-structure and embedded-data checks
 (`tests/cross_binary.py`) and the host API tests. Windows, Macintosh and Amiga
-behavior and Matrox hardware rendering still need testing on the target systems.
+behavior and Matrox and TIGA hardware rendering still need testing on the target
+systems.
 
 ## Earth map data
 
