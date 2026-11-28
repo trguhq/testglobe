@@ -31,6 +31,7 @@ typedef struct {
     int monochrome, width, height, fill_mode;
     HGDIOBJ brush, pen, bitmap, font;
     HPALETTE palette;
+    const char *face;
     int memory_dc;
     unsigned int locks;
     BOOL palette_background;
@@ -81,8 +82,32 @@ static unsigned int mask_blits, mask_clears, mask_bitmaps, pattern_mask_blits;
 static int fail_mask_bitmap, fail_mask_blit, fail_mask_clear, fail_pens;
 static int fail_mask_polygon;
 static unsigned int fail_frame_clears, frame_clears;
-static unsigned int font_creates;
+static unsigned int font_creates, font_enumerations;
 static int fail_font, fail_font_metrics, substituted_font_height;
+/* Installed faces for EnumFonts: each designed size of a raster face, or one
+ * scalable entry. The heights are illustrative, not measured. */
+typedef struct { const char *face; int height, type; } FakeFont;
+static const FakeFont fonts_win31[] = {   /* Windows 3.1, Small Fonts (96 dpi) */
+    { "MS Sans Serif", 13, RASTER_FONTTYPE }, { "MS Sans Serif", 16, RASTER_FONTTYPE },
+    { "MS Sans Serif", 20, RASTER_FONTTYPE }, { "MS Sans Serif", 24, RASTER_FONTTYPE },
+    { "MS Sans Serif", 29, RASTER_FONTTYPE }, { "MS Sans Serif", 37, RASTER_FONTTYPE },
+    { "Small Fonts", 3, RASTER_FONTTYPE }, { "Small Fonts", 5, RASTER_FONTTYPE },
+    { "Small Fonts", 6, RASTER_FONTTYPE }, { "Small Fonts", 8, RASTER_FONTTYPE },
+    { "Small Fonts", 10, RASTER_FONTTYPE }, { "Small Fonts", 11, RASTER_FONTTYPE } };
+static const FakeFont fonts_large[] = {   /* Windows 3.1, Large Fonts (120 dpi) */
+    { "MS Sans Serif", 16, RASTER_FONTTYPE }, { "MS Sans Serif", 20, RASTER_FONTTYPE },
+    { "MS Sans Serif", 25, RASTER_FONTTYPE }, { "MS Sans Serif", 29, RASTER_FONTTYPE },
+    { "Small Fonts", 3, RASTER_FONTTYPE }, { "Small Fonts", 6, RASTER_FONTTYPE },
+    { "Small Fonts", 8, RASTER_FONTTYPE }, { "Small Fonts", 10, RASTER_FONTTYPE },
+    { "Small Fonts", 12, RASTER_FONTTYPE }, { "Small Fonts", 14, RASTER_FONTTYPE } };
+static const FakeFont fonts_win30[] = {   /* Windows 3.0: Helv, no Small Fonts */
+    { "Helv", 13, RASTER_FONTTYPE }, { "Helv", 16, RASTER_FONTTYPE },
+    { "Helv", 20, RASTER_FONTTYPE }, { "Helv", 24, RASTER_FONTTYPE } };
+static const FakeFont fonts_scalable[] = { { "MS Sans Serif", 12, TRUETYPE_FONTTYPE } };
+static const FakeFont fonts_tall[] = { { "MS Sans Serif", 37, RASTER_FONTTYPE } };
+static const FakeFont *fake_fonts = fonts_win31;
+static unsigned int fake_font_count = sizeof(fonts_win31) / sizeof(fonts_win31[0]);
+static int logical_density = 96;
 /* GlobalAlloc fails at or above fail_allocation_from bytes, and at exactly
  * fail_allocation_size bytes, emulating a fragmented global heap. */
 static DWORD fail_allocation_from, fail_allocation_size;
@@ -472,18 +497,45 @@ HFONT CreateFont(int height, int width, int escapement, int orientation,
                  BYTE family, LPCSTR face)
 {
     HFONT font;
-    assert(height == 10 || height == 12 || height == 16);
+    unsigned int i;
     assert(width == 0 && escapement == 0 && orientation == 0 && weight == FW_NORMAL);
     assert(!italic && !underline && !strikeout && charset == ANSI_CHARSET);
     assert(output == OUT_DEFAULT_PRECIS && clipping == CLIP_DEFAULT_PRECIS);
     assert(quality == DEFAULT_QUALITY && family == (VARIABLE_PITCH | FF_SWISS));
-    assert(strcmp(face, "Small Fonts") == 0);
+    /* Only a designed size of an installed face, never a pixel-doubled one. */
+    for (i = 0; i < fake_font_count; ++i)
+        if (strcmp(fake_fonts[i].face, face) == 0 &&
+            (fake_fonts[i].height == height || !(fake_fonts[i].type & RASTER_FONTTYPE)))
+            break;
+    assert(i < fake_font_count);
     ++font_creates;
     if (fail_font) return 0;
     font = object_new(OBJ_FONT);
+    objects[font].face = fake_fonts[i].face;
     objects[font].height = substituted_font_height ? substituted_font_height : height;
     objects[font].width = objects[font].height / 2;
     return font;
+}
+int EnumFonts(HDC dc, LPCSTR face, FARPROC callback, LPARAM data)
+{
+    typedef int (*FontCallback)(const LOGFONT *, const TEXTMETRIC *, int, LPARAM);
+    LOGFONT font;
+    TEXTMETRIC metrics;
+    unsigned int i;
+    int result = 1;
+    assert(objects[dc].kind == OBJ_DC && face != NULL && data == 0);
+    assert(callback == (FARPROC)gdi_font_proc && proc_instances > 1);
+    ++font_enumerations;
+    for (i = 0; i < fake_font_count && result; ++i) {
+        if (strcmp(fake_fonts[i].face, face) != 0) continue;
+        memset(&font, 0, sizeof(font));
+        memset(&metrics, 0, sizeof(metrics));
+        font.lfHeight = metrics.tmHeight = (short)fake_fonts[i].height;
+        metrics.tmAveCharWidth = (short)(fake_fonts[i].height / 2);
+        strcpy(font.lfFaceName, face);
+        result = ((FontCallback)callback)(&font, &metrics, fake_fonts[i].type, data);
+    }
+    return result;
 }
 BOOL GetTextMetrics(HDC dc, TEXTMETRIC *metrics)
 {
@@ -553,6 +605,7 @@ int GetDeviceCaps(HDC dc, int capability)
     case BITSPIXEL: return display_depth;
     case PLANES: return 1;
     case NUMCOLORS: case SIZEPALETTE: return 256;
+    case LOGPIXELSY: return logical_density;
     default: assert(!"Unexpected device capability"); return 0;
     }
 }
@@ -1645,46 +1698,88 @@ static void check_solid_pens(void)
     puts("PASS GDI solid pens: same-index pens cached per palette entry, at most 64 retained, temporary pens for the rest, released with brushes");
 }
 
+/* Forget the cached font and install another set of faces. */
+static void use_fonts(const FakeFont *fonts, unsigned int count, int density)
+{
+    if (gdi_font != 0) DeleteObject(gdi_font);
+    gdi_font = 0;
+    gdi_font_size = 0;
+    fake_fonts = fonts;
+    fake_font_count = count;
+    logical_density = density;
+}
+#define USE_FONTS(table, density) \
+    use_fonts(table, sizeof(table) / sizeof(table[0]), density)
+
+static void expect_font(int client_width, int client_height, const char *face, int height)
+{
+    unsigned int instances;
+    instances = proc_instances;
+    gdi_resize(client_width, client_height);
+    drv_draw_osd();
+    assert(proc_instances == instances);
+    if (face == NULL) {
+        assert(gdi_font == 0);
+    } else {
+        assert(gdi_font != 0 && objects[gdi_font].height == height);
+        assert(strcmp(objects[gdi_font].face, face) == 0);
+    }
+    assert(objects[gdi_buffer].font == GetStockObject(SYSTEM_FONT));
+}
+
 static void check_font_sizes(void)
 {
-    unsigned int creates;
+    unsigned int creates, enumerations;
     int width, height;
     HDC dc;
     width = (int)drv_win_width; height = (int)drv_win_height;
-    gdi_resize(320, 240);
+    USE_FONTS(fonts_win31, 96);
+    expect_font(320, 240, "Small Fonts", 10);
+    creates = font_creates; enumerations = font_enumerations;
     drv_draw_osd();
-    assert(gdi_font != 0 && objects[gdi_font].height == 10);
-    assert(objects[gdi_buffer].font == GetStockObject(SYSTEM_FONT));
-    creates = font_creates;
+    assert(font_creates == creates && font_enumerations == enumerations);
+    expect_font(640, 480, "MS Sans Serif", 13);
+    expect_font(1024, 768, "MS Sans Serif", 16);
+    expect_font(1280, 1024, "MS Sans Serif", 20);
+    /* Large Fonts scale the targets and offer their own designed sizes. */
+    USE_FONTS(fonts_large, 120);
+    expect_font(640, 480, "MS Sans Serif", 16);
+    expect_font(1024, 768, "MS Sans Serif", 20);
+    expect_font(320, 240, "Small Fonts", 12);
+    /* Windows 3.0 has Helv and no Small Fonts; tiny windows take its smallest size. */
+    USE_FONTS(fonts_win30, 96);
+    expect_font(640, 480, "Helv", 13);
+    expect_font(1024, 768, "Helv", 16);
+    expect_font(320, 240, "Helv", 13);
+    /* A scalable face is asked for at the target itself. */
+    USE_FONTS(fonts_scalable, 96);
+    expect_font(1024, 768, "MS Sans Serif", 16);
+    /* No designed size within half again of the target keeps the DC's font,
+     * without searching again until the target changes. */
+    USE_FONTS(fonts_tall, 96);
+    expect_font(640, 480, NULL, 0);
+    creates = font_creates; enumerations = font_enumerations;
     drv_draw_osd();
-    assert(font_creates == creates);
-    gdi_resize(640, 480);
-    drv_draw_osd();
-    assert(gdi_font != 0 && objects[gdi_font].height == 12);
-    gdi_resize(1024, 768);
-    drv_draw_osd();
-    assert(gdi_font != 0 && objects[gdi_font].height == 16);
+    assert(font_creates == creates && font_enumerations == enumerations);
+    use_fonts(fonts_win31, 0, 96);
+    expect_font(1024, 768, NULL, 0);
+    /* Densities outside 48-384 dpi are treated as 96. */
+    USE_FONTS(fonts_win31, 0);
+    expect_font(640, 480, "MS Sans Serif", 13);
+    USE_FONTS(fonts_win31, 96);
     fail_font = TRUE;
-    gdi_resize(320, 240);
+    expect_font(320, 240, NULL, 0);
+    creates = font_creates; enumerations = font_enumerations;
     drv_draw_osd();
-    assert(gdi_font == 0 && objects[gdi_buffer].font == GetStockObject(SYSTEM_FONT));
-    creates = font_creates;
-    drv_draw_osd();
-    assert(font_creates == creates);
+    assert(font_creates == creates && font_enumerations == enumerations);
     fail_font = FALSE;
     fail_font_metrics = TRUE;
-    gdi_resize(640, 480);
-    drv_draw_osd();
-    assert(gdi_font == 0 && objects[gdi_buffer].font == GetStockObject(SYSTEM_FONT));
+    expect_font(640, 480, NULL, 0);
     fail_font_metrics = FALSE;
     substituted_font_height = 40;
-    gdi_resize(1024, 768);
-    drv_draw_osd();
-    assert(gdi_font == 0 && objects[gdi_buffer].font == GetStockObject(SYSTEM_FONT));
+    expect_font(1024, 768, NULL, 0);
     substituted_font_height = 0;
-    gdi_resize(320, 240);
-    drv_draw_osd();
-    assert(gdi_font != 0 && objects[gdi_font].height == 10);
+    expect_font(320, 240, "Small Fonts", 10);
     dc = GetDC(main_window);
     gdi_target = dc;
     creates = font_creates;
@@ -1694,7 +1789,7 @@ static void check_font_sizes(void)
     gdi_target = 0;
     ReleaseDC(main_window, dc);
     gdi_resize(width, height);
-    puts("PASS GDI native fonts: client-size tiers, cached selection, actual metric validation, bounded allocation fallback and restored buffer/direct DC fonts");
+    puts("PASS GDI native fonts: MS Sans Serif, Helv or Small Fonts at designed sizes only, by client size and Small/Large Fonts density, cached selection, actual metric validation, bounded allocation fallback and restored buffer/direct DC fonts");
 }
 
 static void check_frame_clears(void)

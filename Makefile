@@ -110,20 +110,18 @@ MTX_386FLAGS = -G3 -DSOFT3D_TRANSFORM_386
 # Per-vertex/per-polygon objects omit stack probes; none recurses.
 MTX_HOTFLAGS = -Gs
 MTX_DEFINES = -DSEG86 -DDRV_MTX -DDRV -DNO_SINF
-XGX_ROOT = .
-MTX_CPPFLAGS = -I$(XGX_ROOT)
-MTX_LIB = $(XGX_ROOT)\libsv5\lscl.lib
+# Extra preprocessor flags for every Matrox object.
+MTX_CPPFLAGS =
 MTX_LDFLAGS = -link /STACK:16384
 MTX_OBJECTS1 = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj
-MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj
+# m_ls.obj talks to LIB Shell boards directly, with no vendor library or
+# headers; m_pgc.obj drives PGC-compatible boards when none answers.
+MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj m_ls.obj m_pgc.obj
 MTX_OBJECTS = $(MTX_OBJECTS1) $(MTX_OBJECTS2)
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\earthres.h $(SRC)\soft3d.h \
-    $(XGX_ROOT)\XGX1\HEADERS\DEF.H \
-    $(XGX_ROOT)\XGX1\HEADERS\LIBFN.H \
-    $(XGX_ROOT)\XGX1\HEADERS\IOLIB.H
+    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\mtx_ls.h $(SRC)\mtx_pgc.h
 
 # TIGA 2.0, Microsoft C 7 huge model. The vendor communication driver and
 # graphics manager supply board-specific support; ai.lib uses far code/data.
@@ -470,11 +468,11 @@ matrox: testglob.exe
 
 # Each echo is short enough for COMMAND.COM. Response files also keep the
 # compiler and linker invocations below DOS's 127-character command limit.
-testglob.exe: $(MTX_OBJECTS) $(MTX_LIB) FORCE
+testglob.exe: $(MTX_OBJECTS) FORCE
 	@echo -AH -FPi -Fetestglob.exe > link.rsp
 	@echo $(MTX_OBJECTS1) >> link.rsp
 	@echo $(MTX_OBJECTS2) >> link.rsp
-	@echo $(MTX_LIB) $(MTX_LDFLAGS) >> link.rsp
+	@echo $(MTX_LDFLAGS) >> link.rsp
 	$(MTX_CC) @link.rsp
 
 e_data.obj: m_data.c $(MTX_HEADERS)
@@ -521,6 +519,20 @@ m_float.obj: $(SRC)\soft3fp.c $(MTX_HEADERS)
 	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_float.rsp
 	@echo -Fom_float.obj $(SRC)\soft3fp.c >> m_float.rsp
 	$(MTX_CC) @m_float.rsp
+
+# Every command word passes through the binding: no stack probes.
+m_ls.obj: $(SRC)\mtx_ls.c $(MTX_HEADERS)
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > m_ls.rsp
+	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_ls.rsp
+	@echo -Fom_ls.obj $(SRC)\mtx_ls.c >> m_ls.rsp
+	$(MTX_CC) @m_ls.rsp
+
+# Every PGC command byte passes through it: no stack probes.
+m_pgc.obj: $(SRC)\mtx_pgc.c $(MTX_HEADERS)
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > m_pgc.rsp
+	@echo -I$(SRC) -c >> m_pgc.rsp
+	@echo -Fom_pgc.obj $(SRC)\mtx_pgc.c >> m_pgc.rsp
+	$(MTX_CC) @m_pgc.rsp
 
 err.obj: $(SRC)\err.c $(MTX_HEADERS)
 	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > err.rsp
@@ -862,10 +874,14 @@ clean-matrox:
 	-$(RM) m_soft.obj
 	-$(RM) m_386.obj
 	-$(RM) m_float.obj
+	-$(RM) m_ls.obj
+	-$(RM) m_pgc.obj
 	-$(RM) m_cpu.rsp
 	-$(RM) m_soft.rsp
 	-$(RM) m_386.rsp
 	-$(RM) m_float.rsp
+	-$(RM) m_ls.rsp
+	-$(RM) m_pgc.rsp
 	-$(RM) e_data.obj
 	-$(RM) e_data.rsp
 	-$(RM) m_data.c

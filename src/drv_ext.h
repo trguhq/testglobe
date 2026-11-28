@@ -68,8 +68,20 @@ extern int drv_cull_triangle(const Vertex TG_HUGE *a,
 extern int drv_soft3d_requested;
 extern int drv_soft3d_active;
 extern int drv_soft3d_toggle(void);
+/* Host transform kernels. drv_soft3d_select() runs the DOS probes once at
+ * driver init. drv_soft3d_kernel is then the x87 floating-point kernel when
+ * a coprocessor is present (NO87 forces integer), otherwise the separately
+ * compiled 386 integer object on a 386 or later, otherwise the baseline
+ * integer code. drv_soft3d_cpu is the drv_cpu_detect() class. Each driver
+ * calls the selected kernel itself. */
+#define DRV_KERNEL_FIXED 0
+#define DRV_KERNEL_386 1
+#define DRV_KERNEL_FLOAT 2
+extern int drv_soft3d_cpu, drv_soft3d_kernel;
+extern void drv_soft3d_select(void);
+/* Appends the transform path, CPU class and kernel arithmetic. */
 extern void drv_append_soft3d_status(char *buffer, unsigned int capacity,
-                                     const char *backend, int cpu, int has_fpu);
+                                     const char *backend);
 #endif
 
 #if defined(DRV_MTX) || defined(DRV_TGA)

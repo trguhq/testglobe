@@ -2,3 +2,7 @@
 Makefile.mpw -text -diff
 # Native Earth resources contain palette indices, not text.
 data/*.bin -text -diff
+# GitHub's source archives (Download ZIP, release and tag archives) leave out
+# the prebuilt binaries and the host test suite; clone the repository for them.
+/downloads export-ignore
+/tests export-ignore

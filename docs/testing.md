@@ -3,7 +3,9 @@
 These host checks compile the production code on a modern system and verify geometry,
 software-rendered pixels, graphics API arguments, input, and resource cleanup.
 Separate [WebGL checks](#webgl) cover the browser frontend's data, geometry, rendered
-pixels, and controls. For application builds, see [Building](build.md).
+pixels, and controls. For application builds, see [Building](build.md). GitHub's source
+archives leave out the `tests` and `downloads` folders, so clone the repository to run
+the tests.
 
 ## Requirements and quick start
 
@@ -31,7 +33,6 @@ Additional options may be combined:
 | [`--amiga-ogl-contract`](#amiga-opengl) | MiniGL submissions and Amiga window/context lifecycle | None |
 | [`--igl-contract`](#iris-gl) | IRIS GL calls and software texture pixels | None |
 | [`--xgl-contract`](#sun-xgl) | XGL calls with real X11 windows and events | X11 development files, Xvfb, and an `xvfb-run` that keeps stderr separate |
-| [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
 | [`--tiga-contract`](#tiga) | TIGA calls, embedded-module loading, arithmetic, and recovery | None |
 | [`--tiga-sdk /path/to/sdk`](#tiga) | TIGA checks plus compilation against original SDK declarations | TIGA host headers |
 | [`--dos-cpu`](#tiga) | Shared Matrox/TIGA CPU-probe instruction and stack checks (`--tiga-cpu` remains an alias) | Python `unicorn`, GNU `as` and `objcopy` |
@@ -44,12 +45,11 @@ With all prerequisites installed, run every native group with:
 ```sh
 python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
   --gdi-contract --qd-contract --ami-contract --amiga-ogl-contract \
-  --tiga-contract --dos-cpu --tiga-sdk /path/to/tiga --sdk /path/to/matrox
+  --tiga-contract --dos-cpu --tiga-sdk /path/to/tiga
 ```
 
 Exit status zero means all requested checks passed. `PASS` lines identify completed
-checks; `SKIP` identifies an optional group that did not run. Without `--sdk` or
-`MATROX_SDK`, the Matrox SDK group is reported as skipped. The baseline needs no
+checks; `SKIP` identifies an optional group that did not run. The baseline needs no
 vendor graphics SDK. An intentionally injected application failure can be a passing
 test when the runner verifies its expected exit status and diagnostics.
 
@@ -74,34 +74,6 @@ module's bounds and CRC. It does not execute graphics calls or establish CPU/ABI
 compatibility. The GDI build also verifies its NE format and Earth resources before
 reporting success.
 
-The OpenWatcom LibShell adapter has a separate `tests/mtx_ow.c` test that captures
-commands from the real SDK library without requiring a Matrox board. Its numeric
-checks exercise world-window and polygon conversion, pointer/stack conventions,
-variadic calls, and runtime adapters. After `make matrox-cross`, compile it with
-`WATCOM/binl64` on `PATH` and `INCLUDE` set to `WATCOM/h`:
-
-```sh
-wcc -q -bt=dos -mh -0 -fpi -ecc -zp2 -dDRV_MTX \
-  -i=build/cross/matrox/sdk -fo=build/cross/matrox/abi_test.obj tests/mtx_ow.c
-wcl -q -bt=dos -mh -0 -fpi -ecc -fe=build/cross/matrox/mtxabi.exe \
-  build/cross/matrox/abi_test.obj build/cross/matrox/mtx_ow.obj \
-  build/cross/matrox/sdk/lscl-ow.lib
-```
-
-Mount that output directory as DOSBox's `C:` drive, then run:
-
-```text
-set NO87=
-mtxabi.exe hardware > abihw.log
-set NO87=1
-mtxabi.exe emulated > abi87.log
-```
-
-Both logs must contain `PASS`; DOSBox's own exit status does not report a DOS
-assertion failure. The test checks Watcom's actual runtime selection, proving the
-forced emulation path even when DOSBox exposes an x87. This is not a test on
-physical hardware without a coprocessor. Vendor SDKs remain external dependencies.
-
 ## What the host checks establish
 
 Compilation uses strict C89, warnings, ASan, and UBSan, with undefined behavior
@@ -113,8 +85,8 @@ translation units. This catches dependencies accidentally supplied by a fixture 
 includes a driver `.c` file. These checks use the same recorder declarations as the
 behavior tests; they do not substitute for compiling with the native SDK and linker.
 
-Most legacy API declarations come from test fixtures; Matrox and the optional TIGA
-SDK check use supplied vendor headers. Call recorders check submitted arguments and
+Most legacy API declarations come from test fixtures; the optional TIGA SDK check
+uses supplied vendor headers. Call recorders check submitted arguments and
 simulated outcomes. They do not implement the original graphics libraries, establish
 native binary ABIs, or verify hardware rendering. Host integer and pointer widths,
 byte order, and calling conventions remain those of the host, even when
@@ -515,50 +487,103 @@ with that redirection removed placed earlier on `PATH`.
 values. The Sun SDK/runtime on Solaris is required to validate the real ABI, pipeline,
 and graphics output; the real X11 activity in these tests does not exercise XGL itself.
 
-## Matrox LibShell
+## Matrox LibShell and PGC
 
-### Command
+### Commands
 
-```sh
-python3 tests/run.py --sdk /path/to/sdk
-# Or set MATROX_SDK=/path/to/sdk.
-```
-
-### Additional requirements
-
-Provide the original LibShell headers under `XGX1/HEADERS` outside the repository.
-The runner uses their function prototypes, copying headers into a temporary directory
-and removing trailing DOS EOF bytes. DOS and board calls are recorded, and compiler
-pointer keywords are removed for host compilation. Vendor headers are not committed.
+The driver recorder, the LibShell binding test and the PGC command test run with the
+baseline checks. They need no Matrox library or headers: the driver's LibShell calls
+are declared by `src/mtx_ls.h`, and DOS and board calls are recorded, with compiler
+pointer keywords removed for host compilation.
 
 ### Coverage
 
+- **LibShell binding:** `tests/mtx_ls.c` drives `src/mtx_ls.c` against a simulated
+  host window and processor. Every call the driver uses must send the Command
+  Reference's opcode and parameter words; FIXPT values are 16.16, truncated toward
+  zero and saturated, and 200,000 vertex floats must decode without floating point
+  to the same words. Counts go through the host interface with the third read kept,
+  known FIFO room is reused, and no word enters a full FIFO. Reads, non-blocking
+  error reads that clear the ERROR register, the bounded flush of a stalled shell,
+  the C600h/C640h/CE00h/CE40h and `PG1281` segments, the halted presence test with
+  its restoration, and silence without a board are checked too. When the presence
+  test fails on PGC memory, the four words it wrote must be restored.
+- **PGC commands:** `tests/mtx_pgc.c` drives `src/mtx_pgc.c` against simulated
+  communication areas at C6000h and C6400h, with firmware that parses hexadecimal
+  commands by the IBM reference's lengths, switches between ASCII and hexadecimal
+  modes on `CX` and `CA`, answers `FLAGRD`, and reports injected errors. Opcodes,
+  parameters, Reals (integer word first, saturated), 4-bit `LUT` components and quoted
+  `TEXT` must match the reference. Writes must wait for room across the pointer wrap,
+  a full error FIFO that stops the board must be drained, and a board that stops
+  taking commands must end communication by the deadline without overrunning the
+  FIFO. The probe must reject plain memory and an empty address, restoring the flag
+  it tested, and find a board at C6400h. Simulated Matrox boards of types 2 and 0
+  that answer `FLAGRD 30` must get `LUTX` and the two-byte `PROJCT`; a board that does
+  not answer must get `LUT` and the one-byte angle, and the IBM PGC's type 3 must not
+  be asked. `FLAGRD 21` must return the viewport's four Ints. Closing must let queued
+  commands run and restore ASCII mode and error reporting.
+- **PGC timing and restarts:** in a fast-host model the simulated board's processor
+  runs only after the host has paused since its last access, as HOLD stops it during
+  host accesses; the probe, a FIFO wrap and a `FLAGRD` reply must still complete, so
+  every wait must pause between polls. The probe must issue a warm restart, which
+  ends a PG-640A's endless Self-test B5; wait out a cold restart in progress, giving
+  up on one that never ends and finding the next board; and give a board that ignores
+  the warm restart flag its old value back while still discarding stale data. Builds
+  without the pauses or without the warm restart fail these checks.
+
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
-  triangle/quad statistics, and cleanup. Independent normal transforms check every
-  expected fill and cap count at several noncardinal poses. Without an x87, every
-  facing the integer culling test decides, at 81 poses including cardinal ones, must
-  equal the float test, and the Q14 rows' eye must stay within its assumed error at
-  every integer-degree pose.
+  triangle/quad statistics, and cleanup. Independent view-space facing tests check
+  every expected fill and cap count at several noncardinal poses; caps must appear
+  whenever a pole is in view. The native recorder requires the 3,000-unit viewing
+  distance, a window with the viewport's aspect, and a projection angle whose screen
+  scale under the PGC formula is within 0.5% of the host camera's. Without an x87, every facing the integer culling test decides,
+  at 81 poses including cardinal ones, must equal the float test, and the integer eye
+  must stay within its assumed error (2/16384 in direction, 7 Q4 units in position)
+  at every integer-degree pose.
 - **Software transforms:** LibShell is the default; `S`/`s` selects host transforms
-  while keeping indexed LibShell polygon filling. An independent orthographic
-  reference checks orientation, integer-degree rotation, screen coordinates and
-  viewport bounds. Packet checks match every fill to its quad in order, verify the
-  packet vertices against the mesh, and require each mesh vertex to be transformed
-  and projected once per frame; the x/y kernels must equal the full kernels' x and
-  y, row reuse and rejected inputs. CPU profiles exercise baseline, 386 and
-  floating-point dispatch, including 286/287 combinations. The `8086` and `8087`
-  profiles check that the supplied 286 binding is rejected before `lsinit`; a second
-  build with `MTX_8086_BINDING` runs them through the whole contract. The OSD reports
-  actual selection and failed requests; the help keeps `S` visible.
+  while keeping indexed LibShell polygon filling. An independent perspective camera
+  checks orientation, integer-degree rotation, screen coordinates within 1.5 pixels
+  and viewport bounds. Packet checks match every fill to its quad in order, verify
+  the packet vertices against the mesh, and require each mesh vertex to be
+  transformed and projected once per frame. CPU profiles exercise baseline, 386 and
+  floating-point dispatch, including 8086/8087 and 286/287 combinations, each through
+  the whole contract. The `absent` profile requires initialization to stop before any command
+  when neither a LIB Shell nor a PGC-compatible board answers. The OSD reports actual
+  selection and failed requests; the help keeps `S` visible.
 - **Packets:** the recorder counts command bytes from the manual's formats since the
-  last completed reply and requires at most 228 in flight, one checkpoint per four
-  fills and per model/view group, and no repeated fill color while the board's color
-  is known.
-- **Replies and errors:** `LSINQ` word counts and payload ordering; short malformed
-  replies are drained before failure, while replies longer than 16 words abandon the
-  connection. Ready words read no clock; one deadline covers every wait of a reply,
-  and a backward clock step neither adds time nor restarts it. Timeouts and oversized
-  replies must prevent further board commands during cleanup.
+  last completed reply and requires at most 8,124 in flight with the default
+  4,096-word FIFO, one checkpoint per group of 145 fills and per model/view group, and
+  no repeated fill color while the board's color is known. The `fifo256` profile sets
+  `MTXFIFO=256` and requires four fills and at most 228 bytes. `MTXFIFO` values from
+  256 to 8192 must give groups of (bytes − 32) ÷ 56 fills, and others, including
+  non-decimal ones, must be rejected.
+- **Screen sizes:** the `1024x768` and `1280x1024` profiles run the whole LibShell
+  contract with `LSINQSYS` reporting those sizes: viewport, world window, projection
+  angle (whose PGC-formula scale must stay within 0.5% of the host camera's), raster
+  font, OSD positions and host-transform screen bounds all follow the reported size.
+  `bad-resolution` (800 × 400) must stop initialization naming the size. `pgc-1280`
+  sizes a Matrox PG-1280-style board from its `RESETF` viewport, and `pgc-badview`
+  keeps 640 × 480 when the viewport does not start at 0,0. Each PGC profile also
+  checks the board name in the startup report.
+- **PGC driver:** the `pgc`, `pg640a`, `pgc-startup` and `pgc-timeout` profiles
+  record the driver's PGC commands with no LIB Shell board present. The board's LUT
+  must be saved before the palette changes and graphics shown, all 256 entries must
+  receive `earth_cmap`'s 8-bit components, and the viewport, fill mode, text
+  alignment and projection must be set. Native frames must send the 3D window and
+  rotations and fill world vertices with `POLY3`; host-transform frames must fill in
+  the pixel window with y counted from the bottom, matched to their quads like
+  LibShell packets. The OSD must name the PGC. Range, overflow and area-fill errors
+  must retry the frame with host transforms and `S` must restore PGC transforms,
+  while memory errors and errors from host-projected fills must stop the program. A
+  rejected projection at startup must keep graphics with host transforms, and a board
+  that stops answering must be reported and only closed at exit. Otherwise Escape must
+  restore the saved LUT and the display shown at startup.
+- **Replies and errors:** `ioflush()` discards unread replies, so the recorder fails
+  any flush while a reply is outstanding. `LSINQ` word counts and payload ordering;
+  short malformed replies are drained before failure, while replies longer than 16
+  words abandon the connection. Ready words read no clock; one deadline covers every
+  wait of a reply, and a backward clock step neither adds time nor restarts it.
+  Timeouts and oversized replies must prevent further board commands during cleanup.
 - **Startup:** the `stale` profile leaves two latched errors (the second reported
   only after the first is read) and old Read FIFO words; startup discards them with
   a stderr warning. Endless stale data is bounded by count and deadline.
@@ -575,12 +600,10 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 
 ### Native validation
 
-Microsoft C 7, `LSCL.LIB`, and a PG-641-compatible board are needed to validate huge
-pointers, DOS timing, the LibShell ABI, and graphics output. The recorder assumes
-nonblocking error-register reads and that positive `rdfifocnt()` permits a complete
-word read. The supplied SDK documentation does not establish FIFO count units or
-atomic availability; the installed library and board must validate those assumptions
-and asynchronous timing.
+A PG Series 1 board running the LIB Shell, with Microsoft C 7 or OpenWatcom, is
+needed to validate huge pointers, DOS timing, the LibShell binding's register
+accesses and presence test, asynchronous timing, and graphics output. An IBM PGC or
+Matrox PG-640A is needed to validate the PGC path the same way.
 
 ## TIGA
 
@@ -715,8 +738,9 @@ python3 tests/run.py --gdi-contract
   window: startup must match the palette exactly once, in the foreground, and an
   active window must keep its foreground mapping when another application changes
   the palette. Each paint or render realizes the palette once.
-  Font tests cover size tiers, substitution, allocation failure, restoration of
-  selected objects, and bounded ownership across resize.
+  Font tests cover size tiers under Small and Large Fonts, Windows 3.0 and scalable
+  faces, requests only for sizes `EnumFonts` lists, substitution, allocation failure,
+  restoration of selected objects, and bounded ownership across resize.
 - **Palette dithering:** realized palette RGBs, exact solid brushes, two-color DIB
   patterns, cache refreshes after palette changes, and solid fallback when queries
   or pattern creation fail. Packed DIB layout, logical palette indices, pattern

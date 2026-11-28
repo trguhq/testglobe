@@ -7,3 +7,4 @@ HEAPSIZE 8192
 STACKSIZE 16384
 EXPORTS
     gdi_window_proc @1
+    gdi_font_proc @2

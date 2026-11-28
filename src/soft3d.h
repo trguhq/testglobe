@@ -51,6 +51,20 @@ typedef struct Soft3d_float_point
 #define SOFT3D_FLOAT_SINGLE 0
 #define SOFT3D_FLOAT_DOUBLE 1
 
+/* Storage for drivers that choose integer or x87 kernels at run time; the
+ * driver's selected kernel decides which member holds data. */
+typedef union Soft3d_matrix
+{
+    long fixed[3][3];
+    float floating[3][3];
+} Soft3d_matrix;
+
+typedef union Soft3d_points
+{
+    Soft3d_fixed_point fixed[SOFT3D_MAX_VERTICES];
+    Soft3d_float_point floating[SOFT3D_MAX_VERTICES];
+} Soft3d_points;
+
 extern void soft3d_project_cache_reset(Soft3d_project_cache TG_HUGE *cache);
 /* reuse_count is zero, or count/2 when an explicitly identified band's
  * old odd-indexed bottom row becomes this band's even-indexed top row.
@@ -86,22 +100,21 @@ extern int soft3d_fixed_prepare(long matrix[3][3],
                                 const float TG_HUGE *rotation_x,
                                 const float TG_HUGE *rotation_y);
 #ifdef DRV_MTX
-/* Orthographic viewer: object Rz(yaw), then inverse viewer Rx(pitch).
- * Integer-degree angles match the LibShell commands, including wraparound.
- * The common transform kernels' camera-Z translation does not affect the
- * following orthographic projector, which uses only X and Y. */
-extern int soft3d_fixed_prepare_ortho(long matrix[3][3],
-                                     int yaw_degrees, int pitch_degrees);
-/* Map a centered world window to a downward-Y viewport. Return count on
- * success, zero on invalid input. The caller supplies count output points,
- * then uses soft3d_finish_polygon for clipping and backface rejection.
- * Dimensions/extents are 1..32767; coordinates may be outside the viewport. */
-extern int soft3d_fixed_project_ortho(const Soft3d_fixed_point *points,
-                                     unsigned int count,
-                                     unsigned int width, unsigned int height,
-                                     unsigned int world_width,
-                                     unsigned int world_height,
-                                     Soft3d_screen_point *out);
+/* LibShell's camera: object Rz(yaw), then inverse viewer Rx(pitch), with
+ * integer-degree angles as the LibShell commands take them, including
+ * wraparound. The transform kernels then place the eye at the shared
+ * viewing distance along the last row, as for the other prepare helpers. */
+extern int soft3d_fixed_prepare_degrees(long matrix[3][3],
+                                        int yaw_degrees, int pitch_degrees);
+/* Object-space Q4 coordinates of one vertex, each truncated toward zero
+ * (within 1/16 unit), inside the transform kernels' radius domain. Returns
+ * zero for a non-finite or out-of-range component. */
+extern int soft3d_fixed_vertex(const Vertex TG_HUGE *vertex,
+                               Soft3d_fixed_point *out);
+/* A float as 16.16 fixed point for the boards' FIXPT/Real parameters:
+ * truncated toward zero, saturated beyond +/-32768, 0 for NaN, decoded
+ * from the IEEE bits without floating-point arithmetic. */
+extern long soft3d_fixed16(const float TG_HUGE *value);
 #endif
 /* The matrix comes from a prepare helper; input radius is at most 1000.
  * C89 does not permit adding const through a pointer to a 2D array, so the
@@ -176,34 +189,9 @@ extern int soft3d_float_prepare(float matrix[3][3],
                                 const float TG_HUGE *rotation_x,
                                 const float TG_HUGE *rotation_y);
 #ifdef DRV_MTX
-/* Floating counterparts to the bounded orthographic helpers above. */
-extern int soft3d_float_prepare_ortho(float matrix[3][3],
-                                     int yaw_degrees, int pitch_degrees);
-extern int soft3d_float_project_ortho(const Soft3d_float_point *points,
-                                     unsigned int count,
-                                     unsigned int width, unsigned int height,
-                                     unsigned int world_width,
-                                     unsigned int world_height,
-                                     Soft3d_screen_point *out);
-#endif
-#ifdef DRV_MTX
-/* ---- Orthographic x/y transforms (Matrox software mode) ----------------
- * The orthographic projectors read only x and y. These match the x and y
- * of soft3d_fixed/386/float_transform_reuse (single precision) exactly,
- * with the same validation and row reuse, skip the third row and store z
- * as zero. The 386 variant is compiled separately, as above. */
-extern int soft3d_fixed_transform_xy_reuse(long matrix[3][3], unsigned int count,
-                                           const Vertex TG_HUGE *vertices,
-                                           Soft3d_fixed_point *out,
-                                           unsigned int reuse_count);
-extern int soft3d_386_transform_xy_reuse(long matrix[3][3], unsigned int count,
-                                         const Vertex TG_HUGE *vertices,
-                                         Soft3d_fixed_point *out,
-                                         unsigned int reuse_count);
-extern int soft3d_float_transform_xy_reuse(float matrix[3][3], unsigned int count,
-                                           const Vertex TG_HUGE *vertices,
-                                           Soft3d_float_point *out,
-                                           unsigned int reuse_count);
+/* Floating counterpart to soft3d_fixed_prepare_degrees. */
+extern int soft3d_float_prepare_degrees(float matrix[3][3],
+                                        int yaw_degrees, int pitch_degrees);
 #endif
 extern int soft3d_float_transform_reuse(float matrix[3][3], unsigned int count,
                                         const Vertex TG_HUGE *vertices,

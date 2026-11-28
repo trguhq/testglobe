@@ -73,7 +73,16 @@ static HPALETTE gdi_previous_palette;
 /* A diagnostic-only frame is valid too, but a failed clear never is. */
 static int gdi_buffer_valid;
 static HFONT gdi_font;
-static int gdi_font_size;
+static int gdi_font_size, gdi_font_height;
+/* OSD faces in order of preference: Windows 3.1's dialog font, its Windows
+ * 3.0 predecessor, and the small-label font for tiny windows. */
+#define GDI_FONT_FACES 3
+static const char *const gdi_font_faces[GDI_FONT_FACES] =
+    { "MS Sans Serif", "Helv", "Small Fonts" };
+/* The size being searched for and the designed sizes found so far. */
+static int gdi_font_target, gdi_font_face;
+static int gdi_font_best, gdi_font_best_face;
+static int gdi_font_smallest, gdi_font_smallest_face;
 static HDC gdi_mask;
 static HBITMAP gdi_mask_bitmap;
 static HBITMAP gdi_mask_previous;
@@ -304,6 +313,8 @@ static int gdi_refresh_colors(HDC dc)
 extern int testglobe_main(int argc, char **argv);
 LONG FAR PASCAL gdi_window_proc(HWND window, UINT message,
                                  WPARAM wparam, LPARAM lparam);
+int FAR PASCAL gdi_font_proc(const LOGFONT FAR *font,
+                             const TEXTMETRIC FAR *metrics, int type, LPARAM data);
 
 static void gdi_delete_buffer(void)
 {
@@ -326,29 +337,80 @@ static void gdi_delete_buffer(void)
     gdi_shown_valid = FALSE;
 }
 
-/* Select native bitmap text by client size, retaining the DC's font when
- * Windows substitutes an unsuitable face. One font is cached; a failed
- * request is retried only when the size tier changes, not every frame. */
+/* EnumFonts lists each designed size of a raster face; Windows would draw
+ * any other size by duplicating pixels. Scalable faces fit any height. */
+int FAR PASCAL gdi_font_proc(const LOGFONT FAR *font,
+                             const TEXTMETRIC FAR *metrics, int type, LPARAM data)
+{
+    int height;
+    (void)font;
+    (void)data;
+    height = type & RASTER_FONTTYPE ? metrics->tmHeight : gdi_font_target;
+    if (height < 6) return 1;
+    if (height <= gdi_font_target && height > gdi_font_best)
+    {
+        gdi_font_best = height;
+        gdi_font_best_face = gdi_font_face;
+    }
+    if (gdi_font_smallest == 0 || height < gdi_font_smallest)
+    {
+        gdi_font_smallest = height;
+        gdi_font_smallest_face = gdi_font_face;
+    }
+    return 1;
+}
+
+/* Choose the largest designed size of the preferred faces that fits target,
+ * else the smallest size up to half again as tall. Returns 0 if none. */
+static int gdi_find_font(HDC dc, int target)
+{
+    FARPROC callback;
+    gdi_font_target = target;
+    gdi_font_best = gdi_font_smallest = 0;
+    callback = MakeProcInstance((FARPROC)gdi_font_proc, gdi_instance);
+    if (callback == NULL) return 0;
+    for (gdi_font_face = 0; gdi_font_face < GDI_FONT_FACES; ++gdi_font_face)
+        EnumFonts(dc, gdi_font_faces[gdi_font_face], callback, 0);
+    FreeProcInstance(callback);
+    if (gdi_font_best != 0) return gdi_font_best;
+    gdi_font_best_face = gdi_font_smallest_face;
+    return gdi_font_smallest <= target + target / 2 ? gdi_font_smallest : 0;
+}
+
+/* Select native bitmap text by client size and the display's logical
+ * density (Small or Large Fonts), retaining the DC's font when no designed
+ * size fits or Windows substitutes an unsuitable face. One font is cached; a
+ * failed request is retried only when the target size changes. */
 static HFONT gdi_select_font(HDC dc)
 {
     HFONT previous;
     TEXTMETRIC metrics;
-    int height;
-    height = drv_win_width < 480U || drv_win_height < 320U ? 10 :
-             drv_win_width >= 960U && drv_win_height >= 640U ? 16 : 12;
-    if (height != gdi_font_size)
+    int target, density;
+    /* Pixel cell heights at 96 dpi: MS Sans Serif's 8, 10 and 12 points, and
+     * Small Fonts for windows too small for 8-point text. */
+    target = drv_win_width < 480U || drv_win_height < 320U ? 10 :
+             drv_win_width >= 1280U && drv_win_height >= 960U ? 20 :
+             drv_win_width >= 960U && drv_win_height >= 640U ? 16 : 13;
+    density = GetDeviceCaps(dc, LOGPIXELSY);
+    if (density < 48 || density > 384) density = 96;
+    target = (target * density + 48) / 96;
+    if (target != gdi_font_size)
     {
         if (gdi_font != 0) DeleteObject(gdi_font);
-        gdi_font_size = height;
-        gdi_font = CreateFont(height, 0, 0, 0, FW_NORMAL, 0, 0, 0,
-                       ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                       DEFAULT_QUALITY, VARIABLE_PITCH | FF_SWISS, "Small Fonts");
+        gdi_font = 0;
+        gdi_font_size = target;
+        gdi_font_height = gdi_find_font(dc, target);
+        if (gdi_font_height != 0)
+            gdi_font = CreateFont(gdi_font_height, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                           ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           DEFAULT_QUALITY, VARIABLE_PITCH | FF_SWISS,
+                           gdi_font_faces[gdi_font_best_face]);
     }
     if (gdi_font == 0) return 0;
     previous = (HFONT)SelectObject(dc, gdi_font);
     if (previous == 0) return 0;
     if (!GetTextMetrics(dc, &metrics) || metrics.tmHeight < 6 ||
-        metrics.tmHeight > height + 2 || metrics.tmAveCharWidth <= 0)
+        metrics.tmHeight > gdi_font_height + 2 || metrics.tmAveCharWidth <= 0)
     {
         SelectObject(dc, previous);
         DeleteObject(gdi_font);

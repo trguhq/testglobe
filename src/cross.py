@@ -53,7 +53,6 @@ def main(argv=None):
     parser.add_argument("--build-dir", type=Path, default=root / "build" / "cross")
     parser.add_argument("--watcom", default=os.environ.get("WATCOM"))
     parser.add_argument("--retro68", default=os.environ.get("RETRO68"))
-    parser.add_argument("--xgx-root", default=os.environ.get("XGX_ROOT", str(root)))
     parser.add_argument("--tiga-root", default=os.environ.get("TGA_ROOT", str(root / "TIGA")))
     parser.add_argument("--tiga-tools", default=os.environ.get("TIGA_TOOLS"))
     parser.add_argument("--tiga-module", default=os.environ.get("TIGA_MODULE"))
@@ -65,7 +64,7 @@ def main(argv=None):
     config = vars(args).copy()
     config.update(root=root, src=root / "src", out=out,
                   host_cc=shlex.split(args.host_cc))
-    for name in ("watcom", "retro68", "xgx_root", "tiga_root", "tiga_tools", "tiga_module"):
+    for name in ("watcom", "retro68", "tiga_root", "tiga_tools", "tiga_module"):
         config[name] = optional_path(config[name])
     if not config["host_cc"]:
         parser.error("--host-cc must name a compiler")

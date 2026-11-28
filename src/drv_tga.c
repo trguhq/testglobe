@@ -60,7 +60,7 @@ static unsigned short tga_previous_video, tga_previous_mode;
 static int tga_open, tga_video_set, tga_config_saved, tga_palette_saved;
 static int tga_ready, tga_rendering, tga_io_failed, tga_cleaning;
 static int tga_dirty = TRUE;
-static int tga_cpu, tga_has_fpu, tga_mouse_present;
+static int tga_mouse_present;
 static short tga_module = -1;
 static unsigned short tga_error_command;
 static short tga_error_code;
@@ -76,14 +76,10 @@ static const char *tga_payload_error;
 static unsigned long tga_temp_sequence;
 static Drv_quad_stream tga_stream;
 static Soft3d_project_cache tga_cache;
-static union {
-    long fixed[3][3];
-    float floating[3][3];
-} tga_matrix;
-static union {
-    Soft3d_fixed_point fixed[SOFT3D_MAX_VERTICES];
-    Soft3d_float_point floating[SOFT3D_MAX_VERTICES];
-} tga_points;
+/* The TI module exchanges only fixed-point matrices and points, so the x87
+ * members are used only while host transforms are active. */
+static Soft3d_matrix tga_matrix;
+static Soft3d_points tga_points;
 /* Wire fields are 32-bit longs on both Microsoft C and the TI compiler.
  * The packet is far, contiguous and far smaller than a 64 KiB segment. */
 static long tga_packet[TGA_GSP_WORDS(TGA_GSP_MAX_VERTICES)];
@@ -388,8 +384,7 @@ void drv_init(int *argc, char **argv)
 {
     long result;
     (void)argc;
-    tga_cpu = drv_cpu_detect();
-    tga_has_fpu = drv_cpu_has_fpu();
+    drv_soft3d_select();
     if (argv == NULL || !tga_absolute_path(tga_program_path, argv[0])) tga_program_path[0] = '\0';
     /* clock() starts near zero in every DOS run; the date varies between
      * runs, so a stale file from an interrupted one rarely costs a retry. */
@@ -674,15 +669,21 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     }
     else
     {
-        if (tga_has_fpu)
+        switch (drv_soft3d_kernel)
+        {
+        case DRV_KERNEL_FLOAT:
             transformed = soft3d_float_transform_reuse(tga_matrix.floating,
                 vertex_count, vertices, tga_points.floating, reuse, SOFT3D_FLOAT_SINGLE);
-        else if (tga_cpu >= 386)
+            break;
+        case DRV_KERNEL_386:
             transformed = soft3d_386_transform_reuse(tga_matrix.fixed,
                 vertex_count, vertices, tga_points.fixed, reuse);
-        else
+            break;
+        default:
             transformed = soft3d_fixed_transform_reuse(tga_matrix.fixed,
                 vertex_count, vertices, tga_points.fixed, reuse);
+            break;
+        }
         if (!transformed)
         {
             drv_abort_frame("TIGA coordinate is out of range");
@@ -695,7 +696,7 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
     for (i = 0; i < quad_count; ++i)
     {
         for (j = 0; j < 4U; ++j) corners[j] = indices[4U * i + j];
-        if (drv_soft3d_active && tga_has_fpu)
+        if (drv_soft3d_active && drv_soft3d_kernel == DRV_KERNEL_FLOAT)
             count = soft3d_float_project_cached(tga_points.floating, vertex_count,
                 corners, 4U, drv_win_width, drv_win_height, SOFT3D_FLOAT_SINGLE, &tga_cache, screen);
         else
@@ -782,7 +783,7 @@ void drv_draw_osd(void)
     tga_fill_color = TGA_NO_COLOR;
     if (!tga_check()) return;
     drv_format_stats(status);
-    drv_append_soft3d_status(status, sizeof(status), "TI", tga_cpu, tga_has_fpu);
+    drv_append_soft3d_status(status, sizeof(status), "TI");
     drv_append_status(status, sizeof(status), tga_config.mode.num_pages >= 2U ?
                        ", double buffer" : ", single page");
     lines = tga_text_lines(drv_help, 0, 0, FALSE);
@@ -849,7 +850,7 @@ void drv_render(void)
         soft3d_project_cache_reset(&tga_cache);
         if (globe_ready())
         {
-            if (drv_soft3d_active && tga_has_fpu)
+            if (drv_soft3d_active && drv_soft3d_kernel == DRV_KERNEL_FLOAT)
                 prepared = soft3d_float_prepare(tga_matrix.floating, &drv_rot_x, &drv_rot_y);
             else
                 prepared = soft3d_fixed_prepare(tga_matrix.fixed, &drv_rot_x, &drv_rot_y);

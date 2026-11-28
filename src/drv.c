@@ -82,6 +82,8 @@ int drv_cull_enabled;
 #ifdef DRV_SOFT3D
 int drv_soft3d_requested;
 int drv_soft3d_active;
+int drv_soft3d_cpu = 86;
+int drv_soft3d_kernel = DRV_KERNEL_FIXED;
 #endif
 static char drv_message[64];
 
@@ -219,9 +221,18 @@ int drv_soft3d_toggle(void)
     return drv_soft3d_requested;
 }
 
-void drv_append_soft3d_status(char *buffer, unsigned int capacity,
-                              const char *backend, int cpu, int has_fpu)
+void drv_soft3d_select(void)
 {
+    drv_soft3d_cpu = drv_cpu_detect();
+    if (drv_cpu_has_fpu()) drv_soft3d_kernel = DRV_KERNEL_FLOAT;
+    else if (drv_soft3d_cpu >= 386) drv_soft3d_kernel = DRV_KERNEL_386;
+    else drv_soft3d_kernel = DRV_KERNEL_FIXED;
+}
+
+void drv_append_soft3d_status(char *buffer, unsigned int capacity,
+                              const char *backend)
+{
+    int cpu = drv_soft3d_cpu;
     if (drv_soft3d_active)
         drv_append_status(buffer, capacity, ", soft3d on");
     else
@@ -233,7 +244,8 @@ void drv_append_soft3d_status(char *buffer, unsigned int capacity,
     }
     drv_append_status(buffer, capacity, cpu >= 486 ? ", 486+" :
                        (cpu >= 386 ? ", 386" : (cpu >= 286 ? ", 286" : ", 8086")));
-    drv_append_status(buffer, capacity, has_fpu ? " + x87" : " integer");
+    drv_append_status(buffer, capacity,
+                       drv_soft3d_kernel == DRV_KERNEL_FLOAT ? " + x87" : " integer");
 }
 #endif
 

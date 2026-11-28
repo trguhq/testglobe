@@ -85,6 +85,13 @@ typedef struct {
     BYTE tmPitchAndFamily, tmCharSet;
     short tmOverhang, tmDigitizedAspectX, tmDigitizedAspectY;
 } TEXTMETRIC;
+#define LF_FACESIZE 32
+typedef struct {
+    short lfHeight, lfWidth, lfEscapement, lfOrientation, lfWeight;
+    BYTE lfItalic, lfUnderline, lfStrikeOut, lfCharSet;
+    BYTE lfOutPrecision, lfClipPrecision, lfQuality, lfPitchAndFamily;
+    char lfFaceName[LF_FACESIZE];
+} LOGFONT;
 typedef struct {
     DWORD biSize;
     LONG biWidth, biHeight;
@@ -115,6 +122,7 @@ typedef struct {
 #define PLANES 14
 #define NUMCOLORS 24
 #define SIZEPALETTE 104
+#define LOGPIXELSY 90
 #define WHITE_PEN 6
 #define BLACK_PEN 7
 #define NULL_PEN 8
@@ -128,6 +136,8 @@ typedef struct {
 #define CLIP_DEFAULT_PRECIS 0
 #define DEFAULT_QUALITY 0
 #define VARIABLE_PITCH 2
+#define RASTER_FONTTYPE 0x0001
+#define TRUETYPE_FONTTYPE 0x0004
 #define FF_SWISS 32
 #define SRCCOPY 0x00CC0020UL
 #define BLACKNESS 0x00000042UL
@@ -246,6 +256,7 @@ HPEN CreatePen(int, int, COLORREF);
 HFONT CreateFont(int, int, int, int, int, BYTE, BYTE, BYTE, BYTE, BYTE,
                  BYTE, BYTE, BYTE, LPCSTR);
 BOOL GetTextMetrics(HDC, TEXTMETRIC *);
+int EnumFonts(HDC, LPCSTR, FARPROC, LPARAM);
 HGDIOBJ SelectObject(HDC, HGDIOBJ);
 BOOL DeleteObject(HGDIOBJ);
 HGDIOBJ GetStockObject(int);

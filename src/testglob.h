@@ -27,8 +27,13 @@
 #define DEBUG 0
 #endif
 #define TESTGLOBE_NAME "testglobe"
+/* major.minor.patch; see docs/development.md#versions. */
 #define TESTGLOBE_VERSION_MAJOR 0
 #define TESTGLOBE_VERSION_MINOR 2
+#define TESTGLOBE_VERSION_PATCH 4
+#if TESTGLOBE_VERSION_MINOR > 99 || TESTGLOBE_VERSION_PATCH > 99
+#error Each version field runs from 0 to 99, then rolls over into the next
+#endif
 
 #ifndef FALSE
 #define FALSE 0

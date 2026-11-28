@@ -30,6 +30,16 @@ primitive and capabilities. Keep those responsibilities separate.
 - GDI and Amiga select `DRV_PALETTE_DITHER` for the shared color matcher and ordered
   patterns; QuickDraw leaves that work to its native color machinery.
 
+## Versions
+
+Versions have three fields, major.minor.patch, defined in `src/testglob.h`
+(`TESTGLOBE_VERSION_MAJOR`, `_MINOR` and `_PATCH`). Applications print the version at
+startup; QuickDraw shows it in its About box. Every push to GitHub that changes code
+increments the patch field; a push that changes only documentation does not. Each
+field runs from 0 to 99 and then rolls over into the next: 0.2.99 is followed by
+0.3.0, and 0.99.99 by 1.0.0. `testglob.h` stops the build if a field exceeds 99. The
+README's version history has one section per minor series, such as v0.2.x.
+
 ## Source layout
 
 | Location | Responsibility |
@@ -41,7 +51,8 @@ primitive and capabilities. Keep those responsibilities separate.
 | `src/drv_cpu.c` / `src/tga_gsp.c` | Shared Matrox/TIGA DOS CPU/FPU detection / TI-processor transforms; `tga_cmd.h` and `tga_ext.asm` define the module interface. |
 | `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader, and both use the format and MZ/CRC-32 checks in `tga_rlm.h`. |
 | `src/cross*.py` | Linux-hosted build orchestration for the DOS, Win16, and QuickDraw drivers. |
-| `src/mtx_ow.c` | OpenWatcom runtime adapters for the Microsoft-built LibShell library; not used by the Microsoft target. |
+| `src/mtx_ls.c`/`.h` | The LibShell calls the Matrox driver uses, implemented directly on the PG Series 1 host interface, so no Matrox library or headers are needed. |
+| `src/mtx_pgc.c`/`.h` | IBM PGC hexadecimal commands through the communication area, for PGC-compatible boards such as the Matrox PG-640A; the Matrox driver uses them when no LIB Shell board answers. |
 | `src/buildio.h` | C89 file validation and safe output publication for the Earth converter and TIGA packer; not linked into applications. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; the generated arrays stay private. |
 | `web/` | Browser frontend, WebGL rendering, and the generated palette module; reads the canonical `data/` maps. |
@@ -57,8 +68,13 @@ winding for indexed, RGB, and UV packets. Shared input uses `drv_handle_key()`,
 use `drv_dos_mouse_init()` and `drv_dos_mouse_poll()`. Matrox and TIGA also call
 `drv_dos_break_init()`, which turns Ctrl-C and Ctrl-Break into a flag that the event
 loop reads with `drv_dos_break_pending()` and, from DOS 3.1, fails critical disk
-errors instead of prompting. `drv_match_palette_colors()` matches a whole palette for
-GDI and Amiga, searching each distinct realized color once. Backend resize and
+errors instead of prompting. Their `drv_soft3d_select()` runs the CPU and x87 probes
+once and sets `drv_soft3d_kernel` (x87, 386 integer, or baseline integer), which the
+OSD reports. Each driver calls the selected kernel itself, keeping the kernel calls
+visible to its recorder tests, and holds its matrix and points in the shared
+`Soft3d_matrix` and `Soft3d_points` unions. `drv_match_palette_colors()`
+matches a whole palette for GDI and Amiga, searching each distinct realized color
+once. Backend resize and
 texture-loading helpers stay private; `drv_render()` and `drv_close()` are the common
 driver entry points.
 
@@ -141,9 +157,10 @@ make it slower than host transforms. Individual quad submission remains availabl
 
 Matrox, TIGA, GDI, QuickDraw, and Amiga share `src/soft3d.c`/`.h` for integer
 IEEE-float decoding, fixed-point transforms, projection, clipping, and back-face
-rejection; `src/soft3fp.c` provides the floating-point equivalents. Matrox uses
-orthographic kernels that compute only x and y over the same row-reusing packets; the
-other four use perspective projection with bounded packet caches. Indexed projection
+rejection; `src/soft3fp.c` provides the floating-point equivalents. All five use
+perspective projection over row-reusing packets with bounded projection caches;
+Matrox prepares its matrix from LibShell's integer-degree yaw and pitch
+(`soft3d_*_prepare_degrees()`). Indexed projection
 validates indices against the initialized packet. Whole polygons inside the depth and
 viewport bounds skip clipping, while polygons crossing them take the general path.
 Back-face rejection uses the complete rounded polygon, preserving silhouette and
@@ -160,9 +177,9 @@ invalidate reuse. QuickDraw's `qd_fpu.c`/`qd_math.h` boundary and Amiga's runtim
 CPU/FPU dispatch keep hardware floating-point code apart from baseline 68000
 execution; Amiga's separate 68020 object also carries the integer projection,
 clipping, and back-face code. Resource-backed indices load directly into their final
-storage without an extra full-map allocation. TIGA's host path selects the shared
-integer or floating-point helpers; its TI module uses the same fixed-point rounding
-and validates each command's version and bounds.
+storage without an extra full-map allocation. TIGA's TI module uses the same
+fixed-point rounding as the host integer kernels and validates each command's
+version and bounds.
 
 OpenGL and IRIS GL share `src/texsoft.c`/`.h` for software texturing: homogeneous
 clipping, depth testing and culling, perspective-correct UVs, repeat sampling, and

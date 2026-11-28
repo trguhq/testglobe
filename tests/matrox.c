@@ -27,48 +27,49 @@ static int recorded_fixed_transform(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
 static int recorded_386_transform(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
-static int recorded_fixed_xy(long matrix[3][3], unsigned int count,
-    const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
-static int recorded_386_xy(long matrix[3][3], unsigned int count,
-    const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse);
-static int recorded_float_xy(float matrix[3][3], unsigned int count,
-    const Vertex TG_HUGE *vertices, Soft3d_float_point *out, unsigned int reuse);
-static int recorded_fixed_project(const Soft3d_fixed_point *points,
-    unsigned int count, unsigned int width, unsigned int height,
-    unsigned int world_width, unsigned int world_height, Soft3d_screen_point *out);
-static int recorded_float_project(const Soft3d_float_point *points,
-    unsigned int count, unsigned int width, unsigned int height,
-    unsigned int world_width, unsigned int world_height, Soft3d_screen_point *out);
+static int recorded_float_transform(float matrix[3][3], unsigned int count,
+    const Vertex TG_HUGE *vertices, Soft3d_float_point *out, unsigned int reuse,
+    int precision);
+static int recorded_fixed_cached(const Soft3d_fixed_point *points,
+    unsigned int point_count, const unsigned int TG_HUGE *indices,
+    unsigned int corners, unsigned int width, unsigned int height,
+    Soft3d_project_cache TG_HUGE *cache, Soft3d_screen_point *out);
+static int recorded_float_cached(const Soft3d_float_point *points,
+    unsigned int point_count, const unsigned int TG_HUGE *indices,
+    unsigned int corners, unsigned int width, unsigned int height, int precision,
+    Soft3d_project_cache TG_HUGE *cache, Soft3d_screen_point *out);
+static int recorded_fixed_vertex(const Vertex TG_HUGE *vertex, Soft3d_fixed_point *out);
+static char *recorded_mtx_getenv(const char *name);
 #define drv_draw_quad_flat_color recorded_driver_quad
 #define drv_draw_quadbatch_flat_color recorded_driver_quadbatch
-#define soft3d_fixed_prepare_ortho recorded_fixed_prepare
-#define soft3d_float_prepare_ortho recorded_float_prepare
+#define soft3d_fixed_prepare_degrees recorded_fixed_prepare
+#define soft3d_float_prepare_degrees recorded_float_prepare
 #define soft3d_fixed_transform_reuse recorded_fixed_transform
 #define soft3d_386_transform_reuse recorded_386_transform
-#define soft3d_fixed_transform_xy_reuse recorded_fixed_xy
-#define soft3d_386_transform_xy_reuse recorded_386_xy
-#define soft3d_float_transform_xy_reuse recorded_float_xy
-#define soft3d_fixed_project_ortho recorded_fixed_project
-#define soft3d_float_project_ortho recorded_float_project
+#define soft3d_float_transform_reuse recorded_float_transform
+#define soft3d_fixed_project_cached recorded_fixed_cached
+#define soft3d_float_project_cached recorded_float_cached
+#define soft3d_fixed_vertex recorded_fixed_vertex
 #define error recorded_mtx_error
 #define clock recorded_mtx_clock
+#define getenv recorded_mtx_getenv
 #undef fprintf
 #define fprintf recorded_mtx_fprintf
 #include "../src/drv_mtx.c"
 #undef fprintf
+#undef getenv
 #undef clock
 #undef error
 #undef drv_draw_quad_flat_color
 #undef drv_draw_quadbatch_flat_color
-#undef soft3d_fixed_prepare_ortho
-#undef soft3d_float_prepare_ortho
+#undef soft3d_fixed_prepare_degrees
+#undef soft3d_float_prepare_degrees
 #undef soft3d_fixed_transform_reuse
 #undef soft3d_386_transform_reuse
-#undef soft3d_fixed_transform_xy_reuse
-#undef soft3d_386_transform_xy_reuse
-#undef soft3d_float_transform_xy_reuse
-#undef soft3d_fixed_project_ortho
-#undef soft3d_float_project_ortho
+#undef soft3d_float_transform_reuse
+#undef soft3d_fixed_project_cached
+#undef soft3d_float_project_cached
+#undef soft3d_fixed_vertex
 
 #ifdef TEXTURE
 #error The Matrox driver must not compile texture mapping support
@@ -139,9 +140,9 @@ static int selected_cpu = 286, selected_fpu;
 static unsigned int fixed_transforms, optimized_transforms, floating_transforms;
 /* Software packets: points transformed (excluding reused rows) and
  * projected, and each queued quad's expected fill, matched in order. */
-static unsigned long xy_points, projected_points;
-/* Native frames without an x87: facings decided by the integer test. */
-static unsigned long cull_transforms;
+static unsigned long transformed_points, projected_points;
+/* Native frames without an x87: vertices decoded for the integer test. */
+static unsigned long cull_decodes;
 #define EXPECT_EITHER 0
 #define EXPECT_FILL 1
 #define EXPECT_NONE 2
@@ -156,11 +157,22 @@ static unsigned int fail_world_window, fail_screen_polygon, fail_software_prepar
 static unsigned short injected_v3_error = 1;
 static char osd_text[2048];
 
+/* MTXFIFO, read by the driver's getenv. */
+static char *fifo_setting;
+static char *recorded_mtx_getenv(const char *name)
+{
+    if (strcmp(name, "MTXFIFO") == 0) return fifo_setting;
+    return getenv(name);
+}
+/* The driver's own FIFO argument: a group of fills (56 bytes each) and its
+ * 4-byte inquiry in flight: 145 fills and 8124 bytes for the default
+ * 4096-word FIFO, 4 fills and 228 bytes with MTXFIFO=256. */
+static unsigned int fifo_limit = 145U * 56U + 4U;
+
 static void fifo_command(unsigned int bytes)
 {
     fifo_bytes += bytes;
-    /* The driver's own FIFO argument: at most 228 bytes in flight. */
-    assert(fifo_bytes <= 228U);
+    assert(fifo_bytes <= fifo_limit);
     if (fifo_bytes > fifo_peak) fifo_peak = fifo_bytes;
 }
 
@@ -172,68 +184,102 @@ static void fifo_transform(unsigned int bytes)
 
 int drv_cpu_detect(void) { return selected_cpu; }
 int drv_cpu_has_fpu(void) { return selected_fpu; }
+/* The board's screen for this run: LSINQSYS's visible size, or the PGC
+ * viewport RESETF leaves. Text follows the height: 8x16, 12x24 or 16x32. */
+static unsigned int test_width = 640U, test_height = 480U;
+static unsigned int test_x2 = 639U, test_y2 = 479U;
+static unsigned int test_line(void)
+{
+    return test_height >= 1024U ? 32U : test_height >= 768U ? 24U : 16U;
+}
+/* The whole-degree PGC angle for the 45-degree field over the screen's
+ * diagonal, whose screen scale must match the host camera's. */
+static int test_angle(void)
+{
+    double w = test_width - 1.0, h = test_height - 1.0;
+    return (int)floor(2.0 * atan(sqrt(w * w + h * h) * tan(22.5 * PI / 180.0) /
+                                 test_height) * 180.0 / PI + 0.5);
+}
 static int recorded_fixed_prepare(long matrix[3][3], int yaw, int pitch)
 {
     if (fail_software_prepare) { --fail_software_prepare; return 0; }
-    return soft3d_fixed_prepare_ortho(matrix, yaw, pitch);
+    return soft3d_fixed_prepare_degrees(matrix, yaw, pitch);
 }
 static int recorded_float_prepare(float matrix[3][3], int yaw, int pitch)
 {
     if (fail_software_prepare) { --fail_software_prepare; return 0; }
-    return soft3d_float_prepare_ortho(matrix, yaw, pitch);
+    return soft3d_float_prepare_degrees(matrix, yaw, pitch);
 }
+/* Software mode transforms; native mode never transforms on the host. */
 static int recorded_fixed_transform(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
 {
-    assert(!selected_fpu && selected_cpu < 386 && !drv_soft3d_active);
-    ++fixed_transforms; ++cull_transforms;
+    assert(!selected_fpu && selected_cpu < 386 && drv_soft3d_active);
+    ++fixed_transforms;
+    transformed_points += count - reuse;
     return soft3d_fixed_transform_reuse(matrix, count, vertices, out, reuse);
 }
 static int recorded_386_transform(long matrix[3][3], unsigned int count,
     const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
 {
-    assert(!selected_fpu && selected_cpu >= 386 && !drv_soft3d_active);
-    ++optimized_transforms; ++cull_transforms;
+    assert(!selected_fpu && selected_cpu >= 386 && drv_soft3d_active);
+    ++optimized_transforms;
+    transformed_points += count - reuse;
     return soft3d_386_transform_reuse(matrix, count, vertices, out, reuse);
 }
-static int recorded_fixed_xy(long matrix[3][3], unsigned int count,
-    const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
+static int recorded_float_transform(float matrix[3][3], unsigned int count,
+    const Vertex TG_HUGE *vertices, Soft3d_float_point *out, unsigned int reuse,
+    int precision)
 {
-    assert(!selected_fpu && selected_cpu < 386); ++fixed_transforms;
-    xy_points += count - reuse;
-    return soft3d_fixed_transform_xy_reuse(matrix, count, vertices, out, reuse);
+    assert(selected_fpu && drv_soft3d_active && precision == SOFT3D_FLOAT_SINGLE);
+    ++floating_transforms;
+    transformed_points += count - reuse;
+    return soft3d_float_transform_reuse(matrix, count, vertices, out, reuse, precision);
 }
-static int recorded_386_xy(long matrix[3][3], unsigned int count,
-    const Vertex TG_HUGE *vertices, Soft3d_fixed_point *out, unsigned int reuse)
+/* Newly projected points: cache entries that become valid. */
+static unsigned long cache_entries(const Soft3d_project_cache TG_HUGE *cache,
+                                   unsigned int count)
 {
-    assert(!selected_fpu && selected_cpu >= 386); ++optimized_transforms;
-    xy_points += count - reuse;
-    return soft3d_386_transform_xy_reuse(matrix, count, vertices, out, reuse);
+    unsigned long valid = 0;
+    unsigned int i;
+    for (i = 0; i < count && i < SOFT3D_MAX_VERTICES; ++i) valid += cache->valid[i] != 0;
+    return valid;
 }
-static int recorded_float_xy(float matrix[3][3], unsigned int count,
-    const Vertex TG_HUGE *vertices, Soft3d_float_point *out, unsigned int reuse)
+static int recorded_fixed_cached(const Soft3d_fixed_point *points,
+    unsigned int point_count, const unsigned int TG_HUGE *indices,
+    unsigned int corners, unsigned int width, unsigned int height,
+    Soft3d_project_cache TG_HUGE *cache, Soft3d_screen_point *out)
 {
-    assert(selected_fpu); ++floating_transforms;
-    xy_points += count - reuse;
-    return soft3d_float_transform_xy_reuse(matrix, count, vertices, out, reuse);
+    unsigned long before;
+    int count;
+    assert(!selected_fpu && drv_soft3d_active);
+    assert(width == test_width && height == test_height && cache == &mtx_cache);
+    before = cache_entries(cache, point_count);
+    count = soft3d_fixed_project_cached(points, point_count, indices, corners,
+                                        width, height, cache, out);
+    projected_points += cache_entries(cache, point_count) - before;
+    return count;
 }
-static int recorded_fixed_project(const Soft3d_fixed_point *points,
-    unsigned int count, unsigned int width, unsigned int height,
-    unsigned int world_width, unsigned int world_height, Soft3d_screen_point *out)
+static int recorded_float_cached(const Soft3d_float_point *points,
+    unsigned int point_count, const unsigned int TG_HUGE *indices,
+    unsigned int corners, unsigned int width, unsigned int height, int precision,
+    Soft3d_project_cache TG_HUGE *cache, Soft3d_screen_point *out)
 {
-    assert(!selected_fpu);
-    projected_points += count;
-    return soft3d_fixed_project_ortho(points, count, width, height,
-                                      world_width, world_height, out);
+    unsigned long before;
+    int count;
+    assert(selected_fpu && drv_soft3d_active && precision == SOFT3D_FLOAT_SINGLE);
+    assert(width == test_width && height == test_height && cache == &mtx_cache);
+    before = cache_entries(cache, point_count);
+    count = soft3d_float_project_cached(points, point_count, indices, corners,
+                                        width, height, precision, cache, out);
+    projected_points += cache_entries(cache, point_count) - before;
+    return count;
 }
-static int recorded_float_project(const Soft3d_float_point *points,
-    unsigned int count, unsigned int width, unsigned int height,
-    unsigned int world_width, unsigned int world_height, Soft3d_screen_point *out)
+static int recorded_fixed_vertex(const Vertex TG_HUGE *vertex, Soft3d_fixed_point *out)
 {
-    assert(selected_fpu);
-    projected_points += count;
-    return soft3d_float_project_ortho(points, count, width, height,
-                                      world_width, world_height, out);
+    assert(!selected_fpu && !drv_soft3d_active);
+    ++cull_decodes;
+    return soft3d_fixed_vertex(vertex, out);
 }
 
 static void inject_v3_error(unsigned int *remaining)
@@ -362,12 +408,24 @@ int kbhit(void)
 }
 int getch(void) { assert(!"Unexpected blocking keyboard read"); return 0; }
 
+static int board_absent;
 void lsinit(short handle, short address)
 {
     assert(handle == 0 && address == 1);
     ++init_calls;
 }
-void ioflush(void) {}
+int mtx_ls_present(void) { return init_calls != 0 && !board_absent; }
+unsigned int mtx_ls_segment(void) { return 0xC600U; }
+static unsigned int flush_calls;
+/* The binding waits for queued commands and then reads and discards every
+ * reply word, so a flush must never separate a command from its reply.
+ * Stale words behind unread errors are not readable yet and survive. */
+void ioflush(void)
+{
+    assert(inquiry == 0 && inquiry_remaining == 0);
+    if (error_read >= error_count && !clock_timeout) stale_words = 0UL;
+    ++flush_calls;
+}
 void lslibsync(void) { assert(!"Blocking synchronization must not hide board errors"); }
 void lsemulen(short restore)
 {
@@ -440,6 +498,8 @@ short iogetw(void)
 {
     unsigned int type, offset;
     static short system_info[10] = {640,480,256,0x0104,640,480,80,0x0108,0,0};
+    system_info[0] = system_info[4] = (short)test_x2 + 1;
+    system_info[1] = system_info[5] = (short)test_y2 + 1;
     assert(error_read >= error_count && !clock_timeout && pending_delay == 0U);
     if (stale_words != 0UL)
     {
@@ -518,7 +578,12 @@ void krhwsbop(short operation) { assert(operation == 0); fifo_command(4); }
 void krhwsmsk(unsigned short mask) { assert(mask == 255); fifo_command(4); }
 void krhwstdef(unsigned short mode) { assert(mode == 0); fifo_command(4); }
 void lssafapat(short pattern) { assert(pattern == -1); fifo_command(4); }
-void lssfont(short font) { assert(font == -1 || font == -4); fifo_command(4); }
+/* LSSFONT's raster fonts: -2 16x32, -3 12x24, -4 8x16. */
+void lssfont(short font)
+{
+    assert(font == (test_line() == 32U ? -2 : test_line() == 24U ? -3 : -4));
+    fifo_command(4);
+}
 void sctxssf(double x, double y) { assert(x > 0 && y > 0); fifo_command(10); }
 void sctxsdmode(short mode) { assert(mode == 0); fifo_command(4); }
 void sctxsalign(short horizontal, short vertical)
@@ -526,12 +591,9 @@ void sctxsalign(short horizontal, short vertical)
     (void)horizontal; (void)vertical;
     fifo_command(6);
 }
-void sctxbstring(short x, short y, char *text)
+static void osd_line(const char *text)
 {
     char expected[80];
-    assert(x >= 0 && x < 640 && y >= 0 && y < 480);
-    /* SCTXBSTRING sends SCTXSTRING: opcode, x, y, count, 16-bit chars. */
-    fifo_command(8U + 2U * (unsigned int)strlen(text));
     color_known = 0;
     assert(strstr(text, "texture") == NULL);
     assert(strstr(text, "Texture") == NULL);
@@ -547,27 +609,54 @@ void sctxbstring(short x, short y, char *text)
     }
     ++osd_calls;
 }
+void sctxbstring(short x, short y, char *text)
+{
+    assert(x >= 0 && (unsigned int)x < test_width && y >= 0 &&
+           (unsigned int)y + test_line() <= test_height);
+    /* SCTXBSTRING sends SCTXSTRING: opcode, x, y, count, 16-bit chars. */
+    fifo_command(8U + 2U * (unsigned int)strlen(text));
+    osd_line(text);
+}
 void v2gpsvwp(short xmin, short xmax, short ymin, short ymax)
 {
-    assert(xmin == 0 && xmax == 639 && ymin == 0 && ymax == 479);
+    assert(xmin == 0 && (unsigned int)xmax == test_width - 1U && ymin == 0 &&
+           (unsigned int)ymax == test_height - 1U);
     fifo_command(10);
     ++viewport_calls;
 }
+/* The shared 45-degree field on the view plane through the reference point,
+ * with the viewport's 639:479 aspect. */
+static double window_width, window_height;
 void v2gpswdw(double xmin, double xmax, double ymin, double ymax)
 {
-    assert(xmin < -GLOBE_RADIUS && xmax > GLOBE_RADIUS);
-    assert(ymin < -GLOBE_RADIUS && ymax > GLOBE_RADIUS);
-    assert(fabs((xmax - xmin) / (ymax - ymin) - 4.0 / 3.0) < 0.01);
+    double half = (double)GLOBE_VIEW_DISTANCE * tan(22.5 * PI / 180.0);
+    assert(fabs(ymin + half) < 1e-9 && fabs(ymax - half) < 1e-9);
+    assert(fabs(xmax + xmin) < 1e-9 &&
+           fabs(xmax - half * (test_width - 1.0) / (test_height - 1.0)) < 1e-9);
+    window_width = xmax - xmin; window_height = ymax - ymin;
     fifo_transform(18);
     ++world_window_calls;
     inject_v3_error(&fail_world_window);
 }
+/* The PGC projection (IBM PGC and PG-640A manuals) scales view x by
+ * (window diagonal / 2) / tan(angle / 2) * (viewport width / window width)
+ * over the depth. That must give the shared camera's focal length,
+ * 240 / tan(22.5 degrees), within the whole-degree angle's rounding. */
 void v3gpsproj(short projection)
 {
-    assert(projection == 0); fifo_transform(4);
+    double diagonal, scale_x, scale_y, focal;
+    assert(projection == test_angle());
+    assert(window_width > 0.0 && window_height > 0.0);
+    diagonal = sqrt(window_width * window_width + window_height * window_height);
+    scale_x = diagonal / 2.0 / tan(projection * PI / 360.0) * (test_width - 1.0) / window_width;
+    scale_y = diagonal / 2.0 / tan(projection * PI / 360.0) * (test_height - 1.0) / window_height;
+    focal = test_height / 2.0 / tan(22.5 * PI / 180.0);
+    assert(fabs(scale_x - scale_y) < 1e-9);
+    assert(fabs(scale_x / focal - 1.0) < 0.005);
+    fifo_transform(4);
     ++projection_calls; inject_v3_error(&fail_v3_projection);
 }
-void v3gpsdist(double distance) { assert(distance > GLOBE_RADIUS); fifo_transform(6); ++distance_calls; }
+void v3gpsdist(double distance) { assert(distance == GLOBE_VIEW_DISTANCE); fifo_transform(6); ++distance_calls; }
 void v3gpshclip(short enabled) { assert(enabled == 0); fifo_transform(4); ++hither_calls; }
 void v3gpsyclip(short enabled) { assert(enabled == 0); fifo_transform(4); ++yon_calls; }
 void v3mdid(void) { fifo_transform(2); ++model_calls; }
@@ -576,11 +665,10 @@ void v3mdrotz(short angle) { fifo_transform(4); last_yaw = angle; inject_v3_erro
 void v3vwid(void) { fifo_transform(2); ++view_calls; }
 void v3vwrpt(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); fifo_transform(14); }
 void v3vwrotx(short angle) { fifo_transform(4); last_pitch = angle; }
-void krhwcclr(unsigned short color)
+static void frame_cleared(unsigned short color)
 {
     unsigned int i, brightness;
     assert(color < 256);
-    fifo_command(4);
     color_known = 0;
     batch_active = 0; /* a frame (or retry) starts; drop any aborted packet */
     brightness = earth_cmap[color][0] + earth_cmap[color][1] + earth_cmap[color][2];
@@ -591,14 +679,23 @@ void krhwcclr(unsigned short color)
     expected_visible = expected_caps = silhouette_faces = silhouette_caps = 0;
     osd_text[0] = '\0';
 }
-void krhwsfcol(unsigned short color)
+void krhwcclr(unsigned short color)
+{
+    fifo_command(4);
+    frame_cleared(color);
+}
+static void color_selected(unsigned short color)
 {
     assert(color < 256);
     assert(!color_known || color != last_color);
-    fifo_command(4);
     color_known = 1;
     ++color_commands;
     last_color = color;
+}
+void krhwsfcol(unsigned short color)
+{
+    fifo_command(4);
+    color_selected(color);
 }
 
 void v3arwplygn(unsigned short count, struct V3coord *vertices)
@@ -610,7 +707,7 @@ void v3arwplygn(unsigned short count, struct V3coord *vertices)
     assert(last_color == submitted_color);
     fifo_command(4U + 12U * count);
     ++fills_since_sync;
-    assert(fills_since_sync <= 4U);
+    assert(fills_since_sync <= mtx_fill_packets);
     for (i = 0; i < count; ++i) {
         found = 0;
         for (j = 0; j < 4; ++j)
@@ -632,21 +729,27 @@ void v3arwplygn(unsigned short count, struct V3coord *vertices)
 }
 
 /* Independent LibShell camera oracle: Rz(model yaw), then the inverse
- * viewer rotation Rx(-pitch), with the documented orthographic window. */
+ * viewer rotation Rx(-pitch), with the eye GLOBE_VIEW_DISTANCE from the
+ * reference point and a 45-degree field across the screen's height. */
 static void project_native(const Vertex *point, double *x, double *y)
 {
-    double yaw, pitch, model_y;
+    double yaw, pitch, model_y, view_x, view_y, depth, focal;
     yaw = (double)mtx_angle(drv_rot_y) * PI / 180.0;
     pitch = (double)mtx_angle(90.0f + drv_rot_x) * PI / 180.0;
-    *x = cos(yaw) * point->x - sin(yaw) * point->y;
+    view_x = cos(yaw) * point->x - sin(yaw) * point->y;
     model_y = sin(yaw) * point->x + cos(yaw) * point->y;
-    *y = cos(pitch) * model_y + sin(pitch) * point->z;
-    *x = (*x + 1600.0) * 639.0 / 3200.0;
-    *y = (1200.0 - *y) * 479.0 / 2400.0;
+    view_y = cos(pitch) * model_y + sin(pitch) * point->z;
+    depth = (double)GLOBE_VIEW_DISTANCE -
+            (-sin(pitch) * model_y + cos(pitch) * point->z);
+    focal = test_height / 2.0 / tan(22.5 * PI / 180.0);
+    *x = test_width / 2.0 + view_x * focal / depth;
+    *y = test_height / 2.0 - view_y * focal / depth;
 }
 
-/* Floor rounding plus Q14/Q4 transform error stays within one pixel of
- * the unquantized independent camera. */
+/* Truncating division (below one pixel), the integer focal length (579
+ * for 579.41: under 0.25 pixel at the screen edge) and Q14/Q4 transform
+ * error (about 0.1 pixel) keep host points within 1.5 pixels of the
+ * unquantized independent camera. */
 static int near_corner(const struct Phcoord *point, const Vertex *const corners[4])
 {
     unsigned int j;
@@ -654,7 +757,7 @@ static int near_corner(const struct Phcoord *point, const Vertex *const corners[
     for (j = 0; j < 4; ++j)
     {
         project_native(corners[j], &x, &y);
-        if (fabs(point->x - floor(x)) <= 1.0 && fabs(point->y - floor(y)) <= 1.0)
+        if (fabs(point->x - x) <= 1.5 && fabs(point->y - y) <= 1.5)
             return 1;
     }
     return 0;
@@ -702,7 +805,8 @@ static void match_batch_fill(const struct Phcoord *polygon, unsigned int count)
     ++batch_cursor;
 }
 
-void scarwplygn(unsigned short count, struct Phcoord *vertices)
+/* A host-projected fill in top-left screen coordinates. */
+static void screen_fill(const struct Phcoord *vertices, unsigned int count)
 {
     unsigned int i, j;
     long area;
@@ -710,14 +814,11 @@ void scarwplygn(unsigned short count, struct Phcoord *vertices)
     assert(batch_active);
     match_batch_fill(vertices, count);
     assert(last_color == submitted_color);
-    fifo_command(4U + 4U * count);
-    ++fills_since_sync;
-    assert(fills_since_sync <= 4U);
     area = 0;
     for (i = 0; i < count; ++i)
     {
-        assert(vertices[i].x >= 0 && vertices[i].x <= 639);
-        assert(vertices[i].y >= 0 && vertices[i].y <= 479);
+        assert(vertices[i].x >= 0 && (unsigned int)vertices[i].x < test_width);
+        assert(vertices[i].y >= 0 && (unsigned int)vertices[i].y < test_height);
         assert(near_corner(vertices + i, submitted_vertices));
         j = (i + 1U) % count;
         area += (long)vertices[i].x * vertices[j].y -
@@ -727,7 +828,202 @@ void scarwplygn(unsigned short count, struct Phcoord *vertices)
     assert(area < 0L);
     ++screen_polygons; ++filled_polygons;
     if (count == 3) ++filled_triangles;
+}
+void scarwplygn(unsigned short count, struct Phcoord *vertices)
+{
+    fifo_command(4U + 4U * count);
+    ++fills_since_sync;
+    assert(fills_since_sync <= mtx_fill_packets);
+    screen_fill(vertices, count);
     inject_v3_error(&fail_screen_polygon);
+}
+
+static int same_vertex(const Vertex *a, const Vertex *b)
+{
+    return a->x == b->x && a->y == b->y && a->z == b->z;
+}
+
+/* PGC recorder: the commands of mtx_pgc.h. FLAGRD models the board
+ * running every earlier command; transport and encodings are tested by
+ * tests/mtx_pgc.c. */
+#define PGC_NO_WINDOW 0
+#define PGC_WORLD_WINDOW 1
+#define PGC_PIXEL_WINDOW 2
+static int pgc_profile, pgc_board_640a, pgc_timeout, pgc_window_kind;
+static unsigned int pgc_board_type = 3U, pgc_view_x1, pgc_view_y1;
+static unsigned int pgc_open_calls, pgc_close_calls, pgc_sync_calls, pgc_lut_calls;
+static unsigned int pgc_resets, pgc_errors, pgc_injected_code = 10U;
+static unsigned char pgc_display = 1U;
+static unsigned char pgc_table[256][3], pgc_saved_table[256][3];
+static int pgc_table_saved, pgc_fill_mode, pgc_text_ready, pgc_text_size, pgc_aligned;
+
+static void pgc_inject(unsigned int *remaining)
+{
+    if (*remaining == 0U) return;
+    --*remaining;
+    pgc_errors |= 1U << pgc_injected_code;
+}
+int pgc_open(void)
+{
+    /* Only after the LIB Shell presence test fails. */
+    assert(init_calls == 1 && board_absent && pgc_open_calls == 0);
+    ++pgc_open_calls;
+    return pgc_profile;
+}
+unsigned int pgc_segment(void) { return pgc_board_640a ? 0xC640U : 0xC600U; }
+int pgc_matrox(void) { return pgc_board_640a; }
+unsigned int pgc_board(void) { return pgc_board_type; }
+int pgc_failed(void) { return pgc_timeout; }
+unsigned int pgc_take_errors(void)
+{
+    unsigned int errors = pgc_errors;
+    pgc_errors = 0U;
+    return errors;
+}
+int pgc_flagrd(unsigned char flag, unsigned char *reply, unsigned int bytes)
+{
+    assert(pgc_open_calls == 1 && pgc_close_calls == 0 && bytes == 1U);
+    assert(flag == 4U || flag == 5U);
+    ++sync_calls; ++pgc_sync_calls;
+    if (pgc_timeout) return FALSE;
+    *reply = flag == 5U ? pgc_display : 1U;
+    return TRUE;
+}
+void pgc_close(void) { assert(pgc_open_calls == 1); ++pgc_close_calls; }
+void pgc_resetf(void) { assert(!pgc_table_saved); ++pgc_resets; }
+/* FLAGRD 21 after RESETF: the whole screen, unless a profile says not. */
+int pgc_viewport(unsigned int *x1, unsigned int *x2, unsigned int *y1, unsigned int *y2)
+{
+    assert(pgc_open_calls == 1 && pgc_close_calls == 0 && pgc_resets == 1);
+    ++sync_calls; ++pgc_sync_calls;
+    if (pgc_timeout) return FALSE;
+    *x1 = pgc_view_x1; *x2 = test_x2; *y1 = pgc_view_y1; *y2 = test_y2;
+    return TRUE;
+}
+void pgc_displa(unsigned char flag) { assert(flag <= 1U); pgc_display = flag; }
+void pgc_clears(unsigned char color) { assert(pgc_display == 0U); frame_cleared(color); }
+void pgc_color(unsigned char color) { color_selected(color); }
+void pgc_prmfil(unsigned char flag) { assert(flag == 1U); pgc_fill_mode = 1; }
+void pgc_lut(unsigned char index, unsigned char red, unsigned char green,
+             unsigned char blue)
+{
+    /* The board's LUT is saved before the first change. */
+    assert(pgc_table_saved);
+    pgc_table[index][0] = red; pgc_table[index][1] = green; pgc_table[index][2] = blue;
+    ++pgc_lut_calls;
+}
+void pgc_lutsav(void)
+{
+    memcpy(pgc_saved_table, pgc_table, sizeof(pgc_table));
+    pgc_table_saved = 1;
+}
+void pgc_lutint(unsigned char state)
+{
+    assert(state == 255U && pgc_table_saved);
+    memcpy(pgc_table, pgc_saved_table, sizeof(pgc_table));
+}
+void pgc_vwport(int x1, int x2, int y1, int y2)
+{
+    assert(x1 == 0 && (unsigned int)x2 == test_width - 1U && y1 == 0 &&
+           (unsigned int)y2 == test_height - 1U);
+    ++viewport_calls;
+}
+void pgc_window(double x1, double x2, double y1, double y2)
+{
+    double half = (double)GLOBE_VIEW_DISTANCE * tan(22.5 * PI / 180.0);
+    if (x1 == 0.0 && y1 == 0.0)
+    {
+        /* Pixel coordinates for the OSD and host-projected fills. */
+        assert(x2 == test_width - 1.0 && y2 == test_height - 1.0);
+        pgc_window_kind = PGC_PIXEL_WINDOW;
+        return;
+    }
+    assert(fabs(y1 + half) < 1e-9 && fabs(y2 - half) < 1e-9);
+    assert(fabs(x2 + x1) < 1e-9 &&
+           fabs(x2 - half * (test_width - 1.0) / (test_height - 1.0)) < 1e-9);
+    window_width = x2 - x1; window_height = y2 - y1;
+    pgc_window_kind = PGC_WORLD_WINDOW;
+    ++world_window_calls;
+}
+/* The same scale as v3gpsproj, for the window each native frame sends. */
+void pgc_projct(int angle)
+{
+    double half = (double)GLOBE_VIEW_DISTANCE * tan(22.5 * PI / 180.0);
+    double width = 2.0 * half * (test_width - 1.0) / (test_height - 1.0);
+    double height = 2.0 * half, scale;
+    assert(angle == test_angle());
+    scale = sqrt(width * width + height * height) / 2.0 /
+            tan(angle * PI / 360.0) * (test_width - 1.0) / width;
+    assert(fabs(scale / (test_height / 2.0 / tan(22.5 * PI / 180.0)) - 1.0) < 0.005);
+    ++projection_calls; pgc_inject(&fail_v3_projection);
+}
+void pgc_distan(double distance) { assert(distance == GLOBE_VIEW_DISTANCE); ++distance_calls; }
+void pgc_cliph(unsigned char flag) { assert(flag == 0U); ++hither_calls; }
+void pgc_clipy(unsigned char flag) { assert(flag == 0U); ++yon_calls; }
+void pgc_mdiden(void) { ++model_calls; }
+void pgc_mdorg(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); }
+void pgc_mdrotz(int degrees) { last_yaw = (short)degrees; pgc_inject(&fail_v3_rotation); }
+void pgc_vwiden(void) { ++view_calls; }
+void pgc_vwrpt(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); }
+void pgc_vwrotx(int degrees) { last_pitch = (short)degrees; }
+void pgc_poly3(unsigned int count, const Vertex TG_HUGE *const *vertices)
+{
+    unsigned int i, j;
+    double radius;
+    int found;
+    assert(!drv_soft3d_active && pgc_window_kind == PGC_WORLD_WINDOW && pgc_fill_mode);
+    assert(count == 3U || count == 4U);
+    assert(last_color == submitted_color);
+    for (i = 0; i < count; ++i)
+    {
+        found = 0;
+        for (j = 0; j < 4; ++j)
+            if (vertices[i] == submitted_vertices[j]) found = 1;
+        assert(found); /* The board receives world vertices. */
+        radius = vertices[i]->x * vertices[i]->x + vertices[i]->y * vertices[i]->y +
+                 vertices[i]->z * vertices[i]->z;
+        assert(fabs(radius - (double)GLOBE_RADIUS * GLOBE_RADIUS) < 2.0);
+        for (j = 0; j < i; ++j) assert(!same_vertex(vertices[i], vertices[j]));
+    }
+    ++filled_polygons; ++world_polygons;
+    if (count == 3U) ++filled_triangles;
+    pgc_inject(&fail_v3_polygon);
+}
+void pgc_poly(unsigned int count, const Soft3d_screen_point *points)
+{
+    struct Phcoord polygon[SOFT3D_MAX_POLY];
+    unsigned int i;
+    assert(drv_soft3d_active && batch_active && pgc_window_kind == PGC_PIXEL_WINDOW);
+    assert(count >= 3U && count <= SOFT3D_MAX_POLY);
+    /* Back to the top-left screen coordinates of the LIB Shell path. */
+    for (i = 0; i < count; ++i)
+    {
+        assert(points[i].x >= 0L && points[i].x < (long)test_width);
+        assert(points[i].y >= 0L && points[i].y < (long)test_height);
+        polygon[i].x = (short)points[i].x;
+        polygon[i].y = (short)((long)test_height - 1L - points[i].y);
+    }
+    screen_fill(polygon, count);
+    pgc_inject(&fail_screen_polygon);
+}
+void pgc_move(double x, double y)
+{
+    assert(pgc_window_kind == PGC_PIXEL_WINDOW);
+    assert(x == 8.0 && y >= test_line() - 1.0 && y < test_height && y == floor(y));
+    pgc_text_ready = 1;
+}
+void pgc_tsize(double size) { assert(size == test_line() / 2.0); pgc_text_size = 1; }
+void pgc_tjust(unsigned char horizontal, unsigned char vertical)
+{
+    assert(horizontal == 1U && vertical == 3U);
+    pgc_aligned = 1;
+}
+void pgc_text(const char *text)
+{
+    assert(pgc_text_ready && pgc_text_size && pgc_aligned);
+    assert(pgc_window_kind == PGC_PIXEL_WINDOW);
+    pgc_text_ready = 0;
+    osd_line(text);
 }
 
 void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
@@ -735,7 +1031,8 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
                             unsigned char color)
 {
     double ux, uy, uz, vx, vy, vz, nx, ny, nz;
-    double angle, model_y, view_z, tolerance;
+    double angle, model_y, view_x, view_y, view_z, facing, tolerance;
+    double point_x, point_y, point_z;
     unsigned long before_fill;
     int cap;
     Vertex *third;
@@ -761,15 +1058,24 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
            ny * (a->y + b->y + third->y) +
            nz * (a->z + b->z + third->z) > 0.0);
     cap = (third == d || (a->x == d->x && a->y == d->y && a->z == d->z));
-    /* Independently transform the normal using the commands actually sent:
-     * model Rz(yaw), followed by inverse viewer Rx(-pitch). The resulting
-     * positive eye-space Z hemisphere must be the one the SDK receives.
-     * This deliberately avoids the driver's object-space eye-dot formula. */
+    /* Independently transform the normal and a vertex using the commands
+     * actually sent: model Rz(yaw), followed by inverse viewer Rx(-pitch).
+     * The facet faces the eye, GLOBE_VIEW_DISTANCE along view-space Z, when
+     * the normal points toward it from the vertex. This deliberately
+     * avoids the driver's object-space formula. */
     angle = (double)last_yaw * PI / 180.0;
+    view_x = cos(angle) * nx - sin(angle) * ny;
     model_y = sin(angle) * nx + cos(angle) * ny;
+    point_x = cos(angle) * a->x - sin(angle) * a->y;
+    point_y = sin(angle) * a->x + cos(angle) * a->y;
     angle = (double)last_pitch * PI / 180.0;
+    view_y = cos(angle) * model_y + sin(angle) * nz;
     view_z = -sin(angle) * model_y + cos(angle) * nz;
-    tolerance = sqrt(nx * nx + ny * ny + nz * nz) * 0.000001;
+    point_z = -sin(angle) * point_y + cos(angle) * a->z;
+    point_y = cos(angle) * point_y + sin(angle) * a->z;
+    facing = -view_x * point_x - view_y * point_y +
+             view_z * ((double)GLOBE_VIEW_DISTANCE - point_z);
+    tolerance = sqrt(nx * nx + ny * ny + nz * nz) * GLOBE_VIEW_DISTANCE * 0.000001;
     submitted_vertices[0] = a; submitted_vertices[1] = b;
     submitted_vertices[2] = c; submitted_vertices[3] = d;
     submitted_color = color;
@@ -777,21 +1083,16 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
     before_fill = filled_polygons;
     recorded_driver_quad(a, b, c, d, color);
     assert(filled_polygons - before_fill <= 1);
-    if (view_z > tolerance) {
+    if (facing > tolerance) {
         ++expected_visible;
         if (cap) ++expected_caps;
         assert(filled_polygons - before_fill == 1);
-    } else if (view_z < -tolerance) {
+    } else if (facing < -tolerance) {
         assert(filled_polygons == before_fill);
     } else {
         ++silhouette_faces;
         if (cap) ++silhouette_caps;
     }
-}
-
-static int same_vertex(const Vertex *a, const Vertex *b)
-{
-    return a->x == b->x && a->y == b->y && a->z == b->z;
 }
 
 /* Called by the shared packet traversal and by drv_submit_quad_as_batch. */
@@ -866,40 +1167,59 @@ static void direct_driver_quad(Vertex *a, Vertex *b, Vertex *c, Vertex *d,
 static void render_and_check(unsigned long faces, unsigned char *data)
 {
     unsigned int before_sync, before_model, before_view;
-    unsigned int before_fill_syncs, before_transform_syncs;
-    unsigned long before_colors, before_xy, before_projected, before_cull, points;
+    unsigned int before_fill_syncs, before_transform_syncs, before_pgc_syncs;
+    unsigned long before_colors, before_transformed, before_projected, before_cull, points;
+    double elevation;
     int software;
     submitted_quads = filled_polygons = filled_triangles = 0;
     expected_visible = expected_caps = silhouette_faces = silhouette_caps = 0;
     expected_data = data;
     before_sync = sync_calls; before_model = model_calls; before_view = view_calls;
     before_fill_syncs = fill_syncs; before_transform_syncs = transform_syncs;
+    before_pgc_syncs = pgc_sync_calls;
     before_colors = color_commands;
-    before_xy = xy_points; before_projected = projected_points;
-    before_cull = cull_transforms;
+    before_transformed = transformed_points; before_projected = projected_points;
+    before_cull = cull_decodes;
     software = drv_soft3d_active;
+    /* Sine of the eye's elevation above the equator, from the frame's pose. */
+    elevation = cos((double)mtx_angle(90.0f + drv_rot_x) * PI / 180.0);
     drv_render();
     /* Native frames without an x87 run the integer facing test per quad. */
     if (!software && !drv_soft3d_active)
-        assert((cull_transforms > before_cull) == !selected_fpu);
+        assert((cull_decodes > before_cull) == !selected_fpu);
     if (software && drv_soft3d_active)
     {
         /* Row reuse: each mesh vertex is transformed and projected once. */
         points = (globe_longitude + 1UL) * (globe_latitude + 1UL);
-        assert(xy_points - before_xy == points);
+        assert(transformed_points - before_transformed == points);
         assert(projected_points - before_projected == points);
     }
-    /* One checkpoint per four fills, one for the model/view commands and
-     * a color command only when the next fill's palette index changes. */
+    /* LibShell: one checkpoint per group of fills (four by default), one
+     * for the model/view commands. PGC: flow control in the FIFO, and one
+     * FLAGRD after the fills and one after the OSD. Either way a color
+     * command only when the next fill's palette index changes. */
     if (software == drv_soft3d_active)
     {
-        assert(fill_syncs - before_fill_syncs == (filled_polygons + 3UL) / 4UL);
-        assert(transform_syncs - before_transform_syncs == (software ? 0U : 1U));
+        if (mtx_pgc)
+        {
+            assert(pgc_sync_calls - before_pgc_syncs >= 1U &&
+                   pgc_sync_calls - before_pgc_syncs <= 2U);
+            assert(fill_syncs == before_fill_syncs && transform_syncs == before_transform_syncs);
+        }
+        else
+        {
+            assert(fill_syncs - before_fill_syncs ==
+                   (filled_polygons + mtx_fill_packets - 1UL) / mtx_fill_packets);
+            assert(transform_syncs - before_transform_syncs == (software ? 0U : 1U));
+        }
         assert(color_commands - before_colors < filled_polygons);
     }
     assert(submitted_quads == faces);
     assert(filled_polygons > 0 && filled_polygons < faces);
-    assert(filled_triangles > 0); /* duplicate pole vertices compacted */
+    /* Duplicate pole vertices are compacted into triangles. From three radii
+     * away a pole is in view when the eye is more than asin(1/3) above or
+     * below the equator; the margin keeps a whole cap triangle in view. */
+    if (fabs(elevation) > 0.4) assert(filled_triangles > 0);
     if (!drv_soft3d_active)
     {
         assert(filled_polygons >= expected_visible &&
@@ -944,7 +1264,7 @@ static void cleanup_checks(void)
     assert(current_lut == 3 && current_mask == original_mask);
     assert(error_reporting == initial_error_reporting);
     assert(allocated_blocks == 0);
-    assert(fifo_bytes == 4U && fifo_peak <= 228U);
+    assert(fifo_bytes == 4U && fifo_peak <= fifo_limit);
     if (break_exit)
         puts("PASS Matrox Ctrl-Break: INT 23h sets a flag and the event loop exits through board, palette and mask cleanup");
     else
@@ -1184,99 +1504,38 @@ static void check_direct_quad(void)
 
 /* Row reuse and rejected inputs match the full kernels, so the x/y kernels
  * can replace them without changing a packet's outcome. */
-static void check_orthographic_xy(long fixed_matrix[3][3], float floating_matrix[3][3])
-{
-    Vertex vertices[SOFT3D_MAX_VERTICES + 1];
-    Soft3d_fixed_point full[SOFT3D_MAX_VERTICES + 1], xy[SOFT3D_MAX_VERTICES + 1];
-    Soft3d_fixed_point xy386[SOFT3D_MAX_VERTICES + 1];
-    Soft3d_float_point floating[SOFT3D_MAX_VERTICES + 1];
-    Soft3d_float_point floating_xy[SOFT3D_MAX_VERTICES + 1];
-    unsigned int i, pass;
-    for (i = 0; i <= SOFT3D_MAX_VERTICES; ++i)
-    {
-        vertices[i].x = (float)((int)(i * 37U % 1999U) - 999) * 0.75f;
-        vertices[i].y = (float)((int)(i * 53U % 1999U) - 999) * 0.5f;
-        vertices[i].z = (float)((int)(i * 71U % 1999U) - 999) * 0.625f;
-    }
-    for (pass = 0; pass < 2U; ++pass)
-    {
-        /* The second pass reuses the first band's odd row as its even row. */
-        assert(soft3d_fixed_transform_reuse(fixed_matrix, 8, vertices + pass, full, pass * 4U));
-        assert(soft3d_fixed_transform_xy_reuse(fixed_matrix, 8, vertices + pass, xy, pass * 4U));
-        assert(soft3d_386_transform_xy_reuse(fixed_matrix, 8, vertices + pass, xy386, pass * 4U));
-        assert(soft3d_float_transform_reuse(floating_matrix, 8, vertices + pass, floating,
-                                            pass * 4U, SOFT3D_FLOAT_SINGLE));
-        assert(soft3d_float_transform_xy_reuse(floating_matrix, 8, vertices + pass,
-                                               floating_xy, pass * 4U));
-        assert(memcmp(xy, xy386, 8U * sizeof(xy[0])) == 0);
-        for (i = 0; i < 8U; ++i)
-        {
-            assert(xy[i].x == full[i].x && xy[i].y == full[i].y && xy[i].z == 0);
-            assert(floating_xy[i].x == floating[i].x && floating_xy[i].y == floating[i].y);
-            assert(floating_xy[i].z == 0.0f);
-        }
-    }
-    /* Invalid inputs fail in both kernels: radius, counts and reuse. */
-    vertices[2].y = 1000.0625f;
-    assert(!soft3d_fixed_transform_reuse(fixed_matrix, 4, vertices, full, 0));
-    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 4, vertices, xy, 0));
-    assert(!soft3d_386_transform_xy_reuse(fixed_matrix, 4, vertices, xy, 0));
-    vertices[2].y = 0.0f;
-    memset(&vertices[1].z, 0xff, sizeof(vertices[1].z));
-    assert(!soft3d_float_transform_reuse(floating_matrix, 4, vertices, floating, 0,
-                                         SOFT3D_FLOAT_SINGLE));
-    assert(!soft3d_float_transform_xy_reuse(floating_matrix, 4, vertices, floating_xy, 0));
-    vertices[1].z = 0.0f;
-    assert(!soft3d_fixed_transform_xy_reuse(NULL, 4, vertices, xy, 0));
-    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 4, NULL, xy, 0));
-    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 4, vertices, NULL, 0));
-    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, SOFT3D_MAX_VERTICES + 1U, vertices, xy, 0));
-    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 6, vertices, xy, 2));
-    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 5, vertices, xy, 2));
-    assert(!soft3d_fixed_transform_xy_reuse(fixed_matrix, 0, vertices, xy, 1));
-    assert(soft3d_fixed_transform_xy_reuse(fixed_matrix, 0, vertices, xy, 0) ==
-           soft3d_fixed_transform_reuse(fixed_matrix, 0, vertices, full, 0));
-    assert(!soft3d_386_transform_xy_reuse(fixed_matrix, 6, vertices, xy, 2));
-    assert(!soft3d_float_transform_xy_reuse(NULL, 4, vertices, floating_xy, 0));
-    assert(!soft3d_float_transform_xy_reuse(floating_matrix, 0, vertices, floating_xy, 0));
-    assert(!soft3d_float_transform_xy_reuse(floating_matrix, SOFT3D_MAX_VERTICES + 1U,
-                                            vertices, floating_xy, 0));
-    assert(!soft3d_float_transform_xy_reuse(floating_matrix, 6, vertices, floating_xy, 2));
-    assert(soft3d_float_transform_xy_reuse(floating_matrix, SOFT3D_MAX_VERTICES, vertices,
-                                           floating_xy, SOFT3D_MAX_VERTICES / 2U));
-    puts("PASS DOS orthographic x/y kernels: baseline, 386 and float x/y equal the full kernels, with the same row reuse and rejected inputs");
-}
-
-/* The integer facing bound assumes the Q14 rows' cross product is within
- * 4/16384 of the exact eye for every integer-degree pose. */
+/* The integer facing bound assumes the Q14 last row is within 2/16384 of
+ * the exact eye direction, so the Q4 integer eye is within 7 of the exact
+ * eye position, for every integer-degree pose. */
 static void check_integer_eye(void)
 {
     long matrix[3][3];
-    double cx, cy, cz, ex, ey, ez, error, worst = 0.0;
-    int yaw, pitch;
+    double exact[3], row, eye, worst_row = 0.0, worst_eye = 0.0;
+    int yaw, pitch, i;
     for (yaw = 0; yaw < 360; ++yaw)
         for (pitch = 0; pitch < 360; ++pitch)
         {
-            assert(soft3d_fixed_prepare_ortho(matrix, yaw, pitch));
-            cx = (double)matrix[0][1] * matrix[1][2] - (double)matrix[0][2] * matrix[1][1];
-            cy = (double)matrix[0][2] * matrix[1][0] - (double)matrix[0][0] * matrix[1][2];
-            cz = (double)matrix[0][0] * matrix[1][1] - (double)matrix[0][1] * matrix[1][0];
-            ex = -sin(yaw * PI / 180.0) * sin(pitch * PI / 180.0);
-            ey = -cos(yaw * PI / 180.0) * sin(pitch * PI / 180.0);
-            ez = cos(pitch * PI / 180.0);
-            cx = cx / (16384.0 * 16384.0) - ex;
-            cy = cy / (16384.0 * 16384.0) - ey;
-            cz = cz / (16384.0 * 16384.0) - ez;
-            error = sqrt(cx * cx + cy * cy + cz * cz);
-            if (error > worst) worst = error;
+            assert(soft3d_fixed_prepare_degrees(matrix, yaw, pitch));
+            exact[0] = -sin(yaw * PI / 180.0) * sin(pitch * PI / 180.0);
+            exact[1] = -cos(yaw * PI / 180.0) * sin(pitch * PI / 180.0);
+            exact[2] = cos(pitch * PI / 180.0);
+            for (i = 0; i < 3; ++i)
+            {
+                row = fabs((double)matrix[2][i] / 16384.0 - exact[i]) * 16384.0;
+                eye = fabs((double)(matrix[2][i] * (GLOBE_VIEW_DISTANCE * 16L) / 16384L) -
+                           exact[i] * GLOBE_VIEW_DISTANCE * 16.0);
+                if (row > worst_row) worst_row = row;
+                if (eye > worst_eye) worst_eye = eye;
+            }
         }
-    assert(worst * 16384.0 < 4.0);
-    printf("PASS Matrox integer eye: Q14 model/view rows cross within %.2f/16384 of "
-           "the exact eye at every integer-degree pose\n", worst * 16384.0);
+    assert(worst_row <= 2.0 && worst_eye <= 7.0);
+    printf("PASS Matrox integer eye: Q14 last row within %.2f/16384 of the exact eye "
+           "direction and the Q4 eye within %.2f of its position at every integer-degree "
+           "pose\n", worst_row, worst_eye);
 }
 
 /* Without an x87, native culling decides most facings with the integer
- * ortho transform and defers the rest to the float test. Every decision
+ * object-space test and defers the rest to the float test. Every decision
  * must equal the float test, so the submitted polygons are unchanged. */
 static void check_integer_culling(void)
 {
@@ -1320,96 +1579,73 @@ static void check_integer_culling(void)
     drv_rot_x = rot_x; drv_rot_y = rot_y;
 }
 
-static void check_orthographic_math(void)
+/* The host kernels for LibShell's camera: baseline and 386 transforms are
+ * identical, and with the float kernels project within about a pixel of
+ * an independent double-precision perspective camera. */
+static void check_perspective_math(void)
 {
+    static const unsigned int corners[4] = { 0, 1, 2, 3 };
     long fixed_matrix[3][3];
     float floating_matrix[3][3];
-    Vertex vertices[4];
-    Soft3d_fixed_point fixed[4], optimized[4], xy[4], xy386[4];
-    Soft3d_float_point floating[4], floating_xy[4];
-    Soft3d_screen_point a[4], b[4], unchanged[4];
+    Vertex vertices[4], probe;
+    Soft3d_fixed_point fixed[4], optimized[4], decoded;
+    Soft3d_float_point floating[4];
+    Soft3d_project_cache cache;
+    Soft3d_screen_point a[SOFT3D_MAX_POLY], b[SOFT3D_MAX_POLY];
     int yaw, pitch, i;
-    double cy, sy, cp, sp, x, y;
+    double cy, sy, cp, sp, view_x, model_y, view_y, depth, focal, x, y;
     for (i = 0; i < 4; ++i)
     {
         vertices[i].x = (float)(i * 300 - 500);
         vertices[i].y = (float)(i * 200 - 250);
         vertices[i].z = (float)(i * 110 - 100);
     }
+    focal = 240.0 / tan(22.5 * PI / 180.0);
     for (yaw = -360; yaw < 720; yaw += 13)
         for (pitch = -360; pitch < 720; pitch += 17)
         {
-            assert(soft3d_fixed_prepare_ortho(fixed_matrix, yaw, pitch));
-            assert(soft3d_float_prepare_ortho(floating_matrix, yaw, pitch));
+            assert(soft3d_fixed_prepare_degrees(fixed_matrix, yaw, pitch));
+            assert(soft3d_float_prepare_degrees(floating_matrix, yaw, pitch));
             assert(soft3d_fixed_transform_reuse(fixed_matrix, 4, vertices, fixed, 0));
             assert(soft3d_386_transform_reuse(fixed_matrix, 4, vertices, optimized, 0));
             assert(memcmp(fixed, optimized, sizeof(fixed)) == 0);
             assert(soft3d_float_transform_reuse(floating_matrix, 4, vertices, floating,
                                                0, SOFT3D_FLOAT_SINGLE));
-            assert(soft3d_fixed_project_ortho(fixed, 4, 640, 480, 3200, 2400, a) == 4);
-            assert(soft3d_float_project_ortho(floating, 4, 640, 480, 3200, 2400, b) == 4);
-            /* x/y kernels: identical x and y, zero z, identical pixels. */
-            assert(soft3d_fixed_transform_xy_reuse(fixed_matrix, 4, vertices, xy, 0));
-            assert(soft3d_386_transform_xy_reuse(fixed_matrix, 4, vertices, xy386, 0));
-            assert(soft3d_float_transform_xy_reuse(floating_matrix, 4, vertices, floating_xy, 0));
-            assert(memcmp(xy, xy386, sizeof(xy)) == 0);
-            for (i = 0; i < 4; ++i)
-            {
-                assert(xy[i].x == fixed[i].x && xy[i].y == fixed[i].y && xy[i].z == 0);
-                assert(floating_xy[i].x == floating[i].x &&
-                       floating_xy[i].y == floating[i].y && floating_xy[i].z == 0.0f);
-            }
-            assert(soft3d_fixed_project_ortho(xy, 4, 640, 480, 3200, 2400, unchanged) == 4);
-            assert(memcmp(unchanged, a, sizeof(a)) == 0);
-            assert(soft3d_float_project_ortho(floating_xy, 4, 640, 480, 3200, 2400, unchanged) == 4);
-            assert(memcmp(unchanged, b, sizeof(b)) == 0);
+            assert(soft3d_project_cache_begin(&cache, 4, 640, 480, 0));
+            assert(soft3d_fixed_project_cached(fixed, 4, corners, 4, 640, 480, &cache, a) == 4);
+            assert(soft3d_project_cache_begin(&cache, 4, 640, 480, 0));
+            assert(soft3d_float_project_cached(floating, 4, corners, 4, 640, 480,
+                                               SOFT3D_FLOAT_SINGLE, &cache, b) == 4);
             cy = cos(yaw * PI / 180.0); sy = sin(yaw * PI / 180.0);
             cp = cos(pitch * PI / 180.0); sp = sin(pitch * PI / 180.0);
             for (i = 0; i < 4; ++i)
             {
-                x = floor((0.5 + (cy * vertices[i].x - sy * vertices[i].y) / 3200.0) * 639.0);
-                y = floor((0.5 - (cp * sy * vertices[i].x + cp * cy * vertices[i].y +
-                                 sp * vertices[i].z) / 2400.0) * 479.0);
-                assert(fabs(a[i].x - x) <= 1.0 && fabs(a[i].y - y) <= 1.0);
-                assert(fabs(b[i].x - x) <= 1.0 && fabs(b[i].y - y) <= 1.0);
+                view_x = cy * vertices[i].x - sy * vertices[i].y;
+                model_y = sy * vertices[i].x + cy * vertices[i].y;
+                view_y = cp * model_y + sp * vertices[i].z;
+                depth = (double)GLOBE_VIEW_DISTANCE - (-sp * model_y + cp * vertices[i].z);
+                x = 320.0 + view_x * focal / depth;
+                y = 240.0 - view_y * focal / depth;
+                assert(fabs(a[i].x - x) <= 1.5 && fabs(a[i].y - y) <= 1.5);
+                assert(fabs(b[i].x - x) <= 1.5 && fabs(b[i].y - y) <= 1.5);
             }
         }
-    fixed[0].x = -25600; fixed[0].y = 19200;
-    fixed[1].x = 25600; fixed[1].y = -19200;
-    assert(soft3d_fixed_project_ortho(fixed, 2, 640, 480, 3200, 2400, a) == 2);
-    assert(a[0].x == 0 && a[0].y == 0 && a[1].x == 639 && a[1].y == 479);
-    fixed[0].x = 48000; fixed[0].y = -48000;
-    assert(soft3d_fixed_project_ortho(fixed, 1, 32767, 32767, 1, 1, a) == 1);
-    assert(a[0].x == 98314383L && a[0].y == 98314383L);
-    fixed[0].x = -16; fixed[0].y = 16;
-    assert(soft3d_fixed_project_ortho(fixed, 1, 3, 5, 3, 3, a) == 1);
-    assert(a[0].x == 0 && a[0].y == 0);
-    /* Projection may return offscreen coordinates for the viewport clipper. */
-    fixed[0].x = -48000; fixed[0].y = 48000;
-    assert(soft3d_fixed_project_ortho(fixed, 1, 640, 480, 3200, 2400, a) == 1);
-    assert(a[0].x < 0 && a[0].y < 0);
-    memset(a, 0x55, sizeof(a)); memcpy(unchanged, a, sizeof(a));
-    fixed[1].x = 48001;
-    assert(!soft3d_fixed_project_ortho(fixed, 2, 640, 480, 3200, 2400, a));
-    assert(memcmp(a, unchanged, sizeof(a)) == 0);
-    assert(!soft3d_fixed_project_ortho(NULL, 1, 640, 480, 3200, 2400, a));
-    assert(!soft3d_fixed_project_ortho(fixed, 0, 640, 480, 3200, 2400, a));
-    assert(!soft3d_fixed_project_ortho(fixed, SOFT3D_MAX_VERTICES + 1U, 640, 480, 3200, 2400, a));
-    assert(!soft3d_fixed_project_ortho(fixed, 1, 0, 480, 3200, 2400, a));
-    assert(!soft3d_fixed_project_ortho(fixed, 1, 32768U, 480, 3200, 2400, a));
-    assert(!soft3d_fixed_project_ortho(fixed, 1, 640, 480, 0, 2400, a));
-    assert(!soft3d_fixed_project_ortho(fixed, 1, 640, 480, 3200, 2400, NULL));
-    floating[0].x = 0.0f; floating[0].y = 0.0f;
-    memset(&floating[1].x, 0xff, sizeof(floating[1].x));
-    assert(!soft3d_float_project_ortho(floating, 2, 640, 480, 3200, 2400, a));
-    assert(memcmp(a, unchanged, sizeof(a)) == 0);
-    floating[1].x = 3001.0f;
-    assert(!soft3d_float_project_ortho(floating, 2, 640, 480, 3200, 2400, a));
-    assert(!soft3d_fixed_prepare_ortho(NULL, 0, 0));
-    assert(!soft3d_float_prepare_ortho(NULL, 0, 0));
-    check_orthographic_xy(fixed_matrix, floating_matrix);
+    /* Object-space Q4 decoding for integer culling: truncation toward zero,
+     * the kernels' radius domain and non-finite rejection. */
+    probe.x = 12.34f; probe.y = -12.34f; probe.z = 1000.0f;
+    assert(soft3d_fixed_vertex(&probe, &decoded));
+    assert(decoded.x == 197 && decoded.y == -197 && decoded.z == 16000);
+    probe.z = -1000.0625f;
+    assert(!soft3d_fixed_vertex(&probe, &decoded));
+    probe.z = 0.0f;
+    memset(&probe.y, 0xff, sizeof(probe.y));
+    assert(!soft3d_fixed_vertex(&probe, &decoded));
+    assert(!soft3d_fixed_vertex(NULL, &decoded));
+    assert(!soft3d_fixed_vertex(vertices, NULL));
+    assert(!soft3d_fixed_prepare_degrees(NULL, 0, 0));
+    assert(!soft3d_float_prepare_degrees(NULL, 0, 0));
     check_integer_eye();
-    puts("PASS DOS orthographic math: independent camera oracle, baseline/386 equality, viewport endpoints, integer bounds and transactional invalid-input rejection");
+    puts("PASS DOS perspective math: LibShell's camera against an independent oracle, baseline/386 equality, float agreement, Q4 decoding and invalid-input rejection");
 }
 
 static void check_software_controls(void)
@@ -1428,12 +1664,12 @@ static void check_software_controls(void)
     mtx_keyboard('S');
     assert(drv_soft3d_requested && drv_soft3d_active);
     {
-        unsigned long points = xy_points;
+        unsigned long points = transformed_points;
         unsigned int syncs = sync_calls;
         render_and_check(512, test_earth_data(32));
         printf("PASS Matrox software packets: a key-1 frame transforms and projects %lu "
                "points (not 2048 quad corners) with %u checkpoints for %lu fills\n",
-               xy_points - points, sync_calls - syncs, filled_polygons);
+               transformed_points - points, sync_calls - syncs, filled_polygons);
     }
     assert(world_polygons == native_before && screen_polygons > 0);
     assert(strstr(osd_text, "soft3d on") != NULL && strstr(osd_text, "S = soft3d") != NULL);
@@ -1452,23 +1688,25 @@ static void check_software_controls(void)
     assert(screen_polygons == screen_before && world_polygons > native_before);
     assert(strstr(osd_text, "soft3d off (LibShell)") != NULL);
     mtx_keyboard('1');
-    puts("PASS Matrox software selection: S/s, CPU/x87 dispatch, original orthographic camera, bounded screen polygons, palette bytes, both LODs and native restoration");
+    puts("PASS Matrox software selection: S/s, CPU/x87 dispatch, LibShell's perspective camera, bounded screen polygons, palette bytes, both LODs and native restoration");
 }
 
 static void check_software_clipping(void)
 {
+    static const unsigned int corners[4] = { 0, 1, 2, 3 };
     Vertex vertices[4];
     Soft3d_fixed_point fixed[4];
     Soft3d_screen_point projected[SOFT3D_MAX_POLY], swap;
     unsigned int i, before;
-    /* The ordinary radius-1000 globe stays inside the orthographic window.
-     * Exercise generated clip intersections independently with valid input
-     * to the projector, without exceeding the transform kernel's radius. */
-    fixed[0].x = fixed[1].x = -32000;
-    fixed[2].x = fixed[3].x = 32000;
-    fixed[0].y = fixed[3].y = 32000;
-    fixed[1].y = fixed[2].y = -32000;
-    assert(soft3d_fixed_project_ortho(fixed, 4, 640, 480, 3200, 2400, projected) == 4);
+    /* The ordinary radius-1000 globe stays inside the view. Exercise
+     * generated clip intersections independently with eye-space points
+     * that the perspective projector places beyond every screen edge. */
+    fixed[0].x = fixed[1].x = -48000;
+    fixed[2].x = fixed[3].x = 48000;
+    fixed[0].y = fixed[3].y = 48000;
+    fixed[1].y = fixed[2].y = -48000;
+    for (i = 0; i < 4U; ++i) fixed[i].z = -32000;
+    assert(soft3d_fixed_project_polygon(fixed, 4, corners, 4, 640, 480, projected) == 4);
     assert(soft3d_finish_polygon(projected, 4, 639, 479) == 4);
     for (i = 0; i < 4U; ++i)
     {
@@ -1479,7 +1717,7 @@ static void check_software_clipping(void)
     swap = projected[1]; projected[1] = projected[2]; projected[2] = swap;
     assert(!soft3d_finish_polygon(projected, 4, 639, 479));
     for (i = 0; i < 4U; ++i) fixed[i].x = 32000L + (long)i * 16L;
-    assert(soft3d_fixed_project_ortho(fixed, 4, 640, 480, 3200, 2400, projected) == 4);
+    assert(soft3d_fixed_project_polygon(fixed, 4, corners, 4, 640, 480, projected) == 4);
     assert(!soft3d_finish_polygon(projected, 4, 639, 479));
     assert(!drv_soft3d_active);
     mtx_keyboard('S');
@@ -1572,11 +1810,207 @@ static void check_transform_recovery(void)
     puts("PASS Matrox transform recovery: four V3 error classes, setup and polygon failure, complete host retry, S restoration, fatal mixed faults and fatal 2D errors");
 }
 
+/* MTXFIFO: 256 to 8192 bytes, in decimal; groups of (bytes - 32) / 56. */
+static void check_fifo_option(void)
+{
+    static char *valid[5] = { "", "256", "1000", "8191", "8192" };
+    static unsigned int groups[5] = { 145U, 4U, 17U, 145U, 145U };
+    static char *invalid[5] = { "255", "8193", "12x", "-1", "0x400" };
+    unsigned int i;
+    for (i = 0; i < 5U; ++i)
+    {
+        fifo_setting = valid[i];
+        mtx_fifo_option();
+        assert(mtx_fill_packets == groups[i]);
+    }
+    for (i = 0; i < 5U; ++i)
+    {
+        fifo_setting = invalid[i];
+        expected_board_error = 1;
+        if (setjmp(board_error) == 0)
+        {
+            mtx_fifo_option();
+            assert(!"An invalid MTXFIFO must be rejected");
+        }
+        expected_board_error = 0;
+        assert(strstr(board_message, "MTXFIFO") != NULL);
+    }
+    fifo_setting = NULL;
+    mtx_fifo_option();
+    assert(mtx_fill_packets == 145U);
+    puts("PASS Matrox MTXFIFO: 4096-word default (145 fills a group), down to 256 bytes (4), others rejected");
+}
+
+static unsigned char pgc_initial_display = 1U, pgc_original[256][3];
+static void pgc_cleanup_checks(void)
+{
+    assert(pgc_close_calls == 1 && allocated_blocks == 0);
+    if (pgc_timeout)
+    {
+        /* A board that stopped answering receives nothing more. */
+        assert(pgc_display == 0U);
+        puts("PASS PGC timeout: a board that stops answering is reported and only closed at exit");
+        return;
+    }
+    assert(pgc_display == pgc_initial_display);
+    assert(memcmp(pgc_table, pgc_original, sizeof(pgc_table)) == 0);
+    puts("PASS PGC cleanup: Escape restores the saved LUT and the display shown at startup, then ASCII mode");
+}
+
+static void pgc_retry_native(void)
+{
+    unsigned int projection = projection_calls, distance = distance_calls;
+    unsigned int hither = hither_calls, yon = yon_calls;
+    assert(drv_soft3d_active && !drv_soft3d_requested);
+    mtx_keyboard('S');
+    assert(!drv_soft3d_requested && !drv_soft3d_active);
+    assert(projection_calls == projection + 1U && distance_calls == distance + 1U);
+    assert(hither_calls == hither + 1U && yon_calls == yon + 1U);
+    render_and_check(512, test_earth_data(32));
+}
+
+/* LIB Shell absent, a PGC-compatible board present. */
+static int pgc_run(const char *profile)
+{
+    unsigned int i, codes[3] = { 1U, 4U, 10U };
+    int argc = 1, startup = strcmp(profile, "pgc-startup") == 0;
+    char *argv[2];
+    argv[0] = "testglob.exe"; argv[1] = NULL;
+    board_absent = 1; pgc_profile = 1;
+    /* Board types: the IBM ROM's 3, Matrox's 2 (PG-640A) and 0 (PG-1280
+     * family); only Matrox boards answer FLAGRD 30. */
+    pgc_board_640a = strcmp(profile, "pg640a") == 0 || strcmp(profile, "pgc-1280") == 0;
+    pgc_board_type = strcmp(profile, "pg640a") == 0 ? 2U :
+                     strcmp(profile, "pgc-1280") == 0 ? 0U : 3U;
+    if (strcmp(profile, "pgc-1280") == 0)
+    {
+        test_x2 = 1279U; test_y2 = 1023U; test_width = 1280U; test_height = 1024U;
+    }
+    /* A viewport that is not the whole screen keeps 640 x 480. */
+    if (strcmp(profile, "pgc-badview") == 0) { test_x2 = 1279U; test_y2 = 1023U; pgc_view_x1 = 5U; }
+    pgc_display = pgc_initial_display = 1U;
+    for (i = 0; i < 256; ++i)
+    {
+        pgc_original[i][0] = (unsigned char)original_palette[i][0];
+        pgc_original[i][1] = (unsigned char)original_palette[i][1];
+        pgc_original[i][2] = (unsigned char)original_palette[i][2];
+    }
+    memcpy(pgc_table, pgc_original, sizeof(pgc_table));
+    assert(atexit(pgc_cleanup_checks) == 0);
+    assert(atexit(globe_free) == 0);
+    drv_ext_init();
+    drv_init(&argc, argv);
+    assert(init_calls == 1 && pgc_open_calls == 1 && mtx_pgc && mtx_initialized);
+    assert(flush_calls == 0 && inquiry == 0 && fifo_bytes == 0U);
+    assert(pgc_resets == 1 && pgc_table_saved && pgc_display == 0U);
+    assert(mtx_pgc_display == 1U && mouse_resets > 0);
+    assert(test_dos_vectors[0x23] != NULL && test_dos_vectors[0x24] != NULL);
+    assert(strcmp(drv_name, pgc_board_type == 2U ? "Matrox PG-640A (PGC)" :
+                            pgc_board_type == 0U ? "Matrox PG-1280 (PGC)" : "IBM PGC") == 0);
+    assert(mtx_width == test_width && mtx_height == test_height);
+    puts("PASS PGC detection: without a LIB Shell board, a PGC-compatible board is opened, named, sized from its RESETF viewport, its LUT saved and graphics shown");
+    if (startup) { pgc_injected_code = 1U; fail_v3_projection = 1U; }
+    assert(drv_init_window(0, 0, 0, 0));
+    assert(drv_win_width == test_width && drv_win_height == test_height);
+    assert(pgc_lut_calls == 256U && viewport_calls == 1U && pgc_fill_mode);
+    assert(pgc_text_size && pgc_aligned && projection_calls == 1U);
+    assert(distance_calls == 1U && hither_calls == 1U && yon_calls == 1U);
+    for (i = 0; i < 256; ++i)
+    {
+        /* Full 8-bit components: mtx_pgc.c sends LUTX to a PG-640A and
+         * keeps the high four bits in LUT for an IBM PGC. */
+        assert(pgc_table[i][0] == earth_cmap[i][0]);
+        assert(pgc_table[i][1] == earth_cmap[i][1]);
+        assert(pgc_table[i][2] == earth_cmap[i][2]);
+    }
+    globe_init();
+    assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
+    if (startup)
+    {
+        assert(drv_soft3d_active && !drv_soft3d_requested && mtx_native_failed);
+        render_and_check(512, test_earth_data(32));
+        pgc_retry_native();
+        puts("PASS PGC startup fallback: a rejected projection keeps graphics and host transforms; S retries it");
+    }
+    render_and_check(512, test_earth_data(32));
+    assert(strstr(osd_text, "PGC") != NULL && strstr(osd_text, "LibShell") == NULL);
+    check_noncardinal_poses(512, test_earth_data(32));
+    mtx_keyboard('2');
+    render_and_check(2048, test_earth_data(64));
+    check_noncardinal_poses(2048, test_earth_data(64));
+    mtx_keyboard('1');
+    puts("PASS PGC rendering: 3D world window, model/view rotations and POLY3 world vertices across rotated poses");
+    mtx_keyboard('S');
+    assert(drv_soft3d_active);
+    render_and_check(512, test_earth_data(32));
+    check_noncardinal_poses(512, test_earth_data(32));
+    mtx_keyboard('S');
+    assert(!drv_soft3d_active);
+    render_and_check(512, test_earth_data(32));
+    puts("PASS PGC host transforms: POLY in a pixel window counted from the lower left, S restores PGC transforms");
+    if (strcmp(profile, "pgc-timeout") == 0)
+    {
+        pgc_timeout = 1;
+        expected_board_error = 1;
+        if (setjmp(board_error) == 0)
+        {
+            drv_render();
+            assert(!"A board that stops answering must be reported");
+        }
+        expected_board_error = 0;
+        assert(strstr(board_message, "PGC polygon fill: communication timeout") != NULL);
+        assert(mtx_io_failed);
+        mtx_keyboard(27);
+        assert(!"Escape must terminate the application");
+        return 1;
+    }
+    /* Range, overflow and area-fill errors from native fills fall back to
+     * host transforms for the frame's retry and later frames. */
+    drv_rot_x = 13.5f; drv_rot_y = 35.75f;
+    for (i = 0; i < 3U; ++i)
+    {
+        pgc_injected_code = codes[i];
+        if (i == 2U) fail_v3_rotation = 1U;
+        else fail_v3_polygon = 1U;
+        render_and_check(512, test_earth_data(32));
+        assert(drv_soft3d_active && !drv_frame_failed && !mtx_io_failed && pgc_errors == 0U);
+        assert(strstr(osd_text, "soft3d on") != NULL);
+        pgc_retry_native();
+    }
+    /* Other codes stay fatal, as do errors from host-projected fills. */
+    pgc_injected_code = 3U; fail_v3_polygon = 1U;
+    expected_board_error = 1;
+    if (setjmp(board_error) == 0)
+    {
+        drv_render();
+        assert(!"Memory errors must remain fatal");
+    }
+    expected_board_error = 0;
+    assert(strstr(board_message, "PGC polygon fill: board memory exhausted (error 3)") != NULL);
+    assert(!drv_soft3d_active);
+    mtx_keyboard('S');
+    pgc_injected_code = 10U; fail_screen_polygon = 1U;
+    expected_board_error = 1;
+    if (setjmp(board_error) == 0)
+    {
+        drv_render();
+        assert(!"Host-projected fill errors must remain fatal");
+    }
+    expected_board_error = 0;
+    assert(strstr(board_message, "PGC screen polygon fill: area fill error (error 10)") != NULL);
+    mtx_keyboard('S');
+    render_and_check(512, test_earth_data(32));
+    puts("PASS PGC errors: range, overflow and area-fill codes retry with host transforms; other codes and 2D faults are fatal");
+    mtx_keyboard(27);
+    assert(!"Escape must terminate the application");
+    return 1;
+}
+
 int main(int process_argc, char **process_argv)
 {
     unsigned int i;
     int argc;
-    int startup_failure = 0, stale_profile = 0, break_profile = 0;
+    int startup_failure = 0, stale_profile = 0, break_profile = 0, bad_resolution = 0;
     char *argv[2];
     float x, y;
     if (process_argc > 1)
@@ -1597,38 +2031,69 @@ int main(int process_argc, char **process_argv)
         else if (strcmp(profile, "287") == 0) { selected_cpu = 286; selected_fpu = 1; }
         else if (strcmp(profile, "387") == 0) { selected_cpu = 386; selected_fpu = 1; }
         else if (strcmp(profile, "fpu") == 0) { selected_cpu = 486; selected_fpu = 1; }
-        else assert(!"Unknown Matrox profile");
+        else if (strcmp(profile, "absent") == 0) board_absent = 1;
+        else if (strcmp(profile, "fifo256") == 0) fifo_setting = "256";
+        else if (strcmp(profile, "1024x768") == 0) { test_x2 = 1023U; test_y2 = 767U; }
+        else if (strcmp(profile, "1280x1024") == 0) { test_x2 = 1279U; test_y2 = 1023U; }
+        else if (strcmp(profile, "bad-resolution") == 0) { test_x2 = 799U; test_y2 = 399U; bad_resolution = 1; }
+        else if (strncmp(profile, "pg", 2) != 0) assert(!"Unknown Matrox profile");
     }
+    if (!bad_resolution) { test_width = test_x2 + 1U; test_height = test_y2 + 1U; }
     for (i = 0; i < 256; ++i) {
         original_palette[i][0] = (unsigned short)((i + 11) & 255);
         original_palette[i][1] = (unsigned short)((i + 23) & 255);
         original_palette[i][2] = (unsigned short)((i + 47) & 255);
     }
     argc = 1; argv[0] = "testglob.exe"; argv[1] = NULL;
-#ifndef MTX_8086_BINDING
-    if (selected_cpu < 286)
+    if (process_argc > 1 && strncmp(process_argv[1], "pg", 2) == 0)
     {
-        /* The supplied binding uses 286 instructions; reject before lsinit
-         * or any interrupt vector changes. */
+        assert(strcmp(process_argv[1], "pgc") == 0 || strcmp(process_argv[1], "pg640a") == 0 ||
+               strcmp(process_argv[1], "pgc-startup") == 0 ||
+               strcmp(process_argv[1], "pgc-timeout") == 0 ||
+               strcmp(process_argv[1], "pgc-1280") == 0 ||
+               strcmp(process_argv[1], "pgc-badview") == 0);
+        return pgc_run(process_argv[1]);
+    }
+    if (board_absent)
+    {
+        /* No board answers the presence test: stop before any command. */
         drv_ext_init();
         expected_board_error = 1;
         if (setjmp(board_error) == 0)
         {
             drv_init(&argc, argv);
-            assert(!"The 286 LibShell binding must reject an 8086");
+            assert(!"A missing LIB Shell board must stop initialization");
         }
         expected_board_error = 0;
-        assert(strstr(board_message, "80286") != NULL);
-        assert(init_calls == 0 && !mtx_initialized && test_dos_vectors[0x23] == NULL);
-        puts("PASS Matrox CPU requirement: the supplied 286 binding rejects 8086-class CPUs before lsinit");
+        assert(strstr(board_message, "segment C600h") != NULL);
+        assert(strstr(board_message, "no PGC at C6000h or C6400h") != NULL);
+        assert(strstr(board_message, "PG1281") != NULL);
+        assert(init_calls == 1 && pgc_open_calls == 1 && !mtx_initialized && fifo_bytes == 0U);
+        puts("PASS Matrox board check: without a LIB Shell or PGC-compatible board, initialization stops before any command");
         return 0;
     }
-#endif
+    if (bad_resolution)
+    {
+        /* LSINQSYS reports a screen smaller than 640 x 480. */
+        drv_ext_init();
+        expected_board_error = 1;
+        if (setjmp(board_error) == 0)
+        {
+            drv_init(&argc, argv);
+            assert(!"An unsupported LibShell screen must stop initialization");
+        }
+        expected_board_error = 0;
+        assert(strstr(board_message, "reports a 800x400 display") != NULL);
+        assert(strstr(board_message, "640x480 to 2048x2048") != NULL);
+        puts("PASS Matrox screen check: a LibShell screen outside 640x480 to 2048x2048 stops initialization with its reported size");
+        return 0;
+    }
     /* Registered first, so this checks the production atexit cleanup last. */
     assert(atexit(cleanup_checks) == 0);
     /* Main owns the scene; native cleanup remains registered afterward. */
     assert(atexit(globe_free) == 0);
     drv_ext_init();
+    if (process_argc == 1) check_fifo_option();
     assert(!drv_soft3d_requested && !drv_soft3d_active);
     assert(GLOBE_DEFAULT_LONGITUDE == 32);
     assert(drv_colormapped && !drv_texture_avail && !drv_texture_enabled);
@@ -1646,7 +2111,14 @@ int main(int process_argc, char **process_argv)
         stale_words = 5;
     }
     drv_init(&argc, argv);
-    assert(init_calls == 1 && mouse_resets > 0);
+    assert(init_calls == 1 && mouse_resets > 0 && !mtx_pgc);
+    assert(mtx_width == test_width && mtx_height == test_height);
+    if (fifo_setting != NULL)
+    {
+        /* MTXFIFO=256: four fills and the inquiry, 228 bytes. */
+        assert(mtx_fill_packets == 4U);
+        fifo_limit = 4U * 56U + 4U;
+    }
     assert(test_dos_vectors[0x23] != NULL && test_dos_vectors[0x24] != NULL);
     assert(mtx_previous_lut == 3 && inquiry == 0);
     assert(mtx_mask_saved && mtx_previous_mask == original_mask);
@@ -1676,7 +2148,7 @@ int main(int process_argc, char **process_argv)
     if (startup_failure == 1) fail_v3_projection = 1U;
     if (startup_failure == 2) fail_world_window = 1U;
     assert(drv_init_window(0, 0, 0, 0));
-    assert(drv_win_width == 640 && drv_win_height == 480);
+    assert(drv_win_width == test_width && drv_win_height == test_height);
     assert(viewport_calls > 0 && world_window_calls > 0);
     if (startup_failure != 2) assert(projection_calls > 0);
     assert(palette_uploads == 1 && current_lut == 0 && current_mask == 255);
@@ -1695,7 +2167,7 @@ int main(int process_argc, char **process_argv)
         retry_native();
         puts("PASS Matrox startup fallback: optional native projection failure retains graphics, host drawing and complete S-key retry");
     }
-    check_orthographic_math();
+    check_perspective_math();
     render_and_check(512, test_earth_data(32));
     check_direct_quad();
     check_noncardinal_poses(512, test_earth_data(32));

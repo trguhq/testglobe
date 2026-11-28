@@ -38,23 +38,6 @@ def _tiga_headers(config):
     return output
 
 
-def _matrox_headers(config):
-    source = _find(config["xgx_root"], ("XGX1/HEADERS",))
-    root = config["out"] / "sdk"
-    output = root / "XGX1" / "HEADERS"
-    output.mkdir(parents=True, exist_ok=True)
-    # Copy every header, as the host SDK checks do, so vendor headers that
-    # include each other resolve; the three the driver names must exist.
-    for name in ("DEF.H", "LIBFN.H", "IOLIB.H"):
-        _find(source, (name,))
-    for header in sorted(source.iterdir()):
-        if not header.is_file() or header.suffix.lower() != ".h":
-            continue
-        data = header.read_bytes().split(b"\x1a", 1)[0].replace(b"\r\n", b"\n")
-        (output / header.name.upper()).write_bytes(data.rstrip() + b"\n")
-    return root
-
-
 def _compile(config, driver, extra_sources=(), includes=()):
     env = watcom_env(config)
     out = config["out"]
@@ -76,7 +59,7 @@ def _compile(config, driver, extra_sources=(), includes=()):
     objects = []
     # Per-vertex and per-polygon code omits stack checks (-s): none of it
     # recurses, and the 16 KiB stack is far larger than its frames.
-    hot = {"drv_" + driver.lower(), "soft3d", "soft3fp"}
+    hot = {"drv_" + driver.lower(), "soft3d", "soft3fp", "mtx_ls", "mtx_pgc"}
     for path in sources:
         obj = out / (path.stem + ".obj")
         run([compiler] + flags + (["-s"] if path.stem in hot else []) +
@@ -104,7 +87,7 @@ def _link(config, env, objects, library, filename):
     response.write_text("system dos\noption quiet\noption stack=16384\n" +
         "option map=" + quoted(out / "testglob.map") + "\nname " + quoted(executable) + "\n" +
         "".join("file " + quoted(obj) + "\n" for obj in objects) +
-        "library " + quoted(library) + "\n")
+        ("library " + quoted(library) + "\n" if library is not None else ""))
     run([linker, "@" + str(response)], cwd=out, env=env)
     data = executable.read_bytes()
     if len(data) < 28 or data[:2] != b"MZ":
@@ -172,17 +155,8 @@ def build_tiga(config):
 
 
 def build_matrox(config):
-    library = _find(config["xgx_root"], ("libsv5/lscl.lib",))
-    headers = _matrox_headers(config)
-    env, objects = _compile(config, "MTX", (config["src"] / "mtx_ow.c",),
-                           (headers,))
-    librarian = shutil.which("wlib", path=env["PATH"])
-    if librarian is None:
-        raise ValueError("OpenWatcom wlib was not found under --watcom")
-    compatible = config["out"] / "sdk" / "lscl-ow.lib"
-    # Keep the supplied SDK untouched. Its objects ask for Microsoft's
-    # LLIBCE runtime by default; the adapter supplies the used interfaces
-    # through Watcom instead. No instructions or symbols are removed.
-    run([librarian, "-q", "-b", "-zll", "-o=" + str(compatible), library],
-        cwd=config["out"], env=env)
-    return _link(config, env, objects, compatible, "testglob.exe")
+    # mtx_ls.c talks to LIB Shell boards directly, with no vendor library or
+    # headers; mtx_pgc.c drives PGC-compatible boards when none answers.
+    env, objects = _compile(config, "MTX", (config["src"] / "mtx_ls.c",
+                                            config["src"] / "mtx_pgc.c"))
+    return _link(config, env, objects, None, "testglob.exe")

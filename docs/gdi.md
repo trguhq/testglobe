@@ -10,7 +10,7 @@ supported. A [cross-build](build.md#linux-hosted-cross-builds) with OpenWatcom i
 available, and a prebuilt copy is in [downloads](../downloads/README.md).
 
 The executable is marked for Windows 3.0, and every API it calls (the palette manager,
-`CreateDIBPatternBrush`, `GetWinFlags`, `PolyPolygon`, and `DrawText` with
+`CreateDIBPatternBrush`, `GetWinFlags`, `PolyPolygon`, `EnumFonts`, and `DrawText` with
 `DT_CALCRECT`) exists there. This marking still needs native validation on both
 Windows 3.0 and 3.1.
 
@@ -28,10 +28,11 @@ as needed. Keep `-AH -G2 -Gw -Zp1 -FPi` in `GDI_CFLAGS` to preserve the memory m
 Windows ABI, and optional FPU support. `GDI_DATA` defaults to `data` at the root and
 `..\data` inside `src`.
 
-The `.def` file declares `EXETYPE WINDOWS 3.0`, exports the window procedure, and sets
-the segment attributes, an 8 KiB local heap, and a 16 KiB stack. `RC -r -fo` compiles
-`src/gdi.rc` and all 13 map chunks into `g_earth.res`, and `RC -30 -t g_earth.res
-testglob.exe` attaches it and marks a protected-mode Windows 3.0 application. The
+The `.def` file declares `EXETYPE WINDOWS 3.0`, exports the window procedure and the
+font enumeration callback, and sets the segment attributes, an 8 KiB local heap, and a
+16 KiB stack. `RC -r -fo` compiles `src/gdi.rc` and all 13 map chunks into
+`g_earth.res`, and `RC -30 -t g_earth.res testglob.exe` attaches it and marks a
+protected-mode Windows 3.0 application. The
 `-30` is part of the rule, so it is kept when you override `GDI_RCFLAGS` (default
 `-t`). Discardable `RCDATA` chunks avoid large static arrays. As a huge-model
 application, only one instance can run at a time.
@@ -74,6 +75,14 @@ pen cannot be allocated, stock black or white is used.
 
 A failed `PolyPolygon` call falls back to individual `Polygon` calls. Brush and pen
 allocation can reclaim cached objects or use a stock color.
+
+The status and help text use MS Sans Serif (Helv on Windows 3.0) at 8 points, at 10
+points once the client area reaches 960 × 640, and at 12 points from 1280 × 960.
+Client areas narrower than 480 or shorter than 320 pixels use Small Fonts. Sizes
+follow the Small or Large Fonts display setting. Of a raster face, the driver uses
+only the sizes `EnumFonts` lists, taking the largest that fits, so Windows never
+enlarges text by duplicating pixels. If none fits, it takes the smallest size up to
+half again as tall, and otherwise keeps the DC's default font.
 
 ## Animation and updates
 

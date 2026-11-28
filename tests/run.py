@@ -368,8 +368,6 @@ def check_earth_data(cc, common, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sdk", default=os.environ.get("MATROX_SDK"),
-                        help="SDK root containing XGX1/HEADERS (headers are not vendored)")
     parser.add_argument("--xgl-contract", action="store_true",
                         help="Record XGL calls using manual-derived declarations and real X11 under Xvfb; not native XGL validation")
     parser.add_argument("--gdi-contract", action="store_true",
@@ -914,27 +912,23 @@ def main():
             run(cc + common + ["-DFLAT", "-DDRV_OGL",
                 str(ROOT / "tests/texture.c"), str(ROOT / "src/e_saved.c"), "-o", str(output / "texture")])
             run([str(output / "texture")])
-        if not args.sdk:
-            print("SKIP Matrox SDK contract checks: supply --sdk or MATROX_SDK")
-            return
-        headers = Path(args.sdk) / "XGX1" / "HEADERS"
-        required = ("DEF.H", "LIBFN.H", "IOLIB.H")
-        for name in required:
-            if not (headers / name).is_file():
-                parser.error("Missing SDK header: " + str(headers / name))
-        normalized = output / "sdk" / "XGX1" / "HEADERS"
-        normalized.mkdir(parents=True)
-        for path in headers.iterdir():
-            if path.is_file():
-                # DOS uses Ctrl-Z as EOF; GCC treats it as an invalid C token.
-                data = path.read_bytes().rstrip(b"\r\n\x1a") + b"\n"
-                (normalized / path.name).write_bytes(data)
+        # Matrox builds on the direct LibShell binding (mtx_ls.c) and the PGC
+        # commands (mtx_pgc.c), with no vendor library or headers.
         segmented = ["-DSEG86", "-DDRV_MTX", "-D_huge=",
                      "-D__interrupt=", "-D__far=", "-D_far=", "-D_near=",
-                     "-I" + str(ROOT / "tests/dos_shim"),
-                     "-I" + str(output / "sdk")]
+                     "-I" + str(ROOT / "tests/dos_shim")]
         check_production_units(cc, common, segmented, output, "Matrox",
-            ("drv.c", "drv_mtx.c", "err.c", "globe.c", "main.c", "e_saved.c", "soft3d.c", "soft3fp.c"))
+            ("drv.c", "drv_mtx.c", "mtx_ls.c", "mtx_pgc.c", "err.c", "globe.c", "main.c",
+             "e_saved.c", "soft3d.c", "soft3fp.c"))
+        run(cc + common + segmented + ["-DMTX_LS_TEST", str(ROOT / "tests/mtx_ls.c"),
+            str(ROOT / "src/mtx_ls.c"), str(ROOT / "src/soft3d.c"), "-lm",
+            "-o", str(output / "mtx_ls")])
+        run([str(output / "mtx_ls")])
+        # PGC commands against simulated IBM PGC and PG-640A boards.
+        run(cc + common + segmented + ["-DMTX_PGC_TEST", str(ROOT / "tests/mtx_pgc.c"),
+            str(ROOT / "src/mtx_pgc.c"), str(ROOT / "src/soft3d.c"), "-lm",
+            "-o", str(output / "mtx_pgc")])
+        run([str(output / "mtx_pgc")])
         mtx_optimized = output / "mtx_386.o"
         run(cc + common + segmented + ["-DSOFT3D_TRANSFORM_386", "-c",
             str(ROOT / "src/soft3d.c"), "-o", str(mtx_optimized)])
@@ -942,18 +936,16 @@ def main():
             str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
             str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"), str(mtx_optimized),
             str(ROOT / "src/err.c"), "-lm"]
+        mtx_profiles = ("reporting-off", "8086", "286", "386", "486", "8087", "287", "387",
+                        "fpu", "startup-v3", "startup-world", "stale", "ctrl-break",
+                        "fifo256", "1024x768", "1280x1024", "bad-resolution")
         run(cc + common + segmented + mtx_sources + ["-o", str(output / "matrox")])
         run([str(output / "matrox")])
-        # 8086/8087 profiles check rejection by the supplied 286 binding.
-        for profile in ("reporting-off", "8086", "286", "386", "486", "8087", "287", "387", "fpu",
-                        "startup-v3", "startup-world", "stale", "ctrl-break"):
+        # The binding runs on an 8086, so every profile renders. Without
+        # a LIB Shell board it falls back to a PGC-compatible board.
+        for profile in mtx_profiles + ("absent", "pgc", "pg640a", "pgc-startup", "pgc-timeout",
+                                       "pgc-1280", "pgc-badview"):
             run([str(output / "matrox"), profile])
-        # An 8086-safe binding opts out of the check and runs everything.
-        run(cc + common + segmented + ["-DMTX_8086_BINDING"] + mtx_sources +
-            ["-o", str(output / "matrox_8086")])
-        for profile in ("8086", "8087"):
-            run([str(output / "matrox_8086"), profile])
-        print("PASS host compatibility: strict C89 and supplied SDK prototypes")
 
 
 if __name__ == "__main__":
