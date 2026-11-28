@@ -87,14 +87,14 @@ The [v0.1 release](https://github.com/trguhq/testglobe/releases/tag/v0.1) provid
 OpenGL binaries for IRIX (MIPS IV), Linux (ARM64), macOS (x86-64 and ARM64), and
 Solaris (SPARCv8).
 
-For your convenience, cross-compiled development builds (0.2.3 for Matrox, 0.2.2 for the others) are in the
+For your convenience, cross-compiled development builds (0.2.3 for Matrox, 0.2.4 for GDI, 0.2.2 for the others) are in the
 [`downloads`](downloads/README.md) folder. Bear in mind that these may not always be tested on the target system before being released here:
 
 | Application | Download |
 | --- | --- |
 | DOS Matrox LibShell and IBM PGC | [testglobe-matrox-0.2.3.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-0.2.3.zip) |
 | DOS TIGA | [testglobe-tiga-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-tiga-0.2.2.zip) |
-| Windows 3.0 and 3.1 GDI | [testglobe-gdi-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-0.2.2.zip) |
+| Windows 3.0 and 3.1 GDI | [testglobe-gdi-0.2.4.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-0.2.4.zip) |
 | System 7 QuickDraw, 68000 | [testglobe-quickdraw-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-quickdraw-0.2.2.zip) (MacBinary file and 800 KiB HFS disk image) |
 | Amiga chipset / RTG | [testglobe-amiga-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-0.2.2.zip) |
 | Amiga PiStorm3D (MiniGL) | [testglobe-amiga-opengl-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-opengl-0.2.2.zip) |

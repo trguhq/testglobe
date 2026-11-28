@@ -3,6 +3,8 @@
 These archives are cross-compiled on Linux. The Matrox archive is testglobe 0.2.3,
 from source revision
 [`6b78013`](https://github.com/trguhq/testglobe/tree/6b78013eba4ccb3dc8ed763fde913b9444961f10);
+the GDI archive is 0.2.4, from
+[`83502e9`](https://github.com/trguhq/testglobe/tree/83502e91981806661b6c0d4baaf70412a8b961d2);
 the others are 0.2.2, from
 [`a93349b`](https://github.com/trguhq/testglobe/tree/a93349b38a3dd65a1eb5eee0cf7cf27264999cad).
 Each archive is named `testglobe-<target>-<version>.zip` after its make target and
@@ -15,7 +17,7 @@ yourself.
 | --- | --- | --- |
 | DOS, Matrox LIB Shell and IBM PGC-compatible boards | [testglobe-matrox-0.2.3.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-0.2.3.zip) | `testglob.exe`, 8086 or later |
 | DOS, TIGA 2.x boards | [testglobe-tiga-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-tiga-0.2.2.zip) | `testglob.exe` with its TI transform module appended |
-| Windows 3.0 and 3.1 GDI | [testglobe-gdi-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-0.2.2.zip) | `testglob.exe`, Win16 protected mode |
+| Windows 3.0 and 3.1 GDI | [testglobe-gdi-0.2.4.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-0.2.4.zip) | `testglob.exe`, Win16 protected mode |
 | Classic Macintosh QuickDraw | [testglobe-quickdraw-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-quickdraw-0.2.2.zip) | System 7 / 68000 application as a MacBinary file and an 800 KiB HFS disk image |
 | Amiga chipset / RTG | [testglobe-amiga-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-0.2.2.zip) | Application and Workbench icon |
 | Amiga PiStorm3D (MiniGL) | [testglobe-amiga-opengl-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-amiga-opengl-0.2.2.zip) | Application and Workbench icon |
