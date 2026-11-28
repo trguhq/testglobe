@@ -3,7 +3,9 @@
 These host checks compile the production code on a modern system and verify geometry,
 software-rendered pixels, graphics API arguments, input, and resource cleanup.
 Separate [WebGL checks](#webgl) cover the browser frontend's data, geometry, rendered
-pixels, and controls. For application builds, see [Building](build.md).
+pixels, and controls. For application builds, see [Building](build.md). GitHub's source
+archives leave out the `tests` and `downloads` folders, so clone the repository to run
+the tests.
 
 ## Requirements and quick start
 
