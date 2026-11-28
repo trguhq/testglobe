@@ -3,14 +3,17 @@
 ## Requirements
 
 MS-DOS on an 8086 or later, Microsoft C 7.0 with its huge-model runtime and NMAKE,
-and one of these boards in a 640 × 480, 256-color mode:
+and one of these boards with 256 colors, at 640 × 480 up to 2048 × 2048:
 
-- a Matrox PG Series 1 board running the LIB Shell. Download the LIB Shell to the
-  board and initialize it as the board's software describes; the driver checks that
-  the board answers and does not load anything;
+- a Matrox board running the LIB Shell: PG Series 1 (PG-1281 and PG2-1281 at
+  1280 × 1024, PG-1024 at 1024 × 768, PG-641 at 640 × 480). Download the LIB Shell to
+  the board and initialize it as the board's software describes; the driver checks
+  that the board answers and does not load anything;
 - a board compatible with the IBM Professional Graphics Controller (PGC), such as the
   IBM PGC itself or a Matrox PG-640A, with its communication area at C6000h or, for a
   PG-640A set to its alternate address, C6400h.
+
+The driver uses the board's whole screen at the resolution the board reports.
 
 No Matrox SDK is needed: `src/mtx_ls.c` implements the LibShell calls the driver
 uses directly on the board, and `src/mtx_pgc.c` sends PGC commands, as described
@@ -29,10 +32,34 @@ PGC communication area's unused bytes, and puts them back if no board answers. T
 PGC test changes a flag in the communication area and sends commands. If neither
 board answers, the driver names both addresses and stops before drawing anything.
 
-A PGC-compatible board is treated as a PG-640A when the board-type byte at offset
-3F8h is 2 and the board answers `FLAGRD 30`, a flag only the PG-640A manual
-documents. An IBM PGC sends no reply to it, so the test is safe on either board. The
-status line shows `LibShell` or `PGC` for the board in use.
+The byte at offset 3F8h of a PGC's communication area names the board. The PG-640A
+manual lists Matrox's types: 0 for the PG-1280, PG-1280A and PG-1280A/8, 1 for the
+PG-640, 2 for the PG-640A and 4 for the SM-640, with 3 "not used". The IBM PGC's ROM
+writes 3 there (and 1 at 3F9h) when it finishes initializing. A board other than
+type 3 that answers `FLAGRD 30`, a flag only Matrox's firmware has, is treated as a
+Matrox board and gets Matrox's command forms; anything else gets IBM's. An IBM PGC is
+not asked, and a board without the flag answers only the request that follows it, so
+the test is safe either way. The startup report names the board (for example
+`IBM PGC` or `Matrox PG-640A (PGC)`), and the status line shows `LibShell` or `PGC`.
+
+### Screen size
+
+A LIB Shell board reports its visible width and height, and the number of colors it
+can show at once, in the first three words of its `LSINQSYS` reply. On a PGC, the
+driver reads the viewport with `FLAGRD 21` after `RESETF`, whose default viewport is
+the entire screen in both manuals; the IBM ROM range-checks the viewport against
+639 × 479 and keeps that as its default. A reply that does not start at 0,0 keeps
+640 × 480. Sizes from 640 × 480 to 2048 × 2048 are accepted; a LIB Shell board
+reporting anything else, or fewer than 256 colors, stops the program with the size
+it reported.
+
+Everything follows the detected size: the viewport, the projection, host transforms
+and the OSD. The camera keeps its 45° field across the screen height, so the globe
+covers the same share of the screen (a radius of about 205 pixels at 640 × 480, 328 at
+1024 × 768 and 437 at 1280 × 1024). Text uses the raster font LibShell documents for
+each height: 8 × 16 at 480 lines, 12 × 24 from 768 and 16 × 32 from 1024 (`LSSFONT`
+−4, −3 and −2). On a PGC, `TSIZE` gives cells of the same width (8 × 12, 12 × 18,
+16 × 24), and lines are a character height apart in both cases.
 
 ## Build
 
@@ -55,9 +82,9 @@ paths, 8.3 generated names, and response files to stay within command-line limit
 The default globe is key 1. Only keys 1 and 2 are available, and there is no texture
 mapping. Patches are quads, with coincident pole vertices collapsed to triangles. All
 256 LUT entries come from `earth_cmap`, and polygons use the original palette indices.
-A LIB Shell board and a PG-640A (through `LUTX`) keep all eight bits of each
-component. The IBM PGC's `LUT` command takes four bits per component, so it receives
-each component's high four bits: 16 levels of each primary.
+A LIB Shell board and a Matrox PGC-compatible board (through `LUTX`) keep all eight
+bits of each component. The IBM PGC's `LUT` command takes four bits per component, so
+it receives each component's high four bits: 16 levels of each primary.
 
 Both modes use the other drivers' perspective camera: a 45° field of view across the
 screen height, with the eye 3,000 units (three globe radii) from the globe's center.
@@ -69,10 +96,11 @@ projection. The LibShell *Command Reference* gives no projection formula, but th
 are the PGC's `DISTAN` and `PROJCT`, with the same defaults, and the IBM PGC and
 Matrox PG-640A manuals define it: the viewing angle spans the window's diagonal, so
 the screen scale is (window diagonal ÷ 2) ÷ tan(angle ÷ 2) × (viewport ÷ window), and
-the window's size cancels. With a window of the viewport's 639:479 aspect, the
-shared camera's 45° vertical field needs a 69.15° angle; LibShell takes whole
-degrees, so the driver sends 69, which draws the globe 0.27% (about a pixel) larger
-than host transforms do.
+the window's size cancels. With a window of the viewport's aspect, the shared
+camera's 45° vertical field needs 69.15° at 640 × 480, 69.18° at 1024 × 768 and
+67.05° at 1280 × 1024. LibShell takes whole degrees, so the driver sends 69, 69 and
+67, which draw the globe 0.27%, 0.34% and 0.09% larger than host transforms do,
+about a pixel at each size.
 
 Press `S` to switch to host software transforms. This path uses LibShell's
 integer-degree rotations (its `ANGLE` type) and the same camera. The CPU transforms,
@@ -90,12 +118,12 @@ to LibShell 3D.
 A PGC-compatible board runs the same two modes with the PGC commands that LibShell's
 follow. Native frames set the 3D window each frame, then `MDIDEN`, `MDORG`, `MDROTZ`,
 `VWIDEN`, `VWRPT` and `VWROTX`, and fill world-coordinate polygons with `POLY3`, with
-`PRMFIL 1` selecting filled primitives, `DISTAN 3000` and `PROJCT 69`. The IBM manual
-gives `PROJCT` a one-byte angle and the PG-640A manual a two-byte integer; the driver
-sends the two-byte form only to a board it identified as a PG-640A. With `S`,
-host-projected polygons go through `POLY` in a pixel window, whose y axis counts up
-from the bottom of the screen. The OSD uses the same pixel window, with `MOVE` and
-`TEXT` at the PGC's default 8-pixel character spacing. `TEXT` delimits its string with
+`PRMFIL 1` selecting filled primitives, `DISTAN 3000` and `PROJCT` with the angle
+above. The IBM manual gives `PROJCT` a one-byte angle and the PG-640A manual a
+two-byte integer; the driver sends the two-byte form only to a board it identified
+as a Matrox board. With `S`, host-projected polygons go through `POLY` in a pixel
+window, whose y axis counts up from the bottom of the screen. The OSD uses the same
+pixel window, with `MOVE` and `TEXT`. `TEXT` delimits its string with
 double quotes, so any in the OSD are sent as single quotes.
 
 ## Board interface
@@ -134,13 +162,17 @@ command lists, DMA transfers and Self-test B and resets the FIFO pointers; the b
 clears the flag when done. That matters on a PG-640A with its self-test switch on:
 the last test of Self-test B exercises the FIFOs until the host writes this flag,
 so the board answers no commands until then. The IBM manual lists the flag without
-describing it, so a board that leaves it set for two seconds gets its old value back
-and is probed as before. The driver then discards replies and errors left by a
-previous program, sends `CX` and waits for the answer to `FLAGRD 4`: ten seconds
-after an acknowledged warm restart, otherwise two. A board that fails is left with
-its flags restored, and the next address is tried. At startup the driver reads the
-displayed screen with `FLAGRD 5`, saves the board's LUT with `LUTSAV`, shows graphics
-with `DISPLA 0` and enables error reporting.
+describing it, but the IBM ROM does the same: an interrupt handler that finds 307h
+set resets all six FIFO pointers to 0, clears the flag and restarts its command loop.
+Writing 306h makes the ROM restart from its power-up entry, and it clears both flags
+when initialization ends. A board that leaves the warm restart flag set for two
+seconds gets its old value back and is probed as before. The driver then discards
+replies and errors left by a previous program, sends `CX` and waits for the answer to
+`FLAGRD 4`: ten seconds after an acknowledged warm restart, otherwise two. A board
+that fails is left with its flags restored, and the next address is tried. At startup
+the driver reads the displayed screen with `FLAGRD 5`, saves the board's LUT with
+`LUTSAV`, reads the screen size, shows graphics with `DISPLA 0` and enables error
+reporting.
 
 ### Fast machines
 
@@ -259,11 +291,12 @@ culling. So does the native perspective: if the globe's size or position changes
 more than a pixel when `S` switches modes, LibShell's projection differs from the PGC
 formula above.
 
-The PGC path follows the IBM *Technical Reference* and the PG-640A manual, and is
-tested against simulated boards and a command recorder only. Hardware still needs to
-confirm the communication-area probe and the switch to hexadecimal commands, an IBM
-PGC's response to the warm restart flag, that the pause between polls is long enough
-on a fast machine, the PG-640A identification and its `LUTX` and two-byte `PROJCT`,
-the frame synchronization's speed, and the 3D projection, which `S` should leave unchanged in
-size and position. `MTXFIFO` settings above 256 need a LIB Shell board to confirm the
-4,096-word FIFO.
+The PGC path follows the IBM *Technical Reference*, the IBM ROM and the PG-640A
+manual, and is tested against simulated boards and a command recorder only. Hardware
+still needs to confirm the communication-area probe and the switch to hexadecimal
+commands, that the pause between polls is long enough on a fast machine, the Matrox
+identification and its `LUTX` and two-byte `PROJCT`, whether a PG-1280's `RESETF`
+viewport is its whole screen, the frame synchronization's speed, and the 3D
+projection, which `S` should leave unchanged in size and position. Screens above
+640 × 480 are tested only in the recorder. `MTXFIFO` settings above 256 need a LIB
+Shell board to confirm the 4,096-word FIFO.

@@ -183,6 +183,22 @@ static void fifo_transform(unsigned int bytes)
 
 int drv_cpu_detect(void) { return selected_cpu; }
 int drv_cpu_has_fpu(void) { return selected_fpu; }
+/* The board's screen for this run: LSINQSYS's visible size, or the PGC
+ * viewport RESETF leaves. Text follows the height: 8x16, 12x24 or 16x32. */
+static unsigned int test_width = 640U, test_height = 480U;
+static unsigned int test_x2 = 639U, test_y2 = 479U;
+static unsigned int test_line(void)
+{
+    return test_height >= 1024U ? 32U : test_height >= 768U ? 24U : 16U;
+}
+/* The whole-degree PGC angle for the 45-degree field over the screen's
+ * diagonal, whose screen scale must match the host camera's. */
+static int test_angle(void)
+{
+    double w = test_width - 1.0, h = test_height - 1.0;
+    return (int)floor(2.0 * atan(sqrt(w * w + h * h) * tan(22.5 * PI / 180.0) /
+                                 test_height) * 180.0 / PI + 0.5);
+}
 static int recorded_fixed_prepare(long matrix[3][3], int yaw, int pitch)
 {
     if (fail_software_prepare) { --fail_software_prepare; return 0; }
@@ -236,7 +252,7 @@ static int recorded_fixed_cached(const Soft3d_fixed_point *points,
     unsigned long before;
     int count;
     assert(!selected_fpu && drv_soft3d_active);
-    assert(width == 640U && height == 480U && cache == &mtx_cache);
+    assert(width == test_width && height == test_height && cache == &mtx_cache);
     before = cache_entries(cache, point_count);
     count = soft3d_fixed_project_cached(points, point_count, indices, corners,
                                         width, height, cache, out);
@@ -251,7 +267,7 @@ static int recorded_float_cached(const Soft3d_float_point *points,
     unsigned long before;
     int count;
     assert(selected_fpu && drv_soft3d_active && precision == SOFT3D_FLOAT_SINGLE);
-    assert(width == 640U && height == 480U && cache == &mtx_cache);
+    assert(width == test_width && height == test_height && cache == &mtx_cache);
     before = cache_entries(cache, point_count);
     count = soft3d_float_project_cached(points, point_count, indices, corners,
                                         width, height, precision, cache, out);
@@ -481,6 +497,8 @@ short iogetw(void)
 {
     unsigned int type, offset;
     static short system_info[10] = {640,480,256,0x0104,640,480,80,0x0108,0,0};
+    system_info[0] = system_info[4] = (short)test_x2 + 1;
+    system_info[1] = system_info[5] = (short)test_y2 + 1;
     assert(error_read >= error_count && !clock_timeout && pending_delay == 0U);
     if (stale_words != 0UL)
     {
@@ -559,7 +577,12 @@ void krhwsbop(short operation) { assert(operation == 0); fifo_command(4); }
 void krhwsmsk(unsigned short mask) { assert(mask == 255); fifo_command(4); }
 void krhwstdef(unsigned short mode) { assert(mode == 0); fifo_command(4); }
 void lssafapat(short pattern) { assert(pattern == -1); fifo_command(4); }
-void lssfont(short font) { assert(font == -1 || font == -4); fifo_command(4); }
+/* LSSFONT's raster fonts: -2 16x32, -3 12x24, -4 8x16. */
+void lssfont(short font)
+{
+    assert(font == (test_line() == 32U ? -2 : test_line() == 24U ? -3 : -4));
+    fifo_command(4);
+}
 void sctxssf(double x, double y) { assert(x > 0 && y > 0); fifo_command(10); }
 void sctxsdmode(short mode) { assert(mode == 0); fifo_command(4); }
 void sctxsalign(short horizontal, short vertical)
@@ -587,14 +610,16 @@ static void osd_line(const char *text)
 }
 void sctxbstring(short x, short y, char *text)
 {
-    assert(x >= 0 && x < 640 && y >= 0 && y < 480);
+    assert(x >= 0 && (unsigned int)x < test_width && y >= 0 &&
+           (unsigned int)y + test_line() <= test_height);
     /* SCTXBSTRING sends SCTXSTRING: opcode, x, y, count, 16-bit chars. */
     fifo_command(8U + 2U * (unsigned int)strlen(text));
     osd_line(text);
 }
 void v2gpsvwp(short xmin, short xmax, short ymin, short ymax)
 {
-    assert(xmin == 0 && xmax == 639 && ymin == 0 && ymax == 479);
+    assert(xmin == 0 && (unsigned int)xmax == test_width - 1U && ymin == 0 &&
+           (unsigned int)ymax == test_height - 1U);
     fifo_command(10);
     ++viewport_calls;
 }
@@ -605,7 +630,8 @@ void v2gpswdw(double xmin, double xmax, double ymin, double ymax)
 {
     double half = (double)GLOBE_VIEW_DISTANCE * tan(22.5 * PI / 180.0);
     assert(fabs(ymin + half) < 1e-9 && fabs(ymax - half) < 1e-9);
-    assert(fabs(xmax + xmin) < 1e-9 && fabs(xmax - half * 639.0 / 479.0) < 1e-9);
+    assert(fabs(xmax + xmin) < 1e-9 &&
+           fabs(xmax - half * (test_width - 1.0) / (test_height - 1.0)) < 1e-9);
     window_width = xmax - xmin; window_height = ymax - ymin;
     fifo_transform(18);
     ++world_window_calls;
@@ -618,12 +644,12 @@ void v2gpswdw(double xmin, double xmax, double ymin, double ymax)
 void v3gpsproj(short projection)
 {
     double diagonal, scale_x, scale_y, focal;
-    assert(projection == 69);
+    assert(projection == test_angle());
     assert(window_width > 0.0 && window_height > 0.0);
     diagonal = sqrt(window_width * window_width + window_height * window_height);
-    scale_x = diagonal / 2.0 / tan(projection * PI / 360.0) * 639.0 / window_width;
-    scale_y = diagonal / 2.0 / tan(projection * PI / 360.0) * 479.0 / window_height;
-    focal = 240.0 / tan(22.5 * PI / 180.0);
+    scale_x = diagonal / 2.0 / tan(projection * PI / 360.0) * (test_width - 1.0) / window_width;
+    scale_y = diagonal / 2.0 / tan(projection * PI / 360.0) * (test_height - 1.0) / window_height;
+    focal = test_height / 2.0 / tan(22.5 * PI / 180.0);
     assert(fabs(scale_x - scale_y) < 1e-9);
     assert(fabs(scale_x / focal - 1.0) < 0.005);
     fifo_transform(4);
@@ -703,7 +729,7 @@ void v3arwplygn(unsigned short count, struct V3coord *vertices)
 
 /* Independent LibShell camera oracle: Rz(model yaw), then the inverse
  * viewer rotation Rx(-pitch), with the eye GLOBE_VIEW_DISTANCE from the
- * reference point and a 45-degree field across the 480-pixel height. */
+ * reference point and a 45-degree field across the screen's height. */
 static void project_native(const Vertex *point, double *x, double *y)
 {
     double yaw, pitch, model_y, view_x, view_y, depth, focal;
@@ -714,9 +740,9 @@ static void project_native(const Vertex *point, double *x, double *y)
     view_y = cos(pitch) * model_y + sin(pitch) * point->z;
     depth = (double)GLOBE_VIEW_DISTANCE -
             (-sin(pitch) * model_y + cos(pitch) * point->z);
-    focal = 240.0 / tan(22.5 * PI / 180.0);
-    *x = 320.0 + view_x * focal / depth;
-    *y = 240.0 - view_y * focal / depth;
+    focal = test_height / 2.0 / tan(22.5 * PI / 180.0);
+    *x = test_width / 2.0 + view_x * focal / depth;
+    *y = test_height / 2.0 - view_y * focal / depth;
 }
 
 /* Truncating division (below one pixel), the integer focal length (579
@@ -790,8 +816,8 @@ static void screen_fill(const struct Phcoord *vertices, unsigned int count)
     area = 0;
     for (i = 0; i < count; ++i)
     {
-        assert(vertices[i].x >= 0 && vertices[i].x <= 639);
-        assert(vertices[i].y >= 0 && vertices[i].y <= 479);
+        assert(vertices[i].x >= 0 && (unsigned int)vertices[i].x < test_width);
+        assert(vertices[i].y >= 0 && (unsigned int)vertices[i].y < test_height);
         assert(near_corner(vertices + i, submitted_vertices));
         j = (i + 1U) % count;
         area += (long)vertices[i].x * vertices[j].y -
@@ -823,6 +849,7 @@ static int same_vertex(const Vertex *a, const Vertex *b)
 #define PGC_WORLD_WINDOW 1
 #define PGC_PIXEL_WINDOW 2
 static int pgc_profile, pgc_board_640a, pgc_timeout, pgc_window_kind;
+static unsigned int pgc_board_type = 3U, pgc_view_x1, pgc_view_y1;
 static unsigned int pgc_open_calls, pgc_close_calls, pgc_sync_calls, pgc_lut_calls;
 static unsigned int pgc_resets, pgc_errors, pgc_injected_code = 10U;
 static unsigned char pgc_display = 1U;
@@ -843,7 +870,8 @@ int pgc_open(void)
     return pgc_profile;
 }
 unsigned int pgc_segment(void) { return pgc_board_640a ? 0xC640U : 0xC600U; }
-int pgc_pg640a(void) { return pgc_board_640a; }
+int pgc_matrox(void) { return pgc_board_640a; }
+unsigned int pgc_board(void) { return pgc_board_type; }
 int pgc_failed(void) { return pgc_timeout; }
 unsigned int pgc_take_errors(void)
 {
@@ -862,6 +890,15 @@ int pgc_flagrd(unsigned char flag, unsigned char *reply, unsigned int bytes)
 }
 void pgc_close(void) { assert(pgc_open_calls == 1); ++pgc_close_calls; }
 void pgc_resetf(void) { assert(!pgc_table_saved); ++pgc_resets; }
+/* FLAGRD 21 after RESETF: the whole screen, unless a profile says not. */
+int pgc_viewport(unsigned int *x1, unsigned int *x2, unsigned int *y1, unsigned int *y2)
+{
+    assert(pgc_open_calls == 1 && pgc_close_calls == 0 && pgc_resets == 1);
+    ++sync_calls; ++pgc_sync_calls;
+    if (pgc_timeout) return FALSE;
+    *x1 = pgc_view_x1; *x2 = test_x2; *y1 = pgc_view_y1; *y2 = test_y2;
+    return TRUE;
+}
 void pgc_displa(unsigned char flag) { assert(flag <= 1U); pgc_display = flag; }
 void pgc_clears(unsigned char color) { assert(pgc_display == 0U); frame_cleared(color); }
 void pgc_color(unsigned char color) { color_selected(color); }
@@ -886,7 +923,8 @@ void pgc_lutint(unsigned char state)
 }
 void pgc_vwport(int x1, int x2, int y1, int y2)
 {
-    assert(x1 == 0 && x2 == 639 && y1 == 0 && y2 == 479);
+    assert(x1 == 0 && (unsigned int)x2 == test_width - 1U && y1 == 0 &&
+           (unsigned int)y2 == test_height - 1U);
     ++viewport_calls;
 }
 void pgc_window(double x1, double x2, double y1, double y2)
@@ -895,12 +933,13 @@ void pgc_window(double x1, double x2, double y1, double y2)
     if (x1 == 0.0 && y1 == 0.0)
     {
         /* Pixel coordinates for the OSD and host-projected fills. */
-        assert(x2 == 639.0 && y2 == 479.0);
+        assert(x2 == test_width - 1.0 && y2 == test_height - 1.0);
         pgc_window_kind = PGC_PIXEL_WINDOW;
         return;
     }
     assert(fabs(y1 + half) < 1e-9 && fabs(y2 - half) < 1e-9);
-    assert(fabs(x2 + x1) < 1e-9 && fabs(x2 - half * 639.0 / 479.0) < 1e-9);
+    assert(fabs(x2 + x1) < 1e-9 &&
+           fabs(x2 - half * (test_width - 1.0) / (test_height - 1.0)) < 1e-9);
     window_width = x2 - x1; window_height = y2 - y1;
     pgc_window_kind = PGC_WORLD_WINDOW;
     ++world_window_calls;
@@ -909,11 +948,12 @@ void pgc_window(double x1, double x2, double y1, double y2)
 void pgc_projct(int angle)
 {
     double half = (double)GLOBE_VIEW_DISTANCE * tan(22.5 * PI / 180.0);
-    double width = 2.0 * half * 639.0 / 479.0, height = 2.0 * half, scale;
-    assert(angle == 69);
+    double width = 2.0 * half * (test_width - 1.0) / (test_height - 1.0);
+    double height = 2.0 * half, scale;
+    assert(angle == test_angle());
     scale = sqrt(width * width + height * height) / 2.0 /
-            tan(angle * PI / 360.0) * 639.0 / width;
-    assert(fabs(scale / (240.0 / tan(22.5 * PI / 180.0)) - 1.0) < 0.005);
+            tan(angle * PI / 360.0) * (test_width - 1.0) / width;
+    assert(fabs(scale / (test_height / 2.0 / tan(22.5 * PI / 180.0)) - 1.0) < 0.005);
     ++projection_calls; pgc_inject(&fail_v3_projection);
 }
 void pgc_distan(double distance) { assert(distance == GLOBE_VIEW_DISTANCE); ++distance_calls; }
@@ -957,10 +997,10 @@ void pgc_poly(unsigned int count, const Soft3d_screen_point *points)
     /* Back to the top-left screen coordinates of the LIB Shell path. */
     for (i = 0; i < count; ++i)
     {
-        assert(points[i].x >= 0L && points[i].x <= 639L);
-        assert(points[i].y >= 0L && points[i].y <= 479L);
+        assert(points[i].x >= 0L && points[i].x < (long)test_width);
+        assert(points[i].y >= 0L && points[i].y < (long)test_height);
         polygon[i].x = (short)points[i].x;
-        polygon[i].y = (short)(479L - points[i].y);
+        polygon[i].y = (short)((long)test_height - 1L - points[i].y);
     }
     screen_fill(polygon, count);
     pgc_inject(&fail_screen_polygon);
@@ -968,10 +1008,10 @@ void pgc_poly(unsigned int count, const Soft3d_screen_point *points)
 void pgc_move(double x, double y)
 {
     assert(pgc_window_kind == PGC_PIXEL_WINDOW);
-    assert(x == 8.0 && y >= 0.0 && y <= 479.0 && y == floor(y));
+    assert(x == 8.0 && y >= test_line() - 1.0 && y < test_height && y == floor(y));
     pgc_text_ready = 1;
 }
-void pgc_tsize(double size) { assert(size == 8.0); pgc_text_size = 1; }
+void pgc_tsize(double size) { assert(size == test_line() / 2.0); pgc_text_size = 1; }
 void pgc_tjust(unsigned char horizontal, unsigned char vertical)
 {
     assert(horizontal == 1U && vertical == 3U);
@@ -1836,7 +1876,17 @@ static int pgc_run(const char *profile)
     char *argv[2];
     argv[0] = "testglob.exe"; argv[1] = NULL;
     board_absent = 1; pgc_profile = 1;
-    pgc_board_640a = strcmp(profile, "pg640a") == 0;
+    /* Board types: the IBM ROM's 3, Matrox's 2 (PG-640A) and 0 (PG-1280
+     * family); only Matrox boards answer FLAGRD 30. */
+    pgc_board_640a = strcmp(profile, "pg640a") == 0 || strcmp(profile, "pgc-1280") == 0;
+    pgc_board_type = strcmp(profile, "pg640a") == 0 ? 2U :
+                     strcmp(profile, "pgc-1280") == 0 ? 0U : 3U;
+    if (strcmp(profile, "pgc-1280") == 0)
+    {
+        test_x2 = 1279U; test_y2 = 1023U; test_width = 1280U; test_height = 1024U;
+    }
+    /* A viewport that is not the whole screen keeps 640 x 480. */
+    if (strcmp(profile, "pgc-badview") == 0) { test_x2 = 1279U; test_y2 = 1023U; pgc_view_x1 = 5U; }
     pgc_display = pgc_initial_display = 1U;
     for (i = 0; i < 256; ++i)
     {
@@ -1854,10 +1904,13 @@ static int pgc_run(const char *profile)
     assert(pgc_resets == 1 && pgc_table_saved && pgc_display == 0U);
     assert(mtx_pgc_display == 1U && mouse_resets > 0);
     assert(test_dos_vectors[0x23] != NULL && test_dos_vectors[0x24] != NULL);
-    puts("PASS PGC detection: without a LIB Shell board, a PGC-compatible board is opened, its LUT saved and graphics shown");
+    assert(strcmp(drv_name, pgc_board_type == 2U ? "Matrox PG-640A (PGC)" :
+                            pgc_board_type == 0U ? "Matrox PG-1280 (PGC)" : "IBM PGC") == 0);
+    assert(mtx_width == test_width && mtx_height == test_height);
+    puts("PASS PGC detection: without a LIB Shell board, a PGC-compatible board is opened, named, sized from its RESETF viewport, its LUT saved and graphics shown");
     if (startup) { pgc_injected_code = 1U; fail_v3_projection = 1U; }
     assert(drv_init_window(0, 0, 0, 0));
-    assert(drv_win_width == 640 && drv_win_height == 480);
+    assert(drv_win_width == test_width && drv_win_height == test_height);
     assert(pgc_lut_calls == 256U && viewport_calls == 1U && pgc_fill_mode);
     assert(pgc_text_size && pgc_aligned && projection_calls == 1U);
     assert(distance_calls == 1U && hither_calls == 1U && yon_calls == 1U);
@@ -1956,7 +2009,7 @@ int main(int process_argc, char **process_argv)
 {
     unsigned int i;
     int argc;
-    int startup_failure = 0, stale_profile = 0, break_profile = 0;
+    int startup_failure = 0, stale_profile = 0, break_profile = 0, bad_resolution = 0;
     char *argv[2];
     float x, y;
     if (process_argc > 1)
@@ -1979,8 +2032,12 @@ int main(int process_argc, char **process_argv)
         else if (strcmp(profile, "fpu") == 0) { selected_cpu = 486; selected_fpu = 1; }
         else if (strcmp(profile, "absent") == 0) board_absent = 1;
         else if (strcmp(profile, "fifo8192") == 0) fifo_setting = "8192";
+        else if (strcmp(profile, "1024x768") == 0) { test_x2 = 1023U; test_y2 = 767U; }
+        else if (strcmp(profile, "1280x1024") == 0) { test_x2 = 1279U; test_y2 = 1023U; }
+        else if (strcmp(profile, "bad-resolution") == 0) { test_x2 = 799U; test_y2 = 399U; bad_resolution = 1; }
         else if (strncmp(profile, "pg", 2) != 0) assert(!"Unknown Matrox profile");
     }
+    if (!bad_resolution) { test_width = test_x2 + 1U; test_height = test_y2 + 1U; }
     for (i = 0; i < 256; ++i) {
         original_palette[i][0] = (unsigned short)((i + 11) & 255);
         original_palette[i][1] = (unsigned short)((i + 23) & 255);
@@ -1991,7 +2048,9 @@ int main(int process_argc, char **process_argv)
     {
         assert(strcmp(process_argv[1], "pgc") == 0 || strcmp(process_argv[1], "pg640a") == 0 ||
                strcmp(process_argv[1], "pgc-startup") == 0 ||
-               strcmp(process_argv[1], "pgc-timeout") == 0);
+               strcmp(process_argv[1], "pgc-timeout") == 0 ||
+               strcmp(process_argv[1], "pgc-1280") == 0 ||
+               strcmp(process_argv[1], "pgc-badview") == 0);
         return pgc_run(process_argv[1]);
     }
     if (board_absent)
@@ -2010,6 +2069,22 @@ int main(int process_argc, char **process_argv)
         assert(strstr(board_message, "PG1281") != NULL);
         assert(init_calls == 1 && pgc_open_calls == 1 && !mtx_initialized && fifo_bytes == 0U);
         puts("PASS Matrox board check: without a LIB Shell or PGC-compatible board, initialization stops before any command");
+        return 0;
+    }
+    if (bad_resolution)
+    {
+        /* LSINQSYS reports a screen smaller than 640 x 480. */
+        drv_ext_init();
+        expected_board_error = 1;
+        if (setjmp(board_error) == 0)
+        {
+            drv_init(&argc, argv);
+            assert(!"An unsupported LibShell screen must stop initialization");
+        }
+        expected_board_error = 0;
+        assert(strstr(board_message, "reports a 800x400 display") != NULL);
+        assert(strstr(board_message, "640x480 to 2048x2048") != NULL);
+        puts("PASS Matrox screen check: a LibShell screen outside 640x480 to 2048x2048 stops initialization with its reported size");
         return 0;
     }
     /* Registered first, so this checks the production atexit cleanup last. */
@@ -2036,6 +2111,7 @@ int main(int process_argc, char **process_argv)
     }
     drv_init(&argc, argv);
     assert(init_calls == 1 && mouse_resets > 0 && !mtx_pgc);
+    assert(mtx_width == test_width && mtx_height == test_height);
     if (fifo_setting != NULL)
     {
         /* PG Series 1 boards' 4096-word FIFO: 145 fills and the inquiry. */
@@ -2071,7 +2147,7 @@ int main(int process_argc, char **process_argv)
     if (startup_failure == 1) fail_v3_projection = 1U;
     if (startup_failure == 2) fail_world_window = 1U;
     assert(drv_init_window(0, 0, 0, 0));
-    assert(drv_win_width == 640 && drv_win_height == 480);
+    assert(drv_win_width == test_width && drv_win_height == test_height);
     assert(viewport_calls > 0 && world_window_calls > 0);
     if (startup_failure != 2) assert(projection_calls > 0);
     assert(palette_uploads == 1 && current_lut == 0 && current_mask == 255);

@@ -13,8 +13,10 @@
  * so every wait here also drains that FIFO.
  *
  * Commands are hex mode: an opcode byte, Ints as two bytes (low first) and
- * Reals as 16.16 with the integer word first. Matrox's PG-640A reports
- * board type 2 at offset 3F8h and has FLAGRD flags beyond the PGC's 25.
+ * Reals as 16.16 with the integer word first. Offset 3F8h holds a board
+ * type: the PG-640A manual lists Matrox's 0 (PG-1280 family), 1 (PG-640),
+ * 2 (PG-640A) and 4 (SM-640), and the IBM PGC's ROM writes 3 there at
+ * power-up. Matrox's firmware has FLAGRD flags beyond the PGC's 25.
  *
  * The communication area is the board processor's own memory. For each
  * host access the board holds its 8088 off its bus (HOLD) and stretches
@@ -43,7 +45,7 @@
 #define PGC_WARM_RESTART 0x307U
 #define PGC_ERROR_ENABLE 0x308U
 #define PGC_BOARD 0x3F8U
-#define PGC_BOARD_PG640A 2U
+#define PGC_BOARD_IBM 3U
 
 /* Deadlines in forward clock ticks: a reply or free FIFO space, and the
  * shorter wait when probing for a board or identifying it. */
@@ -83,7 +85,8 @@ static void pgc_pause(void)
 
 static const unsigned int pgc_segments[] = { 0xC600U, 0xC640U };
 static unsigned int pgc_seg = 0xC600U;
-static int pgc_found, pgc_is_640a, pgc_stopped;
+static int pgc_found, pgc_is_matrox, pgc_stopped;
+static unsigned int pgc_board_type;
 static unsigned int pgc_errors;
 static unsigned char pgc_saved_enable;
 static unsigned long pgc_limit = PGC_WAIT_TICKS;
@@ -120,7 +123,8 @@ static int pgc_wait_over(Pgc_wait *wait, unsigned long limit)
     return wait->elapsed >= limit;
 }
 
-int pgc_pg640a(void) { return pgc_is_640a; }
+int pgc_matrox(void) { return pgc_is_matrox; }
+unsigned int pgc_board(void) { return pgc_board_type; }
 int pgc_failed(void) { return pgc_stopped; }
 unsigned int pgc_segment(void) { return pgc_seg; }
 
@@ -243,6 +247,19 @@ int pgc_flagrd(unsigned char flag, unsigned char *reply, unsigned int bytes)
     return pgc_read(reply, bytes, pgc_limit, TRUE);
 }
 
+/* FLAGRD 21: the viewport's x1, x2, y1 and y2 as hex-mode Ints. */
+int pgc_viewport(unsigned int *x1, unsigned int *x2, unsigned int *y1,
+                 unsigned int *y2)
+{
+    unsigned char reply[8];
+    if (!pgc_flagrd(21U, reply, 8U)) return FALSE;
+    *x1 = reply[0] | ((unsigned int)reply[1] << 8);
+    *x2 = reply[2] | ((unsigned int)reply[3] << 8);
+    *y1 = reply[4] | ((unsigned int)reply[5] << 8);
+    *y2 = reply[6] | ((unsigned int)reply[7] << 8);
+    return TRUE;
+}
+
 /* TRUE once the board clears a restart flag within limit ticks. */
 static int pgc_flag_clears(unsigned int offset, unsigned long limit)
 {
@@ -317,17 +334,20 @@ int pgc_open(void)
 {
     unsigned char replies[2];
     unsigned int i;
-    pgc_is_640a = FALSE;
+    pgc_is_matrox = FALSE;
     for (i = 0; i < sizeof(pgc_segments) / sizeof(pgc_segments[0]); ++i)
         if (pgc_try(pgc_segments[i])) break;
     if (!pgc_found) return FALSE;
-    /* Both manuals' FLAGRD takes one byte. Only the PG-640A answers flag
-     * 30 (text window); an IBM PGC answers only the second request. */
-    if (PGC_READ(PGC_BOARD) == PGC_BOARD_PG640A)
+    /* Both manuals' FLAGRD takes one byte. Matrox's firmware answers flag
+     * 30 (text window); the IBM PGC's, which marks itself with 3, has no
+     * such flag, and any board without it answers only the second
+     * request. */
+    pgc_board_type = PGC_READ(PGC_BOARD);
+    if (pgc_board_type != PGC_BOARD_IBM)
     {
         pgc_byte(0x51U); pgc_byte(30U);
         pgc_byte(0x51U); pgc_byte(4U);
-        if (pgc_read(replies, 2U, PGC_PROBE_TICKS, FALSE)) pgc_is_640a = TRUE;
+        if (pgc_read(replies, 2U, PGC_PROBE_TICKS, FALSE)) pgc_is_matrox = TRUE;
         else PGC_WRITE(PGC_IN_READ, PGC_READ(PGC_IN_WRITE));
     }
     pgc_limit = PGC_WAIT_TICKS;
@@ -364,12 +384,12 @@ void pgc_prmfil(unsigned char flag) { pgc_byte(0xE9U); pgc_byte(flag); pgc_publi
 void pgc_lutsav(void) { pgc_byte(0xEDU); pgc_publish(); }
 void pgc_lutint(unsigned char state) { pgc_byte(0xECU); pgc_byte(state); pgc_publish(); }
 
-/* LUTX (E6h) takes 8-bit components on the PG-640A; LUT (EEh) takes
+/* LUTX (E6h) takes 8-bit components on Matrox boards; LUT (EEh) takes
  * values modulo 16, so an IBM PGC gets each component's high four bits. */
 void pgc_lut(unsigned char index, unsigned char red, unsigned char green,
              unsigned char blue)
 {
-    if (pgc_is_640a)
+    if (pgc_is_matrox)
     {
         pgc_byte(0xE6U); pgc_byte(index);
         pgc_byte(red); pgc_byte(green); pgc_byte(blue);
@@ -402,7 +422,7 @@ void pgc_window(double x1, double x2, double y1, double y2)
 void pgc_projct(int angle)
 {
     pgc_byte(0xB0U);
-    if (pgc_is_640a) pgc_int(angle);
+    if (pgc_is_matrox) pgc_int(angle);
     else pgc_byte((unsigned char)angle);
     pgc_publish();
 }

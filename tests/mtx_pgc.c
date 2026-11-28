@@ -16,7 +16,10 @@
 static unsigned char areas[2][1024];
 static int kinds[2];
 static int selected = -1;
+/* Matrox firmware (FLAGRD 30, LUTX, two-byte PROJCT) or IBM's, and the
+ * screen RESETF's viewport reports through FLAGRD 21. */
 static int pg640a_model;
+static unsigned int screen_x2 = 639U, screen_y2 = 479U;
 /* Firmware parser state. */
 static int hex_mode[2];
 static unsigned char pending[64];
@@ -93,6 +96,14 @@ static void execute(int which, const unsigned char *command, unsigned int length
     if (command[0] == 0x51)
     {
         if (command[1] == 30 && !pg640a_model) return; /* IBM: no such flag */
+        if (command[1] == 21)
+        {
+            reply(area, 0); reply(area, 0);
+            reply(area, (unsigned char)screen_x2); reply(area, (unsigned char)(screen_x2 >> 8));
+            reply(area, 0); reply(area, 0);
+            reply(area, (unsigned char)screen_y2); reply(area, (unsigned char)(screen_y2 >> 8));
+            return;
+        }
         reply(area, (unsigned char)(command[1] + 100));
     }
 }
@@ -202,6 +213,13 @@ static void reset(int kind0, int kind1, int model_640a)
     pauses = pauses_seen = 0UL; hold_model = warm_ignored = self_test_loop = 0;
     cold_polls = warm_restarts = 0U;
     pg640a_model = model_640a;
+    screen_x2 = 639U; screen_y2 = 479U;
+    /* The IBM ROM marks its board with 3 at 3F8h at power-up. */
+    if (!model_640a)
+    {
+        if (kind0 == KIND_PGC) areas[0][0x3F8] = 3;
+        if (kind1 == KIND_PGC) areas[1][0x3F8] = 3;
+    }
     selected = 0;
 }
 
@@ -231,7 +249,7 @@ int main(void)
     reset(KIND_PGC, KIND_ABSENT, 0);
     areas[0][0x302] = 3; areas[0][0x304] = 2; areas[0][0x308] = 0;
     assert(open_board());
-    assert(pgc_segment() == 0xC600U && !pgc_pg640a() && !pgc_failed());
+    assert(pgc_segment() == 0xC600U && !pgc_matrox() && !pgc_failed());
     assert(hex_mode[0] && areas[0][0x308] == 1);
     assert(warm_restarts == 1U && areas[0][0x307] == 0);
     assert(areas[0][0x303] == areas[0][0x302] && areas[0][0x305] == areas[0][0x304]);
@@ -366,7 +384,7 @@ int main(void)
     /* PG-640A: board type 2 and FLAGRD 30 select LUTX and the Int angle. */
     reset(KIND_PGC, KIND_ABSENT, 1);
     areas[0][0x3F8] = 2;
-    assert(open_board() && pgc_pg640a());
+    assert(open_board() && pgc_matrox() && pgc_board() == 2U);
     logged_count = 0;
     pgc_lut(5, 0xFF, 0x80, 0x1F); pgc_projct(69);
     {
@@ -374,11 +392,17 @@ int main(void)
         expect(matrox, sizeof(matrox));
     }
     pgc_close();
-    /* An IBM PGC whose reserved byte happens to read 2 does not answer
-     * flag 30, so it keeps the IBM forms. */
+    /* Any other Matrox board that answers flag 30, such as a PG-1280
+     * (type 0), gets the same forms. */
+    reset(KIND_PGC, KIND_ABSENT, 1);
+    areas[0][0x3F8] = 0;
+    assert(open_board() && pgc_matrox() && pgc_board() == 0U);
+    pgc_close();
+    /* A board that does not answer flag 30 keeps the IBM forms, whatever
+     * its type byte reads. */
     reset(KIND_PGC, KIND_ABSENT, 0);
     areas[0][0x3F8] = 2;
-    assert(open_board() && !pgc_pg640a() && !pgc_failed());
+    assert(open_board() && !pgc_matrox() && !pgc_failed());
     logged_count = 0;
     pgc_projct(60);
     {
@@ -386,7 +410,27 @@ int main(void)
         expect(ibm, sizeof(ibm));
     }
     pgc_close();
-    puts("PASS PGC identification: a PG-640A gets 8-bit LUTX and its two-byte PROJCT; an IBM PGC keeps LUT and the one-byte angle");
+    /* The IBM PGC's 3 is not asked for flag 30 at all. */
+    reset(KIND_PGC, KIND_ABSENT, 0);
+    assert(open_board() && !pgc_matrox() && pgc_board() == 3U);
+    {
+        static const unsigned char probe[] = { 0x43, 'X', ' ', 0x51, 4 };
+        expect(probe, sizeof(probe));
+    }
+    pgc_close();
+    puts("PASS PGC identification: Matrox boards answering FLAGRD 30 get 8-bit LUTX and the two-byte PROJCT; the IBM PGC (type 3) and others keep LUT and the one-byte angle");
+
+    /* FLAGRD 21 reads the viewport as four hex-mode Ints. */
+    reset(KIND_PGC, KIND_ABSENT, 1);
+    screen_x2 = 1279U; screen_y2 = 1023U;
+    assert(open_board());
+    {
+        unsigned int x1 = 9U, x2 = 9U, y1 = 9U, y2 = 9U;
+        assert(pgc_viewport(&x1, &x2, &y1, &y2));
+        assert(x1 == 0U && x2 == 1279U && y1 == 0U && y2 == 1023U);
+    }
+    pgc_close();
+    puts("PASS PGC viewport: FLAGRD 21 returns x1, x2, y1 and y2 as two-byte Ints");
 
     /* No board at C6000h: shared memory without a processor times out and
      * gets its flag back; nothing answers at C6400h either. */
@@ -422,7 +466,7 @@ int main(void)
     reset(KIND_PGC, KIND_ABSENT, 1);
     areas[0][0x3F8] = 2;
     self_test_loop = 1;
-    assert(open_board() && pgc_pg640a() && warm_restarts == 1U);
+    assert(open_board() && pgc_matrox() && warm_restarts == 1U);
     pgc_close();
     reset(KIND_PGC, KIND_ABSENT, 0);
     areas[0][0x306] = 1;

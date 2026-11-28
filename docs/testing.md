@@ -515,10 +515,11 @@ pointer keywords removed for host compilation.
   a full error FIFO that stops the board must be drained, and a board that stops
   taking commands must end communication by the deadline without overrunning the
   FIFO. The probe must reject plain memory and an empty address, restoring the flag
-  it tested, and find a board at C6400h. A simulated PG-640A must get `LUTX` and the
-  two-byte `PROJCT`, and an IBM PGC, which ignores `FLAGRD 30`, `LUT` and the one-byte
-  angle. Closing must let queued commands run and restore ASCII mode and error
-  reporting.
+  it tested, and find a board at C6400h. Simulated Matrox boards of types 2 and 0
+  that answer `FLAGRD 30` must get `LUTX` and the two-byte `PROJCT`; a board that does
+  not answer must get `LUT` and the one-byte angle, and the IBM PGC's type 3 must not
+  be asked. `FLAGRD 21` must return the viewport's four Ints. Closing must let queued
+  commands run and restore ASCII mode and error reporting.
 - **PGC timing and restarts:** in a fast-host model the simulated board's processor
   runs only after the host has paused since its last access, as HOLD stops it during
   host accesses; the probe, a FIFO wrap and a `FLAGRD` reply must still complete, so
@@ -553,6 +554,14 @@ pointer keywords removed for host compilation.
   is known. The `fifo8192` profile sets `MTXFIFO=8192` and allows 145 fills and
   8,124 bytes. `MTXFIFO` values from 256 to 8192 must give groups of
   (bytes − 32) ÷ 56 fills, and others, including non-decimal ones, must be rejected.
+- **Screen sizes:** the `1024x768` and `1280x1024` profiles run the whole LibShell
+  contract with `LSINQSYS` reporting those sizes: viewport, world window, projection
+  angle (whose PGC-formula scale must stay within 0.5% of the host camera's), raster
+  font, OSD positions and host-transform screen bounds all follow the reported size.
+  `bad-resolution` (800 × 400) must stop initialization naming the size. `pgc-1280`
+  sizes a Matrox PG-1280-style board from its `RESETF` viewport, and `pgc-badview`
+  keeps 640 × 480 when the viewport does not start at 0,0. Each PGC profile also
+  checks the board name in the startup report.
 - **PGC driver:** the `pgc`, `pg640a`, `pgc-startup` and `pgc-timeout` profiles
   record the driver's PGC commands with no LIB Shell board present. The board's LUT
   must be saved before the palette changes and graphics shown, all 256 entries must

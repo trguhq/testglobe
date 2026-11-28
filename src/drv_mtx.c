@@ -26,6 +26,14 @@ static int mtx_initialized;
  * (graphics 0 or emulator 1) it showed at startup. */
 static int mtx_pgc;
 static unsigned char mtx_pgc_display = 1U;
+/* The board's screen: LSINQSYS's visible size or, on a PGC-compatible
+ * board, the viewport RESETF leaves, which is the whole screen. Text
+ * follows the height as LibShell's default fonts do: 8x16 at 480 lines,
+ * 12x24 at 768 and 16x32 at 1024, with lines one character high apart. */
+#define MTX_MAX_SIDE 2048U
+static unsigned int mtx_width = DRV_WIN_WIDTH, mtx_height = DRV_WIN_HEIGHT;
+static unsigned int mtx_line = 16U, mtx_columns = 78U;
+static short mtx_font = -4;
 static int mtx_palette_saved;
 static int mtx_error_policy_saved;
 static int mtx_cleanup_active;
@@ -479,6 +487,33 @@ static unsigned short mtx_inquire_lut(void)
     return value;
 }
 
+static int mtx_screen(unsigned int width, unsigned int height)
+{
+    if (width < DRV_WIN_WIDTH || height < DRV_WIN_HEIGHT ||
+        width > MTX_MAX_SIDE || height > MTX_MAX_SIDE) return FALSE;
+    mtx_width = width;
+    mtx_height = height;
+    if (height >= 1024U) { mtx_font = -2; mtx_line = 32U; }
+    else if (height >= 768U) { mtx_font = -3; mtx_line = 24U; }
+    else { mtx_font = -4; mtx_line = 16U; }
+    /* Characters are half a line wide; keep an 8-pixel margin each side. */
+    mtx_columns = (width - 16U) / (mtx_line / 2U);
+    if (mtx_columns > 78U) mtx_columns = 78U;
+    return TRUE;
+}
+
+/* Matrox names its own boards by board type once its firmware answers;
+ * the IBM PGC's ROM marks itself with 3. */
+static const char *mtx_pgc_name(void)
+{
+    static const char *const matrox[5] = {
+        "Matrox PG-1280 (PGC)", "Matrox PG-640 (PGC)", "Matrox PG-640A (PGC)",
+        "Matrox (PGC)", "Matrox SM-640 (PGC)"
+    };
+    if (pgc_matrox()) return pgc_board() < 5U ? matrox[pgc_board()] : "Matrox (PGC)";
+    return pgc_board() == 3U ? "IBM PGC" : "PGC-compatible";
+}
+
 static void mtx_fifo_option(void)
 {
     const char *setting = getenv("MTXFIFO");
@@ -498,6 +533,7 @@ static void mtx_fifo_option(void)
 static void mtx_pgc_init(void)
 {
     unsigned char display;
+    unsigned int x1, x2, y1, y2;
     mtx_initialized = TRUE;
     if (atexit(mtx_cleanup) != 0)
     {
@@ -511,6 +547,17 @@ static void mtx_pgc_init(void)
     }
     mtx_pgc_display = display;
     pgc_resetf();
+    /* RESETF's viewport is the whole screen; a reply that is not keeps
+     * 640 x 480. */
+    if (!pgc_viewport(&x1, &x2, &y1, &y2))
+    {
+        (void)mtx_failure("screen inquiry", 0U, TRUE, FALSE);
+        return;
+    }
+    if (x1 != 0U || y1 != 0U || x2 >= MTX_MAX_SIDE || y2 >= MTX_MAX_SIDE ||
+        !mtx_screen(x2 + 1U, y2 + 1U))
+        (void)mtx_screen(DRV_WIN_WIDTH, DRV_WIN_HEIGHT);
+    strcpy(drv_name, mtx_pgc_name());
     pgc_lutsav();
     mtx_palette_saved = TRUE;
     pgc_displa(0U);
@@ -565,10 +612,16 @@ void drv_init(int *argc, char **argv)
     MTX_COMMAND(lserror(1), "enable error reporting");
     lsinqsys();
     if (!mtx_read_words(system_info, 10, "system inquiry")) return;
-    if ((unsigned short)system_info[0] < DRV_WIN_WIDTH ||
-        (unsigned short)system_info[1] < DRV_WIN_HEIGHT ||
-        (unsigned short)system_info[2] < 256)
-        error("Matrox LibShell needs a 640x480, 256-color display");
+    /* Words 1-3: visible width and height, simultaneous colors. */
+    if ((unsigned short)system_info[2] < 256)
+        error("Matrox LibShell needs a 256-color display");
+    if (!mtx_screen((unsigned short)system_info[0], (unsigned short)system_info[1]))
+    {
+        sprintf(message, "Matrox LibShell reports a %ux%u display; testglobe needs"
+                " 640x480 to %ux%u", (unsigned int)(unsigned short)system_info[0],
+                (unsigned int)(unsigned short)system_info[1], MTX_MAX_SIDE, MTX_MAX_SIDE);
+        error(message);
+    }
     /* Preserve the table replaced, the displayed LUT label and its plane
      * mask (LSINQ 88). Without index 88, or with a reply outside LSLUTPM's
      * 0..255 range, cleanup leaves the mask alone instead of guessing. */
@@ -602,10 +655,10 @@ static double mtx_view_window(double *half_width, double *half_height)
     double field;
     field = tan((double)GLOBE_FIELD_OF_VIEW * PI / 360.0);
     *half_height = (double)GLOBE_VIEW_DISTANCE * field;
-    *half_width = *half_height * (DRV_WIN_WIDTH - 1) / (DRV_WIN_HEIGHT - 1);
-    return 2.0 * atan(sqrt((double)(DRV_WIN_WIDTH - 1) * (DRV_WIN_WIDTH - 1) +
-                           (double)(DRV_WIN_HEIGHT - 1) * (DRV_WIN_HEIGHT - 1)) *
-                      field / DRV_WIN_HEIGHT) * 180.0 / PI;
+    *half_width = *half_height * (mtx_width - 1.0) / (mtx_height - 1.0);
+    return 2.0 * atan(sqrt((mtx_width - 1.0) * (mtx_width - 1.0) +
+                           (mtx_height - 1.0) * (mtx_height - 1.0)) *
+                      field / mtx_height) * 180.0 / PI;
 }
 
 static int mtx_native_projection(void)
@@ -637,15 +690,15 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     unsigned short brightness;
     unsigned short darkest = 766;
     unsigned short lightest = 0;
-    /* PG-641 display dimensions are fixed, not a desktop window. */
+    /* The board's whole screen, as detected in drv_init, not a window. */
     (void)in_x;
     (void)in_y;
     (void)in_width;
     (void)in_height;
     drv_win_x = 0;
     drv_win_y = 0;
-    drv_win_width = DRV_WIN_WIDTH;
-    drv_win_height = DRV_WIN_HEIGHT;
+    drv_win_width = mtx_width;
+    drv_win_height = mtx_height;
     for (i = 0; i < 256; ++i)
     {
         /* Eight-bit DACs use bits0..7; four-bit DACs use bits4..7.
@@ -675,11 +728,12 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
                     (unsigned char)mtx_palette[i].blue);
         /* The viewport counts pixels up from the screen's lower left.
          * Text is left-justified with its top at the current point; in
-         * the OSD's pixel window a size of 8 gives 8 x 12 cells. */
-        pgc_vwport(0, DRV_WIN_WIDTH - 1, 0, DRV_WIN_HEIGHT - 1);
+         * the OSD's pixel window size s gives s x 1.5s cells (8 x 12 at
+         * 480 lines), half the line pitch wide. */
+        pgc_vwport(0, (int)mtx_width - 1, 0, (int)mtx_height - 1);
         pgc_prmfil(1U);
         pgc_tjust(1U, 3U);
-        pgc_tsize(8.0);
+        pgc_tsize(mtx_line / 2.0);
         if (!mtx_pgc_sync("display setup", FALSE)) return 0;
         /* As with LibShell, a rejected projection leaves host transforms. */
         if (!drv_soft3d_active && mtx_native_projection())
@@ -694,14 +748,14 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
     MTX_COMMAND(lssbm(-1), "screen bitmap");
     MTX_COMMAND(lssclpl(-1), "clipping selection");
     MTX_COMMAND(scsorg(0, 0), "screen origin");
-    MTX_COMMAND(v2gpsvwp(0, DRV_WIN_WIDTH - 1, 0, DRV_WIN_HEIGHT - 1), "viewport");
+    MTX_COMMAND(v2gpsvwp(0, (short)(mtx_width - 1U), 0, (short)(mtx_height - 1U)), "viewport");
     if (!drv_soft3d_active) (void)mtx_native_projection();
     MTX_COMMAND(krhwsbop(0), "drawing operation");                 /* REPLACE, not SET-all-ones. */
     MTX_COMMAND(krhwsmsk(0xff), "plane mask");
     MTX_COMMAND(krhwstdef(0), "transparency");
     MTX_COMMAND(lssafapat(-1), "solid fill");               /* Solid fill, no board-specific shading. */
     MTX_COMMAND(krgcdi(), "graphics cursor");
-    MTX_COMMAND(lssfont(-4), "font selection");                 /* Documented 640x480, 8x16 raster font. */
+    MTX_COMMAND(lssfont(mtx_font), "font selection");      /* The documented raster font for the height. */
     MTX_COMMAND(sctxsalign(0, 0), "text alignment");
     MTX_COMMAND(sctxsdmode(0), "text mode");               /* Text must not enqueue read-FIFO replies. */
     MTX_COMMAND(sctxssf(1.0, 1.0), "text scale");
@@ -749,7 +803,7 @@ static int mtx_set_transform(void)
     if (drv_soft3d_active)
     {
         if (mtx_pgc)
-            pgc_window(0.0, DRV_WIN_WIDTH - 1.0, 0.0, DRV_WIN_HEIGHT - 1.0);
+            pgc_window(0.0, mtx_width - 1.0, 0.0, mtx_height - 1.0);
         return mtx_prepare_software(yaw, pitch);
     }
     yaw_radians = (double)yaw * PI / 180.0;
@@ -948,7 +1002,7 @@ static void mtx_draw_screen(const Soft3d_screen_point *points, int count,
         for (i = 0; i < count; ++i)
         {
             lower_left[i].x = points[i].x;
-            lower_left[i].y = DRV_WIN_HEIGHT - 1L - points[i].y;
+            lower_left[i].y = (long)mtx_height - 1L - points[i].y;
         }
         (void)mtx_set_color((unsigned short)color);
         pgc_poly((unsigned int)count, lower_left);
@@ -1002,7 +1056,7 @@ static int mtx_software_points(unsigned int vertex_count,
         return FALSE;
     }
     (void)soft3d_project_cache_begin(&mtx_cache, vertex_count,
-                                     DRV_WIN_WIDTH, DRV_WIN_HEIGHT, reuse);
+                                     mtx_width, mtx_height, reuse);
     return TRUE;
 }
 
@@ -1043,14 +1097,14 @@ void drv_draw_quadbatch_flat_color(unsigned int vertex_count,
         for (j = 0; j < 4U; ++j) corners[j] = indices[4U * i + j];
         if (drv_soft3d_kernel == DRV_KERNEL_FLOAT)
             count = soft3d_float_project_cached(mtx_points.floating, vertex_count,
-                corners, 4U, DRV_WIN_WIDTH, DRV_WIN_HEIGHT, SOFT3D_FLOAT_SINGLE,
+                corners, 4U, mtx_width, mtx_height, SOFT3D_FLOAT_SINGLE,
                 &mtx_cache, screen);
         else
             count = soft3d_fixed_project_cached(mtx_points.fixed, vertex_count,
-                corners, 4U, DRV_WIN_WIDTH, DRV_WIN_HEIGHT, &mtx_cache, screen);
-        /* LibShell screen fills take pixels 0..639 and 0..479. */
-        count = soft3d_finish_polygon(screen, count, DRV_WIN_WIDTH - 1U,
-                                       DRV_WIN_HEIGHT - 1U);
+                corners, 4U, mtx_width, mtx_height, &mtx_cache, screen);
+        /* Screen fills take pixels inside the board's screen. */
+        count = soft3d_finish_polygon(screen, count, mtx_width - 1U,
+                                       mtx_height - 1U);
         if (count < 3) continue;
         mtx_draw_screen(screen, count, colors[i]);
         if (drv_frame_failed || mtx_io_failed) return;
@@ -1090,9 +1144,9 @@ static unsigned int mtx_text_lines(const char *text, short y, int draw)
     while (*text != '\0')
     {
         count = (unsigned int)strlen(text);
-        if (count > 78U)
+        if (count > mtx_columns)
         {
-            count = 78U;
+            count = mtx_columns;
             split = count;
             while (split != 0U && text[split] != ' ') --split;
             if (split != 0U) count = split;
@@ -1101,10 +1155,10 @@ static unsigned int mtx_text_lines(const char *text, short y, int draw)
         line[count] = '\0';
         if (draw && mtx_pgc)
         {
-            pgc_move(8.0, (double)(DRV_WIN_HEIGHT - 1 - (y + 16 * (int)lines)));
+            pgc_move(8.0, (double)((long)mtx_height - 1L - (y + (long)mtx_line * lines)));
             pgc_text(line);
         }
-        else if (draw) MTX_COMMAND(sctxbstring(8, (short)(y + 16U * lines), line), "OSD text");
+        else if (draw) MTX_COMMAND(sctxbstring(8, (short)(y + mtx_line * lines), line), "OSD text");
         ++lines;
         text += count;
         while (*text == ' ') ++text;
@@ -1116,11 +1170,11 @@ void drv_draw_osd(void)
 {
     char status[256];
     unsigned int lines;
-    if (mtx_pgc) pgc_window(0.0, DRV_WIN_WIDTH - 1.0, 0.0, DRV_WIN_HEIGHT - 1.0);
+    if (mtx_pgc) pgc_window(0.0, mtx_width - 1.0, 0.0, mtx_height - 1.0);
     if (mtx_set_color(mtx_foreground) && !mtx_pgc)
         (void)mtx_checkpoint("text color", FALSE);
     lines = mtx_text_lines(drv_help, 0, FALSE);
-    (void)mtx_text_lines(drv_help, (short)(DRV_WIN_HEIGHT - 4U - 16U * lines), TRUE);
+    (void)mtx_text_lines(drv_help, (short)(mtx_height - 4U - mtx_line * lines), TRUE);
     drv_format_stats(status);
     drv_append_soft3d_status(status, sizeof(status), mtx_pgc ? "PGC" : "LibShell");
     (void)mtx_text_lines(status, 8, TRUE);

@@ -938,12 +938,13 @@ def main():
             str(ROOT / "src/err.c"), "-lm"]
         mtx_profiles = ("reporting-off", "8086", "286", "386", "486", "8087", "287", "387",
                         "fpu", "startup-v3", "startup-world", "stale", "ctrl-break",
-                        "fifo8192")
+                        "fifo8192", "1024x768", "1280x1024", "bad-resolution")
         run(cc + common + segmented + mtx_sources + ["-o", str(output / "matrox")])
         run([str(output / "matrox")])
         # The binding runs on an 8086, so every profile renders. Without
         # a LIB Shell board it falls back to a PGC-compatible board.
-        for profile in mtx_profiles + ("absent", "pgc", "pg640a", "pgc-startup", "pgc-timeout"):
+        for profile in mtx_profiles + ("absent", "pgc", "pg640a", "pgc-startup", "pgc-timeout",
+                                       "pgc-1280", "pgc-badview"):
             run([str(output / "matrox"), profile])
 
 
