@@ -136,6 +136,32 @@ int soft3d_fixed_prepare_degrees(long matrix[3][3],
     return 1;
 }
 
+long soft3d_fixed16(const float TG_HUGE *value)
+{
+    const unsigned char TG_HUGE *bytes = (const unsigned char TG_HUGE *)value;
+    const unsigned short endian = 1;
+    unsigned long bits, magnitude;
+    int exponent, shift;
+    if (*(const unsigned char *)&endian)
+        bits = (unsigned long)bytes[0] | ((unsigned long)bytes[1] << 8) |
+               ((unsigned long)bytes[2] << 16) | ((unsigned long)bytes[3] << 24);
+    else
+        bits = (unsigned long)bytes[3] | ((unsigned long)bytes[2] << 8) |
+               ((unsigned long)bytes[1] << 16) | ((unsigned long)bytes[0] << 24);
+    exponent = (int)((bits >> 23) & 255UL);
+    if (exponent < 111) return 0L;                        /* below 2^-16 */
+    if (exponent == 255 && (bits & 0x7FFFFFUL) != 0UL) return 0L;     /* NaN */
+    if (exponent > 141)                                   /* 32768 or more */
+        return (bits & 0x80000000UL) ? -0x7FFFFFFFL - 1L : 0x7FFFFFFFL;
+    /* The value is magnitude * 2^(exponent - 150); 16.16 scales it by 2^16,
+     * and shift <= 7 keeps the result below 2^31. */
+    magnitude = (bits & 0x7FFFFFUL) | 0x800000UL;
+    shift = exponent - 134;
+    if (shift < 0) magnitude >>= -shift;
+    else magnitude <<= shift;
+    return (bits & 0x80000000UL) ? -(long)magnitude : (long)magnitude;
+}
+
 int soft3d_fixed_vertex(const Vertex TG_HUGE *vertex, Soft3d_fixed_point *out)
 {
     if (vertex == NULL || out == NULL ||

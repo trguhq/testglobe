@@ -31,7 +31,7 @@ Additional options may be combined:
 | [`--amiga-ogl-contract`](#amiga-opengl) | MiniGL submissions and Amiga window/context lifecycle | None |
 | [`--igl-contract`](#iris-gl) | IRIS GL calls and software texture pixels | None |
 | [`--xgl-contract`](#sun-xgl) | XGL calls with real X11 windows and events | X11 development files, Xvfb, and an `xvfb-run` that keeps stderr separate |
-| [`--sdk /path/to/sdk`](#matrox-libshell) | The Matrox driver built against Matrox's own LibShell binding | LibShell headers under `XGX1/HEADERS` |
+| [`--sdk /path/to/sdk`](#matrox-libshell-and-pgc) | The Matrox driver built against Matrox's own LibShell binding | LibShell headers under `XGX1/HEADERS` |
 | [`--tiga-contract`](#tiga) | TIGA calls, embedded-module loading, arithmetic, and recovery | None |
 | [`--tiga-sdk /path/to/sdk`](#tiga) | TIGA checks plus compilation against original SDK declarations | TIGA host headers |
 | [`--dos-cpu`](#tiga) | Shared Matrox/TIGA CPU-probe instruction and stack checks (`--tiga-cpu` remains an alias) | Python `unicorn`, GNU `as` and `objcopy` |
@@ -516,12 +516,13 @@ with that redirection removed placed earlier on `PATH`.
 values. The Sun SDK/runtime on Solaris is required to validate the real ABI, pipeline,
 and graphics output; the real X11 activity in these tests does not exercise XGL itself.
 
-## Matrox LibShell
+## Matrox LibShell and PGC
 
 ### Commands
 
-The driver recorder and the direct-binding test run with the baseline checks and need
-no SDK. To also build the driver against Matrox's own binding, use:
+The driver recorder, the direct-binding test and the PGC command test run with the
+baseline checks and need no SDK. To also build the driver against Matrox's own
+binding, use:
 
 ```sh
 python3 tests/run.py --sdk /path/to/sdk
@@ -546,7 +547,21 @@ headers are not committed.
   known FIFO room is reused, and no word enters a full FIFO. Reads, non-blocking
   error reads that clear the ERROR register, the bounded flush of a stalled shell,
   the C600h/C640h/CE00h/CE40h and `PG1281` segments, the halted presence test with
-  its restoration, and silence without a board are checked too.
+  its restoration, and silence without a board are checked too. When the presence
+  test fails on PGC memory, the four words it wrote must be restored.
+- **PGC commands:** `tests/mtx_pgc.c` drives `src/mtx_pgc.c` against simulated
+  communication areas at C6000h and C6400h, with firmware that parses hexadecimal
+  commands by the IBM reference's lengths, switches between ASCII and hexadecimal
+  modes on `CX` and `CA`, answers `FLAGRD`, and reports injected errors. Opcodes,
+  parameters, Reals (integer word first, saturated), 4-bit `LUT` components and quoted
+  `TEXT` must match the reference. Writes must wait for room across the pointer wrap,
+  a full error FIFO that stops the board must be drained, and a board that stops
+  taking commands must end communication by the deadline without overrunning the
+  FIFO. The probe must reject plain memory and an empty address, restoring the flag
+  it tested, and find a board at C6400h. A simulated PG-640A must get `LUTX` and the
+  two-byte `PROJCT`, and an IBM PGC, which ignores `FLAGRD 30`, `LUT` and the one-byte
+  angle. Closing must let queued commands run and restore ASCII mode and error
+  reporting.
 
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
   triangle/quad statistics, and cleanup. Independent view-space facing tests check
@@ -566,13 +581,28 @@ headers are not committed.
   floating-point dispatch, including 8086/8087 and 286/287 combinations. With `--sdk`,
   the `8086` and `8087` profiles check that the supplied 286 binding is rejected
   before `lsinit`, and a build with `MTX_8086_BINDING` runs them through the whole
-  contract. The `absent` profile requires a board that fails the presence test to stop
-  initialization before any command. The OSD reports actual selection and failed
-  requests; the help keeps `S` visible.
+  contract. The `absent` profile requires initialization to stop before any command
+  when neither a LIB Shell nor a PGC-compatible board answers. The OSD reports actual
+  selection and failed requests; the help keeps `S` visible.
 - **Packets:** the recorder counts command bytes from the manual's formats since the
   last completed reply and requires at most 228 in flight, one checkpoint per four
   fills and per model/view group, and no repeated fill color while the board's color
-  is known.
+  is known. The `fifo8192` profile sets `MTXFIFO=8192` and allows 145 fills and
+  8,124 bytes. `MTXFIFO` values from 256 to 8192 must give groups of
+  (bytes − 32) ÷ 56 fills, and others, including non-decimal ones, must be rejected.
+- **PGC driver:** the `pgc`, `pg640a`, `pgc-startup` and `pgc-timeout` profiles
+  record the driver's PGC commands with no LIB Shell board present. The board's LUT
+  must be saved before the palette changes and graphics shown, all 256 entries must
+  receive `earth_cmap`'s 8-bit components, and the viewport, fill mode, text
+  alignment and projection must be set. Native frames must send the 3D window and
+  rotations and fill world vertices with `POLY3`; host-transform frames must fill in
+  the pixel window with y counted from the bottom, matched to their quads like
+  LibShell packets. The OSD must name the PGC. Range, overflow and area-fill errors
+  must retry the frame with host transforms and `S` must restore PGC transforms,
+  while memory errors and errors from host-projected fills must stop the program. A
+  rejected projection at startup must keep graphics with host transforms, and a board
+  that stops answering must be reported and only closed at exit. Otherwise Escape must
+  restore the saved LUT and the display shown at startup.
 - **Replies and errors:** `ioflush()` discards unread replies, so the recorder fails
   any flush while a reply is outstanding. `LSINQ` word counts and payload ordering;
   short malformed replies are drained before failure, while replies longer than 16

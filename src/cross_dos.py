@@ -77,7 +77,7 @@ def _compile(config, driver, extra_sources=(), includes=(), defines=()):
     objects = []
     # Per-vertex and per-polygon code omits stack checks (-s): none of it
     # recurses, and the 16 KiB stack is far larger than its frames.
-    hot = {"drv_" + driver.lower(), "soft3d", "soft3fp", "mtx_ls"}
+    hot = {"drv_" + driver.lower(), "soft3d", "soft3fp", "mtx_ls", "mtx_pgc"}
     for path in sources:
         obj = out / (path.stem + ".obj")
         run([compiler] + flags + (["-s"] if path.stem in hot else []) +
@@ -173,13 +173,15 @@ def build_tiga(config):
 
 
 def build_matrox(config):
+    # mtx_pgc.c drives PGC-compatible boards when no LIB Shell board answers.
+    pgc = config["src"] / "mtx_pgc.c"
     if not config.get("lscl"):
         # The direct LibShell binding needs no vendor files.
-        env, objects = _compile(config, "MTX", (config["src"] / "mtx_ls.c",))
+        env, objects = _compile(config, "MTX", (config["src"] / "mtx_ls.c", pgc))
         return _link(config, env, objects, None, "testglob.exe")
     library = _find(config["xgx_root"], ("libsv5/lscl.lib",))
     headers = _matrox_headers(config)
-    env, objects = _compile(config, "MTX", (config["src"] / "mtx_ow.c",),
+    env, objects = _compile(config, "MTX", (config["src"] / "mtx_ow.c", pgc),
                            (headers,), ("MTX_LSCL",))
     librarian = shutil.which("wlib", path=env["PATH"])
     if librarian is None:

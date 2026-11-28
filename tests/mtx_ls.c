@@ -44,6 +44,9 @@ static unsigned char error_register;
 static int error_pending;
 static unsigned int error_reads, error_clears, status_reads;
 static unsigned long accesses;
+/* A PGC-style board: the whole window is plain shared memory. */
+static int ram_window;
+static unsigned short ram[512];
 
 static unsigned short count_for(unsigned long address)
 {
@@ -65,6 +68,11 @@ static unsigned short count_for(unsigned long address)
 unsigned short mtx_ls_test_read(unsigned int offset, int bytes)
 {
     ++accesses;
+    if (ram_window)
+    {
+        assert(offset < 1024U);
+        return bytes == 1 ? (unsigned short)(ram[offset / 2U] & 0xFFU) : ram[offset / 2U];
+    }
     if (board_absent) return bytes == 1 ? 0xFFU : 0xFFFFU;
     if (bytes == 1)
     {
@@ -83,11 +91,17 @@ unsigned short mtx_ls_test_read(unsigned int offset, int bytes)
                 ++status_reads;
                 return (unsigned short)(error_pending ? 0x0200U | 0x0010U : 0x0010U);
             }
-            assert(gsp_address == 0x00180000UL || gsp_address == 0x00180010UL);
+            /* The probe first saves whatever the current address holds. */
+            if (gsp_address != 0x00180000UL && gsp_address != 0x00180010UL)
+                return 0x0BADU;
             /* The binding reads each count three times and keeps the last. */
             if (data_reads % 3U != 0U) return 0xDEADU;
             ++count_triples;
             return count_for(gsp_address);
+        case 0x318U:
+            return (unsigned short)(gsp_address & 0xFFFFUL);
+        case 0x31AU:
+            return (unsigned short)(gsp_address >> 16);
         case 0x31EU:
             return gsp_control;
         case 0x320U:
@@ -105,6 +119,12 @@ unsigned short mtx_ls_test_read(unsigned int offset, int bytes)
 void mtx_ls_test_write(unsigned int offset, unsigned short value, int bytes)
 {
     ++accesses;
+    if (ram_window)
+    {
+        assert(offset < 1024U && bytes == 2);
+        ram[offset / 2U] = value;
+        return;
+    }
     if (board_absent) return;
     if (bytes == 1)
     {
@@ -203,8 +223,17 @@ static void check_presence(void)
     assert(iogeterror() == 0 && rdfifocnt() == 0 && iogetw() == 0);
     assert(accesses == 0);
     board_absent = 0;
+    /* On a PGC the probe's offsets are reserved shared memory: a failed
+     * test leaves them exactly as it found them. */
+    ram_window = 1;
+    ram[0x318 / 2] = 0x1111U; ram[0x31A / 2] = 0x2222U;
+    ram[0x31C / 2] = 0x3333U; ram[0x31E / 2] = 0x4444U;
+    lsinit(0, 1); assert(!mtx_ls_present());
+    assert(ram[0x318 / 2] == 0x1111U && ram[0x31A / 2] == 0x2222U);
+    assert(ram[0x31C / 2] == 0x3333U && ram[0x31E / 2] == 0x4444U);
+    ram_window = 0;
     lsinit(0, 1); assert(mtx_ls_present());
-    puts("PASS LibShell binding presence: C600h/C640h/CE00h/CE40h, PG1281 override and validation, halted scratch test with restoration, and no access without a board");
+    puts("PASS LibShell binding presence: C600h/C640h/CE00h/CE40h, PG1281 override and validation, halted scratch test with restoration, no access without a board, and PGC shared memory restored after a failed test");
 }
 
 static void check_commands(void)

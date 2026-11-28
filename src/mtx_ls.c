@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "mtx_ls.h"
+#include "soft3d.h"
 
 #define MTX_LS_HSTADRL 0x318U
 #define MTX_LS_HSTADRH 0x31AU
@@ -144,35 +145,11 @@ static void mtx_ls_fixpt(double value)
     mtx_ls_word((unsigned short)(((unsigned long)fixed >> 16) & 0xFFFFUL));
 }
 
-/* The same conversion for vertex coordinates, decoded from the IEEE single
- * bits so that a machine without an x87 does no floating-point work. */
+/* Vertex coordinates use the shared integer-only IEEE conversion, so a
+ * machine without an x87 does no floating-point work here. */
 static void mtx_ls_float_fixpt(const float *value)
 {
-    const unsigned char *bytes = (const unsigned char *)value;
-    const unsigned short endian = 1;
-    unsigned long bits, magnitude;
-    int exponent, shift;
-    long fixed;
-    if (*(const unsigned char *)&endian)
-        bits = (unsigned long)bytes[0] | ((unsigned long)bytes[1] << 8) |
-               ((unsigned long)bytes[2] << 16) | ((unsigned long)bytes[3] << 24);
-    else
-        bits = (unsigned long)bytes[3] | ((unsigned long)bytes[2] << 8) |
-               ((unsigned long)bytes[1] << 16) | ((unsigned long)bytes[0] << 24);
-    exponent = (int)((bits >> 23) & 255UL);
-    if (exponent < 111) fixed = 0L;                       /* below 2^-16 */
-    else if (exponent > 141)                              /* 32768 or more */
-        fixed = (bits & 0x80000000UL) ? -0x7FFFFFFFL - 1L : 0x7FFFFFFFL;
-    else
-    {
-        /* The value is magnitude * 2^(exponent - 150); 16.16 scales it by
-         * 2^16, and shift <= 7 keeps the result below 2^31. */
-        magnitude = (bits & 0x7FFFFFUL) | 0x800000UL;
-        shift = exponent - 134;
-        if (shift < 0) magnitude >>= -shift;
-        else magnitude <<= shift;
-        fixed = (bits & 0x80000000UL) ? -(long)magnitude : (long)magnitude;
-    }
+    long fixed = soft3d_fixed16(value);
     mtx_ls_word((unsigned short)((unsigned long)fixed & 0xFFFFUL));
     mtx_ls_word((unsigned short)(((unsigned long)fixed >> 16) & 0xFFFFUL));
 }
@@ -187,10 +164,16 @@ static int mtx_ls_valid_segment(unsigned long segment)
 }
 
 /* Halt the GSP, check that two of its scratch registers keep test
- * patterns, then restore them and the GSP's control word. */
+ * patterns, then restore them and the GSP's control word. On a board
+ * without these registers, such as an IBM PGC, offsets 318h-31Fh are
+ * reserved shared memory: a failed test puts their bytes back. */
 static int mtx_ls_probe(void)
 {
     unsigned short control, first, second, read1, read2;
+    unsigned short address_low, address_high, data;
+    address_low = MTX_LS_READ(MTX_LS_HSTADRL);
+    address_high = MTX_LS_READ(MTX_LS_HSTADRH);
+    data = MTX_LS_READ(MTX_LS_HSTDATA);
     control = MTX_LS_READ(MTX_LS_HSTCTRL);
     MTX_LS_WRITE(MTX_LS_HSTCTRL, control | MTX_LS_HALT);
     mtx_ls_address(MTX_LS_SCRATCH1);
@@ -208,7 +191,12 @@ static int mtx_ls_probe(void)
     mtx_ls_address(MTX_LS_SCRATCH2);
     MTX_LS_WRITE(MTX_LS_HSTDATA, second);
     MTX_LS_WRITE(MTX_LS_HSTCTRL, control);
-    return read1 == 0x5A5AU && read2 == 0xA5A5U;
+    if (read1 == 0x5A5AU && read2 == 0xA5A5U) return TRUE;
+    MTX_LS_WRITE(MTX_LS_HSTADRL, address_low);
+    MTX_LS_WRITE(MTX_LS_HSTADRH, address_high);
+    MTX_LS_WRITE(MTX_LS_HSTDATA, data);
+    MTX_LS_WRITE(MTX_LS_HSTCTRL, control);
+    return FALSE;
 }
 
 void lsinit(short fhandle, short addr)

@@ -16,7 +16,7 @@ libraries installed. Each driver page lists its requirements and build variables
 | [Amiga OpenGL](opengl.md#amiga-opengl) (VBCC) | `make amiga-opengl` | `testglobe-amiga-opengl` |
 | [IRIS GL](irisgl.md) | `make irisgl` | `testglobe-irisgl` |
 | [Sun XGL](xgl.md) | `make xgl` | `testglobe-xgl` |
-| [Matrox LibShell](matrox.md) | `nmake matrox` | `testglob.exe` |
+| [Matrox LibShell and PGC](matrox.md) | `nmake matrox` | `testglob.exe` |
 | [TIGA](tiga.md) | `nmake tiga` | `testglob.exe` |
 | [Windows GDI](gdi.md) | `nmake gdi` | `testglob.exe` |
 | [QuickDraw](quickdraw.md) (MPW bridge) | `make quickdraw` | `TestglobeQD` |
@@ -78,7 +78,7 @@ right-button state). Software texture buffers are released when texturing is dis
 memory policy. Other targets use their own `*_CPPFLAGS` variable, for example
 `IGL_CPPFLAGS=-DIGL_ZBUFFER=1` to keep the IRIS GL z-buffer. The Matrox build can
 also link Matrox's own LibShell library instead of its built-in binding; see
-[Matrox LibShell](matrox.md#build).
+[Matrox LibShell and PGC](matrox.md#build).
 
 ## Linux-hosted cross-builds
 
@@ -98,7 +98,8 @@ make matrox-cross
 make tiga-cross CROSS_FLAGS="--tiga-root /path/to/TIGA --tiga-tools /path/to/ti-tools"
 ```
 
-- **Matrox** needs no SDK. To link Matrox's `LSCL.LIB` instead, pass
+- **Matrox** needs no SDK; the executable drives LIB Shell and PGC-compatible boards.
+  To link Matrox's `LSCL.LIB` instead, for LIB Shell boards only, pass
   `CROSS_FLAGS="--lscl --xgx-root /path/to/matrox-sdk"`, with `XGX1/HEADERS` and
   `libsv5/lscl.lib` under that root.
 - **TIGA** needs `include` and `libs/ai.lib`; the original SDK archive layout is also
@@ -116,7 +117,8 @@ transform kernel is compiled separately and guarded by CPU detection. With `--ls
 `src/mtx_ow.c` adapts the Microsoft-built LibShell library's runtime calls; that
 library needs a 286 or later, which the driver then checks before `lsinit`.
 Floating-point emulation stays available without a coprocessor. The per-vertex
-objects and the LibShell binding are compiled with `-s`, without stack probes.
+objects, the LibShell binding and the PGC commands are compiled with `-s`, without
+stack probes.
 
 Watcom's Windows runtime uses the large memory model. Explicit `TG_HUGE` pointers keep
 mesh and resource access normalized across 64 KiB boundaries, with `SEG86` still

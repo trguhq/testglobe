@@ -33,7 +33,13 @@ struct pg_com pg;
 /* The same calls, implemented directly on the board by mtx_ls.c. */
 #include "mtx_ls.h"
 #endif
+/* Boards without the LIB Shell: the IBM PGC command set (mtx_pgc.c). */
+#include "mtx_pgc.h"
 static int mtx_initialized;
+/* A PGC-compatible board instead of a LIB Shell board, and the display
+ * (graphics 0 or emulator 1) it showed at startup. */
+static int mtx_pgc;
+static unsigned char mtx_pgc_display = 1U;
 static int mtx_palette_saved;
 static int mtx_error_policy_saved;
 static int mtx_cleanup_active;
@@ -84,9 +90,15 @@ static int mtx_integer_cull;
  * words, so a stalled shell cannot fill it before error servicing resumes;
  * the bound also suits a 256-byte FIFO. */
 #define MTX_WAIT_TICKS (10UL * (unsigned long)CLOCKS_PER_SEC)
-/* A native fill is a color (4 bytes) and a four-vertex V3ARWPLYGN (52):
- * four with the inquiry use 228 bytes. Screen fills (4 + 44) are smaller. */
-#define MTX_FILL_PACKETS 4U
+/* A native fill is a color (4 bytes) and a four-vertex V3ARWPLYGN (52);
+ * screen fills (4 + 44) are smaller. A group of fills leaves 32 bytes for
+ * its 4-byte inquiry and margin: four fills in a 256-byte FIFO (228 bytes
+ * in flight). MTXFIFO, in bytes, can assume a larger command FIFO, up to
+ * the PG Series 1 boards' 4096 words (8192 bytes): 145 fills a group. */
+#define MTX_FILL_BYTES 56UL
+#define MTX_FIFO_DEFAULT 256UL
+#define MTX_FIFO_LARGEST 8192UL
+static unsigned int mtx_fill_packets = 4U;
 /* Stale startup data: a full-screen readback is 153,600 words. A shell
  * that stalled on a second error resumes once the first is read, so wait
  * for at least one BIOS tick of silence after discarding anything. */
@@ -129,6 +141,42 @@ static unsigned long mtx_wait_step(Mtx_wait *wait)
     return step;
 }
 
+/* LIB Shell ERROR register bits, or PGC error codes as bits (code n is
+ * bit n; see mtx_pgc.h). */
+static const char *mtx_error_reason(unsigned short errors, int communication)
+{
+    if (mtx_pgc)
+    {
+        if (errors & (1U << 1)) return "parameter out of range";
+        if (errors & (1U << 3)) return "board memory exhausted";
+        if (errors & (1U << 4)) return "arithmetic overflow";
+        if (errors & (1U << 6)) return "opcode not recognized";
+        if (errors & (1U << 10)) return "area fill error";
+        if (errors & ((1U << 7) | (1U << 8))) return "command-list nesting";
+        if (errors & (1U << 9)) return "string or command list too long";
+    }
+    else
+    {
+        if (errors & 1U) return "undefined opcode";
+        if (errors & 2U) return "unsupported parameter";
+        if (errors & 4U) return "board memory exhausted";
+        if (errors & 8U) return "arithmetic overflow";
+        if (errors & 16U) return "command-list nesting";
+        if (errors & 32U) return "command-list memory exhausted";
+    }
+    return communication ? "communication timeout" : "unknown error";
+}
+
+/* Errors from native 3D geometry that host transforms can avoid: LIB Shell
+ * opcode, parameter, memory and overflow bits; PGC range, overflow and
+ * area-fill codes. */
+static int mtx_error_recoverable(unsigned short errors)
+{
+    if (errors == 0U) return FALSE;
+    if (mtx_pgc) return (errors & ~((1U << 1) | (1U << 4) | (1U << 10))) == 0U;
+    return (errors & ~15U) == 0U;
+}
+
 static int mtx_failure(const char *operation, unsigned short errors,
                         int communication, int recoverable)
 {
@@ -137,15 +185,18 @@ static int mtx_failure(const char *operation, unsigned short errors,
     /* A failed packet may not have set its color. */
     mtx_color_valid = FALSE;
     if (communication) mtx_io_failed = TRUE;
-    if (errors & 1U) reason = "undefined opcode";
-    else if (errors & 2U) reason = "unsupported parameter";
-    else if (errors & 4U) reason = "board memory exhausted";
-    else if (errors & 8U) reason = "arithmetic overflow";
-    else if (errors & 16U) reason = "command-list nesting";
-    else if (errors & 32U) reason = "command-list memory exhausted";
-    else reason = communication ? "communication timeout" : "unknown error";
-    sprintf(message, "Matrox %s: %s (0x%02X)", operation, reason,
-            (unsigned int)errors);
+    reason = mtx_error_reason(errors, communication);
+    if (mtx_pgc)
+    {
+        /* The manuals number PGC errors; name the lowest one reported. */
+        unsigned int code = 0U;
+        while (code < 15U && (errors & (1U << code)) == 0U) ++code;
+        if (errors == 0U) sprintf(message, "PGC %s: %s", operation, reason);
+        else sprintf(message, "PGC %s: %s (error %u%s)", operation, reason, code,
+                     code == 15U ? " or later" : "");
+    }
+    else sprintf(message, "Matrox %s: %s (0x%02X)", operation, reason,
+                 (unsigned int)errors);
     /* A fully drained, valid inquiry establishes that communication still
      * works. Only optional native geometry setup/polygon packets are
      * recoverable, permitting a bounded 2D retry; the latter include their
@@ -153,7 +204,7 @@ static int mtx_failure(const char *operation, unsigned short errors,
      * software packet's checkpoint. Unknown bits, command-list faults, and
      * transport faults stay fatal. */
     if (!communication && !mtx_cleanup_active && recoverable &&
-        errors != 0U && (errors & ~15U) == 0U)
+        mtx_error_recoverable(errors))
     {
         mtx_native_failed = TRUE;
         drv_soft3d_active = TRUE;
@@ -241,6 +292,20 @@ static int mtx_checkpoint(const char *operation, int recoverable)
                        recoverable, NULL);
 }
 
+/* A PGC answers FLAGRD only after running every earlier command, whose
+ * errors are reported by then. */
+static int mtx_pgc_sync(const char *operation, int recoverable)
+{
+    unsigned char value;
+    unsigned short errors;
+    if (mtx_io_failed) return FALSE;
+    if (!pgc_flagrd(4U, &value, 1U))
+        return mtx_failure(operation, (unsigned short)pgc_take_errors(), TRUE, FALSE);
+    errors = (unsigned short)pgc_take_errors();
+    if (errors != 0U) return mtx_failure(operation, errors, FALSE, recoverable);
+    return TRUE;
+}
+
 #define MTX_COMMAND(command, operation) \
     do { command; (void)mtx_checkpoint(operation, FALSE); } while (0)
 
@@ -276,7 +341,7 @@ static void mtx_fill_sent(int native)
 {
     mtx_pending_native = native;
     ++mtx_pending_fills;
-    if (!mtx_queue_fills || mtx_pending_fills >= MTX_FILL_PACKETS)
+    if (!mtx_queue_fills || mtx_pending_fills >= mtx_fill_packets)
         (void)mtx_flush_fills();
 }
 
@@ -285,7 +350,8 @@ static void mtx_fill_sent(int native)
 static int mtx_set_color(unsigned short color)
 {
     if (mtx_color_valid && mtx_color == color) return FALSE;
-    krhwsfcol(color);
+    if (mtx_pgc) pgc_color((unsigned char)color);
+    else krhwsfcol(color);
     mtx_color = color;
     mtx_color_valid = TRUE;
     return TRUE;
@@ -364,6 +430,20 @@ static void TG_ATEXIT_CALL mtx_cleanup(void)
     if (!mtx_initialized)
         return;
     mtx_cleanup_active = TRUE;
+    if (mtx_pgc)
+    {
+        /* The LUT saved with LUTSAV, the display shown at startup, error
+         * reporting and ASCII mode. */
+        if (!mtx_io_failed && !pgc_failed())
+        {
+            if (mtx_palette_saved) pgc_lutint(255U);
+            pgc_displa(mtx_pgc_display);
+        }
+        pgc_close();
+        mtx_initialized = FALSE;
+        mtx_cleanup_active = FALSE;
+        return;
+    }
     /* An exit during a traversal confirms its fills before other packets. */
     if (!mtx_io_failed) (void)mtx_flush_fills();
     if (!mtx_io_failed && mtx_palette_saved)
@@ -414,16 +494,58 @@ static unsigned short mtx_inquire_lut(void)
     return value;
 }
 
+static void mtx_fifo_option(void)
+{
+    const char *setting = getenv("MTXFIFO");
+    char *end;
+    unsigned long bytes = MTX_FIFO_DEFAULT;
+    if (setting != NULL && *setting != '\0')
+    {
+        bytes = strtoul(setting, &end, 10);
+        if (*end != '\0' || bytes < MTX_FIFO_DEFAULT || bytes > MTX_FIFO_LARGEST)
+            error("MTXFIFO must be a command FIFO size from 256 to 8192 bytes");
+    }
+    mtx_fill_packets = (unsigned int)((bytes - 32UL) / MTX_FILL_BYTES);
+}
+
+#ifndef MTX_LSCL
+/* pgc_open() has selected hex mode and enabled error reports. LUTSAV keeps
+ * the board's LUT for cleanup, which also restores the display it showed. */
+static void mtx_pgc_init(void)
+{
+    unsigned char display;
+    mtx_initialized = TRUE;
+    if (atexit(mtx_cleanup) != 0)
+    {
+        mtx_cleanup();
+        error("Cannot register Matrox cleanup");
+    }
+    if (!pgc_flagrd(5U, &display, 1U))
+    {
+        (void)mtx_failure("display inquiry", 0U, TRUE, FALSE);
+        return;
+    }
+    mtx_pgc_display = display;
+    pgc_resetf();
+    pgc_lutsav();
+    mtx_palette_saved = TRUE;
+    pgc_displa(0U);
+    if (!mtx_pgc_sync("startup", FALSE)) return;
+    mtx_mouse_present = drv_dos_mouse_init();
+}
+#endif
+
 void drv_init(int *argc, char **argv)
 {
     short system_info[10];
     unsigned short reporting;
 #ifndef MTX_LSCL
-    char message[96];
+    char message[128];
 #endif
     (void)argc;
     (void)argv;
     drv_soft3d_select();
+    mtx_fifo_option();
 #if defined(MTX_LSCL) && !defined(MTX_8086_BINDING)
     /* The supplied LSCL.LIB, linked by both compilers, uses ENTER/LEAVE even
      * in its 2D binding; an 8086 misexecutes them inside lsinit. The host
@@ -439,9 +561,18 @@ void drv_init(int *argc, char **argv)
 #ifndef MTX_LSCL
     if (!mtx_ls_present())
     {
-        sprintf(message, "No Matrox LIB Shell board answers at segment %04Xh;"
-                " download LIB SHELL or set PG1281", mtx_ls_segment());
-        error(message);
+        /* Without a LIB Shell board, a PGC-compatible board at C6000h or
+         * C6400h, such as an IBM PGC or a Matrox PG-640A. */
+        if (!pgc_open())
+        {
+            sprintf(message, "No LIB Shell board at segment %04Xh and no PGC at"
+                    " C6000h or C6400h; download LIB SHELL or set PG1281",
+                    mtx_ls_segment());
+            error(message);
+        }
+        mtx_pgc = TRUE;
+        mtx_pgc_init();
+        return;
     }
 #endif
     /* Discard what a previous program left: queued commands run, unread
@@ -494,15 +625,31 @@ void drv_init(int *argc, char **argv)
  * field, sent as 69 (LibShell's ANGLE is whole degrees): an image 0.27%
  * larger than host transforms draw. The window is the shared field on the
  * view plane through the reference point. */
+static double mtx_view_window(double *half_width, double *half_height)
+{
+    double field;
+    field = tan((double)GLOBE_FIELD_OF_VIEW * PI / 360.0);
+    *half_height = (double)GLOBE_VIEW_DISTANCE * field;
+    *half_width = *half_height * (DRV_WIN_WIDTH - 1) / (DRV_WIN_HEIGHT - 1);
+    return 2.0 * atan(sqrt((double)(DRV_WIN_WIDTH - 1) * (DRV_WIN_WIDTH - 1) +
+                           (double)(DRV_WIN_HEIGHT - 1) * (DRV_WIN_HEIGHT - 1)) *
+                      field / DRV_WIN_HEIGHT) * 180.0 / PI;
+}
+
 static int mtx_native_projection(void)
 {
-    double field, half_width, half_height, angle;
-    field = tan((double)GLOBE_FIELD_OF_VIEW * PI / 360.0);
-    half_height = (double)GLOBE_VIEW_DISTANCE * field;
-    half_width = half_height * (DRV_WIN_WIDTH - 1) / (DRV_WIN_HEIGHT - 1);
-    angle = 2.0 * atan(sqrt((double)(DRV_WIN_WIDTH - 1) * (DRV_WIN_WIDTH - 1) +
-                            (double)(DRV_WIN_HEIGHT - 1) * (DRV_WIN_HEIGHT - 1)) *
-                       field / DRV_WIN_HEIGHT) * 180.0 / PI;
+    double half_width, half_height, angle;
+    angle = mtx_view_window(&half_width, &half_height);
+    if (mtx_pgc)
+    {
+        /* The 3D window is set each frame: the OSD and software fills use
+         * a pixel window. Errors surface at the next synchronization. */
+        pgc_projct((int)floor(angle + 0.5));
+        pgc_distan((double)GLOBE_VIEW_DISTANCE);
+        pgc_cliph(0U);
+        pgc_clipy(0U);
+        return TRUE;
+    }
     MTX_TRANSFORM(v2gpswdw(-half_width, half_width, -half_height, half_height),
                   "world window");
     MTX_TRANSFORM(v3gpsproj((short)floor(angle + 0.5)), "projection");
@@ -546,6 +693,28 @@ int drv_init_window(int in_x, int in_y, int in_width, int in_height)
             lightest = brightness;
             mtx_foreground = (unsigned short)i;
         }
+    }
+    if (mtx_pgc)
+    {
+        /* LUTX keeps all eight bits on a PG-640A; LUT keeps four. */
+        for (i = 0; i < 256; ++i)
+            pgc_lut((unsigned char)i, (unsigned char)mtx_palette[i].red,
+                    (unsigned char)mtx_palette[i].green,
+                    (unsigned char)mtx_palette[i].blue);
+        /* The viewport counts pixels up from the screen's lower left.
+         * Text is left-justified with its top at the current point; in
+         * the OSD's pixel window a size of 8 gives 8 x 12 cells. */
+        pgc_vwport(0, DRV_WIN_WIDTH - 1, 0, DRV_WIN_HEIGHT - 1);
+        pgc_prmfil(1U);
+        pgc_tjust(1U, 3U);
+        pgc_tsize(8.0);
+        if (!mtx_pgc_sync("display setup", FALSE)) return 0;
+        /* As with LibShell, a rejected projection leaves host transforms. */
+        if (!drv_soft3d_active && mtx_native_projection())
+            (void)mtx_pgc_sync("projection", TRUE);
+        mtx_color_valid = FALSE;
+        mtx_dirty = TRUE;
+        return 1;
     }
     if (!mtx_upload_palette(mtx_palette)) return 0;
     MTX_COMMAND(lslutsl(0, 0), "palette selection");
@@ -603,8 +772,14 @@ static int mtx_set_transform(void)
     short yaw = mtx_angle(drv_rot_y);
     short pitch = mtx_angle(90.0f + drv_rot_x);
     double yaw_radians, pitch_radians, sin_pitch, distance;
+    double half_width, half_height;
     mtx_integer_cull = FALSE;
-    if (drv_soft3d_active) return mtx_prepare_software(yaw, pitch);
+    if (drv_soft3d_active)
+    {
+        if (mtx_pgc)
+            pgc_window(0.0, DRV_WIN_WIDTH - 1.0, 0.0, DRV_WIN_HEIGHT - 1.0);
+        return mtx_prepare_software(yaw, pitch);
+    }
     yaw_radians = (double)yaw * PI / 180.0;
     pitch_radians = (double)pitch * PI / 180.0;
     sin_pitch = sin(pitch_radians);
@@ -614,14 +789,29 @@ static int mtx_set_transform(void)
      * manual calls the origin a section of the modelling transformation
      * and does not say that v3mdid/v3vwid preserve it or the reference
      * point, so both are resent each frame. One recoverable checkpoint
-     * (44 bytes) covers all six: any fault retries the whole frame. */
-    v3mdid();
-    v3mdorg(0.0, 0.0, 0.0);
-    v3mdrotz(yaw);
-    v3vwid();
-    v3vwrpt(0.0, 0.0, 0.0);
-    v3vwrotx(pitch);
-    if (!mtx_checkpoint("model/view transform", TRUE)) return FALSE;
+     * (44 bytes) covers all six: any fault retries the whole frame. A PGC
+     * reports them with the frame's fills, also recoverably. */
+    if (mtx_pgc)
+    {
+        (void)mtx_view_window(&half_width, &half_height);
+        pgc_window(-half_width, half_width, -half_height, half_height);
+        pgc_mdiden();
+        pgc_mdorg(0.0, 0.0, 0.0);
+        pgc_mdrotz(yaw);
+        pgc_vwiden();
+        pgc_vwrpt(0.0, 0.0, 0.0);
+        pgc_vwrotx(pitch);
+    }
+    else
+    {
+        v3mdid();
+        v3mdorg(0.0, 0.0, 0.0);
+        v3mdrotz(yaw);
+        v3vwid();
+        v3vwrpt(0.0, 0.0, 0.0);
+        v3vwrotx(pitch);
+        if (!mtx_checkpoint("model/view transform", TRUE)) return FALSE;
+    }
     /* The eye sits at the viewing distance from the reference point (the
      * origin): inverse model yaw applied to the viewer's direction, using
      * exactly the integer-degree angles sent to LibShell. The float eye
@@ -756,6 +946,15 @@ static void mtx_draw_native(const Vertex TG_HUGE *source[4],
     if (count < 3) return;
     if (mtx_integer_cull) facing = mtx_integer_facing(kept);
     if (facing < 0 || (facing == 0 && !mtx_float_visible(vertices))) return;
+    if (mtx_pgc)
+    {
+        /* FIFO flow control replaces grouped inquiries; the frame's final
+         * synchronization reports any error. */
+        (void)mtx_set_color((unsigned short)color);
+        pgc_poly3(count, kept);
+        ++globe_quads_num_vis;
+        return;
+    }
     /* Color (4) and four 16.16 vertices (52); see MTX_FILL_PACKETS. */
     if (!mtx_fill_room(TRUE)) return;
     (void)mtx_set_color((unsigned short)color);
@@ -769,7 +968,21 @@ static void mtx_draw_screen(const Soft3d_screen_point *points, int count,
                             unsigned char color)
 {
     struct Phcoord polygon[SOFT3D_MAX_POLY];
+    Soft3d_screen_point lower_left[SOFT3D_MAX_POLY];
     int i;
+    if (mtx_pgc)
+    {
+        /* PGC pixel windows count up from the bottom of the screen. */
+        for (i = 0; i < count; ++i)
+        {
+            lower_left[i].x = points[i].x;
+            lower_left[i].y = DRV_WIN_HEIGHT - 1L - points[i].y;
+        }
+        (void)mtx_set_color((unsigned short)color);
+        pgc_poly((unsigned int)count, lower_left);
+        ++globe_quads_num_vis;
+        return;
+    }
     for (i = 0; i < count; ++i)
     {
         polygon[i].x = (short)points[i].x;
@@ -914,7 +1127,12 @@ static unsigned int mtx_text_lines(const char *text, short y, int draw)
         }
         memcpy(line, text, count);
         line[count] = '\0';
-        if (draw) MTX_COMMAND(sctxbstring(8, (short)(y + 16U * lines), line), "OSD text");
+        if (draw && mtx_pgc)
+        {
+            pgc_move(8.0, (double)(DRV_WIN_HEIGHT - 1 - (y + 16 * (int)lines)));
+            pgc_text(line);
+        }
+        else if (draw) MTX_COMMAND(sctxbstring(8, (short)(y + 16U * lines), line), "OSD text");
         ++lines;
         text += count;
         while (*text == ' ') ++text;
@@ -926,12 +1144,15 @@ void drv_draw_osd(void)
 {
     char status[256];
     unsigned int lines;
-    if (mtx_set_color(mtx_foreground)) (void)mtx_checkpoint("text color", FALSE);
+    if (mtx_pgc) pgc_window(0.0, DRV_WIN_WIDTH - 1.0, 0.0, DRV_WIN_HEIGHT - 1.0);
+    if (mtx_set_color(mtx_foreground) && !mtx_pgc)
+        (void)mtx_checkpoint("text color", FALSE);
     lines = mtx_text_lines(drv_help, 0, FALSE);
     (void)mtx_text_lines(drv_help, (short)(DRV_WIN_HEIGHT - 4U - 16U * lines), TRUE);
     drv_format_stats(status);
-    drv_append_soft3d_status(status, sizeof(status), "LibShell");
+    drv_append_soft3d_status(status, sizeof(status), mtx_pgc ? "PGC" : "LibShell");
     (void)mtx_text_lines(status, 8, TRUE);
+    if (mtx_pgc) (void)mtx_pgc_sync("OSD text", FALSE);
     /* The manual does not say text leaves the foreground color unchanged. */
     mtx_color_valid = FALSE;
 }
@@ -948,7 +1169,8 @@ void drv_render(void)
         mtx_native_failed = FALSE;
         drv_quadstream_reset(&mtx_stream);
         soft3d_project_cache_reset(&mtx_cache);
-        MTX_COMMAND(krhwcclr(mtx_background), "clear screen");
+        if (mtx_pgc) pgc_clears((unsigned char)mtx_background);
+        else MTX_COMMAND(krhwcclr(mtx_background), "clear screen");
         mtx_color_valid = FALSE;
         globe_quads_num_vis = 0;
         if (globe_ready())
@@ -964,7 +1186,10 @@ void drv_render(void)
                 if (drv_soft3d_active) globe_draw_quadbatches();
                 else globe_draw_quads();
                 mtx_queue_fills = FALSE;
-                (void)mtx_flush_fills();
+                if (mtx_pgc)
+                    (void)mtx_pgc_sync(drv_soft3d_active ? "screen polygon fill" :
+                                       "polygon fill", !drv_soft3d_active);
+                else (void)mtx_flush_fills();
             }
             else if (!drv_frame_failed) drv_abort_frame("Matrox software rotation failed");
         }
@@ -972,7 +1197,8 @@ void drv_render(void)
         {
             drv_reset_timing();
             if (mtx_native_failed && attempt == 0) continue;
-            MTX_COMMAND(krhwcclr(mtx_background), "clear failed frame");
+            if (mtx_pgc) pgc_clears((unsigned char)mtx_background);
+            else MTX_COMMAND(krhwcclr(mtx_background), "clear failed frame");
             mtx_color_valid = FALSE;
             globe_quads_num_vis = 0;
         }
@@ -999,7 +1225,8 @@ static void mtx_keyboard(unsigned char key)
                 drv_soft3d_active = TRUE;
                 drv_notice(NULL);
             }
-            else drv_notice("Matrox software setup failed; using LibShell");
+            else drv_notice(mtx_pgc ? "Matrox software setup failed; using PGC transforms" :
+                            "Matrox software setup failed; using LibShell");
         }
         else if (mtx_native_projection())
         {

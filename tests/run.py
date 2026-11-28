@@ -920,11 +920,17 @@ def main():
                      "-D__interrupt=", "-D__far=", "-D_far=", "-D_near=",
                      "-I" + str(ROOT / "tests/dos_shim")]
         check_production_units(cc, common, segmented, output, "Matrox",
-            ("drv.c", "drv_mtx.c", "mtx_ls.c", "err.c", "globe.c", "main.c", "e_saved.c",
-             "soft3d.c", "soft3fp.c"))
+            ("drv.c", "drv_mtx.c", "mtx_ls.c", "mtx_pgc.c", "err.c", "globe.c", "main.c",
+             "e_saved.c", "soft3d.c", "soft3fp.c"))
         run(cc + common + segmented + ["-DMTX_LS_TEST", str(ROOT / "tests/mtx_ls.c"),
-            str(ROOT / "src/mtx_ls.c"), "-lm", "-o", str(output / "mtx_ls")])
+            str(ROOT / "src/mtx_ls.c"), str(ROOT / "src/soft3d.c"), "-lm",
+            "-o", str(output / "mtx_ls")])
         run([str(output / "mtx_ls")])
+        # PGC commands against simulated IBM PGC and PG-640A boards.
+        run(cc + common + segmented + ["-DMTX_PGC_TEST", str(ROOT / "tests/mtx_pgc.c"),
+            str(ROOT / "src/mtx_pgc.c"), str(ROOT / "src/soft3d.c"), "-lm",
+            "-o", str(output / "mtx_pgc")])
+        run([str(output / "mtx_pgc")])
         mtx_optimized = output / "mtx_386.o"
         run(cc + common + segmented + ["-DSOFT3D_TRANSFORM_386", "-c",
             str(ROOT / "src/soft3d.c"), "-o", str(mtx_optimized)])
@@ -933,11 +939,13 @@ def main():
             str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"), str(mtx_optimized),
             str(ROOT / "src/err.c"), "-lm"]
         mtx_profiles = ("reporting-off", "8086", "286", "386", "486", "8087", "287", "387",
-                        "fpu", "startup-v3", "startup-world", "stale", "ctrl-break")
+                        "fpu", "startup-v3", "startup-world", "stale", "ctrl-break",
+                        "fifo8192")
         run(cc + common + segmented + mtx_sources + ["-o", str(output / "matrox")])
         run([str(output / "matrox")])
-        # The direct binding runs on an 8086, so every profile renders.
-        for profile in mtx_profiles + ("absent",):
+        # The direct binding runs on an 8086, so every profile renders. Without
+        # a LIB Shell board it falls back to a PGC-compatible board.
+        for profile in mtx_profiles + ("absent", "pgc", "pg640a", "pgc-startup", "pgc-timeout"):
             run([str(output / "matrox"), profile])
         if not args.sdk:
             print("SKIP Matrox vendor binding (LSCL.LIB) checks: supply --sdk or MATROX_SDK")
@@ -956,7 +964,7 @@ def main():
                 (normalized / path.name).write_bytes(data)
         lscl = segmented + ["-DMTX_LSCL", "-I" + str(output / "sdk")]
         check_production_units(cc, common, lscl, output, "Matrox_LSCL",
-            ("drv.c", "drv_mtx.c", "mtx_ls.c"))
+            ("drv.c", "drv_mtx.c", "mtx_ls.c", "mtx_pgc.c"))
         run(cc + common + lscl + mtx_sources + ["-o", str(output / "matrox_lscl")])
         run([str(output / "matrox_lscl")])
         # 8086/8087 profiles check rejection by the supplied 286 binding.

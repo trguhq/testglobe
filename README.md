@@ -32,7 +32,7 @@ Workbench pens or a private fullscreen palette, or draws RGB on truecolor RTG sc
 | [Amiga OpenGL](docs/opengl.md#amiga-opengl) | AmigaOS 3.x, 68020/68881, PiStorm3D / MiniGL | `make amiga-opengl` | Key 5: 512 × 256 | Yes |
 | [IRIS GL](docs/irisgl.md) | IRIX 4.0, 32-bit MIPS | `make irisgl` | Key 3: 128 × 64 | Yes |
 | [Sun XGL](docs/xgl.md) | Solaris 2.6, 32-bit SPARC | `make xgl` | Key 3: 128 × 64 | Yes |
-| [Matrox LibShell](docs/matrox.md) | MS-DOS, Matrox PG Series 1 running the LIB Shell | `nmake matrox` | Key 1: 32 × 16 | No |
+| [Matrox LibShell and PGC](docs/matrox.md) | MS-DOS, Matrox PG Series 1 running the LIB Shell, or an IBM PGC-compatible board such as the Matrox PG-640A | `nmake matrox` | Key 1: 32 × 16 | No |
 | [TIGA](docs/tiga.md) | MS-DOS, TIGA 2.x, 640 × 480 indexed color | `nmake tiga` | Key 1: 32 × 16 | No |
 | [Windows GDI](docs/gdi.md) | Windows 3.0 or 3.1, 16-bit | `nmake gdi` | Key 1: 32 × 16 | No |
 | [QuickDraw](docs/quickdraw.md) | Classic Macintosh System 7, 68000 | MPW `Makefile.mpw` | Key 1: 32 × 16 | No |
@@ -71,7 +71,7 @@ Letter keys work in either case.
 | `t` | Toggle texture mapping in OpenGL, IRIS GL, Sun XGL, and WebGL. |
 | `c` | Toggle CPU culling of back-facing latitude-band ranges in OpenGL, IRIS GL, Sun XGL, and WebGL; on by default in Sun XGL only. |
 | `d` | Toggle display lists in OpenGL, or palette dithering in the native Amiga driver; both start enabled. |
-| `s` | Switch Matrox or TIGA between host software transforms and board/API transforms. Matrox starts with LibShell transforms, TIGA with host transforms. |
+| `s` | Switch Matrox or TIGA between host software transforms and board/API transforms. Matrox starts with board transforms (LibShell or PGC), TIGA with host transforms. |
 | `Esc` | Exit native applications (Matrox and TIGA also accept Ctrl-C and Ctrl-Break); in WebGL, pause rotation and release dragging. |
 
 WebGL also has on-screen controls and a **Reset view** button.
@@ -123,7 +123,7 @@ test runner.
   and exiting.
 - [Building](docs/build.md): targets, build settings, cross-builds, and Earth map data.
 - Drivers: [WebGL](docs/webgl.md), [OpenGL and Amiga OpenGL](docs/opengl.md),
-  [IRIS GL](docs/irisgl.md), [Sun XGL](docs/xgl.md), [Matrox LibShell](docs/matrox.md),
+  [IRIS GL](docs/irisgl.md), [Sun XGL](docs/xgl.md), [Matrox LibShell and PGC](docs/matrox.md),
   [TIGA](docs/tiga.md), [Windows GDI](docs/gdi.md), [QuickDraw](docs/quickdraw.md),
   and [Amiga](docs/amiga.md).
 - [Testing](docs/testing.md): host checks, driver contract tests, and their limits.
@@ -145,7 +145,7 @@ test runner.
 
 ### v0.2 (in development)
 
-- Added Matrox LibShell, TIGA, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga
+- Added Matrox LibShell and PGC, TIGA, Windows GDI, QuickDraw, Sun XGL, IRIS GL, and Amiga
   backends.
 - Added a static WebGL 2 browser frontend using the canonical Earth maps and palette.
 - Embedded the canonical binary Earth maps through bounded C arrays or native

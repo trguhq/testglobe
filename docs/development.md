@@ -42,6 +42,7 @@ primitive and capabilities. Keep those responsibilities separate.
 | `src/tga_pack.c` | Build-time attachment of the TI module to the DOS executable; `drv_tga.c` extracts it for the native loader, and both use the format and MZ/CRC-32 checks in `tga_rlm.h`. |
 | `src/cross*.py` | Linux-hosted build orchestration for the DOS, Win16, and QuickDraw drivers. |
 | `src/mtx_ls.c`/`.h` | The LibShell calls the Matrox driver uses, implemented directly on the PG Series 1 host interface; replaces Matrox's `LSCL.LIB` unless `MTX_LSCL` is defined. |
+| `src/mtx_pgc.c`/`.h` | IBM PGC hexadecimal commands through the communication area, for PGC-compatible boards such as the Matrox PG-640A; the Matrox driver uses them when no LIB Shell board answers. |
 | `src/mtx_ow.c` | OpenWatcom runtime adapters for Matrox's Microsoft-built `LSCL.LIB`, used only by `matrox-cross --lscl`. |
 | `src/buildio.h` | C89 file validation and safe output publication for the Earth converter and TIGA packer; not linked into applications. |
 | `src/e_ext.h` | Shared palette and bounded map-reader declarations; the generated arrays stay private. |

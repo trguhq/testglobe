@@ -121,12 +121,13 @@ MTX_BINDING = m_ls.obj
 MTX_LIB =
 MTX_LDFLAGS = -link /STACK:16384
 MTX_OBJECTS1 = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj
-MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj $(MTX_BINDING)
+# m_pgc.obj drives PGC-compatible boards when no LIB Shell board answers.
+MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj m_pgc.obj $(MTX_BINDING)
 MTX_OBJECTS = $(MTX_OBJECTS1) $(MTX_OBJECTS2)
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\mtx_ls.h
+    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\mtx_ls.h $(SRC)\mtx_pgc.h
 
 # TIGA 2.0, Microsoft C 7 huge model. The vendor communication driver and
 # graphics manager supply board-specific support; ai.lib uses far code/data.
@@ -532,6 +533,13 @@ m_ls.obj: $(SRC)\mtx_ls.c $(MTX_HEADERS)
 	@echo -Fom_ls.obj $(SRC)\mtx_ls.c >> m_ls.rsp
 	$(MTX_CC) @m_ls.rsp
 
+# Every PGC command byte passes through it: no stack probes.
+m_pgc.obj: $(SRC)\mtx_pgc.c $(MTX_HEADERS)
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > m_pgc.rsp
+	@echo -I$(SRC) -c >> m_pgc.rsp
+	@echo -Fom_pgc.obj $(SRC)\mtx_pgc.c >> m_pgc.rsp
+	$(MTX_CC) @m_pgc.rsp
+
 err.obj: $(SRC)\err.c $(MTX_HEADERS)
 	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > err.rsp
 	@echo $(MTX_CPPFLAGS) -c >> err.rsp
@@ -873,11 +881,13 @@ clean-matrox:
 	-$(RM) m_386.obj
 	-$(RM) m_float.obj
 	-$(RM) m_ls.obj
+	-$(RM) m_pgc.obj
 	-$(RM) m_cpu.rsp
 	-$(RM) m_soft.rsp
 	-$(RM) m_386.rsp
 	-$(RM) m_float.rsp
 	-$(RM) m_ls.rsp
+	-$(RM) m_pgc.rsp
 	-$(RM) e_data.obj
 	-$(RM) e_data.rsp
 	-$(RM) m_data.c

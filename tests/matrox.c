@@ -39,6 +39,7 @@ static int recorded_float_cached(const Soft3d_float_point *points,
     unsigned int corners, unsigned int width, unsigned int height, int precision,
     Soft3d_project_cache TG_HUGE *cache, Soft3d_screen_point *out);
 static int recorded_fixed_vertex(const Vertex TG_HUGE *vertex, Soft3d_fixed_point *out);
+static char *recorded_mtx_getenv(const char *name);
 #define drv_draw_quad_flat_color recorded_driver_quad
 #define drv_draw_quadbatch_flat_color recorded_driver_quadbatch
 #define soft3d_fixed_prepare_degrees recorded_fixed_prepare
@@ -51,10 +52,12 @@ static int recorded_fixed_vertex(const Vertex TG_HUGE *vertex, Soft3d_fixed_poin
 #define soft3d_fixed_vertex recorded_fixed_vertex
 #define error recorded_mtx_error
 #define clock recorded_mtx_clock
+#define getenv recorded_mtx_getenv
 #undef fprintf
 #define fprintf recorded_mtx_fprintf
 #include "../src/drv_mtx.c"
 #undef fprintf
+#undef getenv
 #undef clock
 #undef error
 #undef drv_draw_quad_flat_color
@@ -154,11 +157,21 @@ static unsigned int fail_world_window, fail_screen_polygon, fail_software_prepar
 static unsigned short injected_v3_error = 1;
 static char osd_text[2048];
 
+/* MTXFIFO, read by the driver's getenv. */
+static char *fifo_setting;
+static char *recorded_mtx_getenv(const char *name)
+{
+    if (strcmp(name, "MTXFIFO") == 0) return fifo_setting;
+    return getenv(name);
+}
+/* The driver's own FIFO argument: a group of fills (56 bytes each) and its
+ * 4-byte inquiry in flight, 228 bytes for the default 256-byte FIFO. */
+static unsigned int fifo_limit = 228U;
+
 static void fifo_command(unsigned int bytes)
 {
     fifo_bytes += bytes;
-    /* The driver's own FIFO argument: at most 228 bytes in flight. */
-    assert(fifo_bytes <= 228U);
+    assert(fifo_bytes <= fifo_limit);
     if (fifo_bytes > fifo_peak) fifo_peak = fifo_bytes;
 }
 
@@ -556,12 +569,9 @@ void sctxsalign(short horizontal, short vertical)
     (void)horizontal; (void)vertical;
     fifo_command(6);
 }
-void sctxbstring(short x, short y, char *text)
+static void osd_line(const char *text)
 {
     char expected[80];
-    assert(x >= 0 && x < 640 && y >= 0 && y < 480);
-    /* SCTXBSTRING sends SCTXSTRING: opcode, x, y, count, 16-bit chars. */
-    fifo_command(8U + 2U * (unsigned int)strlen(text));
     color_known = 0;
     assert(strstr(text, "texture") == NULL);
     assert(strstr(text, "Texture") == NULL);
@@ -576,6 +586,13 @@ void sctxbstring(short x, short y, char *text)
         assert(strstr(text, "triangles") == NULL);
     }
     ++osd_calls;
+}
+void sctxbstring(short x, short y, char *text)
+{
+    assert(x >= 0 && x < 640 && y >= 0 && y < 480);
+    /* SCTXBSTRING sends SCTXSTRING: opcode, x, y, count, 16-bit chars. */
+    fifo_command(8U + 2U * (unsigned int)strlen(text));
+    osd_line(text);
 }
 void v2gpsvwp(short xmin, short xmax, short ymin, short ymax)
 {
@@ -623,11 +640,10 @@ void v3mdrotz(short angle) { fifo_transform(4); last_yaw = angle; inject_v3_erro
 void v3vwid(void) { fifo_transform(2); ++view_calls; }
 void v3vwrpt(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); fifo_transform(14); }
 void v3vwrotx(short angle) { fifo_transform(4); last_pitch = angle; }
-void krhwcclr(unsigned short color)
+static void frame_cleared(unsigned short color)
 {
     unsigned int i, brightness;
     assert(color < 256);
-    fifo_command(4);
     color_known = 0;
     batch_active = 0; /* a frame (or retry) starts; drop any aborted packet */
     brightness = earth_cmap[color][0] + earth_cmap[color][1] + earth_cmap[color][2];
@@ -638,14 +654,23 @@ void krhwcclr(unsigned short color)
     expected_visible = expected_caps = silhouette_faces = silhouette_caps = 0;
     osd_text[0] = '\0';
 }
-void krhwsfcol(unsigned short color)
+void krhwcclr(unsigned short color)
+{
+    fifo_command(4);
+    frame_cleared(color);
+}
+static void color_selected(unsigned short color)
 {
     assert(color < 256);
     assert(!color_known || color != last_color);
-    fifo_command(4);
     color_known = 1;
     ++color_commands;
     last_color = color;
+}
+void krhwsfcol(unsigned short color)
+{
+    fifo_command(4);
+    color_selected(color);
 }
 
 void v3arwplygn(unsigned short count, struct V3coord *vertices)
@@ -657,7 +682,7 @@ void v3arwplygn(unsigned short count, struct V3coord *vertices)
     assert(last_color == submitted_color);
     fifo_command(4U + 12U * count);
     ++fills_since_sync;
-    assert(fills_since_sync <= 4U);
+    assert(fills_since_sync <= mtx_fill_packets);
     for (i = 0; i < count; ++i) {
         found = 0;
         for (j = 0; j < 4; ++j)
@@ -755,7 +780,8 @@ static void match_batch_fill(const struct Phcoord *polygon, unsigned int count)
     ++batch_cursor;
 }
 
-void scarwplygn(unsigned short count, struct Phcoord *vertices)
+/* A host-projected fill in top-left screen coordinates. */
+static void screen_fill(const struct Phcoord *vertices, unsigned int count)
 {
     unsigned int i, j;
     long area;
@@ -763,9 +789,6 @@ void scarwplygn(unsigned short count, struct Phcoord *vertices)
     assert(batch_active);
     match_batch_fill(vertices, count);
     assert(last_color == submitted_color);
-    fifo_command(4U + 4U * count);
-    ++fills_since_sync;
-    assert(fills_since_sync <= 4U);
     area = 0;
     for (i = 0; i < count; ++i)
     {
@@ -780,7 +803,188 @@ void scarwplygn(unsigned short count, struct Phcoord *vertices)
     assert(area < 0L);
     ++screen_polygons; ++filled_polygons;
     if (count == 3) ++filled_triangles;
+}
+void scarwplygn(unsigned short count, struct Phcoord *vertices)
+{
+    fifo_command(4U + 4U * count);
+    ++fills_since_sync;
+    assert(fills_since_sync <= mtx_fill_packets);
+    screen_fill(vertices, count);
     inject_v3_error(&fail_screen_polygon);
+}
+
+static int same_vertex(const Vertex *a, const Vertex *b)
+{
+    return a->x == b->x && a->y == b->y && a->z == b->z;
+}
+
+/* PGC recorder: the commands of mtx_pgc.h. FLAGRD models the board
+ * running every earlier command; transport and encodings are tested by
+ * tests/mtx_pgc.c. */
+#define PGC_NO_WINDOW 0
+#define PGC_WORLD_WINDOW 1
+#define PGC_PIXEL_WINDOW 2
+static int pgc_profile, pgc_board_640a, pgc_timeout, pgc_window_kind;
+static unsigned int pgc_open_calls, pgc_close_calls, pgc_sync_calls, pgc_lut_calls;
+static unsigned int pgc_resets, pgc_errors, pgc_injected_code = 10U;
+static unsigned char pgc_display = 1U;
+static unsigned char pgc_table[256][3], pgc_saved_table[256][3];
+static int pgc_table_saved, pgc_fill_mode, pgc_text_ready, pgc_text_size, pgc_aligned;
+
+static void pgc_inject(unsigned int *remaining)
+{
+    if (*remaining == 0U) return;
+    --*remaining;
+    pgc_errors |= 1U << pgc_injected_code;
+}
+int pgc_open(void)
+{
+    /* Only after the LIB Shell presence test fails. */
+    assert(init_calls == 1 && board_absent && pgc_open_calls == 0);
+    ++pgc_open_calls;
+    return pgc_profile;
+}
+unsigned int pgc_segment(void) { return pgc_board_640a ? 0xC640U : 0xC600U; }
+int pgc_pg640a(void) { return pgc_board_640a; }
+int pgc_failed(void) { return pgc_timeout; }
+unsigned int pgc_take_errors(void)
+{
+    unsigned int errors = pgc_errors;
+    pgc_errors = 0U;
+    return errors;
+}
+int pgc_flagrd(unsigned char flag, unsigned char *reply, unsigned int bytes)
+{
+    assert(pgc_open_calls == 1 && pgc_close_calls == 0 && bytes == 1U);
+    assert(flag == 4U || flag == 5U);
+    ++sync_calls; ++pgc_sync_calls;
+    if (pgc_timeout) return FALSE;
+    *reply = flag == 5U ? pgc_display : 1U;
+    return TRUE;
+}
+void pgc_close(void) { assert(pgc_open_calls == 1); ++pgc_close_calls; }
+void pgc_resetf(void) { assert(!pgc_table_saved); ++pgc_resets; }
+void pgc_displa(unsigned char flag) { assert(flag <= 1U); pgc_display = flag; }
+void pgc_clears(unsigned char color) { assert(pgc_display == 0U); frame_cleared(color); }
+void pgc_color(unsigned char color) { color_selected(color); }
+void pgc_prmfil(unsigned char flag) { assert(flag == 1U); pgc_fill_mode = 1; }
+void pgc_lut(unsigned char index, unsigned char red, unsigned char green,
+             unsigned char blue)
+{
+    /* The board's LUT is saved before the first change. */
+    assert(pgc_table_saved);
+    pgc_table[index][0] = red; pgc_table[index][1] = green; pgc_table[index][2] = blue;
+    ++pgc_lut_calls;
+}
+void pgc_lutsav(void)
+{
+    memcpy(pgc_saved_table, pgc_table, sizeof(pgc_table));
+    pgc_table_saved = 1;
+}
+void pgc_lutint(unsigned char state)
+{
+    assert(state == 255U && pgc_table_saved);
+    memcpy(pgc_table, pgc_saved_table, sizeof(pgc_table));
+}
+void pgc_vwport(int x1, int x2, int y1, int y2)
+{
+    assert(x1 == 0 && x2 == 639 && y1 == 0 && y2 == 479);
+    ++viewport_calls;
+}
+void pgc_window(double x1, double x2, double y1, double y2)
+{
+    double half = (double)GLOBE_VIEW_DISTANCE * tan(22.5 * PI / 180.0);
+    if (x1 == 0.0 && y1 == 0.0)
+    {
+        /* Pixel coordinates for the OSD and host-projected fills. */
+        assert(x2 == 639.0 && y2 == 479.0);
+        pgc_window_kind = PGC_PIXEL_WINDOW;
+        return;
+    }
+    assert(fabs(y1 + half) < 1e-9 && fabs(y2 - half) < 1e-9);
+    assert(fabs(x2 + x1) < 1e-9 && fabs(x2 - half * 639.0 / 479.0) < 1e-9);
+    window_width = x2 - x1; window_height = y2 - y1;
+    pgc_window_kind = PGC_WORLD_WINDOW;
+    ++world_window_calls;
+}
+/* The same scale as v3gpsproj, for the window each native frame sends. */
+void pgc_projct(int angle)
+{
+    double half = (double)GLOBE_VIEW_DISTANCE * tan(22.5 * PI / 180.0);
+    double width = 2.0 * half * 639.0 / 479.0, height = 2.0 * half, scale;
+    assert(angle == 69);
+    scale = sqrt(width * width + height * height) / 2.0 /
+            tan(angle * PI / 360.0) * 639.0 / width;
+    assert(fabs(scale / (240.0 / tan(22.5 * PI / 180.0)) - 1.0) < 0.005);
+    ++projection_calls; pgc_inject(&fail_v3_projection);
+}
+void pgc_distan(double distance) { assert(distance == GLOBE_VIEW_DISTANCE); ++distance_calls; }
+void pgc_cliph(unsigned char flag) { assert(flag == 0U); ++hither_calls; }
+void pgc_clipy(unsigned char flag) { assert(flag == 0U); ++yon_calls; }
+void pgc_mdiden(void) { ++model_calls; }
+void pgc_mdorg(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); }
+void pgc_mdrotz(int degrees) { last_yaw = (short)degrees; pgc_inject(&fail_v3_rotation); }
+void pgc_vwiden(void) { ++view_calls; }
+void pgc_vwrpt(double x, double y, double z) { assert(x == 0 && y == 0 && z == 0); }
+void pgc_vwrotx(int degrees) { last_pitch = (short)degrees; }
+void pgc_poly3(unsigned int count, const Vertex TG_HUGE *const *vertices)
+{
+    unsigned int i, j;
+    double radius;
+    int found;
+    assert(!drv_soft3d_active && pgc_window_kind == PGC_WORLD_WINDOW && pgc_fill_mode);
+    assert(count == 3U || count == 4U);
+    assert(last_color == submitted_color);
+    for (i = 0; i < count; ++i)
+    {
+        found = 0;
+        for (j = 0; j < 4; ++j)
+            if (vertices[i] == submitted_vertices[j]) found = 1;
+        assert(found); /* The board receives world vertices. */
+        radius = vertices[i]->x * vertices[i]->x + vertices[i]->y * vertices[i]->y +
+                 vertices[i]->z * vertices[i]->z;
+        assert(fabs(radius - (double)GLOBE_RADIUS * GLOBE_RADIUS) < 2.0);
+        for (j = 0; j < i; ++j) assert(!same_vertex(vertices[i], vertices[j]));
+    }
+    ++filled_polygons; ++world_polygons;
+    if (count == 3U) ++filled_triangles;
+    pgc_inject(&fail_v3_polygon);
+}
+void pgc_poly(unsigned int count, const Soft3d_screen_point *points)
+{
+    struct Phcoord polygon[SOFT3D_MAX_POLY];
+    unsigned int i;
+    assert(drv_soft3d_active && batch_active && pgc_window_kind == PGC_PIXEL_WINDOW);
+    assert(count >= 3U && count <= SOFT3D_MAX_POLY);
+    /* Back to the top-left screen coordinates of the LIB Shell path. */
+    for (i = 0; i < count; ++i)
+    {
+        assert(points[i].x >= 0L && points[i].x <= 639L);
+        assert(points[i].y >= 0L && points[i].y <= 479L);
+        polygon[i].x = (short)points[i].x;
+        polygon[i].y = (short)(479L - points[i].y);
+    }
+    screen_fill(polygon, count);
+    pgc_inject(&fail_screen_polygon);
+}
+void pgc_move(double x, double y)
+{
+    assert(pgc_window_kind == PGC_PIXEL_WINDOW);
+    assert(x == 8.0 && y >= 0.0 && y <= 479.0 && y == floor(y));
+    pgc_text_ready = 1;
+}
+void pgc_tsize(double size) { assert(size == 8.0); pgc_text_size = 1; }
+void pgc_tjust(unsigned char horizontal, unsigned char vertical)
+{
+    assert(horizontal == 1U && vertical == 3U);
+    pgc_aligned = 1;
+}
+void pgc_text(const char *text)
+{
+    assert(pgc_text_ready && pgc_text_size && pgc_aligned);
+    assert(pgc_window_kind == PGC_PIXEL_WINDOW);
+    pgc_text_ready = 0;
+    osd_line(text);
 }
 
 void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
@@ -850,11 +1054,6 @@ void drv_draw_quad_flat_color(Vertex TG_HUGE *a, Vertex TG_HUGE *b,
         ++silhouette_faces;
         if (cap) ++silhouette_caps;
     }
-}
-
-static int same_vertex(const Vertex *a, const Vertex *b)
-{
-    return a->x == b->x && a->y == b->y && a->z == b->z;
 }
 
 /* Called by the shared packet traversal and by drv_submit_quad_as_batch. */
@@ -929,7 +1128,7 @@ static void direct_driver_quad(Vertex *a, Vertex *b, Vertex *c, Vertex *d,
 static void render_and_check(unsigned long faces, unsigned char *data)
 {
     unsigned int before_sync, before_model, before_view;
-    unsigned int before_fill_syncs, before_transform_syncs;
+    unsigned int before_fill_syncs, before_transform_syncs, before_pgc_syncs;
     unsigned long before_colors, before_transformed, before_projected, before_cull, points;
     double elevation;
     int software;
@@ -938,6 +1137,7 @@ static void render_and_check(unsigned long faces, unsigned char *data)
     expected_data = data;
     before_sync = sync_calls; before_model = model_calls; before_view = view_calls;
     before_fill_syncs = fill_syncs; before_transform_syncs = transform_syncs;
+    before_pgc_syncs = pgc_sync_calls;
     before_colors = color_commands;
     before_transformed = transformed_points; before_projected = projected_points;
     before_cull = cull_decodes;
@@ -955,12 +1155,24 @@ static void render_and_check(unsigned long faces, unsigned char *data)
         assert(transformed_points - before_transformed == points);
         assert(projected_points - before_projected == points);
     }
-    /* One checkpoint per four fills, one for the model/view commands and
-     * a color command only when the next fill's palette index changes. */
+    /* LibShell: one checkpoint per group of fills (four by default), one
+     * for the model/view commands. PGC: flow control in the FIFO, and one
+     * FLAGRD after the fills and one after the OSD. Either way a color
+     * command only when the next fill's palette index changes. */
     if (software == drv_soft3d_active)
     {
-        assert(fill_syncs - before_fill_syncs == (filled_polygons + 3UL) / 4UL);
-        assert(transform_syncs - before_transform_syncs == (software ? 0U : 1U));
+        if (mtx_pgc)
+        {
+            assert(pgc_sync_calls - before_pgc_syncs >= 1U &&
+                   pgc_sync_calls - before_pgc_syncs <= 2U);
+            assert(fill_syncs == before_fill_syncs && transform_syncs == before_transform_syncs);
+        }
+        else
+        {
+            assert(fill_syncs - before_fill_syncs ==
+                   (filled_polygons + mtx_fill_packets - 1UL) / mtx_fill_packets);
+            assert(transform_syncs - before_transform_syncs == (software ? 0U : 1U));
+        }
         assert(color_commands - before_colors < filled_polygons);
     }
     assert(submitted_quads == faces);
@@ -1013,7 +1225,7 @@ static void cleanup_checks(void)
     assert(current_lut == 3 && current_mask == original_mask);
     assert(error_reporting == initial_error_reporting);
     assert(allocated_blocks == 0);
-    assert(fifo_bytes == 4U && fifo_peak <= 228U);
+    assert(fifo_bytes == 4U && fifo_peak <= fifo_limit);
     if (break_exit)
         puts("PASS Matrox Ctrl-Break: INT 23h sets a flag and the event loop exits through board, palette and mask cleanup");
     else
@@ -1559,6 +1771,192 @@ static void check_transform_recovery(void)
     puts("PASS Matrox transform recovery: four V3 error classes, setup and polygon failure, complete host retry, S restoration, fatal mixed faults and fatal 2D errors");
 }
 
+/* MTXFIFO: 256 to 8192 bytes, in decimal; groups of (bytes - 32) / 56. */
+static void check_fifo_option(void)
+{
+    static char *valid[5] = { "", "256", "1000", "8191", "8192" };
+    static unsigned int groups[5] = { 4U, 4U, 17U, 145U, 145U };
+    static char *invalid[5] = { "255", "8193", "12x", "-1", "0x400" };
+    unsigned int i;
+    for (i = 0; i < 5U; ++i)
+    {
+        fifo_setting = valid[i];
+        mtx_fifo_option();
+        assert(mtx_fill_packets == groups[i]);
+    }
+    for (i = 0; i < 5U; ++i)
+    {
+        fifo_setting = invalid[i];
+        expected_board_error = 1;
+        if (setjmp(board_error) == 0)
+        {
+            mtx_fifo_option();
+            assert(!"An invalid MTXFIFO must be rejected");
+        }
+        expected_board_error = 0;
+        assert(strstr(board_message, "MTXFIFO") != NULL);
+    }
+    fifo_setting = NULL;
+    mtx_fifo_option();
+    assert(mtx_fill_packets == 4U);
+    puts("PASS Matrox MTXFIFO: 256-byte default (4 fills a group), up to 8192 bytes (145), others rejected");
+}
+
+#ifndef MTX_LSCL
+/* The PGC fallback needs the direct binding's presence test. */
+static unsigned char pgc_initial_display = 1U, pgc_original[256][3];
+static void pgc_cleanup_checks(void)
+{
+    assert(pgc_close_calls == 1 && allocated_blocks == 0);
+    if (pgc_timeout)
+    {
+        /* A board that stopped answering receives nothing more. */
+        assert(pgc_display == 0U);
+        puts("PASS PGC timeout: a board that stops answering is reported and only closed at exit");
+        return;
+    }
+    assert(pgc_display == pgc_initial_display);
+    assert(memcmp(pgc_table, pgc_original, sizeof(pgc_table)) == 0);
+    puts("PASS PGC cleanup: Escape restores the saved LUT and the display shown at startup, then ASCII mode");
+}
+
+static void pgc_retry_native(void)
+{
+    unsigned int projection = projection_calls, distance = distance_calls;
+    unsigned int hither = hither_calls, yon = yon_calls;
+    assert(drv_soft3d_active && !drv_soft3d_requested);
+    mtx_keyboard('S');
+    assert(!drv_soft3d_requested && !drv_soft3d_active);
+    assert(projection_calls == projection + 1U && distance_calls == distance + 1U);
+    assert(hither_calls == hither + 1U && yon_calls == yon + 1U);
+    render_and_check(512, test_earth_data(32));
+}
+
+/* LIB Shell absent, a PGC-compatible board present. */
+static int pgc_run(const char *profile)
+{
+    unsigned int i, codes[3] = { 1U, 4U, 10U };
+    int argc = 1, startup = strcmp(profile, "pgc-startup") == 0;
+    char *argv[2];
+    argv[0] = "testglob.exe"; argv[1] = NULL;
+    board_absent = 1; pgc_profile = 1;
+    pgc_board_640a = strcmp(profile, "pg640a") == 0;
+    pgc_display = pgc_initial_display = 1U;
+    for (i = 0; i < 256; ++i)
+    {
+        pgc_original[i][0] = (unsigned char)original_palette[i][0];
+        pgc_original[i][1] = (unsigned char)original_palette[i][1];
+        pgc_original[i][2] = (unsigned char)original_palette[i][2];
+    }
+    memcpy(pgc_table, pgc_original, sizeof(pgc_table));
+    assert(atexit(pgc_cleanup_checks) == 0);
+    assert(atexit(globe_free) == 0);
+    drv_ext_init();
+    drv_init(&argc, argv);
+    assert(init_calls == 1 && pgc_open_calls == 1 && mtx_pgc && mtx_initialized);
+    assert(flush_calls == 0 && inquiry == 0 && fifo_bytes == 0U);
+    assert(pgc_resets == 1 && pgc_table_saved && pgc_display == 0U);
+    assert(mtx_pgc_display == 1U && mouse_resets > 0);
+    assert(test_dos_vectors[0x23] != NULL && test_dos_vectors[0x24] != NULL);
+    puts("PASS PGC detection: without a LIB Shell board, a PGC-compatible board is opened, its LUT saved and graphics shown");
+    if (startup) { pgc_injected_code = 1U; fail_v3_projection = 1U; }
+    assert(drv_init_window(0, 0, 0, 0));
+    assert(drv_win_width == 640 && drv_win_height == 480);
+    assert(pgc_lut_calls == 256U && viewport_calls == 1U && pgc_fill_mode);
+    assert(pgc_text_size && pgc_aligned && projection_calls == 1U);
+    assert(distance_calls == 1U && hither_calls == 1U && yon_calls == 1U);
+    for (i = 0; i < 256; ++i)
+    {
+        /* Full 8-bit components: mtx_pgc.c sends LUTX to a PG-640A and
+         * keeps the high four bits in LUT for an IBM PGC. */
+        assert(pgc_table[i][0] == earth_cmap[i][0]);
+        assert(pgc_table[i][1] == earth_cmap[i][1]);
+        assert(pgc_table[i][2] == earth_cmap[i][2]);
+    }
+    globe_init();
+    assert(globe_init_verts(GLOBE_DEFAULT_LONGITUDE, -1, GLOBE_RADIUS));
+    if (startup)
+    {
+        assert(drv_soft3d_active && !drv_soft3d_requested && mtx_native_failed);
+        render_and_check(512, test_earth_data(32));
+        pgc_retry_native();
+        puts("PASS PGC startup fallback: a rejected projection keeps graphics and host transforms; S retries it");
+    }
+    render_and_check(512, test_earth_data(32));
+    assert(strstr(osd_text, "PGC") != NULL && strstr(osd_text, "LibShell") == NULL);
+    check_noncardinal_poses(512, test_earth_data(32));
+    mtx_keyboard('2');
+    render_and_check(2048, test_earth_data(64));
+    check_noncardinal_poses(2048, test_earth_data(64));
+    mtx_keyboard('1');
+    puts("PASS PGC rendering: 3D world window, model/view rotations and POLY3 world vertices across rotated poses");
+    mtx_keyboard('S');
+    assert(drv_soft3d_active);
+    render_and_check(512, test_earth_data(32));
+    check_noncardinal_poses(512, test_earth_data(32));
+    mtx_keyboard('S');
+    assert(!drv_soft3d_active);
+    render_and_check(512, test_earth_data(32));
+    puts("PASS PGC host transforms: POLY in a pixel window counted from the lower left, S restores PGC transforms");
+    if (strcmp(profile, "pgc-timeout") == 0)
+    {
+        pgc_timeout = 1;
+        expected_board_error = 1;
+        if (setjmp(board_error) == 0)
+        {
+            drv_render();
+            assert(!"A board that stops answering must be reported");
+        }
+        expected_board_error = 0;
+        assert(strstr(board_message, "PGC polygon fill: communication timeout") != NULL);
+        assert(mtx_io_failed);
+        mtx_keyboard(27);
+        assert(!"Escape must terminate the application");
+        return 1;
+    }
+    /* Range, overflow and area-fill errors from native fills fall back to
+     * host transforms for the frame's retry and later frames. */
+    drv_rot_x = 13.5f; drv_rot_y = 35.75f;
+    for (i = 0; i < 3U; ++i)
+    {
+        pgc_injected_code = codes[i];
+        if (i == 2U) fail_v3_rotation = 1U;
+        else fail_v3_polygon = 1U;
+        render_and_check(512, test_earth_data(32));
+        assert(drv_soft3d_active && !drv_frame_failed && !mtx_io_failed && pgc_errors == 0U);
+        assert(strstr(osd_text, "soft3d on") != NULL);
+        pgc_retry_native();
+    }
+    /* Other codes stay fatal, as do errors from host-projected fills. */
+    pgc_injected_code = 3U; fail_v3_polygon = 1U;
+    expected_board_error = 1;
+    if (setjmp(board_error) == 0)
+    {
+        drv_render();
+        assert(!"Memory errors must remain fatal");
+    }
+    expected_board_error = 0;
+    assert(strstr(board_message, "PGC polygon fill: board memory exhausted (error 3)") != NULL);
+    assert(!drv_soft3d_active);
+    mtx_keyboard('S');
+    pgc_injected_code = 10U; fail_screen_polygon = 1U;
+    expected_board_error = 1;
+    if (setjmp(board_error) == 0)
+    {
+        drv_render();
+        assert(!"Host-projected fill errors must remain fatal");
+    }
+    expected_board_error = 0;
+    assert(strstr(board_message, "PGC screen polygon fill: area fill error (error 10)") != NULL);
+    mtx_keyboard('S');
+    render_and_check(512, test_earth_data(32));
+    puts("PASS PGC errors: range, overflow and area-fill codes retry with host transforms; other codes and 2D faults are fatal");
+    mtx_keyboard(27);
+    assert(!"Escape must terminate the application");
+    return 1;
+}
+#endif
+
 int main(int process_argc, char **process_argv)
 {
     unsigned int i;
@@ -1585,7 +1983,8 @@ int main(int process_argc, char **process_argv)
         else if (strcmp(profile, "387") == 0) { selected_cpu = 386; selected_fpu = 1; }
         else if (strcmp(profile, "fpu") == 0) { selected_cpu = 486; selected_fpu = 1; }
         else if (strcmp(profile, "absent") == 0) board_absent = 1;
-        else assert(!"Unknown Matrox profile");
+        else if (strcmp(profile, "fifo8192") == 0) fifo_setting = "8192";
+        else if (strncmp(profile, "pg", 2) != 0) assert(!"Unknown Matrox profile");
     }
     for (i = 0; i < 256; ++i) {
         original_palette[i][0] = (unsigned short)((i + 11) & 255);
@@ -1594,6 +1993,13 @@ int main(int process_argc, char **process_argv)
     }
     argc = 1; argv[0] = "testglob.exe"; argv[1] = NULL;
 #ifndef MTX_LSCL
+    if (process_argc > 1 && strncmp(process_argv[1], "pg", 2) == 0)
+    {
+        assert(strcmp(process_argv[1], "pgc") == 0 || strcmp(process_argv[1], "pg640a") == 0 ||
+               strcmp(process_argv[1], "pgc-startup") == 0 ||
+               strcmp(process_argv[1], "pgc-timeout") == 0);
+        return pgc_run(process_argv[1]);
+    }
     if (board_absent)
     {
         /* No board answers the presence test: stop before any command. */
@@ -1606,9 +2012,10 @@ int main(int process_argc, char **process_argv)
         }
         expected_board_error = 0;
         assert(strstr(board_message, "segment C600h") != NULL);
+        assert(strstr(board_message, "no PGC at C6000h or C6400h") != NULL);
         assert(strstr(board_message, "PG1281") != NULL);
-        assert(init_calls == 1 && !mtx_initialized && fifo_bytes == 0U);
-        puts("PASS Matrox board check: a board that does not answer stops initialization before any command");
+        assert(init_calls == 1 && pgc_open_calls == 1 && !mtx_initialized && fifo_bytes == 0U);
+        puts("PASS Matrox board check: without a LIB Shell or PGC-compatible board, initialization stops before any command");
         return 0;
     }
 #endif
@@ -1636,6 +2043,7 @@ int main(int process_argc, char **process_argv)
     /* Main owns the scene; native cleanup remains registered afterward. */
     assert(atexit(globe_free) == 0);
     drv_ext_init();
+    if (process_argc == 1) check_fifo_option();
     assert(!drv_soft3d_requested && !drv_soft3d_active);
     assert(GLOBE_DEFAULT_LONGITUDE == 32);
     assert(drv_colormapped && !drv_texture_avail && !drv_texture_enabled);
@@ -1653,7 +2061,13 @@ int main(int process_argc, char **process_argv)
         stale_words = 5;
     }
     drv_init(&argc, argv);
-    assert(init_calls == 1 && mouse_resets > 0);
+    assert(init_calls == 1 && mouse_resets > 0 && !mtx_pgc);
+    if (fifo_setting != NULL)
+    {
+        /* PG Series 1 boards' 4096-word FIFO: 145 fills and the inquiry. */
+        assert(mtx_fill_packets == 145U);
+        fifo_limit = 145U * 56U + 4U;
+    }
     assert(test_dos_vectors[0x23] != NULL && test_dos_vectors[0x24] != NULL);
     assert(mtx_previous_lut == 3 && inquiry == 0);
     assert(mtx_mask_saved && mtx_previous_mask == original_mask);

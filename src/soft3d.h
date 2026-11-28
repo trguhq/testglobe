@@ -111,6 +111,10 @@ extern int soft3d_fixed_prepare_degrees(long matrix[3][3],
  * zero for a non-finite or out-of-range component. */
 extern int soft3d_fixed_vertex(const Vertex TG_HUGE *vertex,
                                Soft3d_fixed_point *out);
+/* A float as 16.16 fixed point for the boards' FIXPT/Real parameters:
+ * truncated toward zero, saturated beyond +/-32768, 0 for NaN, decoded
+ * from the IEEE bits without floating-point arithmetic. */
+extern long soft3d_fixed16(const float TG_HUGE *value);
 #endif
 /* The matrix comes from a prepare helper; input radius is at most 1000.
  * C89 does not permit adding const through a pointer to a 2D array, so the
