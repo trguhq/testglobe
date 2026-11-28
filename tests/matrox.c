@@ -378,12 +378,26 @@ int kbhit(void)
 }
 int getch(void) { assert(!"Unexpected blocking keyboard read"); return 0; }
 
+static int board_absent;
 void lsinit(short handle, short address)
 {
     assert(handle == 0 && address == 1);
     ++init_calls;
 }
-void ioflush(void) {}
+#ifndef MTX_LSCL
+int mtx_ls_present(void) { return init_calls != 0 && !board_absent; }
+unsigned int mtx_ls_segment(void) { return 0xC600U; }
+#endif
+static unsigned int flush_calls;
+/* Both bindings wait for queued commands and then read and discard every
+ * reply word, so a flush must never separate a command from its reply.
+ * Stale words behind unread errors are not readable yet and survive. */
+void ioflush(void)
+{
+    assert(inquiry == 0 && inquiry_remaining == 0);
+    if (error_read >= error_count && !clock_timeout) stale_words = 0UL;
+    ++flush_calls;
+}
 void lslibsync(void) { assert(!"Blocking synchronization must not hide board errors"); }
 void lsemulen(short restore)
 {
@@ -1570,6 +1584,7 @@ int main(int process_argc, char **process_argv)
         else if (strcmp(profile, "287") == 0) { selected_cpu = 286; selected_fpu = 1; }
         else if (strcmp(profile, "387") == 0) { selected_cpu = 386; selected_fpu = 1; }
         else if (strcmp(profile, "fpu") == 0) { selected_cpu = 486; selected_fpu = 1; }
+        else if (strcmp(profile, "absent") == 0) board_absent = 1;
         else assert(!"Unknown Matrox profile");
     }
     for (i = 0; i < 256; ++i) {
@@ -1578,7 +1593,26 @@ int main(int process_argc, char **process_argv)
         original_palette[i][2] = (unsigned short)((i + 47) & 255);
     }
     argc = 1; argv[0] = "testglob.exe"; argv[1] = NULL;
-#ifndef MTX_8086_BINDING
+#ifndef MTX_LSCL
+    if (board_absent)
+    {
+        /* No board answers the presence test: stop before any command. */
+        drv_ext_init();
+        expected_board_error = 1;
+        if (setjmp(board_error) == 0)
+        {
+            drv_init(&argc, argv);
+            assert(!"A missing LIB Shell board must stop initialization");
+        }
+        expected_board_error = 0;
+        assert(strstr(board_message, "segment C600h") != NULL);
+        assert(strstr(board_message, "PG1281") != NULL);
+        assert(init_calls == 1 && !mtx_initialized && fifo_bytes == 0U);
+        puts("PASS Matrox board check: a board that does not answer stops initialization before any command");
+        return 0;
+    }
+#endif
+#if defined(MTX_LSCL) && !defined(MTX_8086_BINDING)
     if (selected_cpu < 286)
     {
         /* The supplied binding uses 286 instructions; reject before lsinit

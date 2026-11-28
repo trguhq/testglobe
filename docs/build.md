@@ -76,9 +76,9 @@ right-button state). Software texture buffers are released when texturing is dis
 `CPPFLAGS=-DTEXTURE_CACHE_RASTER=1` keeps them.
 [Development notes](development.md#shared-rendering-pipelines) describe the cache and
 memory policy. Other targets use their own `*_CPPFLAGS` variable, for example
-`IGL_CPPFLAGS=-DIGL_ZBUFFER=1` to keep the IRIS GL z-buffer, or `-DMTX_8086_BINDING`
-in `MTX_CPPFLAGS` (beside its `-I$(XGX_ROOT)`) for a LibShell binding without 286
-instructions.
+`IGL_CPPFLAGS=-DIGL_ZBUFFER=1` to keep the IRIS GL z-buffer. The Matrox build can
+also link Matrox's own LibShell library instead of its built-in binding; see
+[Matrox LibShell](matrox.md#build).
 
 ## Linux-hosted cross-builds
 
@@ -94,11 +94,13 @@ Windows targets and set its installation directory:
 ```sh
 export WATCOM=/path/to/openwatcom
 make gdi-cross
-make matrox-cross CROSS_FLAGS="--xgx-root /path/to/matrox-sdk"
+make matrox-cross
 make tiga-cross CROSS_FLAGS="--tiga-root /path/to/TIGA --tiga-tools /path/to/ti-tools"
 ```
 
-- **Matrox** needs `XGX1/HEADERS` and `libsv5/lscl.lib` under its SDK root.
+- **Matrox** needs no SDK. To link Matrox's `LSCL.LIB` instead, pass
+  `CROSS_FLAGS="--lscl --xgx-root /path/to/matrox-sdk"`, with `XGX1/HEADERS` and
+  `libsv5/lscl.lib` under that root.
 - **TIGA** needs `include` and `libs/ai.lib`; the original SDK archive layout is also
   accepted. Install DOSBox on the host and put the TI compiler, assembler, and linker
   together in `--tiga-tools`. The build compiles `tga_gsp.c` and `tga_ext.asm` and
@@ -109,13 +111,12 @@ make tiga-cross CROSS_FLAGS="--tiga-root /path/to/TIGA --tiga-tools /path/to/ti-
 SDKs, compilers, and vendor libraries are not included in this repository.
 
 The Watcom DOS builds use huge-model pointers and C stack calling conventions to
-match the SDK bindings; `src/mtx_ow.c` adapts the Microsoft-built LibShell library's
-runtime calls. Application objects use 8086 instructions, and the 386 transform
-kernel is compiled separately and guarded by CPU detection. The supplied LibShell
-library itself needs a 286 or later, which both Matrox builds check before `lsinit`
-unless `MTX_8086_BINDING` is defined for an 8086-safe binding. Floating-point
-emulation stays available without a coprocessor. The per-vertex objects are compiled
-with `-s`, without stack probes.
+match the SDK bindings. Application objects use 8086 instructions, and the 386
+transform kernel is compiled separately and guarded by CPU detection. With `--lscl`,
+`src/mtx_ow.c` adapts the Microsoft-built LibShell library's runtime calls; that
+library needs a 286 or later, which the driver then checks before `lsinit`.
+Floating-point emulation stays available without a coprocessor. The per-vertex
+objects and the LibShell binding are compiled with `-s`, without stack probes.
 
 Watcom's Windows runtime uses the large memory model. Explicit `TG_HUGE` pointers keep
 mesh and resource access normalized across 64 KiB boundaries, with `SEG86` still

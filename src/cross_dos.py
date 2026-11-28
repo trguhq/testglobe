@@ -55,7 +55,7 @@ def _matrox_headers(config):
     return root
 
 
-def _compile(config, driver, extra_sources=(), includes=()):
+def _compile(config, driver, extra_sources=(), includes=(), defines=()):
     env = watcom_env(config)
     out = config["out"]
     source = config["src"]
@@ -69,14 +69,15 @@ def _compile(config, driver, extra_sources=(), includes=()):
     # -fpi keeps x87 emulation available; -0 is the baseline application CPU.
     flags = ["-q", "-bt=dos", "-mh", "-0", "-fpi", "-ecc", "-zp2", "-os", "-w3",
              "-dSEG86", "-dDRV_" + driver, "-dDRV", "-dNO_SINF",
-             "-i=" + str(source)] + ["-i=" + str(path) for path in includes]
+             "-i=" + str(source)] + ["-i=" + str(path) for path in includes] + \
+            ["-d" + name for name in defines]
     names = ["drv", "drv_" + driver.lower(), "drv_cpu", "err", "globe",
              "main", "soft3d", "soft3fp"]
     sources = [source / (name + ".c") for name in names] + [data] + list(extra_sources)
     objects = []
     # Per-vertex and per-polygon code omits stack checks (-s): none of it
     # recurses, and the 16 KiB stack is far larger than its frames.
-    hot = {"drv_" + driver.lower(), "soft3d", "soft3fp"}
+    hot = {"drv_" + driver.lower(), "soft3d", "soft3fp", "mtx_ls"}
     for path in sources:
         obj = out / (path.stem + ".obj")
         run([compiler] + flags + (["-s"] if path.stem in hot else []) +
@@ -104,7 +105,7 @@ def _link(config, env, objects, library, filename):
     response.write_text("system dos\noption quiet\noption stack=16384\n" +
         "option map=" + quoted(out / "testglob.map") + "\nname " + quoted(executable) + "\n" +
         "".join("file " + quoted(obj) + "\n" for obj in objects) +
-        "library " + quoted(library) + "\n")
+        ("library " + quoted(library) + "\n" if library is not None else ""))
     run([linker, "@" + str(response)], cwd=out, env=env)
     data = executable.read_bytes()
     if len(data) < 28 or data[:2] != b"MZ":
@@ -172,10 +173,14 @@ def build_tiga(config):
 
 
 def build_matrox(config):
+    if not config.get("lscl"):
+        # The direct LibShell binding needs no vendor files.
+        env, objects = _compile(config, "MTX", (config["src"] / "mtx_ls.c",))
+        return _link(config, env, objects, None, "testglob.exe")
     library = _find(config["xgx_root"], ("libsv5/lscl.lib",))
     headers = _matrox_headers(config)
     env, objects = _compile(config, "MTX", (config["src"] / "mtx_ow.c",),
-                           (headers,))
+                           (headers,), ("MTX_LSCL",))
     librarian = shutil.which("wlib", path=env["PATH"])
     if librarian is None:
         raise ValueError("OpenWatcom wlib was not found under --watcom")

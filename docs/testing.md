@@ -31,7 +31,7 @@ Additional options may be combined:
 | [`--amiga-ogl-contract`](#amiga-opengl) | MiniGL submissions and Amiga window/context lifecycle | None |
 | [`--igl-contract`](#iris-gl) | IRIS GL calls and software texture pixels | None |
 | [`--xgl-contract`](#sun-xgl) | XGL calls with real X11 windows and events | X11 development files, Xvfb, and an `xvfb-run` that keeps stderr separate |
-| [`--sdk /path/to/sdk`](#matrox-libshell) | DOS/Matrox calls against original SDK declarations | LibShell headers under `XGX1/HEADERS` |
+| [`--sdk /path/to/sdk`](#matrox-libshell) | The Matrox driver built against Matrox's own LibShell binding | LibShell headers under `XGX1/HEADERS` |
 | [`--tiga-contract`](#tiga) | TIGA calls, embedded-module loading, arithmetic, and recovery | None |
 | [`--tiga-sdk /path/to/sdk`](#tiga) | TIGA checks plus compilation against original SDK declarations | TIGA host headers |
 | [`--dos-cpu`](#tiga) | Shared Matrox/TIGA CPU-probe instruction and stack checks (`--tiga-cpu` remains an alias) | Python `unicorn`, GNU `as` and `objcopy` |
@@ -77,7 +77,8 @@ reporting success.
 The OpenWatcom LibShell adapter has a separate `tests/mtx_ow.c` test that captures
 commands from the real SDK library without requiring a Matrox board. Its numeric
 checks exercise world-window and polygon conversion, pointer/stack conventions,
-variadic calls, and runtime adapters. After `make matrox-cross`, compile it with
+variadic calls, and runtime adapters. After
+`make matrox-cross CROSS_FLAGS="--lscl --xgx-root /path/to/matrox-sdk"`, compile it with
 `WATCOM/binl64` on `PATH` and `INCLUDE` set to `WATCOM/h`:
 
 ```sh
@@ -517,7 +518,10 @@ and graphics output; the real X11 activity in these tests does not exercise XGL 
 
 ## Matrox LibShell
 
-### Command
+### Commands
+
+The driver recorder and the direct-binding test run with the baseline checks and need
+no SDK. To also build the driver against Matrox's own binding, use:
 
 ```sh
 python3 tests/run.py --sdk /path/to/sdk
@@ -526,12 +530,23 @@ python3 tests/run.py --sdk /path/to/sdk
 
 ### Additional requirements
 
-Provide the original LibShell headers under `XGX1/HEADERS` outside the repository.
-The runner uses their function prototypes, copying headers into a temporary directory
-and removing trailing DOS EOF bytes. DOS and board calls are recorded, and compiler
-pointer keywords are removed for host compilation. Vendor headers are not committed.
+For `--sdk`, provide the original LibShell headers under `XGX1/HEADERS` outside the
+repository. The runner uses their function prototypes, copying headers into a
+temporary directory and removing trailing DOS EOF bytes. DOS and board calls are
+recorded, and compiler pointer keywords are removed for host compilation. Vendor
+headers are not committed.
 
 ### Coverage
+
+- **Direct binding:** `tests/mtx_ls.c` drives `src/mtx_ls.c` against a simulated
+  host window and processor. Every call the driver uses must send the Command
+  Reference's opcode and parameter words; FIXPT values are 16.16, truncated toward
+  zero and saturated, and 200,000 vertex floats must decode without floating point
+  to the same words. Counts go through the host interface with the third read kept,
+  known FIFO room is reused, and no word enters a full FIFO. Reads, non-blocking
+  error reads that clear the ERROR register, the bounded flush of a stalled shell,
+  the C600h/C640h/CE00h/CE40h and `PG1281` segments, the halted presence test with
+  its restoration, and silence without a board are checked too.
 
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
   triangle/quad statistics, and cleanup. Independent view-space facing tests check
@@ -548,19 +563,22 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
   and viewport bounds. Packet checks match every fill to its quad in order, verify
   the packet vertices against the mesh, and require each mesh vertex to be
   transformed and projected once per frame. CPU profiles exercise baseline, 386 and
-  floating-point dispatch, including 286/287 combinations. The `8086` and `8087`
-  profiles check that the supplied 286 binding is rejected before `lsinit`; a second
-  build with `MTX_8086_BINDING` runs them through the whole contract. The OSD reports
-  actual selection and failed requests; the help keeps `S` visible.
+  floating-point dispatch, including 8086/8087 and 286/287 combinations. With `--sdk`,
+  the `8086` and `8087` profiles check that the supplied 286 binding is rejected
+  before `lsinit`, and a build with `MTX_8086_BINDING` runs them through the whole
+  contract. The `absent` profile requires a board that fails the presence test to stop
+  initialization before any command. The OSD reports actual selection and failed
+  requests; the help keeps `S` visible.
 - **Packets:** the recorder counts command bytes from the manual's formats since the
   last completed reply and requires at most 228 in flight, one checkpoint per four
   fills and per model/view group, and no repeated fill color while the board's color
   is known.
-- **Replies and errors:** `LSINQ` word counts and payload ordering; short malformed
-  replies are drained before failure, while replies longer than 16 words abandon the
-  connection. Ready words read no clock; one deadline covers every wait of a reply,
-  and a backward clock step neither adds time nor restarts it. Timeouts and oversized
-  replies must prevent further board commands during cleanup.
+- **Replies and errors:** `ioflush()` discards unread replies, so the recorder fails
+  any flush while a reply is outstanding. `LSINQ` word counts and payload ordering;
+  short malformed replies are drained before failure, while replies longer than 16
+  words abandon the connection. Ready words read no clock; one deadline covers every
+  wait of a reply, and a backward clock step neither adds time nor restarts it.
+  Timeouts and oversized replies must prevent further board commands during cleanup.
 - **Startup:** the `stale` profile leaves two latched errors (the second reported
   only after the first is read) and old Read FIFO words; startup discards them with
   a stderr warning. Endless stale data is bounded by count and deadline.
@@ -577,12 +595,10 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 
 ### Native validation
 
-Microsoft C 7, `LSCL.LIB`, and a PG-641-compatible board are needed to validate huge
-pointers, DOS timing, the LibShell ABI, and graphics output. The recorder assumes
-nonblocking error-register reads and that positive `rdfifocnt()` permits a complete
-word read. The supplied SDK documentation does not establish FIFO count units or
-atomic availability; the installed library and board must validate those assumptions
-and asynchronous timing.
+A PG Series 1 board running the LIB Shell, with Microsoft C 7 or OpenWatcom, is
+needed to validate huge pointers, DOS timing, the direct binding's register accesses
+and presence test, asynchronous timing, and graphics output. Building with
+`LSCL.LIB` as well allows the two bindings to be compared on the board.
 
 ## TIGA
 

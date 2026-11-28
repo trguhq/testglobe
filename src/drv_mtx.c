@@ -17,8 +17,9 @@
 #include "glob_ext.h"
 #include "drv_ext.h"
 
-/* /AH and the matching LSCL.LIB supply far code/data pointers. DEF.H must
- * precede prototypes. The C binding converts float V3COORDs to 16.16. */
+#ifdef MTX_LSCL
+/* The vendor binding: /AH and the matching LSCL.LIB supply far code/data
+ * pointers. DEF.H must precede prototypes. */
 #include "XGX1/HEADERS/DEF.H"
 #ifndef PROTO
 #define PROTO
@@ -28,6 +29,10 @@
 
 /* Required communication object, as in the supplied LSINFO.C example. */
 struct pg_com pg;
+#else
+/* The same calls, implemented directly on the board by mtx_ls.c. */
+#include "mtx_ls.h"
+#endif
 static int mtx_initialized;
 static int mtx_palette_saved;
 static int mtx_error_policy_saved;
@@ -72,11 +77,12 @@ static int mtx_integer_cull;
 
 /* LSERROR stalls the shell before a second unread error. A blocking
  * lslibsync() cannot service that register, so use a counted LSINQ reply
- * as a completion marker while polling the SDK's error and Read FIFO APIs.
+ * as a completion marker while polling the ERROR register and read FIFO.
  * Packets contain a small command, the per-frame model/view commands or up
  * to MTX_FILL_PACKETS color/polygon pairs, and a four-byte inquiry; LUT
- * writes and text are bounded so even a legacy 256-byte command FIFO cannot
- * fill before error servicing resumes. */
+ * writes and text are bounded too. The PG Series 1 command FIFO holds 4096
+ * words, so a stalled shell cannot fill it before error servicing resumes;
+ * the bound also suits a 256-byte FIFO. */
 #define MTX_WAIT_TICKS (10UL * (unsigned long)CLOCKS_PER_SEC)
 /* A native fill is a color (4 bytes) and a four-vertex V3ARWPLYGN (52):
  * four with the inquiry use 228 bytes. Screen fills (4 + 44) are smaller. */
@@ -167,12 +173,12 @@ static int mtx_read_word(unsigned short *word, unsigned short *errors,
     for (;;)
     {
         /* IOGETERROR reads/acknowledges the eight-bit error register; zero
-         * has no error bits set. Keep draining while firmware is busy. */
+         * has no error bits set. Keep draining while firmware is busy. The
+         * direct binding reads it without waiting; the vendor's first waits
+         * for the command FIFO to drain (see docs/matrox.md). */
         *errors |= (unsigned short)iogeterror();
-        /* SDK integration assumption: a positive RDFIFOCNT must mean that
-         * IOGETW can read one complete word without waiting. The supplied
-         * headers expose only word reads, but do not document count units
-         * or atomic availability; verify this on the actual board/binding. */
+        /* RDFIFOCNT counts whole words, so IOGETW then reads one without
+         * waiting. */
         if (rdfifocnt() > 0)
         {
             *word = (unsigned short)iogetw();
@@ -196,7 +202,6 @@ static int mtx_inquire(unsigned short code, unsigned short *value,
     int valid;
     mtx_wait_begin(&wait);
     lsinq(code);
-    ioflush();
     if (!mtx_read_word(&remaining, &errors, operation, &wait)) return FALSE;
     valid = remaining == 1U || (remaining == 0U && present != NULL);
     if (present != NULL) *present = remaining == 1U;
@@ -292,7 +297,6 @@ static int mtx_read_words(short *words, unsigned short count,
     unsigned short word, errors = 0;
     Mtx_wait wait;
     mtx_wait_begin(&wait);
-    ioflush();
     while (count != 0U)
     {
         if (!mtx_read_word(&word, &errors, operation, &wait)) return FALSE;
@@ -414,14 +418,17 @@ void drv_init(int *argc, char **argv)
 {
     short system_info[10];
     unsigned short reporting;
+#ifndef MTX_LSCL
+    char message[96];
+#endif
     (void)argc;
     (void)argv;
     drv_soft3d_select();
-#ifndef MTX_8086_BINDING
+#if defined(MTX_LSCL) && !defined(MTX_8086_BINDING)
     /* The supplied LSCL.LIB, linked by both compilers, uses ENTER/LEAVE even
      * in its 2D binding; an 8086 misexecutes them inside lsinit. The host
      * probe remains 8086-safe. Define MTX_8086_BINDING only when linking a
-     * binding built for 8086 instructions. */
+     * binding built for 8086 instructions. The direct binding needs none. */
     if (drv_soft3d_cpu < 286) error("This LibShell library requires an 80286 or later CPU");
 #endif
     mtx_native_failed = FALSE;
@@ -429,6 +436,16 @@ void drv_init(int *argc, char **argv)
      * and the event loop exits through the cleanup registered below. */
     drv_dos_break_init();
     lsinit(0, 1);
+#ifndef MTX_LSCL
+    if (!mtx_ls_present())
+    {
+        sprintf(message, "No Matrox LIB Shell board answers at segment %04Xh;"
+                " download LIB SHELL or set PG1281", mtx_ls_segment());
+        error(message);
+    }
+#endif
+    /* Discard what a previous program left: queued commands run, unread
+     * replies are dropped. */
     ioflush();
     mtx_initialized = TRUE;
     if (atexit(mtx_cleanup) != 0)

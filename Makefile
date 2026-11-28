@@ -110,20 +110,23 @@ MTX_386FLAGS = -G3 -DSOFT3D_TRANSFORM_386
 # Per-vertex/per-polygon objects omit stack probes; none recurses.
 MTX_HOTFLAGS = -Gs
 MTX_DEFINES = -DSEG86 -DDRV_MTX -DDRV -DNO_SINF
+# The direct LibShell binding (m_ls.obj) needs no vendor files. For the
+# vendor's LSCL.LIB instead, clear MTX_BINDING and set MTX_CPPFLAGS and
+# MTX_LIB to $(MTX_LSCL_CPPFLAGS) and $(MTX_LSCL_LIB); see docs/matrox.md.
 XGX_ROOT = .
-MTX_CPPFLAGS = -I$(XGX_ROOT)
-MTX_LIB = $(XGX_ROOT)\libsv5\lscl.lib
+MTX_LSCL_CPPFLAGS = -DMTX_LSCL -I$(XGX_ROOT)
+MTX_LSCL_LIB = $(XGX_ROOT)\libsv5\lscl.lib
+MTX_CPPFLAGS =
+MTX_BINDING = m_ls.obj
+MTX_LIB =
 MTX_LDFLAGS = -link /STACK:16384
 MTX_OBJECTS1 = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj
-MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj
+MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj $(MTX_BINDING)
 MTX_OBJECTS = $(MTX_OBJECTS1) $(MTX_OBJECTS2)
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
     $(SRC)\globe.h $(SRC)\glob_ext.h $(SRC)\e_ext.h $(SRC)\e_cmap.h \
-    $(SRC)\earthres.h $(SRC)\soft3d.h \
-    $(XGX_ROOT)\XGX1\HEADERS\DEF.H \
-    $(XGX_ROOT)\XGX1\HEADERS\LIBFN.H \
-    $(XGX_ROOT)\XGX1\HEADERS\IOLIB.H
+    $(SRC)\earthres.h $(SRC)\soft3d.h $(SRC)\mtx_ls.h
 
 # TIGA 2.0, Microsoft C 7 huge model. The vendor communication driver and
 # graphics manager supply board-specific support; ai.lib uses far code/data.
@@ -522,6 +525,13 @@ m_float.obj: $(SRC)\soft3fp.c $(MTX_HEADERS)
 	@echo -Fom_float.obj $(SRC)\soft3fp.c >> m_float.rsp
 	$(MTX_CC) @m_float.rsp
 
+# Every command word passes through the binding: no stack probes.
+m_ls.obj: $(SRC)\mtx_ls.c $(MTX_HEADERS)
+	@echo $(MTX_DEFINES) $(MTX_CFLAGS) $(MTX_HOTFLAGS) > m_ls.rsp
+	@echo $(MTX_CPPFLAGS) -I$(SRC) -c >> m_ls.rsp
+	@echo -Fom_ls.obj $(SRC)\mtx_ls.c >> m_ls.rsp
+	$(MTX_CC) @m_ls.rsp
+
 err.obj: $(SRC)\err.c $(MTX_HEADERS)
 	@echo $(MTX_DEFINES) $(MTX_CFLAGS) > err.rsp
 	@echo $(MTX_CPPFLAGS) -c >> err.rsp
@@ -862,10 +872,12 @@ clean-matrox:
 	-$(RM) m_soft.obj
 	-$(RM) m_386.obj
 	-$(RM) m_float.obj
+	-$(RM) m_ls.obj
 	-$(RM) m_cpu.rsp
 	-$(RM) m_soft.rsp
 	-$(RM) m_386.rsp
 	-$(RM) m_float.rsp
+	-$(RM) m_ls.rsp
 	-$(RM) e_data.obj
 	-$(RM) e_data.rsp
 	-$(RM) m_data.c

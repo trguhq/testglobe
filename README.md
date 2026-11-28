@@ -32,7 +32,7 @@ Workbench pens or a private fullscreen palette, or draws RGB on truecolor RTG sc
 | [Amiga OpenGL](docs/opengl.md#amiga-opengl) | AmigaOS 3.x, 68020/68881, PiStorm3D / MiniGL | `make amiga-opengl` | Key 5: 512 × 256 | Yes |
 | [IRIS GL](docs/irisgl.md) | IRIX 4.0, 32-bit MIPS | `make irisgl` | Key 3: 128 × 64 | Yes |
 | [Sun XGL](docs/xgl.md) | Solaris 2.6, 32-bit SPARC | `make xgl` | Key 3: 128 × 64 | Yes |
-| [Matrox LibShell](docs/matrox.md) | MS-DOS, PG-641-compatible hardware | `nmake matrox` | Key 1: 32 × 16 | No |
+| [Matrox LibShell](docs/matrox.md) | MS-DOS, Matrox PG Series 1 running the LIB Shell | `nmake matrox` | Key 1: 32 × 16 | No |
 | [TIGA](docs/tiga.md) | MS-DOS, TIGA 2.x, 640 × 480 indexed color | `nmake tiga` | Key 1: 32 × 16 | No |
 | [Windows GDI](docs/gdi.md) | Windows 3.0 or 3.1, 16-bit | `nmake gdi` | Key 1: 32 × 16 | No |
 | [QuickDraw](docs/quickdraw.md) | Classic Macintosh System 7, 68000 | MPW `Makefile.mpw` | Key 1: 32 × 16 | No |

@@ -53,7 +53,10 @@ def main(argv=None):
     parser.add_argument("--build-dir", type=Path, default=root / "build" / "cross")
     parser.add_argument("--watcom", default=os.environ.get("WATCOM"))
     parser.add_argument("--retro68", default=os.environ.get("RETRO68"))
-    parser.add_argument("--xgx-root", default=os.environ.get("XGX_ROOT", str(root)))
+    parser.add_argument("--xgx-root", default=os.environ.get("XGX_ROOT", str(root)),
+                        help="Matrox SDK root, used only with --lscl")
+    parser.add_argument("--lscl", action="store_true",
+                        help="link Matrox's LSCL.LIB from --xgx-root instead of the direct binding")
     parser.add_argument("--tiga-root", default=os.environ.get("TGA_ROOT", str(root / "TIGA")))
     parser.add_argument("--tiga-tools", default=os.environ.get("TIGA_TOOLS"))
     parser.add_argument("--tiga-module", default=os.environ.get("TIGA_MODULE"))

@@ -2,24 +2,17 @@
 
 ## Requirements
 
-MS-DOS, Microsoft C 7.0 with its huge-model runtime and NMAKE, and the matching Matrox
-LibShell C binding. The driver assumes a 640 × 480, 256-color PG-641-compatible
-display; initialize the board and its firmware as the SDK describes. The supplied
-`LSCL.LIB` uses 286 instructions (`ENTER`/`LEAVE`), so both builds stop with an error
-on an 8086-class CPU before calling `lsinit`. A Microsoft-compatible DOS mouse driver
-enables dragging; the keyboard controls work without one. A
-[cross-build](build.md#linux-hosted-cross-builds) with OpenWatcom is also available.
+MS-DOS on an 8086 or later, Microsoft C 7.0 with its huge-model runtime and NMAKE,
+and a Matrox PG Series 1 board running the LIB Shell in a 640 × 480, 256-color mode.
+Download the LIB Shell to the board and initialize it as the board's software
+describes; the driver checks that the board answers and does not load anything. No
+Matrox SDK is needed: `src/mtx_ls.c` implements the LibShell calls the driver uses
+directly on the board, as described under [Board interface](#board-interface). A
+Microsoft-compatible DOS mouse driver enables dragging; the keyboard controls work
+without one. A [cross-build](build.md#linux-hosted-cross-builds) with OpenWatcom is
+also available.
 
 ## Build
-
-Place the SDK at the repository root:
-
-```text
-XGX1/HEADERS/DEF.H
-XGX1/HEADERS/LIBFN.H
-XGX1/HEADERS/IOLIB.H
-libsv5/lscl.lib
-```
 
 With the compiler and linker on `PATH`, run:
 
@@ -27,16 +20,30 @@ With the compiler and linker on `PATH`, run:
 nmake matrox
 ```
 
-The output is `testglob.exe`. For an SDK elsewhere, set `XGX_ROOT`, for example
-`XGX_ROOT=C:\MATROX`; the default is `.` in the root Makefile and `..` in
-`src/Makefile`. Override `MTX_CC`, `MTX_CFLAGS`, `MTX_CPPFLAGS`, `MTX_386FLAGS`,
-`MTX_LIB`, and `MTX_LDFLAGS` as needed, keeping `-AH -G0 -FPi` on the baseline objects;
-only the guarded `m_386.obj` kernel uses `-G3`. When linking a LibShell binding built
-for 8086 instructions, add `-DMTX_8086_BINDING` to `MTX_CPPFLAGS` (keeping its
-`-I$(XGX_ROOT)`) to skip the 286 check. `MTX_HOTFLAGS` (`-Gs`) removes stack
-probes from the per-vertex and per-polygon objects, none of which recurse; the
-OpenWatcom cross-build uses `-s` for the same files. The DOS rules use backslash paths,
-8.3 generated names, and response files to stay within command-line limits.
+The output is `testglob.exe`. It looks for the board at segment C600h, or at the
+first segment listed in the `PG1281` environment variable, as Matrox's own binding
+does (for example `set PG1281=0xCE00`). Override `MTX_CC`, `MTX_CFLAGS`,
+`MTX_CPPFLAGS`, `MTX_386FLAGS`, and `MTX_LDFLAGS` as needed, keeping `-AH -G0 -FPi` on
+the baseline objects; only the guarded `m_386.obj` kernel uses `-G3`. `MTX_HOTFLAGS`
+(`-Gs`) removes stack probes from the per-vertex, per-polygon and per-word objects,
+none of which recurse; the OpenWatcom cross-build uses `-s` for the same files. The
+DOS rules use backslash paths, 8.3 generated names, and response files to stay
+within command-line limits.
+
+To link Matrox's own C binding instead, for comparison on hardware, place its SDK at
+the repository root (`XGX1/HEADERS/DEF.H`, `LIBFN.H`, `IOLIB.H` and
+`libsv5/lscl.lib`, or set `XGX_ROOT`), clean the Matrox objects, and run:
+
+```text
+nmake matrox MTX_BINDING= MTX_CPPFLAGS=$(MTX_LSCL_CPPFLAGS) MTX_LIB=$(MTX_LSCL_LIB)
+```
+
+The supplied `LSCL.LIB` uses 286 instructions (`ENTER`/`LEAVE`), so that build stops
+with an error on an 8086-class CPU before calling `lsinit`; add `-DMTX_8086_BINDING`
+to `MTX_CPPFLAGS` only for a binding rebuilt for the 8086. Its `iogeterror()` first
+waits for the command FIFO to drain, sending a no-op each time, so a shell stalled on
+two unread errors can hang it; the direct binding reads the error register without
+waiting.
 
 ## Rendering and color
 
@@ -72,6 +79,22 @@ shared traversal, 2.7 KB of driver points and projection cache), not a second me
 Native LibShell 3D keeps sending each quad's world vertices. Press `S` again to return
 to LibShell 3D.
 
+## Board interface
+
+The LIB Shell runs on the board's TMS34010 graphics processor. The host reaches it
+through a 1 KB window at the board's segment. The window begins with the same
+communication area as the IBM PGC; LibShell's registers follow it: the processor's
+host-interface address, data and control words at offsets 318h–31Eh, the FIFO data
+entry at 320h, and the 8-bit ERROR register at 3B0h. The command and reply FIFOs each
+hold 4,096 words. Their counts, and a status word whose bit 9 marks an unread error,
+are read through the host interface. A command is its opcode word and parameter
+words, in the formats the *LIB Shell Command Reference* gives; a FIXPT value is sent
+as 16.16, fraction word first, and vertex coordinates are converted from their IEEE
+bits without floating-point arithmetic. At startup the binding halts the processor
+briefly to check that two of its scratch registers keep test patterns, as Matrox's
+`lsinit` does; if they do not, the driver reports the segment and stops before sending
+anything.
+
 ## Platform notes
 
 The *LIB Shell Command Reference Manual* documents no depth buffer or back-face
@@ -96,8 +119,10 @@ emulation for other floating-point work, including mesh generation.
 LibShell reports each error as an 8-bit value in its error register and waits until
 that value is read before reporting the next, so a shell with unread errors appears
 to hang. The driver therefore services the register while waiting for `LSINQ`
-replies between bounded command packets, keeping at most 228 bytes in flight so even
-a 256-byte command FIFO cannot fill while the shell is stalled. One reply confirms up
+replies between bounded command packets, keeping at most 228 bytes in flight, far
+below the 4,096-word FIFO, so a stalled shell cannot fill it. `ioflush()` discards
+unread replies, so the driver uses it only at startup and after its last command,
+never between a command and its reply. One reply confirms up
 to four polygon fills, and one the six per-frame model/view commands; a key-1 frame
 needs about 70 replies instead of about 270. The driver resends `v3mdorg` and
 `v3vwrpt` each frame, because the manual does not say that `v3mdid` and `v3vwid`
@@ -131,14 +156,10 @@ DOS call instead of prompting on an invisible screen.
 
 ## Validation
 
-See the [Matrox SDK checks](testing.md#matrox-libshell). Native validation requires
-Microsoft C 7, `LSCL.LIB`, and the board. Polling assumes that `iogeterror()` does not
-block and that a positive `rdfifocnt()` allows a complete `iogetw()` without waiting.
-Neither the supplied headers nor the Command Reference establish the FIFO count's
-units or whether a word is available atomically; verify these against the installed
-binding and board. The 228-byte packet budget assumes the manual's command formats
-and a command FIFO of at least 256 bytes; the startup quiet interval, the INT 23h
-exit path and the speed of grouped checkpoints and integer culling also need the
-board to confirm. So does the native perspective: if the globe's size or position
-changes by more than a pixel when `S` switches modes, LibShell's projection differs
-from the PGC formula above.
+See the [Matrox checks](testing.md#matrox-libshell). Native validation requires the
+board and Microsoft C 7 or OpenWatcom. The direct binding follows Matrox's binding
+source and the Command Reference's formats, but its register accesses, the presence
+test and the startup quiet interval still need the board to confirm, as do the INT
+23h exit path and the speed of grouped checkpoints and integer culling. So does the
+native perspective: if the globe's size or position changes by more than a pixel when
+`S` switches modes, LibShell's projection differs from the PGC formula above.

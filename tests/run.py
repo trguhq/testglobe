@@ -369,7 +369,7 @@ def check_earth_data(cc, common, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sdk", default=os.environ.get("MATROX_SDK"),
-                        help="SDK root containing XGX1/HEADERS (headers are not vendored)")
+                        help="Matrox SDK root containing XGX1/HEADERS, to also check the vendor LSCL.LIB binding (headers are not vendored)")
     parser.add_argument("--xgl-contract", action="store_true",
                         help="Record XGL calls using manual-derived declarations and real X11 under Xvfb; not native XGL validation")
     parser.add_argument("--gdi-contract", action="store_true",
@@ -914,8 +914,33 @@ def main():
             run(cc + common + ["-DFLAT", "-DDRV_OGL",
                 str(ROOT / "tests/texture.c"), str(ROOT / "src/e_saved.c"), "-o", str(output / "texture")])
             run([str(output / "texture")])
+        # Matrox builds on the direct LibShell binding (mtx_ls.c) and needs no
+        # SDK; --sdk also builds the driver against the vendor binding.
+        segmented = ["-DSEG86", "-DDRV_MTX", "-D_huge=",
+                     "-D__interrupt=", "-D__far=", "-D_far=", "-D_near=",
+                     "-I" + str(ROOT / "tests/dos_shim")]
+        check_production_units(cc, common, segmented, output, "Matrox",
+            ("drv.c", "drv_mtx.c", "mtx_ls.c", "err.c", "globe.c", "main.c", "e_saved.c",
+             "soft3d.c", "soft3fp.c"))
+        run(cc + common + segmented + ["-DMTX_LS_TEST", str(ROOT / "tests/mtx_ls.c"),
+            str(ROOT / "src/mtx_ls.c"), "-lm", "-o", str(output / "mtx_ls")])
+        run([str(output / "mtx_ls")])
+        mtx_optimized = output / "mtx_386.o"
+        run(cc + common + segmented + ["-DSOFT3D_TRANSFORM_386", "-c",
+            str(ROOT / "src/soft3d.c"), "-o", str(mtx_optimized)])
+        mtx_sources = [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_saved.c"),
+            str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
+            str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"), str(mtx_optimized),
+            str(ROOT / "src/err.c"), "-lm"]
+        mtx_profiles = ("reporting-off", "8086", "286", "386", "486", "8087", "287", "387",
+                        "fpu", "startup-v3", "startup-world", "stale", "ctrl-break")
+        run(cc + common + segmented + mtx_sources + ["-o", str(output / "matrox")])
+        run([str(output / "matrox")])
+        # The direct binding runs on an 8086, so every profile renders.
+        for profile in mtx_profiles + ("absent",):
+            run([str(output / "matrox"), profile])
         if not args.sdk:
-            print("SKIP Matrox SDK contract checks: supply --sdk or MATROX_SDK")
+            print("SKIP Matrox vendor binding (LSCL.LIB) checks: supply --sdk or MATROX_SDK")
             return
         headers = Path(args.sdk) / "XGX1" / "HEADERS"
         required = ("DEF.H", "LIBFN.H", "IOLIB.H")
@@ -929,27 +954,16 @@ def main():
                 # DOS uses Ctrl-Z as EOF; GCC treats it as an invalid C token.
                 data = path.read_bytes().rstrip(b"\r\n\x1a") + b"\n"
                 (normalized / path.name).write_bytes(data)
-        segmented = ["-DSEG86", "-DDRV_MTX", "-D_huge=",
-                     "-D__interrupt=", "-D__far=", "-D_far=", "-D_near=",
-                     "-I" + str(ROOT / "tests/dos_shim"),
-                     "-I" + str(output / "sdk")]
-        check_production_units(cc, common, segmented, output, "Matrox",
-            ("drv.c", "drv_mtx.c", "err.c", "globe.c", "main.c", "e_saved.c", "soft3d.c", "soft3fp.c"))
-        mtx_optimized = output / "mtx_386.o"
-        run(cc + common + segmented + ["-DSOFT3D_TRANSFORM_386", "-c",
-            str(ROOT / "src/soft3d.c"), "-o", str(mtx_optimized)])
-        mtx_sources = [str(ROOT / "tests/matrox.c"), str(ROOT / "src/e_saved.c"),
-            str(ROOT / "src/globe.c"), str(ROOT / "src/drv.c"),
-            str(ROOT / "src/soft3d.c"), str(ROOT / "src/soft3fp.c"), str(mtx_optimized),
-            str(ROOT / "src/err.c"), "-lm"]
-        run(cc + common + segmented + mtx_sources + ["-o", str(output / "matrox")])
-        run([str(output / "matrox")])
+        lscl = segmented + ["-DMTX_LSCL", "-I" + str(output / "sdk")]
+        check_production_units(cc, common, lscl, output, "Matrox_LSCL",
+            ("drv.c", "drv_mtx.c", "mtx_ls.c"))
+        run(cc + common + lscl + mtx_sources + ["-o", str(output / "matrox_lscl")])
+        run([str(output / "matrox_lscl")])
         # 8086/8087 profiles check rejection by the supplied 286 binding.
-        for profile in ("reporting-off", "8086", "286", "386", "486", "8087", "287", "387", "fpu",
-                        "startup-v3", "startup-world", "stale", "ctrl-break"):
-            run([str(output / "matrox"), profile])
+        for profile in mtx_profiles:
+            run([str(output / "matrox_lscl"), profile])
         # An 8086-safe binding opts out of the check and runs everything.
-        run(cc + common + segmented + ["-DMTX_8086_BINDING"] + mtx_sources +
+        run(cc + common + lscl + ["-DMTX_8086_BINDING"] + mtx_sources +
             ["-o", str(output / "matrox_8086")])
         for profile in ("8086", "8087"):
             run([str(output / "matrox_8086"), profile])
