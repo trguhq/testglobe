@@ -466,27 +466,29 @@ void drv_init(int *argc, char **argv)
 
 /* Reissue all native projection state after failed initialization or S retry.
  * Screen-coordinate fills do not depend on these optional settings.
- *   LibShell's perspective uses the other drivers' camera: the shared field
- * of view, in LibShell's integer degrees, from the shared viewing distance.
- * The manual gives no projection formula. It does not say whether the
- * viewing angle spans the window's width or its height, or whether the
- * window lies on the view plane through the reference point. A square
- * viewport, and a square window GLOBE_VIEW_DISTANCE * tan(angle / 2) on
- * each side of the reference point, give the same image under each of
- * those readings. Setting the viewport also resets the clipping rectangle
- * to it, so the full screen is restored for the OSD and screen fills. */
+ *   LibShell's perspective follows the PGC's, which the IBM PGC and Matrox
+ * PG-640A manuals define: the viewing angle spans the window's diagonal,
+ *   x_screen = x_view / (distance - z_view) * (diagonal / 2)
+ *              / tan(angle / 2) * (viewport width / window width),
+ * and likewise for y. With the window's aspect equal to the viewport's,
+ * the scale is half the viewport's diagonal over tan(angle / 2), and the
+ * window's size cancels. Matching the shared camera's focal length,
+ * (height / 2) / tan(field / 2), gives 69.15 degrees for the 45-degree
+ * field, sent as 69 (LibShell's ANGLE is whole degrees): an image 0.27%
+ * larger than host transforms draw. The window is the shared field on the
+ * view plane through the reference point. */
 static int mtx_native_projection(void)
 {
-    double half;
-    half = (double)GLOBE_VIEW_DISTANCE *
-           tan((double)GLOBE_FIELD_OF_VIEW * PI / 360.0);
-    MTX_TRANSFORM(v2gpsvwp((DRV_WIN_WIDTH - DRV_WIN_HEIGHT) / 2,
-                           (DRV_WIN_WIDTH + DRV_WIN_HEIGHT) / 2 - 1,
-                           0, DRV_WIN_HEIGHT - 1), "viewport");
-    MTX_TRANSFORM(krhwsclipr(0, 0, DRV_WIN_WIDTH - 1, DRV_WIN_HEIGHT - 1),
-                  "clipping rectangle");
-    MTX_TRANSFORM(v2gpswdw(-half, half, -half, half), "world window");
-    MTX_TRANSFORM(v3gpsproj((short)GLOBE_FIELD_OF_VIEW), "projection");
+    double field, half_width, half_height, angle;
+    field = tan((double)GLOBE_FIELD_OF_VIEW * PI / 360.0);
+    half_height = (double)GLOBE_VIEW_DISTANCE * field;
+    half_width = half_height * (DRV_WIN_WIDTH - 1) / (DRV_WIN_HEIGHT - 1);
+    angle = 2.0 * atan(sqrt((double)(DRV_WIN_WIDTH - 1) * (DRV_WIN_WIDTH - 1) +
+                            (double)(DRV_WIN_HEIGHT - 1) * (DRV_WIN_HEIGHT - 1)) *
+                       field / DRV_WIN_HEIGHT) * 180.0 / PI;
+    MTX_TRANSFORM(v2gpswdw(-half_width, half_width, -half_height, half_height),
+                  "world window");
+    MTX_TRANSFORM(v3gpsproj((short)floor(angle + 0.5)), "projection");
     MTX_TRANSFORM(v3gpsdist((double)GLOBE_VIEW_DISTANCE), "view distance");
     MTX_TRANSFORM(v3gpshclip(0), "hither clipping");
     MTX_TRANSFORM(v3gpsyclip(0), "yon clipping");

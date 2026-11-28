@@ -48,15 +48,16 @@ Both modes use the other drivers' perspective camera: a 45° field of view acros
 screen height, with the eye 3,000 units (three globe radii) from the globe's center.
 
 By default, LibShell transforms, projects, clips, and fills world-coordinate polygons
-through `v3arwplygn` (`V3ARWPLYGN`, winding-number fill). The driver sets a 45°
-perspective with `v3gpsproj(45)` and the viewing distance with `v3gpsdist(3000)`;
-LibShell's default angle is 60°, and 0 selects an orthogonal projection. The
-*Command Reference* gives no projection formula. It does not say whether the viewing
-angle spans the window's width or its height, or whether the window lies on the view
-plane through the reference point. The driver therefore maps a square window, ±1,242.6
-units (3,000 × tan 22.5°), to a centered 480 × 480 viewport, which gives the same
-image under each of those readings. Because `v2gpsvwp` also resets the clipping
-rectangle to the viewport, `krhwsclipr` then restores the full screen for the OSD.
+through `v3arwplygn` (`V3ARWPLYGN`, winding-number fill), with the viewing distance
+set by `v3gpsdist(3000)` and the angle by `v3gpsproj`; 0 would select an orthogonal
+projection. The LibShell *Command Reference* gives no projection formula, but these
+are the PGC's `DISTAN` and `PROJCT`, with the same defaults, and the IBM PGC and
+Matrox PG-640A manuals define it: the viewing angle spans the window's diagonal, so
+the screen scale is (window diagonal ÷ 2) ÷ tan(angle ÷ 2) × (viewport ÷ window), and
+the window's size cancels. With a window of the viewport's 639:479 aspect, the
+shared camera's 45° vertical field needs a 69.15° angle; LibShell takes whole
+degrees, so the driver sends 69, which draws the globe 0.27% (about a pixel) larger
+than host transforms do.
 
 Press `S` to switch to host software transforms. This path uses LibShell's
 integer-degree rotations (its `ANGLE` type) and the same camera. The CPU transforms,
@@ -139,5 +140,5 @@ binding and board. The 228-byte packet budget assumes the manual's command forma
 and a command FIFO of at least 256 bytes; the startup quiet interval, the INT 23h
 exit path and the speed of grouped checkpoints and integer culling also need the
 board to confirm. So does the native perspective: if the globe's size or position
-changes when `S` switches modes, LibShell reads the viewing angle or window
-differently from the assumptions above.
+changes by more than a pixel when `S` switches modes, LibShell's projection differs
+from the PGC formula above.

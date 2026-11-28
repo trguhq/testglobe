@@ -536,9 +536,9 @@ pointer keywords are removed for host compilation. Vendor headers are not commit
 - **Geometry and palette:** both resolutions, indexed colors, command arguments,
   triangle/quad statistics, and cleanup. Independent view-space facing tests check
   every expected fill and cap count at several noncardinal poses; caps must appear
-  whenever a pole is in view. The native recorder requires LibShell's 45° projection,
-  the 3,000-unit viewing distance, the square window and viewport, and the restored
-  clipping rectangle. Without an x87, every facing the integer culling test decides,
+  whenever a pole is in view. The native recorder requires the 3,000-unit viewing
+  distance, a window with the viewport's aspect, and a projection angle whose screen
+  scale under the PGC formula is within 0.5% of the host camera's. Without an x87, every facing the integer culling test decides,
   at 81 poses including cardinal ones, must equal the float test, and the integer eye
   must stay within its assumed error (2/16384 in direction, 7 Q4 units in position)
   at every integer-degree pose.

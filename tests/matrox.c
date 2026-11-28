@@ -563,39 +563,40 @@ void sctxbstring(short x, short y, char *text)
     }
     ++osd_calls;
 }
-/* Initialization maps the whole screen; native projection uses the
- * centered 480 x 480 square and then restores the full clipping rectangle. */
-static int square_viewport, clip_restored;
 void v2gpsvwp(short xmin, short xmax, short ymin, short ymax)
 {
-    assert(ymin == 0 && ymax == 479);
-    assert((xmin == 0 && xmax == 639) || (xmin == 80 && xmax == 559));
-    square_viewport = xmin == 80;
-    clip_restored = 0;
+    assert(xmin == 0 && xmax == 639 && ymin == 0 && ymax == 479);
     fifo_command(10);
     ++viewport_calls;
 }
-void krhwsclipr(short left, short top, short right, short bottom)
-{
-    assert(left == 0 && top == 0 && right == 639 && bottom == 479);
-    fifo_command(10);
-    clip_restored = 1;
-}
-/* A square window, GLOBE_VIEW_DISTANCE * tan(22.5 degrees) on each side:
- * the shared 45-degree field on the view plane through the reference point. */
+/* The shared 45-degree field on the view plane through the reference point,
+ * with the viewport's 639:479 aspect. */
+static double window_width, window_height;
 void v2gpswdw(double xmin, double xmax, double ymin, double ymax)
 {
     double half = (double)GLOBE_VIEW_DISTANCE * tan(22.5 * PI / 180.0);
-    assert(square_viewport && clip_restored);
-    assert(fabs(xmin + half) < 1e-9 && fabs(xmax - half) < 1e-9);
     assert(fabs(ymin + half) < 1e-9 && fabs(ymax - half) < 1e-9);
+    assert(fabs(xmax + xmin) < 1e-9 && fabs(xmax - half * 639.0 / 479.0) < 1e-9);
+    window_width = xmax - xmin; window_height = ymax - ymin;
     fifo_transform(18);
     ++world_window_calls;
     inject_v3_error(&fail_world_window);
 }
+/* The PGC projection (IBM PGC and PG-640A manuals) scales view x by
+ * (window diagonal / 2) / tan(angle / 2) * (viewport width / window width)
+ * over the depth. That must give the shared camera's focal length,
+ * 240 / tan(22.5 degrees), within the whole-degree angle's rounding. */
 void v3gpsproj(short projection)
 {
-    assert(projection == 45 && projection == GLOBE_FIELD_OF_VIEW);
+    double diagonal, scale_x, scale_y, focal;
+    assert(projection == 69);
+    assert(window_width > 0.0 && window_height > 0.0);
+    diagonal = sqrt(window_width * window_width + window_height * window_height);
+    scale_x = diagonal / 2.0 / tan(projection * PI / 360.0) * 639.0 / window_width;
+    scale_y = diagonal / 2.0 / tan(projection * PI / 360.0) * 479.0 / window_height;
+    focal = 240.0 / tan(22.5 * PI / 180.0);
+    assert(fabs(scale_x - scale_y) < 1e-9);
+    assert(fabs(scale_x / focal - 1.0) < 0.005);
     fifo_transform(4);
     ++projection_calls; inject_v3_error(&fail_v3_projection);
 }
