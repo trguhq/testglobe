@@ -91,7 +91,6 @@ Development builds of 0.2.2 are in the [`downloads`](downloads/README.md) folder
 
 | Application | Download |
 | --- | --- |
-| Linux OpenGL: x86-64, x86, ARM64, ARMv7 in one file | [testglobe-linux-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-linux-0.2.2.zip) |
 | DOS Matrox LibShell and IBM PGC | [testglobe-matrox-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-matrox-0.2.2.zip) |
 | DOS TIGA | [testglobe-tiga-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-tiga-0.2.2.zip) |
 | Windows 3.0 and 3.1 GDI | [testglobe-gdi-0.2.2.zip](https://github.com/trguhq/testglobe/raw/refs/heads/develop/downloads/testglobe-gdi-0.2.2.zip) |
