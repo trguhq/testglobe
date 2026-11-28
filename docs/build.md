@@ -76,9 +76,8 @@ right-button state). Software texture buffers are released when texturing is dis
 `CPPFLAGS=-DTEXTURE_CACHE_RASTER=1` keeps them.
 [Development notes](development.md#shared-rendering-pipelines) describe the cache and
 memory policy. Other targets use their own `*_CPPFLAGS` variable, for example
-`IGL_CPPFLAGS=-DIGL_ZBUFFER=1` to keep the IRIS GL z-buffer. The Matrox build can
-also link Matrox's own LibShell library instead of its built-in binding; see
-[Matrox LibShell and PGC](matrox.md#build).
+`IGL_CPPFLAGS=-DIGL_ZBUFFER=1` to keep the IRIS GL z-buffer; the Matrox build uses
+`MTX_CPPFLAGS` (see [Matrox LibShell and PGC](matrox.md#build)).
 
 ## Linux-hosted cross-builds
 
@@ -98,10 +97,8 @@ make matrox-cross
 make tiga-cross CROSS_FLAGS="--tiga-root /path/to/TIGA --tiga-tools /path/to/ti-tools"
 ```
 
-- **Matrox** needs no SDK; the executable drives LIB Shell and PGC-compatible boards.
-  To link Matrox's `LSCL.LIB` instead, for LIB Shell boards only, pass
-  `CROSS_FLAGS="--lscl --xgx-root /path/to/matrox-sdk"`, with `XGX1/HEADERS` and
-  `libsv5/lscl.lib` under that root.
+- **Matrox** needs no SDK, library or headers; the executable drives LIB Shell and
+  PGC-compatible boards.
 - **TIGA** needs `include` and `libs/ai.lib`; the original SDK archive layout is also
   accepted. Install DOSBox on the host and put the TI compiler, assembler, and linker
   together in `--tiga-tools`. The build compiles `tga_gsp.c` and `tga_ext.asm` and
@@ -113,9 +110,7 @@ SDKs, compilers, and vendor libraries are not included in this repository.
 
 The Watcom DOS builds use huge-model pointers and C stack calling conventions to
 match the SDK bindings. Application objects use 8086 instructions, and the 386
-transform kernel is compiled separately and guarded by CPU detection. With `--lscl`,
-`src/mtx_ow.c` adapts the Microsoft-built LibShell library's runtime calls; that
-library needs a 286 or later, which the driver then checks before `lsinit`.
+transform kernel is compiled separately and guarded by CPU detection.
 Floating-point emulation stays available without a coprocessor. The per-vertex
 objects, the LibShell binding and the PGC commands are compiled with `-s`, without
 stack probes.

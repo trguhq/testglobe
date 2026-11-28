@@ -30,6 +30,10 @@ fails, solid fills and matching outlines remain available. The ZIP and standalon
 executable contain the same application.
 Its FPS counter reports subsecond frames promptly instead of waiting for 60 frames.
 
+The Matrox archive predates the built-in LibShell binding and PGC support: it links
+Matrox's `LSCL.LIB`, which the source no longer uses, and needs a 286 or later. The
+current `make matrox-cross` needs no Matrox library or headers.
+
 The four cross-builds passed compilation, executable/resource inspection, and host
 regression tests. The Matrox library adapter also passed DOSBox tests with x87 and
 forced floating-point emulation. Native Windows/Macintosh execution and physical

@@ -28,7 +28,7 @@
  * shell, and ioflush() stops waiting when the FIFO makes no progress.
  */
 #include "testglob.h"
-#if defined(DRV_MTX) && !defined(MTX_LSCL)
+#if defined(DRV_MTX)
 #include <stdlib.h>
 #include <string.h>
 #include "mtx_ls.h"

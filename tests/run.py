@@ -368,8 +368,6 @@ def check_earth_data(cc, common, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sdk", default=os.environ.get("MATROX_SDK"),
-                        help="Matrox SDK root containing XGX1/HEADERS, to also check the vendor LSCL.LIB binding (headers are not vendored)")
     parser.add_argument("--xgl-contract", action="store_true",
                         help="Record XGL calls using manual-derived declarations and real X11 under Xvfb; not native XGL validation")
     parser.add_argument("--gdi-contract", action="store_true",
@@ -914,8 +912,8 @@ def main():
             run(cc + common + ["-DFLAT", "-DDRV_OGL",
                 str(ROOT / "tests/texture.c"), str(ROOT / "src/e_saved.c"), "-o", str(output / "texture")])
             run([str(output / "texture")])
-        # Matrox builds on the direct LibShell binding (mtx_ls.c) and needs no
-        # SDK; --sdk also builds the driver against the vendor binding.
+        # Matrox builds on the direct LibShell binding (mtx_ls.c) and the PGC
+        # commands (mtx_pgc.c), with no vendor library or headers.
         segmented = ["-DSEG86", "-DDRV_MTX", "-D_huge=",
                      "-D__interrupt=", "-D__far=", "-D_far=", "-D_near=",
                      "-I" + str(ROOT / "tests/dos_shim")]
@@ -943,39 +941,10 @@ def main():
                         "fifo8192")
         run(cc + common + segmented + mtx_sources + ["-o", str(output / "matrox")])
         run([str(output / "matrox")])
-        # The direct binding runs on an 8086, so every profile renders. Without
+        # The binding runs on an 8086, so every profile renders. Without
         # a LIB Shell board it falls back to a PGC-compatible board.
         for profile in mtx_profiles + ("absent", "pgc", "pg640a", "pgc-startup", "pgc-timeout"):
             run([str(output / "matrox"), profile])
-        if not args.sdk:
-            print("SKIP Matrox vendor binding (LSCL.LIB) checks: supply --sdk or MATROX_SDK")
-            return
-        headers = Path(args.sdk) / "XGX1" / "HEADERS"
-        required = ("DEF.H", "LIBFN.H", "IOLIB.H")
-        for name in required:
-            if not (headers / name).is_file():
-                parser.error("Missing SDK header: " + str(headers / name))
-        normalized = output / "sdk" / "XGX1" / "HEADERS"
-        normalized.mkdir(parents=True)
-        for path in headers.iterdir():
-            if path.is_file():
-                # DOS uses Ctrl-Z as EOF; GCC treats it as an invalid C token.
-                data = path.read_bytes().rstrip(b"\r\n\x1a") + b"\n"
-                (normalized / path.name).write_bytes(data)
-        lscl = segmented + ["-DMTX_LSCL", "-I" + str(output / "sdk")]
-        check_production_units(cc, common, lscl, output, "Matrox_LSCL",
-            ("drv.c", "drv_mtx.c", "mtx_ls.c", "mtx_pgc.c"))
-        run(cc + common + lscl + mtx_sources + ["-o", str(output / "matrox_lscl")])
-        run([str(output / "matrox_lscl")])
-        # 8086/8087 profiles check rejection by the supplied 286 binding.
-        for profile in mtx_profiles:
-            run([str(output / "matrox_lscl"), profile])
-        # An 8086-safe binding opts out of the check and runs everything.
-        run(cc + common + lscl + ["-DMTX_8086_BINDING"] + mtx_sources +
-            ["-o", str(output / "matrox_8086")])
-        for profile in ("8086", "8087"):
-            run([str(output / "matrox_8086"), profile])
-        print("PASS host compatibility: strict C89 and supplied SDK prototypes")
 
 
 if __name__ == "__main__":

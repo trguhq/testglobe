@@ -6,8 +6,7 @@
  * The subset of the LIB Shell C binding that the Matrox driver uses, with
  * the binding's names, argument types and structures. mtx_ls.c implements
  * them directly on the board's host interface, so no vendor library or
- * header is needed. Defining MTX_LSCL builds the driver against the
- * vendor's headers and LSCL.LIB instead.
+ * header is needed.
  */
 #ifndef mtx_ls_h
 #define mtx_ls_h

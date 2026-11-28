@@ -42,30 +42,13 @@ With the compiler and linker on `PATH`, run:
 nmake matrox
 ```
 
-The output is `testglob.exe`, which drives either kind of board. Override `MTX_CC`,
-`MTX_CFLAGS`, `MTX_CPPFLAGS`, `MTX_386FLAGS`, and `MTX_LDFLAGS` as needed, keeping
-`-AH -G0 -FPi` on the baseline objects; only the guarded `m_386.obj` kernel uses
-`-G3`. `MTX_HOTFLAGS`
-(`-Gs`) removes stack probes from the per-vertex, per-polygon and per-word objects,
-none of which recurse; the OpenWatcom cross-build uses `-s` for the same files. The
-DOS rules use backslash paths, 8.3 generated names, and response files to stay
-within command-line limits.
-
-To link Matrox's own C binding instead, for comparison on hardware, place its SDK at
-the repository root (`XGX1/HEADERS/DEF.H`, `LIBFN.H`, `IOLIB.H` and
-`libsv5/lscl.lib`, or set `XGX_ROOT`), clean the Matrox objects, and run:
-
-```text
-nmake matrox MTX_BINDING= MTX_CPPFLAGS=$(MTX_LSCL_CPPFLAGS) MTX_LIB=$(MTX_LSCL_LIB)
-```
-
-The supplied `LSCL.LIB` uses 286 instructions (`ENTER`/`LEAVE`), so that build stops
-with an error on an 8086-class CPU before calling `lsinit`; add `-DMTX_8086_BINDING`
-to `MTX_CPPFLAGS` only for a binding rebuilt for the 8086. Its `iogeterror()` first
-waits for the command FIFO to drain, sending a no-op each time, so a shell stalled on
-two unread errors can hang it; the direct binding reads the error register without
-waiting. A build with `LSCL.LIB` supports LIB Shell boards only, because the PGC
-fallback depends on the direct binding's presence test.
+The output is `testglob.exe`, which drives either kind of board. It uses no Matrox
+library or headers. Override `MTX_CC`, `MTX_CFLAGS`, `MTX_CPPFLAGS`, `MTX_386FLAGS`,
+and `MTX_LDFLAGS` as needed, keeping `-AH -G0 -FPi` on the baseline objects; only the
+guarded `m_386.obj` kernel uses `-G3`. `MTX_HOTFLAGS` (`-Gs`) removes stack probes
+from the per-vertex, per-polygon and per-word objects, none of which recurse; the
+OpenWatcom cross-build uses `-s` for the same files. The DOS rules use backslash
+paths, 8.3 generated names, and response files to stay within command-line limits.
 
 ## Rendering and color
 
@@ -121,15 +104,17 @@ The LIB Shell runs on the board's TMS34010 graphics processor. The host reaches 
 through a 1 KB window at the board's segment. The window begins with the same
 communication area as the IBM PGC; LibShell's registers follow it: the processor's
 host-interface address, data and control words at offsets 318h–31Eh, the FIFO data
-entry at 320h, and the 8-bit ERROR register at 3B0h. The command and reply FIFOs each
-hold 4,096 words. Their counts, and a status word whose bit 9 marks an unread error,
-are read through the host interface. A command is its opcode word and parameter
+entry at 320h, and the 8-bit ERROR register at 3B0h. Matrox's library source gives
+the command and reply FIFOs 4,096 words each. Their counts, and a status word whose
+bit 9 marks an unread error, are read through the host interface. A command is its opcode word and parameter
 words, in the formats the *LIB Shell Command Reference* gives; a FIXPT value is sent
 as 16.16, fraction word first, and vertex coordinates are converted from their IEEE
 bits without floating-point arithmetic. At startup the binding halts the processor
 briefly to check that two of its scratch registers keep test patterns, as Matrox's
-`lsinit` does; if they do not, the driver reports the segment and stops before sending
-anything.
+`lsinit` does; if they do not, the driver looks for a PGC-compatible board instead.
+Matrox's `iogeterror()` first waits for the command FIFO to drain, sending a no-op
+each time, so a shell stalled on two unread errors can hang it; `src/mtx_ls.c` reads
+the error register without waiting.
 
 A PGC-compatible board takes commands through its 1 KB communication area: a
 256-byte command FIFO at offset 0, a readback FIFO at 100h and an error FIFO at 200h,
@@ -232,7 +217,7 @@ DOS call instead of prompting on an invisible screen.
 ## Validation
 
 See the [Matrox checks](testing.md#matrox-libshell-and-pgc). Native validation
-requires the board and Microsoft C 7 or OpenWatcom. The direct binding follows
+requires the board and Microsoft C 7 or OpenWatcom. The LibShell binding follows
 Matrox's binding source and the Command Reference's formats, but its register
 accesses, the presence test and the startup quiet interval still need the board to
 confirm, as do the INT 23h exit path and the speed of grouped checkpoints and integer

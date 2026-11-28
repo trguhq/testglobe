@@ -38,24 +38,7 @@ def _tiga_headers(config):
     return output
 
 
-def _matrox_headers(config):
-    source = _find(config["xgx_root"], ("XGX1/HEADERS",))
-    root = config["out"] / "sdk"
-    output = root / "XGX1" / "HEADERS"
-    output.mkdir(parents=True, exist_ok=True)
-    # Copy every header, as the host SDK checks do, so vendor headers that
-    # include each other resolve; the three the driver names must exist.
-    for name in ("DEF.H", "LIBFN.H", "IOLIB.H"):
-        _find(source, (name,))
-    for header in sorted(source.iterdir()):
-        if not header.is_file() or header.suffix.lower() != ".h":
-            continue
-        data = header.read_bytes().split(b"\x1a", 1)[0].replace(b"\r\n", b"\n")
-        (output / header.name.upper()).write_bytes(data.rstrip() + b"\n")
-    return root
-
-
-def _compile(config, driver, extra_sources=(), includes=(), defines=()):
+def _compile(config, driver, extra_sources=(), includes=()):
     env = watcom_env(config)
     out = config["out"]
     source = config["src"]
@@ -69,8 +52,7 @@ def _compile(config, driver, extra_sources=(), includes=(), defines=()):
     # -fpi keeps x87 emulation available; -0 is the baseline application CPU.
     flags = ["-q", "-bt=dos", "-mh", "-0", "-fpi", "-ecc", "-zp2", "-os", "-w3",
              "-dSEG86", "-dDRV_" + driver, "-dDRV", "-dNO_SINF",
-             "-i=" + str(source)] + ["-i=" + str(path) for path in includes] + \
-            ["-d" + name for name in defines]
+             "-i=" + str(source)] + ["-i=" + str(path) for path in includes]
     names = ["drv", "drv_" + driver.lower(), "drv_cpu", "err", "globe",
              "main", "soft3d", "soft3fp"]
     sources = [source / (name + ".c") for name in names] + [data] + list(extra_sources)
@@ -173,23 +155,8 @@ def build_tiga(config):
 
 
 def build_matrox(config):
-    # mtx_pgc.c drives PGC-compatible boards when no LIB Shell board answers.
-    pgc = config["src"] / "mtx_pgc.c"
-    if not config.get("lscl"):
-        # The direct LibShell binding needs no vendor files.
-        env, objects = _compile(config, "MTX", (config["src"] / "mtx_ls.c", pgc))
-        return _link(config, env, objects, None, "testglob.exe")
-    library = _find(config["xgx_root"], ("libsv5/lscl.lib",))
-    headers = _matrox_headers(config)
-    env, objects = _compile(config, "MTX", (config["src"] / "mtx_ow.c", pgc),
-                           (headers,), ("MTX_LSCL",))
-    librarian = shutil.which("wlib", path=env["PATH"])
-    if librarian is None:
-        raise ValueError("OpenWatcom wlib was not found under --watcom")
-    compatible = config["out"] / "sdk" / "lscl-ow.lib"
-    # Keep the supplied SDK untouched. Its objects ask for Microsoft's
-    # LLIBCE runtime by default; the adapter supplies the used interfaces
-    # through Watcom instead. No instructions or symbols are removed.
-    run([librarian, "-q", "-b", "-zll", "-o=" + str(compatible), library],
-        cwd=config["out"], env=env)
-    return _link(config, env, objects, compatible, "testglob.exe")
+    # mtx_ls.c talks to LIB Shell boards directly, with no vendor library or
+    # headers; mtx_pgc.c drives PGC-compatible boards when none answers.
+    env, objects = _compile(config, "MTX", (config["src"] / "mtx_ls.c",
+                                            config["src"] / "mtx_pgc.c"))
+    return _link(config, env, objects, None, "testglob.exe")

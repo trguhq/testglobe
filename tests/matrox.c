@@ -397,12 +397,10 @@ void lsinit(short handle, short address)
     assert(handle == 0 && address == 1);
     ++init_calls;
 }
-#ifndef MTX_LSCL
 int mtx_ls_present(void) { return init_calls != 0 && !board_absent; }
 unsigned int mtx_ls_segment(void) { return 0xC600U; }
-#endif
 static unsigned int flush_calls;
-/* Both bindings wait for queued commands and then read and discard every
+/* The binding waits for queued commands and then reads and discards every
  * reply word, so a flush must never separate a command from its reply.
  * Stale words behind unread errors are not readable yet and survive. */
 void ioflush(void)
@@ -1802,8 +1800,6 @@ static void check_fifo_option(void)
     puts("PASS Matrox MTXFIFO: 256-byte default (4 fills a group), up to 8192 bytes (145), others rejected");
 }
 
-#ifndef MTX_LSCL
-/* The PGC fallback needs the direct binding's presence test. */
 static unsigned char pgc_initial_display = 1U, pgc_original[256][3];
 static void pgc_cleanup_checks(void)
 {
@@ -1955,7 +1951,6 @@ static int pgc_run(const char *profile)
     assert(!"Escape must terminate the application");
     return 1;
 }
-#endif
 
 int main(int process_argc, char **process_argv)
 {
@@ -1992,7 +1987,6 @@ int main(int process_argc, char **process_argv)
         original_palette[i][2] = (unsigned short)((i + 47) & 255);
     }
     argc = 1; argv[0] = "testglob.exe"; argv[1] = NULL;
-#ifndef MTX_LSCL
     if (process_argc > 1 && strncmp(process_argv[1], "pg", 2) == 0)
     {
         assert(strcmp(process_argv[1], "pgc") == 0 || strcmp(process_argv[1], "pg640a") == 0 ||
@@ -2018,26 +2012,6 @@ int main(int process_argc, char **process_argv)
         puts("PASS Matrox board check: without a LIB Shell or PGC-compatible board, initialization stops before any command");
         return 0;
     }
-#endif
-#if defined(MTX_LSCL) && !defined(MTX_8086_BINDING)
-    if (selected_cpu < 286)
-    {
-        /* The supplied binding uses 286 instructions; reject before lsinit
-         * or any interrupt vector changes. */
-        drv_ext_init();
-        expected_board_error = 1;
-        if (setjmp(board_error) == 0)
-        {
-            drv_init(&argc, argv);
-            assert(!"The 286 LibShell binding must reject an 8086");
-        }
-        expected_board_error = 0;
-        assert(strstr(board_message, "80286") != NULL);
-        assert(init_calls == 0 && !mtx_initialized && test_dos_vectors[0x23] == NULL);
-        puts("PASS Matrox CPU requirement: the supplied 286 binding rejects 8086-class CPUs before lsinit");
-        return 0;
-    }
-#endif
     /* Registered first, so this checks the production atexit cleanup last. */
     assert(atexit(cleanup_checks) == 0);
     /* Main owns the scene; native cleanup remains registered afterward. */

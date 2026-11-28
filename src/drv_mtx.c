@@ -17,22 +17,8 @@
 #include "glob_ext.h"
 #include "drv_ext.h"
 
-#ifdef MTX_LSCL
-/* The vendor binding: /AH and the matching LSCL.LIB supply far code/data
- * pointers. DEF.H must precede prototypes. */
-#include "XGX1/HEADERS/DEF.H"
-#ifndef PROTO
-#define PROTO
-#endif
-#include "XGX1/HEADERS/LIBFN.H"
-#include "XGX1/HEADERS/IOLIB.H"
-
-/* Required communication object, as in the supplied LSINFO.C example. */
-struct pg_com pg;
-#else
-/* The same calls, implemented directly on the board by mtx_ls.c. */
+/* LibShell calls, implemented directly on the board by mtx_ls.c. */
 #include "mtx_ls.h"
-#endif
 /* Boards without the LIB Shell: the IBM PGC command set (mtx_pgc.c). */
 #include "mtx_pgc.h"
 static int mtx_initialized;
@@ -225,8 +211,7 @@ static int mtx_read_word(unsigned short *word, unsigned short *errors,
     {
         /* IOGETERROR reads/acknowledges the eight-bit error register; zero
          * has no error bits set. Keep draining while firmware is busy. The
-         * direct binding reads it without waiting; the vendor's first waits
-         * for the command FIFO to drain (see docs/matrox.md). */
+         * binding reads it without waiting for the command FIFO to drain. */
         *errors |= (unsigned short)iogeterror();
         /* RDFIFOCNT counts whole words, so IOGETW then reads one without
          * waiting. */
@@ -508,7 +493,6 @@ static void mtx_fifo_option(void)
     mtx_fill_packets = (unsigned int)((bytes - 32UL) / MTX_FILL_BYTES);
 }
 
-#ifndef MTX_LSCL
 /* pgc_open() has selected hex mode and enabled error reports. LUTSAV keeps
  * the board's LUT for cleanup, which also restores the display it showed. */
 static void mtx_pgc_init(void)
@@ -533,32 +517,21 @@ static void mtx_pgc_init(void)
     if (!mtx_pgc_sync("startup", FALSE)) return;
     mtx_mouse_present = drv_dos_mouse_init();
 }
-#endif
 
 void drv_init(int *argc, char **argv)
 {
     short system_info[10];
     unsigned short reporting;
-#ifndef MTX_LSCL
     char message[128];
-#endif
     (void)argc;
     (void)argv;
     drv_soft3d_select();
     mtx_fifo_option();
-#if defined(MTX_LSCL) && !defined(MTX_8086_BINDING)
-    /* The supplied LSCL.LIB, linked by both compilers, uses ENTER/LEAVE even
-     * in its 2D binding; an 8086 misexecutes them inside lsinit. The host
-     * probe remains 8086-safe. Define MTX_8086_BINDING only when linking a
-     * binding built for 8086 instructions. The direct binding needs none. */
-    if (drv_soft3d_cpu < 286) error("This LibShell library requires an 80286 or later CPU");
-#endif
     mtx_native_failed = FALSE;
     /* Before the board changes state: Ctrl-C/Break then only sets a flag,
      * and the event loop exits through the cleanup registered below. */
     drv_dos_break_init();
     lsinit(0, 1);
-#ifndef MTX_LSCL
     if (!mtx_ls_present())
     {
         /* Without a LIB Shell board, a PGC-compatible board at C6000h or
@@ -574,7 +547,6 @@ void drv_init(int *argc, char **argv)
         mtx_pgc_init();
         return;
     }
-#endif
     /* Discard what a previous program left: queued commands run, unread
      * replies are dropped. */
     ioflush();

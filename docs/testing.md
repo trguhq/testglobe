@@ -31,7 +31,6 @@ Additional options may be combined:
 | [`--amiga-ogl-contract`](#amiga-opengl) | MiniGL submissions and Amiga window/context lifecycle | None |
 | [`--igl-contract`](#iris-gl) | IRIS GL calls and software texture pixels | None |
 | [`--xgl-contract`](#sun-xgl) | XGL calls with real X11 windows and events | X11 development files, Xvfb, and an `xvfb-run` that keeps stderr separate |
-| [`--sdk /path/to/sdk`](#matrox-libshell-and-pgc) | The Matrox driver built against Matrox's own LibShell binding | LibShell headers under `XGX1/HEADERS` |
 | [`--tiga-contract`](#tiga) | TIGA calls, embedded-module loading, arithmetic, and recovery | None |
 | [`--tiga-sdk /path/to/sdk`](#tiga) | TIGA checks plus compilation against original SDK declarations | TIGA host headers |
 | [`--dos-cpu`](#tiga) | Shared Matrox/TIGA CPU-probe instruction and stack checks (`--tiga-cpu` remains an alias) | Python `unicorn`, GNU `as` and `objcopy` |
@@ -44,12 +43,11 @@ With all prerequisites installed, run every native group with:
 ```sh
 python3 tests/run.py --ogl-contract --igl-contract --xgl-contract \
   --gdi-contract --qd-contract --ami-contract --amiga-ogl-contract \
-  --tiga-contract --dos-cpu --tiga-sdk /path/to/tiga --sdk /path/to/matrox
+  --tiga-contract --dos-cpu --tiga-sdk /path/to/tiga
 ```
 
 Exit status zero means all requested checks passed. `PASS` lines identify completed
-checks; `SKIP` identifies an optional group that did not run. Without `--sdk` or
-`MATROX_SDK`, the Matrox SDK group is reported as skipped. The baseline needs no
+checks; `SKIP` identifies an optional group that did not run. The baseline needs no
 vendor graphics SDK. An intentionally injected application failure can be a passing
 test when the runner verifies its expected exit status and diagnostics.
 
@@ -74,35 +72,6 @@ module's bounds and CRC. It does not execute graphics calls or establish CPU/ABI
 compatibility. The GDI build also verifies its NE format and Earth resources before
 reporting success.
 
-The OpenWatcom LibShell adapter has a separate `tests/mtx_ow.c` test that captures
-commands from the real SDK library without requiring a Matrox board. Its numeric
-checks exercise world-window and polygon conversion, pointer/stack conventions,
-variadic calls, and runtime adapters. After
-`make matrox-cross CROSS_FLAGS="--lscl --xgx-root /path/to/matrox-sdk"`, compile it with
-`WATCOM/binl64` on `PATH` and `INCLUDE` set to `WATCOM/h`:
-
-```sh
-wcc -q -bt=dos -mh -0 -fpi -ecc -zp2 -dDRV_MTX \
-  -i=build/cross/matrox/sdk -fo=build/cross/matrox/abi_test.obj tests/mtx_ow.c
-wcl -q -bt=dos -mh -0 -fpi -ecc -fe=build/cross/matrox/mtxabi.exe \
-  build/cross/matrox/abi_test.obj build/cross/matrox/mtx_ow.obj \
-  build/cross/matrox/sdk/lscl-ow.lib
-```
-
-Mount that output directory as DOSBox's `C:` drive, then run:
-
-```text
-set NO87=
-mtxabi.exe hardware > abihw.log
-set NO87=1
-mtxabi.exe emulated > abi87.log
-```
-
-Both logs must contain `PASS`; DOSBox's own exit status does not report a DOS
-assertion failure. The test checks Watcom's actual runtime selection, proving the
-forced emulation path even when DOSBox exposes an x87. This is not a test on
-physical hardware without a coprocessor. Vendor SDKs remain external dependencies.
-
 ## What the host checks establish
 
 Compilation uses strict C89, warnings, ASan, and UBSan, with undefined behavior
@@ -114,8 +83,8 @@ translation units. This catches dependencies accidentally supplied by a fixture 
 includes a driver `.c` file. These checks use the same recorder declarations as the
 behavior tests; they do not substitute for compiling with the native SDK and linker.
 
-Most legacy API declarations come from test fixtures; Matrox and the optional TIGA
-SDK check use supplied vendor headers. Call recorders check submitted arguments and
+Most legacy API declarations come from test fixtures; the optional TIGA SDK check
+uses supplied vendor headers. Call recorders check submitted arguments and
 simulated outcomes. They do not implement the original graphics libraries, establish
 native binary ABIs, or verify hardware rendering. Host integer and pointer widths,
 byte order, and calling conventions remain those of the host, even when
@@ -520,26 +489,14 @@ and graphics output; the real X11 activity in these tests does not exercise XGL 
 
 ### Commands
 
-The driver recorder, the direct-binding test and the PGC command test run with the
-baseline checks and need no SDK. To also build the driver against Matrox's own
-binding, use:
-
-```sh
-python3 tests/run.py --sdk /path/to/sdk
-# Or set MATROX_SDK=/path/to/sdk.
-```
-
-### Additional requirements
-
-For `--sdk`, provide the original LibShell headers under `XGX1/HEADERS` outside the
-repository. The runner uses their function prototypes, copying headers into a
-temporary directory and removing trailing DOS EOF bytes. DOS and board calls are
-recorded, and compiler pointer keywords are removed for host compilation. Vendor
-headers are not committed.
+The driver recorder, the LibShell binding test and the PGC command test run with the
+baseline checks. They need no Matrox library or headers: the driver's LibShell calls
+are declared by `src/mtx_ls.h`, and DOS and board calls are recorded, with compiler
+pointer keywords removed for host compilation.
 
 ### Coverage
 
-- **Direct binding:** `tests/mtx_ls.c` drives `src/mtx_ls.c` against a simulated
+- **LibShell binding:** `tests/mtx_ls.c` drives `src/mtx_ls.c` against a simulated
   host window and processor. Every call the driver uses must send the Command
   Reference's opcode and parameter words; FIXPT values are 16.16, truncated toward
   zero and saturated, and 200,000 vertex floats must decode without floating point
@@ -578,10 +535,8 @@ headers are not committed.
   and viewport bounds. Packet checks match every fill to its quad in order, verify
   the packet vertices against the mesh, and require each mesh vertex to be
   transformed and projected once per frame. CPU profiles exercise baseline, 386 and
-  floating-point dispatch, including 8086/8087 and 286/287 combinations. With `--sdk`,
-  the `8086` and `8087` profiles check that the supplied 286 binding is rejected
-  before `lsinit`, and a build with `MTX_8086_BINDING` runs them through the whole
-  contract. The `absent` profile requires initialization to stop before any command
+  floating-point dispatch, including 8086/8087 and 286/287 combinations, each through
+  the whole contract. The `absent` profile requires initialization to stop before any command
   when neither a LIB Shell nor a PGC-compatible board answers. The OSD reports actual
   selection and failed requests; the help keeps `S` visible.
 - **Packets:** the recorder counts command bytes from the manual's formats since the
@@ -626,9 +581,9 @@ headers are not committed.
 ### Native validation
 
 A PG Series 1 board running the LIB Shell, with Microsoft C 7 or OpenWatcom, is
-needed to validate huge pointers, DOS timing, the direct binding's register accesses
-and presence test, asynchronous timing, and graphics output. Building with
-`LSCL.LIB` as well allows the two bindings to be compared on the board.
+needed to validate huge pointers, DOS timing, the LibShell binding's register
+accesses and presence test, asynchronous timing, and graphics output. An IBM PGC or
+Matrox PG-640A is needed to validate the PGC path the same way.
 
 ## TIGA
 

@@ -110,19 +110,13 @@ MTX_386FLAGS = -G3 -DSOFT3D_TRANSFORM_386
 # Per-vertex/per-polygon objects omit stack probes; none recurses.
 MTX_HOTFLAGS = -Gs
 MTX_DEFINES = -DSEG86 -DDRV_MTX -DDRV -DNO_SINF
-# The direct LibShell binding (m_ls.obj) needs no vendor files. For the
-# vendor's LSCL.LIB instead, clear MTX_BINDING and set MTX_CPPFLAGS and
-# MTX_LIB to $(MTX_LSCL_CPPFLAGS) and $(MTX_LSCL_LIB); see docs/matrox.md.
-XGX_ROOT = .
-MTX_LSCL_CPPFLAGS = -DMTX_LSCL -I$(XGX_ROOT)
-MTX_LSCL_LIB = $(XGX_ROOT)\libsv5\lscl.lib
+# Extra preprocessor flags for every Matrox object.
 MTX_CPPFLAGS =
-MTX_BINDING = m_ls.obj
-MTX_LIB =
 MTX_LDFLAGS = -link /STACK:16384
 MTX_OBJECTS1 = drv.obj drv_mtx.obj err.obj globe.obj main.obj e_data.obj
-# m_pgc.obj drives PGC-compatible boards when no LIB Shell board answers.
-MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj m_pgc.obj $(MTX_BINDING)
+# m_ls.obj talks to LIB Shell boards directly, with no vendor library or
+# headers; m_pgc.obj drives PGC-compatible boards when none answers.
+MTX_OBJECTS2 = m_cpu.obj m_soft.obj m_386.obj m_float.obj m_ls.obj m_pgc.obj
 MTX_OBJECTS = $(MTX_OBJECTS1) $(MTX_OBJECTS2)
 MTX_HEADERS = $(SRC)\testglob.h $(SRC)\types.h $(SRC)\drv.h \
     $(SRC)\drv_ext.h $(SRC)\drv_mtx.h $(SRC)\err_ext.h \
@@ -474,11 +468,11 @@ matrox: testglob.exe
 
 # Each echo is short enough for COMMAND.COM. Response files also keep the
 # compiler and linker invocations below DOS's 127-character command limit.
-testglob.exe: $(MTX_OBJECTS) $(MTX_LIB) FORCE
+testglob.exe: $(MTX_OBJECTS) FORCE
 	@echo -AH -FPi -Fetestglob.exe > link.rsp
 	@echo $(MTX_OBJECTS1) >> link.rsp
 	@echo $(MTX_OBJECTS2) >> link.rsp
-	@echo $(MTX_LIB) $(MTX_LDFLAGS) >> link.rsp
+	@echo $(MTX_LDFLAGS) >> link.rsp
 	$(MTX_CC) @link.rsp
 
 e_data.obj: m_data.c $(MTX_HEADERS)
