@@ -78,21 +78,23 @@ static int mtx_integer_cull;
 /* LSERROR stalls the shell before a second unread error. A blocking
  * lslibsync() cannot service that register, so use a counted LSINQ reply
  * as a completion marker while polling the ERROR register and read FIFO.
- * Packets contain a small command, the per-frame model/view commands or up
- * to MTX_FILL_PACKETS color/polygon pairs, and a four-byte inquiry; LUT
- * writes and text are bounded too. The PG Series 1 command FIFO holds 4096
- * words, so a stalled shell cannot fill it before error servicing resumes;
- * the bound also suits a 256-byte FIFO. */
+ * Packets contain a small command, the per-frame model/view commands or a
+ * group of up to mtx_fill_packets color/polygon pairs, and a four-byte
+ * inquiry; LUT writes and text are bounded too. Each packet fits the
+ * command FIFO, so a stalled shell cannot fill it before error servicing
+ * resumes. */
 #define MTX_WAIT_TICKS (10UL * (unsigned long)CLOCKS_PER_SEC)
 /* A native fill is a color (4 bytes) and a four-vertex V3ARWPLYGN (52);
  * screen fills (4 + 44) are smaller. A group of fills leaves 32 bytes for
- * its 4-byte inquiry and margin: four fills in a 256-byte FIFO (228 bytes
- * in flight). MTXFIFO, in bytes, can assume a larger command FIFO, up to
- * the PG Series 1 boards' 4096 words (8192 bytes): 145 fills a group. */
+ * its 4-byte inquiry and margin. The PG Series 1 command FIFO holds 4096
+ * words (8192 bytes): FIFO_SIZE in Matrox's binding source, and the limit
+ * Matrox's Windows driver fills to in bulk transfers. That gives 145 fills
+ * a group. MTXFIFO, in bytes, can assume a smaller FIFO, down to 256 bytes
+ * (four fills, 228 bytes in flight). */
 #define MTX_FILL_BYTES 56UL
-#define MTX_FIFO_DEFAULT 256UL
-#define MTX_FIFO_LARGEST 8192UL
-static unsigned int mtx_fill_packets = 4U;
+#define MTX_FIFO_SMALLEST 256UL
+#define MTX_FIFO_DEFAULT 8192UL
+static unsigned int mtx_fill_packets = 145U;
 /* Stale startup data: a full-screen readback is 153,600 words. A shell
  * that stalled on a second error resumes once the first is read, so wait
  * for at least one BIOS tick of silence after discarding anything. */
@@ -522,7 +524,7 @@ static void mtx_fifo_option(void)
     if (setting != NULL && *setting != '\0')
     {
         bytes = strtoul(setting, &end, 10);
-        if (*end != '\0' || bytes < MTX_FIFO_DEFAULT || bytes > MTX_FIFO_LARGEST)
+        if (*end != '\0' || bytes < MTX_FIFO_SMALLEST || bytes > MTX_FIFO_DEFAULT)
             error("MTXFIFO must be a command FIFO size from 256 to 8192 bytes");
     }
     mtx_fill_packets = (unsigned int)((bytes - 32UL) / MTX_FILL_BYTES);

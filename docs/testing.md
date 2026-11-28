@@ -551,11 +551,12 @@ pointer keywords removed for host compilation.
   when neither a LIB Shell nor a PGC-compatible board answers. The OSD reports actual
   selection and failed requests; the help keeps `S` visible.
 - **Packets:** the recorder counts command bytes from the manual's formats since the
-  last completed reply and requires at most 228 in flight, one checkpoint per four
-  fills and per model/view group, and no repeated fill color while the board's color
-  is known. The `fifo8192` profile sets `MTXFIFO=8192` and allows 145 fills and
-  8,124 bytes. `MTXFIFO` values from 256 to 8192 must give groups of
-  (bytes − 32) ÷ 56 fills, and others, including non-decimal ones, must be rejected.
+  last completed reply and requires at most 8,124 in flight with the default
+  4,096-word FIFO, one checkpoint per group of 145 fills and per model/view group, and
+  no repeated fill color while the board's color is known. The `fifo256` profile sets
+  `MTXFIFO=256` and requires four fills and at most 228 bytes. `MTXFIFO` values from
+  256 to 8192 must give groups of (bytes − 32) ÷ 56 fills, and others, including
+  non-decimal ones, must be rejected.
 - **Screen sizes:** the `1024x768` and `1280x1024` profiles run the whole LibShell
   contract with `LSINQSYS` reporting those sizes: viewport, world window, projection
   angle (whose PGC-formula scale must stay within 0.5% of the host camera's), raster

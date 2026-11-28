@@ -165,8 +165,9 @@ static char *recorded_mtx_getenv(const char *name)
     return getenv(name);
 }
 /* The driver's own FIFO argument: a group of fills (56 bytes each) and its
- * 4-byte inquiry in flight, 228 bytes for the default 256-byte FIFO. */
-static unsigned int fifo_limit = 228U;
+ * 4-byte inquiry in flight: 145 fills and 8124 bytes for the default
+ * 4096-word FIFO, 4 fills and 228 bytes with MTXFIFO=256. */
+static unsigned int fifo_limit = 145U * 56U + 4U;
 
 static void fifo_command(unsigned int bytes)
 {
@@ -1813,7 +1814,7 @@ static void check_transform_recovery(void)
 static void check_fifo_option(void)
 {
     static char *valid[5] = { "", "256", "1000", "8191", "8192" };
-    static unsigned int groups[5] = { 4U, 4U, 17U, 145U, 145U };
+    static unsigned int groups[5] = { 145U, 4U, 17U, 145U, 145U };
     static char *invalid[5] = { "255", "8193", "12x", "-1", "0x400" };
     unsigned int i;
     for (i = 0; i < 5U; ++i)
@@ -1836,8 +1837,8 @@ static void check_fifo_option(void)
     }
     fifo_setting = NULL;
     mtx_fifo_option();
-    assert(mtx_fill_packets == 4U);
-    puts("PASS Matrox MTXFIFO: 256-byte default (4 fills a group), up to 8192 bytes (145), others rejected");
+    assert(mtx_fill_packets == 145U);
+    puts("PASS Matrox MTXFIFO: 4096-word default (145 fills a group), down to 256 bytes (4), others rejected");
 }
 
 static unsigned char pgc_initial_display = 1U, pgc_original[256][3];
@@ -2031,7 +2032,7 @@ int main(int process_argc, char **process_argv)
         else if (strcmp(profile, "387") == 0) { selected_cpu = 386; selected_fpu = 1; }
         else if (strcmp(profile, "fpu") == 0) { selected_cpu = 486; selected_fpu = 1; }
         else if (strcmp(profile, "absent") == 0) board_absent = 1;
-        else if (strcmp(profile, "fifo8192") == 0) fifo_setting = "8192";
+        else if (strcmp(profile, "fifo256") == 0) fifo_setting = "256";
         else if (strcmp(profile, "1024x768") == 0) { test_x2 = 1023U; test_y2 = 767U; }
         else if (strcmp(profile, "1280x1024") == 0) { test_x2 = 1279U; test_y2 = 1023U; }
         else if (strcmp(profile, "bad-resolution") == 0) { test_x2 = 799U; test_y2 = 399U; bad_resolution = 1; }
@@ -2114,9 +2115,9 @@ int main(int process_argc, char **process_argv)
     assert(mtx_width == test_width && mtx_height == test_height);
     if (fifo_setting != NULL)
     {
-        /* PG Series 1 boards' 4096-word FIFO: 145 fills and the inquiry. */
-        assert(mtx_fill_packets == 145U);
-        fifo_limit = 145U * 56U + 4U;
+        /* MTXFIFO=256: four fills and the inquiry, 228 bytes. */
+        assert(mtx_fill_packets == 4U);
+        fifo_limit = 4U * 56U + 4U;
     }
     assert(test_dos_vectors[0x23] != NULL && test_dos_vectors[0x24] != NULL);
     assert(mtx_previous_lut == 3 && inquiry == 0);

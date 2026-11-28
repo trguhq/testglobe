@@ -232,17 +232,18 @@ and `v3vwid` preserve the origin and reference point. A fill color equal to the
 previous one is not resent; the driver forgets the color after a clear, the OSD and
 any error. Diagnostics name the operation and error bits.
 
-By default the driver assumes a 256-byte command FIFO, the size of the PGC's: a
-group is four fills and at most 228 bytes are in flight. In the recorder a key-1
-frame then needs 58 replies instead of about 270. Matrox's library source gives the
-PG Series 1 boards 4,096-word FIFOs (`FIFO_SIZE` in `IOLIB.H`, and the limit its
-`ioputw()` checks against). The *Command Reference* does not state a size, so that
-is optional: set `MTXFIFO` to the command FIFO size in bytes, from 256 to 8192,
-before starting the program. `set MTXFIFO=8192` uses the whole 4,096-word FIFO, with
-145 fills a group, and the same frame needs 8 replies. Other values are rejected. A
-larger group means that more fills are drawn before a recoverable error is reported;
-the frame is retried either way. `MTXFIFO` does not affect PGC boards, whose
-transfer waits for room in their 256-byte FIFO.
+The driver uses the whole 4,096-word (8,192-byte) command FIFO of the PG Series 1
+and PG2 boards: a group is 145 fills, and in the recorder a key-1 frame needs 8
+replies instead of about 270. The *Command Reference* does not state the size, but
+Matrox's library source does (`FIFO_SIZE` in `IOLIB.H`, and the limit its `ioputw()`
+checks against), and Matrox's own Windows 3.1 driver for these boards (`PGX1_8P.DRV`)
+measures free space as 1000h words minus the FIFO count when it sends bulk data.
+To use smaller groups, set `MTXFIFO` to a command FIFO size in bytes, from 256 to
+8192, before starting the program: `set MTXFIFO=256` gives four fills a group, at
+most 228 bytes in flight and 58 replies a frame. Other values are rejected. A larger
+group means that more fills are drawn before a recoverable error is reported; the
+frame is retried either way. `MTXFIFO` does not affect PGC boards, whose transfer
+waits for room in their 256-byte FIFO.
 
 At startup the driver first discards errors and Read FIFO words left by a previous
 program, waiting for a short quiet interval in case a stalled shell resumes, and
@@ -298,5 +299,6 @@ commands, that the pause between polls is long enough on a fast machine, the Mat
 identification and its `LUTX` and two-byte `PROJCT`, whether a PG-1280's `RESETF`
 viewport is its whole screen, the frame synchronization's speed, and the 3D
 projection, which `S` should leave unchanged in size and position. Screens above
-640 × 480 are tested only in the recorder. `MTXFIFO` settings above 256 need a LIB
-Shell board to confirm the 4,096-word FIFO.
+640 × 480 are tested only in the recorder. The 4,096-word FIFO default still needs a
+LIB Shell board to confirm it; `set MTXFIFO=256` restores four-fill groups if it
+misbehaves.
